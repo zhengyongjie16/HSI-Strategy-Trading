@@ -1,6 +1,6 @@
+import type { Logger } from '../../types/logger.js';
 import { canonicalDecimal, exactCompare } from '../../utils/numeric/exact.js';
 import { AMOUNT_CONFIG_TEXT_PATTERN } from '../../constants/financialConfig.js';
-import { logger } from '../../utils/logger/index.js';
 import type { LiquidationCooldownConfig, MonitorConfig, DecimalRange } from '../../types/config.js';
 import type { Quote } from '../../types/quote.js';
 import {
@@ -250,6 +250,7 @@ export function validateExplicitBooleanConfig({
  * @returns 验证结果
  */
 export function validateSymbolFromQuote(
+  logger: Logger,
   quote: Quote | null,
   symbol: string,
   symbolLabel: string,

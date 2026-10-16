@@ -1,3 +1,8 @@
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
+import { scheduleBoundedOneShotAt } from '../../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../../src/infrastructure/time/index.js';
+
 /**
  * P0 脱敏 V1 恢复保护网。
  * 真实 repository → loader → DailyLoss/episode/cooldown → rebuild → orderMonitor 恢复；
@@ -13,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createMonitorConfig, createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import type { PostTradeConsistencyRuntime } from '../../../src/app/types.js';
+import type { PostTradeConsistencyRuntime } from '../../../src/app/runtime/types.js';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
 import { createWarrantCandidateSearch } from '../../../src/application/autoSearch/candidateSearch.js';
 import { createStartupSeatSearch } from '../../../src/application/autoSearch/startupSeatSearch.js';
@@ -32,17 +37,17 @@ import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealized
 import { createWarrantRiskChecker } from '../../../src/domain/risk/warrantRiskChecker.js';
 import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
-import { createLoadTradingDayRuntimeSnapshot } from '../../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
-import { createRebuildTradingDayState } from '../../../src/main/lifecycle/rebuildTradingDayState.js';
+import { createLoadTradingDayRuntimeSnapshot } from '../../../src/application/tradingDayRebuild/loadTradingDayRuntimeSnapshot.js';
+import { createRebuildTradingDayState } from '../../../src/application/tradingDayRebuild/rebuildTradingDayState.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import { createSeatActivationDispatcher } from '../../../src/runtime/seatActivationDispatcher/index.js';
-import type { LastState } from '../../../src/types/state.js';
 import type { OrderFact } from '../../../src/types/trade.js';
 import { isRecord } from '../../../src/utils/helpers/index.js';
-import { logger } from '../../../src/utils/logger/index.js';
-import { getTradingMinutesSinceOpen, toHongKongTimeIso } from '../../../src/utils/time/index.js';
-import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
+import { logger } from '../../../src/infrastructure/logger/index.js';
+import { getTradingMinutesSinceOpen } from '../../../src/domain/tradingSession/index.js';
+import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
+import { buildTradeLogPath } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/tradeLogPath.js';
 import {
   createLoggerDouble,
   createMarketDataClientDouble,
@@ -50,7 +55,7 @@ import {
   createQuoteDouble,
   createRateLimiterDouble,
   createTerminationDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
 import { createBrokerIngressFixture } from '../architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import type { OfflineRecoveryFixture } from './types.js';
@@ -130,6 +135,7 @@ async function createRecoveryNative(orders: unknown = frozenOrders) {
 }
 const originalNative = await createRecoveryNative();
 const originalRecorder = originalNative.createRecorder({
+  logger: createLoggerDouble(),
   rateLimiter: createRateLimiterDouble(),
   getExecutionTimeEvidence: () => [],
   settlementRefreshNeedRecorder: {
@@ -231,6 +237,7 @@ async function createOfflineRecovery(
   // 只装配 monitor 自身的真实 runtime，不另造独立 settlement store 或人工 refresh nudge。
   let postTrade: PostTradeConsistencyRuntime | null = null;
   const recorder = native.createRecorder({
+    logger: createLoggerDouble(),
     rateLimiter,
     getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: {
@@ -255,6 +262,10 @@ async function createOfflineRecovery(
     },
   });
   const monitor = native.createMonitor({
+    logger: createLoggerDouble(),
+    wait: wait,
+    requestExternalApi: wrapExternalApiRequest,
+    scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
     rateLimiter,
     marketDataClient: market,
     cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
@@ -278,28 +289,32 @@ async function createOfflineRecovery(
     scheduleTimer: setTimeout,
     clearTimer: clearTimeout,
   });
-  const trader = createTraderDouble({
-    orderRecorder: recorder,
+  const tradeRuntime = createTradeRuntimeDouble({
     ...native.createAccountService({ rateLimiter }),
-    fetchAllOrdersFromAPI: () =>
-      orders === null ? recorder.fetchAllOrdersFromAPI() : Promise.resolve(orders),
-    initializeOrderMonitor: monitor.initialize,
-    seedOrderHoldSymbols: holds.seedFromOrders,
-    getOrderHoldSymbols: holds.getHoldSymbols,
-    recoverOrderTrackingFromSnapshot: monitor.recoverOrderTrackingFromSnapshot,
-    hasPendingProtectiveLiquidationOrders: monitor.hasPendingProtectiveLiquidationOrders,
+    orderRecorder: {
+      fetchAllOrdersFromAPI: () =>
+        orders === null ? recorder.fetchAllOrdersFromAPI() : Promise.resolve(orders),
+    },
+    orderMonitor: {
+      initialize: monitor.initialize,
+      recoverOrderTrackingFromSnapshot: monitor.recoverOrderTrackingFromSnapshot,
+      hasPendingProtectiveLiquidationOrders: monitor.hasPendingProtectiveLiquidationOrders,
+    },
+    orderHoldRegistry: {
+      seedFromOrders: holds.seedFromOrders,
+      getHoldSymbols: holds.getHoldSymbols,
+    },
   });
-  const lastState: LastState = {
-    canTrade: false,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: fixture.dayKey,
-    lifecycleState: 'ACTIVE',
-    pendingOpenRebuild: false,
-    isTradingEnabled: false,
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-    allTradingSymbols: new Set(),
+  const stateFixtures: RuntimeStateFixtures = {
+    tradingTimeState: { canTrade: false, isHalfDay: false, openProtectionActive: false },
+    lifecycleState: {
+      currentDayKey: fixture.dayKey,
+      lifecycleState: 'ACTIVE',
+      pendingOpenRebuild: false,
+      isTradingEnabled: false,
+    },
+    tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
   };
   const warrantRiskChecker = createWarrantRiskChecker({
     onInvalidCallPrice: () => {},
@@ -323,12 +338,13 @@ async function createOfflineRecovery(
   const snapshot = createAccountPositionSnapshot({
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
-    readPort: trader,
+    readPort: tradeRuntime.accountService,
     reportFatalError: termination.reportFatalError,
   });
   postTrade = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     termination,
-    getTrader: () => trader,
+    getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
     snapshot,
     onPositionsCommitted: async () => {},
     scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
@@ -342,9 +358,10 @@ async function createOfflineRecovery(
     mixedTradeLogRepository: repository,
   });
   const dispatcher = createSeatActivationDispatcher({
+    logger: createLoggerDouble(),
     snapshot,
     symbolRegistry,
-    monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(),
+    monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
     termination,
   });
   const hydrate = createTradeLogHydrator({
@@ -357,10 +374,13 @@ async function createOfflineRecovery(
   let recoveryCalls = 0;
   let hydrationCalls = 0;
   const load = createLoadTradingDayRuntimeSnapshot({
+    logger: createLoggerDouble(),
     snapshot,
     marketDataClient: market,
-    trader,
-    lastState,
+    orderRecorder: tradeRuntime.orderRecorder,
+    orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+    orderMonitor: tradeRuntime.orderMonitor,
+    ...stateFixtures,
     tradingConfig,
     symbolRegistry,
     dailyLossTracker: daily,
@@ -402,8 +422,8 @@ async function createOfflineRecovery(
       warrantRiskChecker,
       logger: createLoggerDouble(),
     }),
-    trader,
-    lastState,
+    orderMonitor: tradeRuntime.orderMonitor,
+    ...stateFixtures,
     symbolRegistry,
     monitorContext: context,
     dailyLossTracker: daily,

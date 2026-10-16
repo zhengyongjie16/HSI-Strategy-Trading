@@ -1,3 +1,7 @@
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { nowMonotonicMs, wait } from '../../src/infrastructure/time/index.js';
+
 /** 真实共享执行 → tracking/O/Daily/episode → settlement 隔离检查；仅 broker、行情、时钟及持久化 IO 为离线边界。 */
 
 import { describe, expect, it } from 'bun:test';
@@ -93,7 +97,11 @@ async function createHarness(
     netAssets: '10000',
     availableCash: '10000',
   });
-  const limiter = createRateLimiter();
+  const limiter = createRateLimiter({
+    wait: wait,
+    nowMonotonicMs: nowMonotonicMs,
+    logger: createLoggerDouble(),
+  });
   let clock = T;
   const trace: string[] = [];
   const fatal: unknown[] = [];
@@ -157,6 +165,7 @@ async function createHarness(
     isExternalFailure: () => false,
   });
   const recorder = createOrderRecorder({
+    logger: createLoggerDouble(),
     orderSnapshotReadPort: native.ports.createOrderSnapshotReadPort({
       rateLimiter: limiter,
       executionLedgerPort: native.executionLedgerPort,
@@ -210,6 +219,10 @@ async function createHarness(
     },
   });
   const tracking = createOrderMonitor({
+    wait: wait,
+    requestExternalApi: wrapExternalApiRequest,
+    scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
+    logger: createLoggerDouble(),
     orderDetailReadPort: native.ports.createOrderDetailReadPort(),
     executionLedgerPort: native.executionLedgerPort,
     orderPushPort: native.ports.createOrderPushPort(),
@@ -244,6 +257,7 @@ async function createHarness(
   await tracking.recoverOrderTrackingFromSnapshot([native.queryObservation]);
   const cancelOutcomes: Awaited<ReturnType<typeof tracking.cancelOrder>>[] = [];
   const executor = createOrderExecutor({
+    logger: createLoggerDouble(),
     readSellPositions: native.ports.createSellPositionReader(),
     tradeMutationPort: native.ports.createTradeMutationPort(),
     rateLimiter: limiter,

@@ -1,4 +1,5 @@
-import type { CacheDomain, LifecycleMutableState } from '../../../src/main/lifecycle/types.js';
+import type { CacheDomain } from '../../../src/runtime/lifecycle/types.js';
+import type { LifecycleMutableState } from '../../../src/types/lifecycle.js';
 
 /**
  * createLifecycleRuntime 接线测试中的开盘重建委托记录。

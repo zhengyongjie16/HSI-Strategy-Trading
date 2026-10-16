@@ -1,9 +1,11 @@
+import type { SeatSwitchWorkflow, StartSwitchOnDistanceResult } from '../../types/seatSwitch.js';
+import type { SymbolRegistry } from '../../types/seat.js';
+
 /** 距离换标事件用例：从原行情/席位身份与 canonical 持仓发起距离检查，不代管 WAIT 或激活。 */
 import { TRADING } from '../../constants/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
-import { isSeatActive } from '../../utils/seat/guards.js';
-import type { StartSwitchOnDistanceResult } from '../../types/monitorContextPorts.js';
-import type { MonitorContext } from '../../types/state.js';
+import { isSeatActive } from '../../domain/seat/seatPolicy.js';
+
 import type { QuoteUpdatedEvent } from '../../types/marketPorts.js';
 import type {
   StartDistanceSwitchExecutor,
@@ -22,7 +24,10 @@ export function createDistanceSwitchExecutor(
   deps: DistanceSwitchExecutorDeps,
 ): StartDistanceSwitchExecutor {
   return async function startDistanceSwitchOnMonitorQuote(params: {
-    readonly monitorContext: MonitorContext;
+    readonly monitorContext: {
+      readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+      readonly seatSwitch: SeatSwitchWorkflow;
+    };
     readonly event: QuoteUpdatedEvent;
     readonly canContinue: () => boolean;
     readonly retryConsumed: boolean;
@@ -82,7 +87,10 @@ export function createDistanceSwitchExecutor(
  * @returns 调用 startSwitchOnDistance 前的单侧权威快照
  */
 function captureDistanceSwitchPrecheckDirection(
-  monitorContext: Pick<MonitorContext, 'symbolRegistry' | 'seatSwitch'>,
+  monitorContext: {
+    readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+    readonly seatSwitch: SeatSwitchWorkflow;
+  },
   direction: 'LONG' | 'SHORT',
 ): DistanceSwitchPrecheckSnapshot[number] {
   const seatState = monitorContext.symbolRegistry.getSeatState(direction);
@@ -96,9 +104,10 @@ function captureDistanceSwitchPrecheckDirection(
 }
 
 /** 距离事件捕获两方向原身份，明确外部失败只有在未发布任何换标计划时才可重评估。 */
-export function captureDistanceSwitchPrecheckSnapshot(
-  monitorContext: Pick<MonitorContext, 'symbolRegistry' | 'seatSwitch'>,
-): DistanceSwitchPrecheckSnapshot {
+export function captureDistanceSwitchPrecheckSnapshot(monitorContext: {
+  readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+  readonly seatSwitch: SeatSwitchWorkflow;
+}): DistanceSwitchPrecheckSnapshot {
   return [
     captureDistanceSwitchPrecheckDirection(monitorContext, 'LONG'),
     captureDistanceSwitchPrecheckDirection(monitorContext, 'SHORT'),
@@ -107,7 +116,10 @@ export function captureDistanceSwitchPrecheckSnapshot(
 
 /** 两方向都无 pending 且身份未变才能证明没有已提交的换标副作用。 */
 function isDistanceSwitchPrecheckRetrySafe(
-  monitorContext: Pick<MonitorContext, 'symbolRegistry' | 'seatSwitch'>,
+  monitorContext: {
+    readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+    readonly seatSwitch: SeatSwitchWorkflow;
+  },
   snapshot: DistanceSwitchPrecheckSnapshot,
 ): boolean {
   return snapshot.every((entry) => {

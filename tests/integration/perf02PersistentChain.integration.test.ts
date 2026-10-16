@@ -1,27 +1,31 @@
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { nowMonotonicMs, wait } from '../../src/infrastructure/time/index.js';
+
+import type { TradeRuntime } from '../../src/app/runtime/types.js';
+
 /** PERF-02 持久化全链路回归：真实 quoteClient → D-event 宿主 → intraday-regression → 生命周期清理/重建。 */
 
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
 import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createGlobalStateDomain } from '../../src/main/lifecycle/cacheDomains/globalStateDomain.js';
-import { createMarketDataDomain } from '../../src/main/lifecycle/cacheDomains/marketDataDomain.js';
-import { createSignalRuntimeDomain } from '../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
-import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
-import type { LifecycleMutableState } from '../../src/main/lifecycle/types.js';
-import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
-import type { QuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/types.js';
+import { createGlobalStateDomain } from '../../src/runtime/lifecycle/cacheDomains/globalStateDomain.js';
+import { createMarketDataDomain } from '../../src/runtime/lifecycle/cacheDomains/marketDataDomain.js';
+import { createSignalRuntimeDomain } from '../../src/runtime/lifecycle/cacheDomains/signalRuntimeDomain.js';
+import { createDayLifecycleManager } from '../../src/runtime/lifecycle/dayLifecycleManager.js';
+import type { LifecycleMutableState } from '../../src/types/lifecycle.js';
+import { createQuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscriptionRuntime/index.js';
+import type { QuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscriptionRuntime/types.js';
 import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import type { Processor } from '../../src/runtime/asyncProgram/types.js';
 import { createBusinessEventProgram } from '../../src/runtime/businessEventProgram/index.js';
 import type { BusinessEventProgram } from '../../src/runtime/businessEventProgram/types.js';
 import type { CandlestickUpdatedEvent, MarketDataClient } from '../../src/types/marketPorts.js';
-import type { Trader } from '../../src/types/services.js';
-import type { LastState } from '../../src/types/state.js';
 import type { TradingSignalStrategy } from '../../src/types/strategy.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import { configObject } from '../config/strategy/intradayRegression/fixtures.js';
@@ -256,7 +260,7 @@ async function runDelayedSampleScenario(
   const pendingTimers = [...chain.timers];
   if (pendingTimers.length === 0) throw new Error('expected delayed verification timers');
 
-  chain.eventHarness.lastState.openProtectionActive = true;
+  chain.eventHarness.stateFixtures.tradingTimeState.openProtectionActive = true;
   chain.setNow(params.baseNowMs + 55_000);
   emitCandle(chain, params.baseNowMs, params.badClose, params.high, params.low, false);
   chain.marketController.flushAllEvents();
@@ -357,13 +361,7 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
   daily.resetAll(new Date(INITIAL_NOW_MS));
   const episode = createProtectiveLiquidationEpisodeTracker();
   const termination = chain.eventHarness.termination;
-  const appState: LastState = Object.assign(chain.eventHarness.lastState, {
-    lifecycleState: 'ACTIVE' as const,
-    pendingOpenRebuild: false,
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-    allTradingSymbols: new Set<string>(),
-  });
+  const appState = chain.eventHarness.stateFixtures;
   let boundQuotes: QuoteSubscriptionRuntime | null = null;
   const account = native.createAccountService({ rateLimiter: createRateLimiterDouble() });
   const snapshot = createAccountPositionSnapshot({
@@ -372,14 +370,15 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
     readPort: account,
     reportFatalError: termination.reportFatalError,
   });
-  let traderOwner: Trader | null = null;
+  let traderOwner: TradeRuntime | null = null;
   const settlement = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     snapshot,
     termination,
-    getTrader: () => {
-      if (traderOwner === null) throw new Error('PERF trader assembly not completed');
+    getProtectiveOrderReader: () => {
+      if (traderOwner === null) throw new Error('PERF tradeRuntime assembly not completed');
 
-      return traderOwner;
+      return traderOwner.orderMonitor;
     },
     onPositionsCommitted: async (token) => {
       if (boundQuotes === null) throw new Error('PERF quote owner not assembled');
@@ -389,7 +388,12 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
     scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
   });
   const tradingConfig = createTradingConfig({ monitor: monitorConfig() });
-  const trader = await native.createTrader({
+  const tradeRuntime = await native.createTradeRuntime({
+    logger: createLoggerDouble(),
+    wait: wait,
+    nowMonotonicMs: nowMonotonicMs,
+    requestExternalApi: wrapExternalApiRequest,
+    scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
     tradingConfig,
     marketDataClient: chain.marketDataClient,
     symbolRegistry: chain.eventHarness.symbolRegistry,
@@ -397,24 +401,25 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
     protectiveLiquidationEpisodeTracker: episode,
     persistProtectiveLiquidationExecutionProgress: () => {},
     postTradeConsistencyRuntime: settlement,
-    isExecutionAllowed: () => chain.eventHarness.lastState.isTradingEnabled,
-    isContinuousTradingAllowed: () => chain.eventHarness.lastState.canTrade === true,
+    isExecutionAllowed: () => chain.eventHarness.stateFixtures.lifecycleState.isTradingEnabled,
+    isContinuousTradingAllowed: () =>
+      chain.eventHarness.stateFixtures.tradingTimeState.canTrade === true,
     now: () => new Date(INITIAL_NOW_MS),
     scheduleTimer: setTimeout,
     clearTimer: clearTimeout,
     readCurrentTradingDayInfo: () => ({
-      dateKey: appState.currentDayKey ?? '2026-07-15',
+      dateKey: appState.lifecycleState.currentDayKey ?? '2026-07-15',
       info: { isTradingDay: true, isHalfDay: false },
     }),
     unrealizedLossBuyGate: createRiskCheckerDouble(),
     termination,
   });
-  traderOwner = trader;
+  traderOwner = tradeRuntime;
   const monitorContext = createMonitorContextDouble({
     config: monitorConfig(),
     strategy: chain.eventHarness.strategy,
     symbolRegistry: chain.eventHarness.symbolRegistry,
-    orderRecorder: trader.orderRecorder,
+    orderRecorder: tradeRuntime.orderRecorder,
     dailyLossTracker: daily,
   });
   const quoteRuntime = createQuoteSubscriptionRuntime({
@@ -422,8 +427,8 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
     tradingConfig,
     symbolRegistry: chain.eventHarness.symbolRegistry,
     marketDataClient: chain.marketDataClient,
-    trader,
-    lastState: appState,
+    orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+    ...appState,
     snapshot,
     termination,
   });
@@ -446,7 +451,7 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
   if (initial.status !== 'COMMITTED') throw new Error('PERF initial H refresh aborted');
 
   const globalState = createGlobalStateDomain({
-    lastState: appState,
+    ...appState,
     snapshot,
     logger: createLoggerDouble(),
     runTradingDayOpenRebuild: async (now) => {
@@ -459,13 +464,13 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
       }).result;
       if (refreshed.status !== 'COMMITTED') return { status: 'ABORTED' };
 
-      const observations = await trader.fetchAllOrdersFromAPI();
+      const observations = await tradeRuntime.orderRecorder.fetchAllOrdersFromAPI();
       const prepared = daily.prepareRecalculationFromAllOrders(
         observations,
         monitorContext.config,
         now,
       );
-      const commit = trader.orderRecorder.commitRebuildSnapshot(
+      const commit = tradeRuntime.orderRecorder.commitRebuildSnapshot(
         [
           { symbol: 'BULL.HK', isLongSymbol: true },
           { symbol: 'BEAR.HK', isLongSymbol: false },
@@ -482,9 +487,9 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
       if (commit.status !== 'COMMITTED') return { status: 'ABORTED' };
 
       daily.publishRecalculation(prepared);
-      appState.canTrade = true;
-      appState.isHalfDay = false;
-      appState.openProtectionActive = false;
+      appState.tradingTimeState.canTrade = true;
+      appState.tradingTimeState.isHalfDay = false;
+      appState.tradingTimeState.openProtectionActive = false;
       return { status: 'COMMITTED', snapshotToken: refreshed.snapshotToken };
     },
   });
@@ -506,17 +511,17 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
     autoSearchWakeupRuntime: idleRuntime,
     seatActivationDispatcher: idleRuntime,
     seatRuntimeCleanupDispatcher: idleRuntime,
-    trader,
+    orderMonitor: tradeRuntime.orderMonitor,
     postTradeConsistencyRuntime: settlement,
     buyTaskQueue: chain.eventHarness.buyTaskQueue,
     sellTaskQueue: chain.eventHarness.sellTaskQueue,
-    monitorTaskQueue: createMonitorTaskQueue(),
+    monitorTaskQueue: createMonitorTaskQueue(createLoggerDouble()),
   });
   const marketDataDomain = createMarketDataDomain({
     logger: createLoggerDouble(),
     marketDataClient: chain.marketDataClient,
   });
-  const state: LifecycleMutableState = appState;
+  const state: LifecycleMutableState = appState.lifecycleState;
   const manager = createDayLifecycleManager({
     termination: chain.eventHarness.termination,
     mutableState: state,
@@ -531,7 +536,7 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
     snapshot,
     settlement,
     stopAndDrain: async () => {
-      await trader.stopOrderMonitorRuntimeAndDrain();
+      await tradeRuntime.orderMonitor.stopRuntimeAndDrain();
       await settlement.stopAndDrain();
       await quoteRuntime.stopAndDrain();
     },
@@ -675,7 +680,7 @@ describe('PERF-02 真实持久化全链路', () => {
       expect(chain.fatalErrors).toEqual([]);
       expect(negativeChain.fatalErrors).toEqual([]);
 
-      chain.eventHarness.lastState.openProtectionActive = false;
+      chain.eventHarness.stateFixtures.tradingTimeState.openProtectionActive = false;
       const oldPendingTimerStart = chain.timers.length;
       chain.setNow(INITIAL_NOW_MS + 3 * MINUTE_MS);
       emitCandle(chain, INITIAL_NOW_MS + 3 * MINUTE_MS, 80, 100, 1, false);
@@ -713,9 +718,9 @@ describe('PERF-02 真实持久化全链路', () => {
       expect(reseeded.version).toBe(1);
       expect(reseeded.candles.at(-1)?.close).toBe(200);
 
-      chain.eventHarness.lastState.currentDayKey = '2026-07-16';
-      chain.eventHarness.lastState.openProtectionActive = false;
-      chain.eventHarness.lastState.isTradingEnabled = true;
+      chain.eventHarness.stateFixtures.lifecycleState.currentDayKey = '2026-07-16';
+      chain.eventHarness.stateFixtures.tradingTimeState.openProtectionActive = false;
+      chain.eventHarness.stateFixtures.lifecycleState.isTradingEnabled = true;
       await lifecycle.manager.tick(new Date(RESEEDED_NOW_MS + 60 * MINUTE_MS), {
         dayKey: '2026-07-16',
         canTradeNow: true,

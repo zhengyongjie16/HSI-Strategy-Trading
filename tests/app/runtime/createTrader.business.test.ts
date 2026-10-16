@@ -1,22 +1,29 @@
-/** Trader 门面契约：同 ctx 实际 ports 装配、原授权与原生 IO 故障；重建保留 H/O/Daily 原子提交。 */
+import { scheduleBoundedOneShotAt } from '../../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../../src/infrastructure/externalApi/index.js';
+import { nowMonotonicMs, wait } from '../../../src/infrastructure/time/index.js';
 
-import { describe, expect, it } from 'bun:test';
-import { createTradingConfig } from '../../../mock/factories/configFactory.js';
-import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
-import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
-import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
-import type { Trader } from '../../../src/types/services.js';
-import { getRequiredHKDateKey, toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import {
+  createLoggerDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createRateLimiterDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
+import type { TradeRuntime } from '../../../src/app/runtime/types.js';
+
+/** Trader 门面契约：同 ctx 实际 ports 装配、原授权与原生 IO 故障；重建保留 H/O/Daily 原子提交。 */
+
+import { describe, expect, it } from 'bun:test';
+import { createTradingConfig } from '../../../mock/factories/configFactory.js';
+import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
+import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
+import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
+import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
+import { getRequiredHKDateKey, toHongKongTimeIso } from '../../../src/utils/time/index.js';
+
 import type { BrokerIngressInput } from '../../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
@@ -74,21 +81,27 @@ async function createFacadeFixture() {
     readPort,
     reportFatalError: termination.reportFatalError,
   });
-  let trader: Trader | null = null;
+  let tradeRuntime: TradeRuntime | null = null;
   const settlement = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     snapshot,
     termination,
-    getTrader: () => {
-      if (trader === null) throw new Error('Trader composition has not completed');
+    getProtectiveOrderReader: () => {
+      if (tradeRuntime === null) throw new Error('Trader composition has not completed');
 
-      return trader;
+      return tradeRuntime.orderMonitor;
     },
     onPositionsCommitted: async () => {},
     scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
   });
-  const createTrader = (): Promise<Trader> =>
+  const createTradeRuntime = (): Promise<TradeRuntime> =>
     native
-      .createTrader({
+      .createTradeRuntime({
+        logger: createLoggerDouble(),
+        wait: wait,
+        nowMonotonicMs: nowMonotonicMs,
+        requestExternalApi: wrapExternalApiRequest,
+        scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
         tradingConfig: createTradingConfig(),
         marketDataClient: createMarketDataClientDouble(),
         symbolRegistry: createSymbolRegistryDouble(),
@@ -109,10 +122,10 @@ async function createFacadeFixture() {
         termination,
       })
       .then((owner) => {
-        trader = owner;
+        tradeRuntime = owner;
         return owner;
       });
-  return { native, daily, snapshot, settlement, createTrader };
+  return { native, daily, snapshot, settlement, createTradeRuntime };
 }
 
 function seedOriginalPosition(
@@ -147,22 +160,22 @@ async function catchRejection(operation: () => Promise<unknown>): Promise<unknow
   return null;
 }
 
-describe('trader facade business flow', () => {
-  it('createTrader 不再暴露旧的订单监控轮询入口', async () => {
+describe('tradeRuntime facade business flow', () => {
+  it('createTradeRuntime 不再暴露旧的订单监控轮询入口', async () => {
     const f = await createFacadeFixture();
-    const trader = await f.createTrader();
-    expect('monitorAndManageOrders' in trader).toBe(false);
+    const tradeRuntime = await f.createTradeRuntime();
+    expect('monitorAndManageOrders' in tradeRuntime).toBe(false);
     expect(f.native.contextCreationCount()).toBe(1);
     expect(f.native.accountReadCounts()).toEqual({ balance: 0, positions: 0 });
   });
 
   it('将末日撤单 permit 内授权透传到专用 Trader API，授权失效时不调用 broker', async () => {
     const f = await createFacadeFixture();
-    const trader = await f.createTrader();
-    await trader.initializeOrderMonitor();
-    await trader.recoverOrderTrackingFromSnapshot([]);
+    const tradeRuntime = await f.createTradeRuntime();
+    await tradeRuntime.orderMonitor.initialize();
+    await tradeRuntime.orderMonitor.recoverOrderTrackingFromSnapshot([]);
     let authorizationChecks = 0;
-    const outcome = await trader.cancelDoomsdayOrder('DOOMSDAY-BUY', {
+    const outcome = await tradeRuntime.orderMonitor.cancelDoomsdayOrder('DOOMSDAY-BUY', {
       kind: 'DOOMSDAY_WINDOW',
       beforeBrokerCancel: () => {
         authorizationChecks++;
@@ -173,12 +186,12 @@ describe('trader facade business flow', () => {
     expect(f.native.nativeReadCounts().cancel).toBe(0);
     expect(f.native.nativeMutations()).toEqual([]);
     expect(authorizationChecks).toBe(1);
-    await trader.stopOrderMonitorRuntimeAndDrain();
+    await tradeRuntime.orderMonitor.stopRuntimeAndDrain();
   });
 
-  it('createTrader 通过公开 orderRecorder 工厂组装真实订单记录器', async () => {
+  it('createTradeRuntime 通过公开 orderRecorder 工厂组装真实订单记录器', async () => {
     const f = await createFacadeFixture();
-    const trader = await f.createTrader();
+    const tradeRuntime = await f.createTradeRuntime();
     const paired = await f.snapshot.requestRefresh({
       source: 'TRADER_RECORDER_REBUILD',
       dayEpoch: 1,
@@ -242,7 +255,7 @@ describe('trader facade business flow', () => {
         tradeDoneAtMs: 2000,
       },
     ]);
-    const observations = await trader.fetchAllOrdersFromAPI();
+    const observations = await tradeRuntime.orderRecorder.fetchAllOrdersFromAPI();
     expect(f.native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
     expect(
       observations.map((o) => ({
@@ -261,7 +274,7 @@ describe('trader facade business flow', () => {
       createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' }),
       new Date(NOW_MS),
     );
-    const commit = trader.orderRecorder.commitRebuildSnapshot(
+    const commit = tradeRuntime.orderRecorder.commitRebuildSnapshot(
       [{ symbol: 'BULL.HK', isLongSymbol: true }],
       observations,
       () =>
@@ -275,8 +288,8 @@ describe('trader facade business flow', () => {
     if (commit.status !== 'COMMITTED') throw new Error('Trader O rebuild aborted');
 
     f.daily.publishRecalculation(prepared);
-    const buyOrders = trader.orderRecorder.getBuyOrdersForSymbol('BULL.HK', true);
-    const sellableOrders = trader.orderRecorder.selectSellableOrders({
+    const buyOrders = tradeRuntime.orderRecorder.getBuyOrdersForSymbol('BULL.HK', true);
+    const sellableOrders = tradeRuntime.orderRecorder.selectSellableOrders({
       symbol: 'BULL.HK',
       direction: 'LONG',
       strategy: 'PROFIT_ONLY',
@@ -298,7 +311,7 @@ describe('trader facade business flow', () => {
       f.snapshot.isCurrent(paired.snapshotToken, { account: true, positions: true, paired: true }),
     ).toBeTrue();
     expect(f.settlement.getStatus().staleVersion).toBe(0);
-    expect(trader.orderRecorder.getCostBasis('BULL.HK', true)).toEqual({
+    expect(tradeRuntime.orderRecorder.getCostBasis('BULL.HK', true)).toEqual({
       costAmount: '220',
       quantity: 200,
     });
@@ -309,16 +322,20 @@ describe('trader facade business flow', () => {
       executedTime: 1000,
     });
     expect(sellableOrders.orders[0]?.orderId).toBe('BUY-1');
-    trader.resetRuntimeState();
-    expect(trader.orderRecorder.getBuyOrdersForSymbol('BULL.HK', true)).toEqual([]);
-    expect(trader.orderRecorder.getCostBasis('BULL.HK', true)).toBeNull();
+    tradeRuntime.orderRecorder.resetAll();
+    tradeRuntime.cacheManager.clearCache();
+    tradeRuntime.orderHoldRegistry.clear();
+    tradeRuntime.orderMonitor.clearTrackedOrders();
+    tradeRuntime.orderExecutor.resetBuyThrottle();
+    expect(tradeRuntime.orderRecorder.getBuyOrdersForSymbol('BULL.HK', true)).toEqual([]);
+    expect(tradeRuntime.orderRecorder.getCostBasis('BULL.HK', true)).toBeNull();
   });
 
-  it('createTrader 在 TradeContext.new 同步抛错时保持 rejected promise 语义', async () => {
+  it('createTradeRuntime 在 TradeContext.new 同步抛错时保持 rejected promise 语义', async () => {
     const f = await createFacadeFixture();
     const original = new Error('trade context init failed');
     f.native.setContextCreationFailure(original);
-    const promise = f.createTrader();
+    const promise = f.createTradeRuntime();
     expect(promise).toBeInstanceOf(Promise);
     const caught = await catchRejection(() => promise);
     expect(caught).toBe(original);
@@ -327,11 +344,11 @@ describe('trader facade business flow', () => {
     expect(f.native.accountReadCounts()).toEqual({ balance: 0, positions: 0 });
   });
 
-  it('createTrader 的公开 getAccountSnapshot 在空账户时透传契约失败', async () => {
+  it('createTradeRuntime 的公开 getAccountSnapshot 在空账户时透传契约失败', async () => {
     const f = await createFacadeFixture();
     f.native.setAccountBalanceEmpty();
-    const trader = await f.createTrader();
-    const caught = await catchRejection(() => trader.getAccountSnapshot());
+    const tradeRuntime = await f.createTradeRuntime();
+    const caught = await catchRejection(() => tradeRuntime.accountService.getAccountSnapshot());
     expect(caught).toBeInstanceOf(TypeError);
     expect(caught).toHaveProperty(
       'message',
@@ -339,13 +356,13 @@ describe('trader facade business flow', () => {
     );
   });
 
-  it('createTrader 的公开 getAccountSnapshot 支持透传 retryConfig 并保持 attempts 为 1', async () => {
+  it('createTradeRuntime 的公开 getAccountSnapshot 支持透传 retryConfig 并保持 attempts 为 1', async () => {
     const f = await createFacadeFixture();
     const original = new Error('service unavailable');
     f.native.setAccountBalanceFailure(original);
-    const trader = await f.createTrader();
+    const tradeRuntime = await f.createTradeRuntime();
     const caught = await catchRejection(() =>
-      trader.getAccountSnapshot({ retryConfig: { retries: 0, delayMs: 0 } }),
+      tradeRuntime.accountService.getAccountSnapshot({ retryConfig: { retries: 0, delayMs: 0 } }),
     );
     expect(caught).toMatchObject({
       name: 'ExternalApiRequestError',
@@ -357,14 +374,17 @@ describe('trader facade business flow', () => {
     expect(f.native.accountReadCounts().balance).toBe(1);
   });
 
-  it('createTrader 的公开 getStockPositions 支持透传 symbols 与 retryConfig', async () => {
+  it('createTradeRuntime 的公开 getStockPositions 支持透传 symbols 与 retryConfig', async () => {
     const f = await createFacadeFixture();
     seedOriginalPosition(f.native);
     const original = new Error('service unavailable');
     f.native.setStockPositionsFailure(original);
-    const trader = await f.createTrader();
+    const tradeRuntime = await f.createTradeRuntime();
     const caught = await catchRejection(() =>
-      trader.getStockPositions({ symbols: ['700.HK'], retryConfig: { retries: 0, delayMs: 0 } }),
+      tradeRuntime.accountService.getStockPositions({
+        symbols: ['700.HK'],
+        retryConfig: { retries: 0, delayMs: 0 },
+      }),
     );
     expect(caught).toMatchObject({
       name: 'ExternalApiRequestError',

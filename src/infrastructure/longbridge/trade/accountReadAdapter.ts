@@ -1,8 +1,9 @@
+import { wrapExternalApiRequest } from '../../externalApi/index.js';
+
 /** 原context账户金融IO边界。重试范围只含外部SDK await；映射故障保持internal/原identity。 */
 import type { TradeContext } from 'longbridge';
 import type { AccountReadPort } from '../../../types/accountReadPorts.js';
 import { isRecord } from '../../../utils/helpers/index.js';
-import { wrapExternalApiRequest } from '../../../utils/apiFailure/index.js';
 import { mapAccountBalance, mapStockPositions } from './accountMapper.js';
 
 /**

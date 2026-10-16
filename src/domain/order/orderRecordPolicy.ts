@@ -1,12 +1,13 @@
 /** 订单记录纯规则：精确成本依据、生命周期分流、盈利/交易时长选单与 pending 成交状态。 */
 
 import { TIME } from '../../constants/index.js';
-import type { OrderExecutionRecordObservation } from '../../types/orderRecorder.js';
 import type {
+  OrderExecutionRecordObservation,
   OrderRecord,
   PendingSellInfo,
   SellableOrderSelectParams,
-} from '../../types/services.js';
+} from '../../types/orderRecorder.js';
+
 import type { OrderTimeoutCheckParams } from '../../types/tradingCalendar.js';
 import {
   canonicalDecimal,
@@ -17,7 +18,7 @@ import {
   exactSubtract,
   integerQuotient,
 } from '../../utils/numeric/exact.js';
-import { calculateTradingDurationMsBetween } from '../../utils/time/index.js';
+import { calculateTradingDurationMsBetween } from '../tradingSession/index.js';
 import type { OrderRebuildClassification, OrderStatistics } from './types.js';
 
 /**

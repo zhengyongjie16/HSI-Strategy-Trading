@@ -23,11 +23,11 @@ import {
 import type { SignalType } from '../../types/signal.js';
 import type {
   BullBearWarrantType,
-  RiskCheckResult,
   WarrantDistanceInfo,
   WarrantDistanceLiquidationResult,
   WarrantRefreshResult,
-} from '../../types/services.js';
+} from '../../types/warrantRisk.js';
+import type { RiskCheckResult } from '../../types/riskCheck.js';
 import type { WarrantInfo, WarrantRiskChecker, WarrantRiskCheckerDeps } from './types.js';
 
 /** 沿用轮证类型识别规则；类型枚举不是金融数据。 */

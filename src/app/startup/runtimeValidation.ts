@@ -10,8 +10,8 @@ import type {
   MutableRuntimeValidationCollector,
   RuntimeValidationCollector,
   RuntimeValidationCollectionParams,
-} from '../types.js';
-import { resolveBoundSeatSymbol } from '../../utils/seat/symbols.js';
+} from './types.js';
+import { resolveBoundSeatSymbol } from '../../domain/seat/seatPolicy.js';
 
 function shouldSkipRuntimeValidationSymbol(
   symbol: string | null,

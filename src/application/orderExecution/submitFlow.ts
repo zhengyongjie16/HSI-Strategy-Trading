@@ -6,7 +6,6 @@
  * - 构造订单载荷并提交到 Trade API
  * - 在提交成功后注册 orderMonitor 追踪与卖单防重占用
  */
-import { logger } from '../../utils/logger/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import {
   compareRatios,
@@ -17,7 +16,7 @@ import {
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import type { TradeSubmitCommand } from '../../types/tradeMutationPorts.js';
 import type { Signal, OrderTypeConfig } from '../../types/signal.js';
-import type { CancelOrderOutcome } from '../../types/trader.js';
+import type { CancelOrderOutcome } from '../../types/orderCancellation.js';
 import type { OrderActionAuthorization, SellMergeDecision } from '../../domain/order/types.js';
 import { buildOrderRemark } from '../../domain/order/orderRemark.js';
 import { resolveOrderTypeConfig } from '../../domain/order/orderTypePolicy.js';
@@ -25,7 +24,7 @@ import { resolveSellMergeDecision } from '../../domain/order/sellMergePolicy.js'
 import {
   formatCancelOutcomeTag,
   isTerminalNonFilledCloseConfirmed,
-} from '../../utils/trading/orderStatus.js';
+} from '../../domain/order/cancelOutcomePolicy.js';
 import type {
   DoomsdayClearanceOrderCommand,
   OrderActionResult,
@@ -42,7 +41,7 @@ import {
 import {
   createTradeMutationUnknownError,
   createAcceptedOrderLocalSyncError,
-} from '../../utils/trading/tradeMutation.js';
+} from './tradeMutationErrors.js';
 import { handleSubmitError } from './submitFailureLogging.js';
 import { createQuantityResolver } from './quantityResolver.js';
 
@@ -265,6 +264,7 @@ function resolveReplannedSellQuantity(
  * @returns 目标订单提交函数
  */
 export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTargetOrder {
+  const { logger } = deps;
   const {
     rateLimiter,
     cacheManager,
@@ -281,7 +281,11 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     recordBuyAttempt,
     now,
   } = deps;
-  const quantityResolver = createQuantityResolver({ rateLimiter, readSellPositions });
+  const quantityResolver = createQuantityResolver({
+    logger: logger,
+    rateLimiter,
+    readSellPositions,
+  });
   const doomsdayAwaitingTerminalOrderIdsBySymbol = new Map<string, ReadonlySet<string>>();
 
   /**
@@ -476,7 +480,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         if (response === null) return { kind: 'SKIPPED' };
 
         if (response.kind === 'REJECTED') {
-          handleSubmitError(response, signal, orderPayload);
+          handleSubmitError(logger, response, signal, orderPayload);
           return { kind: 'SKIPPED' };
         }
 

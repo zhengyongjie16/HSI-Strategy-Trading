@@ -6,7 +6,7 @@
  * - 基于 seat truth baseline 隔离旧 timer、旧 waiting-empty 与旧任务回调
  * - 通过 AUTO_SYMBOL_TICK latest-only 任务推进周期换标，不向 timeWakeupPlanner 暴露候选
  */
-import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
+import { scheduleBoundedOneShotAt } from '../timer/index.js';
 import { isSettlementReadinessAbortError } from '../../application/postTradeSettlement/readinessGate.js';
 import type { SettlementReadinessReceipt } from '../../types/settlement.js';
 import type { SeatTruthChangedListener } from '../../types/seat.js';
@@ -659,7 +659,10 @@ export function createPeriodicSwitchWakeupRuntime(
     drainPromise = null;
     running = true;
     unsubscribeSeatTruthChanged = deps.symbolRegistry.onSeatTruthChanged(handleSeatTruthChanged);
-    unsubscribeOrderStateChanged = deps.trader.onOrderStateChanged(redispatchWaitingEmptyRoutes);
+    unsubscribeOrderStateChanged = deps.orderMonitor.onOrderStateChanged(
+      redispatchWaitingEmptyRoutes,
+    );
+
     unsubscribeFreshReached = deps.postTradeConsistencyRuntime.onFreshReached(() => {
       redispatchWaitingEmptyRoutes();
       for (const state of routeStates.values()) {

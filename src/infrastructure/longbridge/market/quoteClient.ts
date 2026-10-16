@@ -1,3 +1,5 @@
+import { wrapExternalApiRequest } from '../../externalApi/index.js';
+
 /**
  * 行情数据客户端模块（WebSocket 订阅模式）
  *
@@ -39,20 +41,19 @@ import { mapQuoteDecimal, mapWarrantQuote } from './quoteFinancialMapper.js';
 import {
   createExternalApiAggregateRequestError,
   isAllExternalApiRequestErrors,
-  wrapExternalApiRequest,
 } from '../../../utils/apiFailure/index.js';
-import { logger } from '../../../utils/logger/index.js';
+import { logger } from '../../logger/index.js';
 import { API, TRADING } from '../../../constants/index.js';
 import type { Quote } from '../../../types/quote.js';
 import type {
   CandlestickPeriod,
-  TradingDayInfo,
   MarketDataClient,
   MarketQuoteContext,
   TradingDaysResult,
   CandlestickUpdatedEvent,
   QuoteUpdatedEvent,
 } from '../../../types/marketPorts.js';
+import type { TradingDayInfo } from '../../../types/tradingCalendar.js';
 import type {
   CandlestickUpdatedListener,
   MarketDataClientDeps,

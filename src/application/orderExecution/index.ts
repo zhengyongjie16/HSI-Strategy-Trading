@@ -1,3 +1,5 @@
+import type { Logger } from '../../types/logger.js';
+
 /**
  * 订单执行模块
  *
@@ -6,11 +8,11 @@
  * - 管理同方向买入频率限制（防止重复开仓）
  * - 协调订单提交流程与追踪登记
  */
-import { logger } from '../../utils/logger/index.js';
 import { LOG_COLORS } from '../../constants/index.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
-import { isSeatVersionMatch } from '../../utils/seat/guards.js';
-import { getHKDateKey, isInContinuousHKSession } from '../../utils/time/index.js';
+import { isSeatVersionMatch } from '../../domain/seat/seatIdentity.js';
+import { getHKDateKey } from '../../utils/time/index.js';
+import { isInContinuousHKSession } from '../../domain/tradingSession/index.js';
 import {
   hasReachedDoomsdayBuyCutoff,
   isWithinDoomsdayClearanceTakeoverWindow,
@@ -25,7 +27,7 @@ import type {
   DoomsdayClearanceExecutionResult,
   ExecuteSignalsResult,
   SignalCallerAuthorization,
-} from '../../types/trader.js';
+} from '../../types/orderExecutionPorts.js';
 import type { OrderActionAuthorization } from '../../domain/order/types.js';
 import type { OrderCommandPurpose } from '../../types/tradeMutationPorts.js';
 import type {
@@ -93,6 +95,7 @@ function resolveSignalOrderPurpose(
  * @returns true 表示通过校验，false 表示应跳过
  */
 function validateSignalSeatVersionAtExecution(
+  logger: Logger,
   signal: ExecutableSignal,
   boundSeatVersion: number,
   currentSeatVersion: number,
@@ -290,6 +293,7 @@ function resolveOrdinaryOrderCommand(signal: ExecutableSignal): ExecutableOrderC
  * @returns OrderExecutor 接口实例
  */
 export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
+  const { logger } = deps;
   const {
     readSellPositions,
     tradeMutationPort,
@@ -459,6 +463,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
       }
 
       return validateSignalSeatVersionAtExecution(
+        logger,
         signal,
         signal.seatVersion,
         currentSeat.seatVersion,
@@ -472,6 +477,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
   });
 
   const submitTargetOrder = createSubmitTargetOrder({
+    logger: logger,
     readSellPositions,
     tradeMutationPort,
     rateLimiter,

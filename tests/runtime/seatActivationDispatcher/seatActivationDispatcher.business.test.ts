@@ -1,15 +1,17 @@
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import {
+  createLoggerDouble,
+  createAccountSnapshotDouble,
+  createMonitorConfigDouble,
+} from '../../helpers/testDoubles.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { createSeatActivationDispatcher } from '../../../src/runtime/seatActivationDispatcher/index.js';
 import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import type { RuntimeWritableSeatState } from '../../../src/types/seat.js';
-import {
-  createAccountSnapshotDouble,
-  createMonitorConfigDouble,
-} from '../../helpers/testDoubles.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
 
 let termination: ReturnType<typeof createTerminationRuntime>;
@@ -37,8 +39,9 @@ describe('SeatActivationDispatcher', () => {
       longSymbol: 'OLD_BULL.HK',
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const dispatcher = createSeatActivationDispatcher({
+      logger: createLoggerDouble(),
       termination,
       symbolRegistry,
       snapshot,
@@ -89,8 +92,9 @@ describe('SeatActivationDispatcher', () => {
       longSymbol: 'OLD_BULL.HK',
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const dispatcher = createSeatActivationDispatcher({
+      logger: createLoggerDouble(),
       termination,
       symbolRegistry,
       snapshot,
@@ -120,8 +124,9 @@ describe('SeatActivationDispatcher', () => {
       longSymbol: 'OLD_BULL.HK',
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const dispatcher = createSeatActivationDispatcher({
+      logger: createLoggerDouble(),
       termination,
       symbolRegistry,
       snapshot,
@@ -173,8 +178,9 @@ describe('SeatActivationDispatcher', () => {
       longSymbol: 'OLD_BULL.HK',
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const dispatcher = createSeatActivationDispatcher({
+      logger: createLoggerDouble(),
       termination,
       symbolRegistry,
       snapshot,

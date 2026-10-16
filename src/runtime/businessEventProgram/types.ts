@@ -1,7 +1,9 @@
-import type { TradingConfig } from '../../types/config.js';
-import type { LastState, MonitorContext } from '../../types/state.js';
+import type { MonitorConfig, TradingConfig } from '../../types/config.js';
+import type { LifecycleMutableState } from '../../types/lifecycle.js';
+import type { TradingTimeState } from '../../types/timeControlPlane.js';
+
 import type { MarketDataClient } from '../../types/marketPorts.js';
-import type { OrderRecorder } from '../../types/services.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { RuntimeClock, RuntimeTermination } from '../../types/runtime.js';
 import type { StrategyDisplayItem, TradingSignalStrategy } from '../../types/strategy.js';
@@ -16,7 +18,7 @@ export interface BusinessEventProgram {
 
 /** 宿主使用的最小监控事实；策略只获得其冻结的行情和席位投影。 */
 type BusinessEventMonitorContext = {
-  readonly config: Pick<MonitorContext['config'], 'monitorSymbol'>;
+  readonly config: Pick<MonitorConfig, 'monitorSymbol'>;
   readonly strategy: TradingSignalStrategy;
   readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
   readonly orderRecorder: Pick<OrderRecorder, 'getBuyOrdersForSymbol'>;
@@ -37,9 +39,9 @@ export type BusinessEventProgramDeps = {
     'getCandlestickSnapshot' | 'onCandlestickUpdated'
   >;
   readonly monitorContext: BusinessEventMonitorContext;
-  readonly lastState: Pick<
-    LastState,
-    'isTradingEnabled' | 'canTrade' | 'isHalfDay' | 'currentDayKey' | 'openProtectionActive'
+  readonly tradingTimeState: Readonly<TradingTimeState>;
+  readonly lifecycleState: Readonly<
+    Pick<LifecycleMutableState, 'currentDayKey' | 'isTradingEnabled'>
   >;
   readonly tradingConfig: { readonly global: Pick<TradingConfig['global'], 'doomsdayProtection'> };
   readonly buyTaskQueue: Pick<TaskQueue<BuyTaskType>, 'push'>;

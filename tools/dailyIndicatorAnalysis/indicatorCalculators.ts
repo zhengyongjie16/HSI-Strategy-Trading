@@ -4,7 +4,7 @@
  */
 import { IS_DEBUG } from '../../src/constants/index.js';
 import { isValidPositiveNumber } from '../../src/utils/helpers/index.js';
-import { logger } from '../../src/utils/logger/index.js';
+import { logger } from '../../src/infrastructure/logger/index.js';
 import {
   createEmaState,
   commitEmaClose,

@@ -21,7 +21,6 @@ import {
 import type { OrderReadStatus } from '../../../types/orderReadMetadata.js';
 import type { DailyLossCumulativeExecutionResult } from '../../../types/risk.js';
 import type { OrderFact } from '../../../types/trade.js';
-import { logger } from '../../../utils/logger/index.js';
 import { exactCompare, exactMultiply } from '../../../utils/numeric/exact.js';
 import {
   acknowledgeLatestReplaceTerminal,
@@ -75,6 +74,7 @@ function acknowledgeTerminalEvidenceAfterWsSettlement(
  * @returns 事件流接口
  */
 export function createEventFlow(deps: EventFlowDeps): EventFlow {
+  const { logger } = deps;
   const {
     runtime,
     orderRecorder,

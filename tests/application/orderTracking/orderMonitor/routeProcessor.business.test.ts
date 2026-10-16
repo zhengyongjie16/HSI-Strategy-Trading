@@ -1,3 +1,10 @@
+import {
+  createLoggerDouble,
+  createOrderRecorderDouble,
+  createQuoteDouble,
+  createRateLimiterDouble,
+} from '../../../helpers/testDoubles.js';
+
 /**
  * orderMonitor routeProcessor 业务测试
  *
@@ -25,14 +32,11 @@ import type {
 } from '../../../../src/domain/order/types.js';
 import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
 import type { OrderReadStatus } from '../../../../src/types/orderReadMetadata.js';
-import type { OrderRecorder, TradeMutationPermit } from '../../../../src/types/services.js';
+import type { OrderRecorder } from '../../../../src/types/orderRecorder.js';
+import type { TradeMutationPermit } from '../../../../src/types/rateLimit.js';
 import { exactMultiply } from '../../../../src/utils/numeric/exact.js';
 import { toHongKongTimeIso } from '../../../../src/utils/time/index.js';
-import {
-  createOrderRecorderDouble,
-  createQuoteDouble,
-  createRateLimiterDouble,
-} from '../../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../recorder/executionFixture.js';
 
@@ -383,6 +387,7 @@ async function createDeps(params?: {
   readonly replaceOrderPrice?: RouteProcessorDeps['replaceOrderPrice'];
   readonly settleOrder?: RouteProcessorDeps['settleOrder'];
   readonly trackOrder?: RouteProcessorDeps['trackOrder'];
+  readonly recordAcceptedSellContinuation?: RouteProcessorDeps['recordAcceptedSellContinuation'];
   readonly isContinuousTradingAllowed?: () => boolean;
   readonly orderRecorder?: RouteProcessorDeps['orderRecorder'];
   readonly native?: Awaited<ReturnType<typeof createBrokerIngressFixture>>;
@@ -397,6 +402,7 @@ async function createDeps(params?: {
   const config = params?.config ?? createConfig();
   const native = params?.native ?? (await createNativeFixture());
   const deps: TestRouteDeps = {
+    logger: createLoggerDouble(),
     native,
     now: params?.now ?? (() => new Date(Date.now())),
     runtime,
@@ -404,6 +410,7 @@ async function createDeps(params?: {
     orderRecorder: params?.orderRecorder ?? createOrderRecorderDouble(),
     rateLimiter: params?.rateLimiter ?? createRateLimiterDouble(),
     isContinuousTradingAllowed: params?.isContinuousTradingAllowed ?? (() => true),
+    recordAcceptedSellContinuation: params?.recordAcceptedSellContinuation ?? (() => {}),
     trackOrder:
       params?.trackOrder ??
       ((_trackParams: TrackOrderParams) => {
@@ -1279,6 +1286,7 @@ describe('orderMonitor routeProcessor', () => {
   it('卖单 timeout 转市价在 submitOrder 已发起后 reject 时保留 follow-up placeholder', async () => {
     const { runtime, storage, orderRecorder, settlementFlow } =
       await createTimeoutSellHandoffHarness('SELL-TIMEOUT-SUBMIT-RESULT-UNKNOWN');
+    const acceptedContinuations: Array<readonly [string, string]> = [];
     const native = await createNativeFixture();
     const submitStarted = createDeferredValue<null>();
     const submitResult = createDeferredValue<string>();
@@ -1292,6 +1300,9 @@ describe('orderMonitor routeProcessor', () => {
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
       native,
+      recordAcceptedSellContinuation: (originalId, marketId) => {
+        acceptedContinuations.push([originalId, marketId]);
+      },
       trackOrder: (params) => {
         trackedOrders.push(params);
       },
@@ -1321,6 +1332,7 @@ describe('orderMonitor routeProcessor', () => {
       code: null,
     });
     expect(receivedError).toHaveProperty('cause', requestFailure);
+    expect(acceptedContinuations).toEqual([]);
     expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(1);
 
     expect(storage.getPendingSellSnapshot().map((pendingSell) => pendingSell.orderId)).toEqual([
@@ -1340,6 +1352,7 @@ describe('orderMonitor routeProcessor', () => {
   it('卖单 timeout 转市价明确 REJECTED 时释放占用，不伪造 accepted 或再次提交', async () => {
     const { runtime, storage, orderRecorder, settlementFlow } =
       await createTimeoutSellHandoffHarness('SELL-TIMEOUT-SUBMIT-REJECTED');
+    const acceptedContinuations: Array<readonly [string, string]> = [];
     const native = await createNativeFixture();
     native.setSubmitBehavior(async () => {
       throw Object.assign(new Error('broker rejected follow-up'), { code: 601013 });
@@ -1350,11 +1363,15 @@ describe('orderMonitor routeProcessor', () => {
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
       native,
+      recordAcceptedSellContinuation: (originalId, marketId) => {
+        acceptedContinuations.push([originalId, marketId]);
+      },
       trackOrder: (params) => {
         trackedOrders.push(params);
       },
     });
     expect(await captureTimeoutMarketRouteError(deps)).toBe('');
+    expect(acceptedContinuations).toEqual([]);
     expectTimeoutSellOccupancyReleased(storage);
     expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(1);
     expect(trackedOrders).toEqual([]);
@@ -1451,6 +1468,7 @@ describe('orderMonitor routeProcessor', () => {
   it('卖单 timeout 转市价在 broker 已接受后即使 runtime 停止也承认远端订单事实', async () => {
     const { runtime, storage, orderRecorder, settlementFlow } =
       await createTimeoutSellHandoffHarness('SELL-TIMEOUT-STOPPED-AFTER-SUBMIT');
+    const acceptedContinuations: Array<readonly [string, string]> = [];
     const native = await createNativeFixture();
     const submitStarted = createDeferredValue<null>();
     const submitFinished = createDeferredValue<null>();
@@ -1465,6 +1483,9 @@ describe('orderMonitor routeProcessor', () => {
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
       native,
+      recordAcceptedSellContinuation: (originalId, marketId) => {
+        acceptedContinuations.push([originalId, marketId]);
+      },
       trackOrder: (params) => {
         trackedOrders.push(params);
       },
@@ -1484,6 +1505,7 @@ describe('orderMonitor routeProcessor', () => {
     submitFinished.resolve(null);
 
     await processPromise;
+    expect(acceptedContinuations).toEqual([['SELL-TIMEOUT-STOPPED-AFTER-SUBMIT', 'FOLLOW-UP']]);
     expect(trackedOrders.map((trackedOrder) => trackedOrder.orderId)).toEqual(['FOLLOW-UP']);
     expect(storage.getPendingSellSnapshot().map((pendingSell) => pendingSell.orderId)).toEqual([
       'FOLLOW-UP',
@@ -1493,6 +1515,7 @@ describe('orderMonitor routeProcessor', () => {
   it('卖单 timeout 转市价在 broker 已接受后即使 route generation 变化也承认远端订单事实', async () => {
     const { runtime, storage, orderRecorder, settlementFlow } =
       await createTimeoutSellHandoffHarness('SELL-TIMEOUT-GENERATION-CHANGED');
+    const acceptedContinuations: Array<readonly [string, string]> = [];
     const native = await createNativeFixture();
     const submitStarted = createDeferredValue<null>();
     const submitFinished = createDeferredValue<null>();
@@ -1507,6 +1530,9 @@ describe('orderMonitor routeProcessor', () => {
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
       native,
+      recordAcceptedSellContinuation: (originalId, marketId) => {
+        acceptedContinuations.push([originalId, marketId]);
+      },
       trackOrder: (params) => {
         trackedOrders.push(params);
       },
@@ -1530,6 +1556,7 @@ describe('orderMonitor routeProcessor', () => {
     submitFinished.resolve(null);
 
     await processPromise;
+    expect(acceptedContinuations).toEqual([['SELL-TIMEOUT-GENERATION-CHANGED', 'FOLLOW-UP']]);
     expect(trackedOrders.map((trackedOrder) => trackedOrder.orderId)).toEqual(['FOLLOW-UP']);
     expect(storage.getPendingSellSnapshot().map((pendingSell) => pendingSell.orderId)).toEqual([
       'FOLLOW-UP',
@@ -1540,11 +1567,16 @@ describe('orderMonitor routeProcessor', () => {
     const { runtime, storage, orderRecorder, settlementFlow } =
       await createTimeoutSellHandoffHarness('SELL-TIMEOUT-TRACK-FAIL');
     const trackAttempts: string[] = [];
+    const acceptedContinuations: Array<readonly [string, string]> = [];
     const { deps } = await createDeps({
       runtime,
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
+      recordAcceptedSellContinuation: (originalId, marketId) => {
+        acceptedContinuations.push([originalId, marketId]);
+      },
       trackOrder: (params) => {
+        expect(acceptedContinuations).toEqual([['SELL-TIMEOUT-TRACK-FAIL', params.orderId]]);
         trackAttempts.push(params.orderId);
         throw new Error('track local fact failed');
       },
@@ -1553,6 +1585,7 @@ describe('orderMonitor routeProcessor', () => {
     const errorMessage = await captureTimeoutMarketRouteError(deps);
 
     expect(trackAttempts).toEqual(['FOLLOW-UP']);
+    expect(acceptedContinuations).toEqual([['SELL-TIMEOUT-TRACK-FAIL', 'FOLLOW-UP']]);
     expect(errorMessage).toContain('order submitted but local sync failed: FOLLOW-UP');
     expect(storage.getPendingSellSnapshot().map((pendingSell) => pendingSell.orderId)).toEqual([
       'SELL-TIMEOUT-TRACK-FAIL',

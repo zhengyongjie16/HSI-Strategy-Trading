@@ -6,17 +6,17 @@
  * - 在席位从 ACTIVE 退出或身份变化时清理该方向旧信号、旧任务与牛熊证缓存
  * - 保持席位清理从时间循环迁移到席位状态边沿事件
  */
-import { logger } from '../../utils/logger/index.js';
 import { requiresSeatRuntimeCleanup } from '../../domain/seat/seatIdentity.js';
 import { clearMonitorDirectionQueues, logDirectionQueueCleanup } from './queueCleanup.js';
 import type { SeatStateChangedEvent } from '../../types/seat.js';
-import type { Unsubscribe } from '../../types/services.js';
+import type { Unsubscribe } from '../../types/events.js';
 import type { SeatRuntimeCleanupDispatcher, SeatRuntimeCleanupDispatcherDeps } from './types.js';
 
 function cleanupDirectionRuntime(
   deps: SeatRuntimeCleanupDispatcherDeps,
   event: SeatStateChangedEvent,
 ): void {
+  const { logger } = deps;
   const monitorContext = deps.monitorContext;
 
   monitorContext.strategy.invalidateDirection(event.direction);

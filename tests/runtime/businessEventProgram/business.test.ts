@@ -111,15 +111,15 @@ describe('businessEventProgram 中性事件宿主', () => {
     async (boundary) => {
       const h = createEventHarness();
       if (boundary === 'protection') {
-        h.lastState.openProtectionActive = true;
+        h.stateFixtures.tradingTimeState.openProtectionActive = true;
       }
 
       if (boundary === 'gate') {
-        h.lastState.canTrade = false;
+        h.stateFixtures.tradingTimeState.canTrade = false;
       }
 
       if (boundary === 'day') {
-        h.lastState.currentDayKey = null;
+        h.stateFixtures.lifecycleState.currentDayKey = null;
       }
 
       if (boundary === 'takeover') {
@@ -145,7 +145,7 @@ describe('businessEventProgram 中性事件宿主', () => {
       h.publish();
     }).toThrow('监听时间');
     expect(h.termination.isTerminated()).toBeTrue();
-    expect(h.lastState.isTradingEnabled).toBeFalse();
+    expect(h.stateFixtures.lifecycleState.isTradingEnabled).toBeFalse();
     expect(h.contexts).toHaveLength(0);
     h.program.start();
     expect(h.mutable.subscriptions).toBe(1);

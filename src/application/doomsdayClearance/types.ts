@@ -1,12 +1,16 @@
+import type { LifecycleMutableState } from '../../types/lifecycle.js';
+import type { DoomsdayOrderCancellation } from '../../types/orderCancellation.js';
+import type { OrderCacheManager } from '../orderTracking/types.js';
+import type { DoomsdaySignalExecutor } from '../../types/orderExecutionPorts.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { AccountPositionSnapshot } from '../../types/accountPosition.js';
 import type { SellSignalAction } from '../../types/signal.js';
-import type { OrderRecorder, Trader } from '../../types/services.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
 import type { MarketDataClient } from '../../types/marketPorts.js';
 import type { SymbolRegistry } from '../../types/seat.js';
-import type { SeatSwitchWorkflow } from '../../types/monitorContextPorts.js';
-import type { Logger } from '../../utils/logger/types.js';
+import type { SeatSwitchWorkflow } from '../../types/seatSwitch.js';
+import type { Logger } from '../../types/logger.js';
 
 /** 末日 owner 所需的席位归属与本地买单投影能力，不携带策略、风控或整个监控上下文。 */
 export type DoomsdayMonitorContext = {
@@ -44,9 +48,9 @@ export type DoomsdayClearanceContext = {
   readonly isLive: () => boolean;
   readonly positions: ReadonlyArray<Position>;
   readonly monitorContext: DoomsdayMonitorContext;
-  readonly trader: Pick<Trader, 'executeDoomsdayClearanceSignals'>;
+  readonly orderExecutor: DoomsdaySignalExecutor;
   readonly marketDataClient: Pick<MarketDataClient, 'getQuotes'>;
-  readonly lastState: { readonly isTradingEnabled: boolean };
+  readonly lifecycleState: Readonly<Pick<LifecycleMutableState, 'isTradingEnabled'>>;
   readonly snapshot: Pick<AccountPositionSnapshot, 'getView' | 'invalidateAccount'>;
 };
 
@@ -62,7 +66,8 @@ export type CancelPendingBuyOrdersContext = {
   readonly isHalfDay: boolean;
   readonly isLive: () => boolean;
   readonly monitorContext: DoomsdayMonitorContext;
-  readonly trader: Pick<Trader, 'getPendingOrders' | 'cancelDoomsdayOrder'>;
+  readonly cacheManager: Pick<OrderCacheManager, 'getPendingOrders'>;
+  readonly orderMonitor: DoomsdayOrderCancellation;
 };
 
 /** 买单撤单的确认计数与重评估结果；accepted 的最终终态继续由既有订单回报推进。 */
@@ -78,12 +83,11 @@ export type DoomsdayEvaluationContext = {
   readonly isHalfDay: boolean;
   readonly dayEpoch: number;
   readonly monitorContext: DoomsdayMonitorContext;
-  readonly trader: Pick<
-    Trader,
-    'getPendingOrders' | 'cancelDoomsdayOrder' | 'executeDoomsdayClearanceSignals'
-  >;
+  readonly orderExecutor: DoomsdaySignalExecutor;
+  readonly cacheManager: Pick<OrderCacheManager, 'getPendingOrders'>;
+  readonly orderMonitor: DoomsdayOrderCancellation;
   readonly marketDataClient: Pick<MarketDataClient, 'getQuotes'>;
-  readonly lastState: { readonly isTradingEnabled: boolean };
+  readonly lifecycleState: Readonly<Pick<LifecycleMutableState, 'isTradingEnabled'>>;
   readonly snapshot: Pick<AccountPositionSnapshot, 'getView' | 'invalidateAccount'>;
 };
 

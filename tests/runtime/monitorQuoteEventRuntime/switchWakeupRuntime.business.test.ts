@@ -1,22 +1,26 @@
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createSettlementRuntimeFixture } from '../../main/fixtures/settlementRuntime.js';
-import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
-import type { PostTradeConsistencyRuntime } from '../../../src/app/types.js';
-import type {
-  SettlementFreshnessReader,
-  SettlementReadinessReceipt,
-} from '../../../src/types/settlement.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
 import {
+  createLoggerDouble,
   createMonitorContextDouble,
   createSeatSwitchWorkflowDouble,
   createQuoteDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
   createPositionDouble,
   createAccountSnapshotDouble,
 } from '../../helpers/testDoubles.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../../helpers/settlementRuntime.js';
+import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
+import type { PostTradeConsistencyRuntime } from '../../../src/app/runtime/types.js';
+import type {
+  SettlementFreshnessReader,
+  SettlementReadinessReceipt,
+} from '../../../src/types/settlement.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+
 import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import { createSwitchWakeupRuntime } from '../../../src/runtime/monitorQuoteEventRuntime/switchWakeupRuntime.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
@@ -24,13 +28,13 @@ import type {
   SeatSwitchWorkflow,
   SwitchDriveResult,
   SwitchWakeupRequirement,
-} from '../../../src/types/monitorContextPorts.js';
+} from '../../../src/types/seatSwitch.js';
 import type { QuoteUpdatedEvent } from '../../../src/types/marketPorts.js';
-import type { OrderStateChangedEvent } from '../../../src/types/services.js';
-import type { MonitorContext } from '../../../src/types/state.js';
+import type { OrderStateChangedEvent } from '../../../src/types/orderTracking.js';
+import type { MonitorContextAssembly } from '../../../src/app/context/types.js';
 import type { SymbolRegistry } from '../../../src/types/seat.js';
 import type { QuoteRetainPort } from '../../../src/types/quoteSubscription.js';
-import type { TradingGateEventRuntime } from '../../../src/main/tradingGateEventRuntime/types.js';
+import type { TradingGateEventRuntime } from '../../../src/runtime/tradingGateEventRuntime/types.js';
 import type { TradingGateStateChangedEvent } from '../../../src/types/timeControlPlane.js';
 
 /**
@@ -70,12 +74,13 @@ afterEach(async () => {
 async function createConsistencyHarness(
   params: Readonly<{
     snapshot: AccountPositionSnapshot;
-    monitorContext: MonitorContext;
+    monitorContext: MonitorContextAssembly;
     started: boolean;
   }>,
 ) {
   let deliveryGate: ReturnType<typeof createDeferred<void>> | null = null;
   const owner = createSettlementRuntimeFixture({
+    logger: createLoggerDouble(),
     snapshot: params.snapshot,
     monitorContext: params.monitorContext,
     termination: createTerminationRuntime({
@@ -84,7 +89,7 @@ async function createConsistencyHarness(
       stopProducers: [],
       onSecondaryError: () => {},
     }),
-    getTrader: () => createTraderDouble(),
+    getProtectiveOrderReader: () => createTradeRuntimeDouble().orderMonitor,
     onPositionsCommitted: async (token) => {
       if (!params.snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
         throw new Error('Stale settlement positions callback');
@@ -240,13 +245,9 @@ describe('switchWakeupRuntime', () => {
 
   async function createBaseHarness(
     params: {
-      readonly monitorContext?: MonitorContext;
+      readonly monitorContext?: MonitorContextAssembly;
       readonly symbolRegistry?: SymbolRegistry;
-      readonly lastState?: {
-        canTrade: boolean | null;
-        isTradingEnabled: boolean;
-        isHalfDay: boolean | null;
-      };
+      readonly stateFixtures?: RuntimeStateFixtures;
       readonly startSettlement?: boolean;
       readonly doomsdayProtectionEnabled?: boolean;
       readonly now?: () => Date;
@@ -267,12 +268,8 @@ describe('switchWakeupRuntime', () => {
       ) => Promise<void>;
       runtime: ReturnType<typeof createSwitchWakeupRuntime>;
       symbolRegistry: SymbolRegistry;
-      monitorContext: MonitorContext;
-      lastState: {
-        canTrade: boolean | null;
-        isTradingEnabled: boolean;
-        isHalfDay: boolean | null;
-      };
+      monitorContext: MonitorContextAssembly;
+      stateFixtures: RuntimeStateFixtures;
       consistencyHarness: Awaited<ReturnType<typeof createConsistencyHarness>>;
       timerHarness: ReturnType<typeof createTimerHarness>;
     }>
@@ -302,11 +299,12 @@ describe('switchWakeupRuntime', () => {
         shortVersion: 1,
       });
     const timerHarness = params.timerHarness ?? createTimerHarness();
-    const lastState = params.lastState ?? {
-      canTrade: true,
-      isTradingEnabled: true,
-      isHalfDay: false,
-    };
+    const stateFixtures =
+      params.stateFixtures ??
+      createRuntimeStateFixtures({
+        tradingTimeState: { canTrade: true, isHalfDay: false },
+        lifecycleState: { isTradingEnabled: true },
+      });
     const monitorContext = params.monitorContext ?? {
       ...createMonitorContextDouble({
         config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
@@ -330,14 +328,16 @@ describe('switchWakeupRuntime', () => {
       monitorContext,
       started: params.startSettlement ?? true,
     });
-    const trader = createTraderDouble({
-      onOrderStateChanged: (listener) => {
-        orderStateChangedListener = listener;
-        return () => {
-          if (orderStateChangedListener === listener) {
-            orderStateChangedListener = null;
-          }
-        };
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderMonitor: {
+        onOrderStateChanged: (listener) => {
+          orderStateChangedListener = listener;
+          return () => {
+            if (orderStateChangedListener === listener) {
+              orderStateChangedListener = null;
+            }
+          };
+        },
       },
     });
     const tradingGateEventRuntime = params.tradingGateEventRuntime ?? {
@@ -355,10 +355,10 @@ describe('switchWakeupRuntime', () => {
           };
         },
       },
-      trader,
+      orderMonitor: tradeRuntime.orderMonitor,
       symbolRegistry,
       monitorContext,
-      lastState,
+      ...stateFixtures,
       snapshot,
       postTradeConsistencyRuntime: consistencyHarness.port,
       tradingGateEventRuntime,
@@ -398,7 +398,7 @@ describe('switchWakeupRuntime', () => {
       },
       symbolRegistry,
       monitorContext,
-      lastState,
+      stateFixtures,
       consistencyHarness,
       timerHarness,
     };
@@ -597,7 +597,7 @@ describe('switchWakeupRuntime', () => {
     await runtimeHarness.consistencyHarness.refreshFacts();
     await advanceStarted.promise;
 
-    runtimeHarness.lastState.isTradingEnabled = false;
+    runtimeHarness.stateFixtures.lifecycleState.isTradingEnabled = false;
     releaseAdvance.resolve();
     await waitTick();
     await waitTick();
@@ -609,7 +609,7 @@ describe('switchWakeupRuntime', () => {
     ]);
     expect(runtimeHarness.timerHarness.getPendingTimerCount()).toBe(0);
 
-    runtimeHarness.lastState.isTradingEnabled = true;
+    runtimeHarness.stateFixtures.lifecycleState.isTradingEnabled = true;
     emitQuoteUpdated('NEXT.HK', 1.23);
     await waitTick();
 
@@ -763,7 +763,7 @@ describe('switchWakeupRuntime', () => {
       shortVersion: 1,
     });
     const tradingGateHarness = createTradingGateHarness();
-    const monitorContext: MonitorContext = {
+    const monitorContext: MonitorContextAssembly = {
       ...createMonitorContextDouble({
         config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
         symbolRegistry,
@@ -1836,11 +1836,10 @@ describe('switchWakeupRuntime', () => {
     let advanceCalls = 0;
     const runtimeHarness = await createBaseHarness({
       startSettlement: false,
-      lastState: {
-        canTrade: false,
-        isTradingEnabled: false,
-        isHalfDay: false,
-      },
+      stateFixtures: createRuntimeStateFixtures({
+        tradingTimeState: { canTrade: false, isHalfDay: false },
+        lifecycleState: { isTradingEnabled: false },
+      }),
       seatSwitch: {
         evaluatePeriodicSwitchDue: async () => ({ kind: 'NOOP' }),
         startSwitchOnDistance: async (params) => ({
@@ -1877,8 +1876,8 @@ describe('switchWakeupRuntime', () => {
     await waitTick();
     expect(advanceCalls).toBe(0);
 
-    runtimeHarness.lastState.canTrade = true;
-    runtimeHarness.lastState.isTradingEnabled = true;
+    runtimeHarness.stateFixtures.tradingTimeState.canTrade = true;
+    runtimeHarness.stateFixtures.lifecycleState.isTradingEnabled = true;
     await runtimeHarness.consistencyHarness.startBaseline();
     await runtimeHarness.consistencyHarness.refreshFacts();
     await waitTick();
@@ -1923,12 +1922,12 @@ describe('switchWakeupRuntime', () => {
       driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
     });
 
-    runtimeHarness.lastState.canTrade = false;
+    runtimeHarness.stateFixtures.tradingTimeState.canTrade = false;
     tradingGateHarness.emit({ previousCanTrade: true, nextCanTrade: false });
     await waitTick();
     expect(advanceCalls).toBe(0);
 
-    runtimeHarness.lastState.canTrade = true;
+    runtimeHarness.stateFixtures.tradingTimeState.canTrade = true;
     tradingGateHarness.emit({ previousCanTrade: false, nextCanTrade: true });
     await waitTick();
 
@@ -1992,7 +1991,7 @@ describe('switchWakeupRuntime', () => {
     await runtimeHarness.consistencyHarness.refreshFacts();
     await advanceStarted.promise;
 
-    runtimeHarness.lastState.canTrade = false;
+    runtimeHarness.stateFixtures.tradingTimeState.canTrade = false;
     tradingGateHarness.emit({ previousCanTrade: true, nextCanTrade: false });
     releaseFirstAdvance.resolve();
     await waitTick();
@@ -2001,7 +2000,7 @@ describe('switchWakeupRuntime', () => {
     expect(canContinueDuringLunch).toEqual([false]);
     expect(advanceCalls).toBe(1);
 
-    runtimeHarness.lastState.canTrade = true;
+    runtimeHarness.stateFixtures.tradingTimeState.canTrade = true;
     tradingGateHarness.emit({ previousCanTrade: false, nextCanTrade: true });
     await waitTick();
     await waitTick();
@@ -2100,13 +2099,13 @@ describe('switchWakeupRuntime', () => {
       driveResult: createWaitResult([{ kind: 'FRESHNESS' }]),
     });
 
-    runtimeHarness.lastState.isTradingEnabled = false;
-    runtimeHarness.lastState.canTrade = false;
+    runtimeHarness.stateFixtures.lifecycleState.isTradingEnabled = false;
+    runtimeHarness.stateFixtures.tradingTimeState.canTrade = false;
     tradingGateHarness.emit({ previousCanTrade: true, nextCanTrade: false });
     await waitTick();
 
-    runtimeHarness.lastState.isTradingEnabled = true;
-    runtimeHarness.lastState.canTrade = true;
+    runtimeHarness.stateFixtures.lifecycleState.isTradingEnabled = true;
+    runtimeHarness.stateFixtures.tradingTimeState.canTrade = true;
     await runtimeHarness.consistencyHarness.refreshFacts();
     await waitTick();
 

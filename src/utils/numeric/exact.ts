@@ -129,24 +129,6 @@ export function integerQuotient(numerator: string, denominator: string): string 
 }
 
 /**
- * 直接求整数手数再乘每手数量，保持名义预算不等式；不足一手返回 0。
- * @param amount 严格正预算
- * @param price 严格正价格
- * @param lotSize 严格正整数手数
- * @returns 精确整数数量文本，不在此强制转为 number
- */
-export function wholeLotQuantity(amount: string, price: string, lotSize: string): string {
-  positive(amount);
-  positive(price);
-  const lot = positive(lotSize);
-  if (!lot.isInteger()) {
-    throw new RangeError('Lot size must be an integer');
-  }
-
-  return exactMultiply(integerQuotient(amount, exactMultiply(price, lotSize)), lotSize);
-}
-
-/**
  * 用 cross product 比较金额/数量或其他比率，不重建舍入均价。
  * @param leftNumerator 左分子（成本金额等）
  * @param leftDenominator 左严格正分母（数量等）

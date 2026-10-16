@@ -7,7 +7,7 @@ import { rejects } from 'node:assert/strict';
 import { createWarrantCandidateSearch } from '../../../src/application/autoSearch/candidateSearch.js';
 import type { MarketQuoteContext, MarketWarrantListItem } from '../../../src/types/marketPorts.js';
 import type { AutoSearchConfig } from '../../../src/types/config.js';
-import type { Logger } from '../../../src/utils/logger/types.js';
+import type { Logger } from '../../../src/types/logger.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { getDefaultAutoSearchConfig } from '../../helpers/seatTestUtils.js';
 

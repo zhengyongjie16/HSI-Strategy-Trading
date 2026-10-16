@@ -5,7 +5,7 @@
  * 执行流程：调用方通过 recalculateFromAllOrders 或 recordCumulativeExecution 提供累计订单事实，通过 getLossOffset(direction) 获取当日亏损偏移；内部只维护唯一 monitor 的方向级状态。
  */
 import { mergeBrokerOrderExecutionFact } from '../order/executionFact.js';
-import type { BrokerOrderExecutionFact } from '../../types/orderRecorder.js';
+import type { BrokerOrderExecutionFact, OrderRecord } from '../../types/orderRecorder.js';
 import type {
   DailyLossCumulativeExecutionInput,
   DailyLossCumulativeExecutionResult,
@@ -18,7 +18,7 @@ import type {
   PreparedDailyLossProtectionBoundary,
   PreparedDailyLossRecalculation,
 } from '../../types/risk.js';
-import type { OrderRecord } from '../../types/services.js';
+
 import {
   canonicalDecimal,
   exactAdd,

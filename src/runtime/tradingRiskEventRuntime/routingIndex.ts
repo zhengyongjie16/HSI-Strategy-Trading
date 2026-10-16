@@ -6,7 +6,7 @@
  * - 对重复归属执行 fail-fast，避免同一标的同时占用 LONG/SHORT 两条路由
  */
 import { formatSymbolDisplay } from '../../utils/display/index.js';
-import { resolveMonitorContextSeatSnapshot } from '../../utils/seat/snapshots.js';
+import { resolveMonitorContextSeatSnapshot } from '../../domain/seat/seatSnapshot.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { ProtectiveLiquidationRoute } from '../../application/protectiveLiquidation/types.js';
 import type { TradingRiskRoutingIndex } from './types.js';

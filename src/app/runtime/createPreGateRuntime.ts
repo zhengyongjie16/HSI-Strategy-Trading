@@ -11,11 +11,11 @@ import { validateAllConfig } from '../../config/validator/index.js';
 import { createTradingConfig } from '../../config/trading/index.js';
 import { createWarrantListCache } from '../../infrastructure/longbridge/market/warrantListCache/index.js';
 import { createSymbolRegistry } from '../../domain/seat/symbolRegistry.js';
-import { logger } from '../../utils/logger/index.js';
+import { logger } from '../../infrastructure/logger/index.js';
 import { getHKDateKey, getRequiredHKDateKey } from '../../utils/time/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
-import { createTradingDayInfoResolver } from '../lifecycle/rebuild.js';
+import { createTradingDayInfoResolver } from '../startup/tradingDayInfoResolver.js';
 import { DEFAULT_CREATE_PRE_GATE_RUNTIME_DEPS } from './createPreGateRuntimeDeps.js';
 import type { CreatePreGateRuntimeParams, PreGateRuntime } from '../types.js';
 
@@ -34,8 +34,8 @@ function createPreGateRuntimeFactory(
     params: CreatePreGateRuntimeParams,
   ): Promise<PreGateRuntime | null> {
     const { env, cleanup, termination } = params;
-    const tradingConfig = createTradingConfig({ env });
-    await validateAllConfig({ env, tradingConfig });
+    const tradingConfig = createTradingConfig({ logger: logger, env });
+    await validateAllConfig({ logger: logger, env, tradingConfig });
     if (termination.isTerminated()) return null;
 
     const symbolRegistry = createSymbolRegistry(tradingConfig.monitor);

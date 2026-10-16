@@ -1,9 +1,12 @@
+import { wait } from '../../../../src/infrastructure/time/index.js';
+import { createLoggerDouble, createMonitorConfigDouble } from '../../../helpers/testDoubles.js';
+
 /** 完整tracked生产normalize→settle：非FILLED零执行只收资源，不能借失踪tracking绕过经济提交。 */
 
 import { expect, test } from 'bun:test';
 import { normalizeTerminalStateSnapshot } from '../../../../src/domain/order/orderFactMerge.js';
 import type { TerminalStateSnapshot } from '../../../../src/domain/order/types.js';
-import { createMonitorConfigDouble } from '../../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../recorder/executionFixture.js';
 
@@ -29,6 +32,8 @@ async function setup(status: 'Canceled' | 'Rejected' | 'Filled') {
   f.runtime.runtimeState = 'ACTIVE';
   f.runtime.running = true;
   const ops = native.createOperations({
+    logger: createLoggerDouble(),
+    wait: wait,
     runtime: f.runtime,
     monitorConfig: createMonitorConfigDouble(),
     rateLimiter: f.rateLimiter,

@@ -1,3 +1,7 @@
+import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
+
+import { createLoggerDouble, createOrderRecorderDouble } from '../../../helpers/testDoubles.js';
+
 /** 实际Route/OrderOps→生产FIFO→同一adapter/native entry；静态SDKDTO，不构造联网context。 */
 
 import { describe, expect, it } from 'bun:test';
@@ -6,7 +10,7 @@ import { createRateLimiter } from '../../../../src/application/orderExecution/ra
 import { createOrderHoldRegistry } from '../../../../src/application/orderTracking/orderHoldRegistry.js';
 import type { OrderMonitorRuntimeStore } from '../../../../src/application/orderTracking/orderMonitor/types.js';
 import { buildOrderMonitorConfig } from '../../../../src/domain/order/orderTrackingPolicy.js';
-import { createOrderRecorderDouble } from '../../../helpers/testDoubles.js';
+
 import { interceptNativeDecimalSerialization } from '../../../infrastructure/longbridge/trade/mutationStageFixture.js';
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
@@ -42,12 +46,18 @@ async function fixture() {
     running: true,
     unsubscribeQuoteUpdated: null,
   };
-  const rateLimiter = createRateLimiter();
+  const rateLimiter = createRateLimiter({
+    wait: wait,
+    nowMonotonicMs: nowMonotonicMs,
+    logger: createLoggerDouble(),
+  });
   const orderRecorder = createOrderRecorderDouble();
   const config = createTradingConfig();
   let live = true;
   const hold = createOrderHoldRegistry();
   const ops = native.createOperations({
+    logger: createLoggerDouble(),
+    wait: wait,
     runtime,
     rateLimiter,
     orderRecorder,
@@ -225,13 +235,18 @@ describe('monitor actual native mutation stages', () => {
       executedTimeMs: null,
       orderUpdatedAtMs: 1700000000200,
     };
+    const acceptedContinuations: Array<readonly [string, string]> = [];
     const route = f.native.createRoute({
+      logger: createLoggerDouble(),
       runtime: f.runtime,
       rateLimiter: f.rateLimiter,
       orderRecorder: f.orderRecorder,
       config: buildOrderMonitorConfig(f.config.global),
       now: () => new Date(1700000200000),
       isContinuousTradingAllowed: () => true,
+      recordAcceptedSellContinuation: (originalId, marketId) => {
+        acceptedContinuations.push([originalId, marketId]);
+      },
       trackOrder: f.ops.trackOrder,
       cancelOrder: async () => {
         throw new Error('confirmed terminal must not cancel again');
@@ -262,6 +277,7 @@ describe('monitor actual native mutation stages', () => {
         day: true,
       },
     ]);
+    expect(acceptedContinuations).toEqual([[f.tracked.orderId, 'FOLLOW-UP']]);
     expect(f.runtime.trackedOrders.has('FOLLOW-UP')).toBe(true);
     expect(f.hold.getHoldSymbols().has('BULL.HK')).toBe(true);
   });

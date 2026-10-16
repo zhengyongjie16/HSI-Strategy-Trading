@@ -1,6 +1,13 @@
+import { spyOn, describe, expect, it } from 'bun:test';
+import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
+
+import {
+  createLoggerDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
+} from '../../../helpers/testDoubles.js';
+
 /** 真normalize→settlement→O pending/tracking/hold资源链：不造经济revision/T或假admission。 */
 
-import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
 import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
 import { createOrderHoldRegistry } from '../../../../src/application/orderTracking/orderHoldRegistry.js';
@@ -10,9 +17,9 @@ import { orderAnalysis } from '../../../../src/domain/order/orderAnalysis.js';
 import { normalizeTerminalStateSnapshot } from '../../../../src/domain/order/orderFactMerge.js';
 import type { TerminalStateSnapshot } from '../../../../src/domain/order/types.js';
 import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
-import { logger } from '../../../../src/utils/logger/index.js';
+import { logger } from '../../../../src/infrastructure/logger/index.js';
 import { toHongKongTimeIso } from '../../../../src/utils/time/index.js';
-import { createProtectiveLiquidationEpisodeTrackerDouble } from '../../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 async function fixture() {
@@ -52,7 +59,12 @@ async function fixture() {
   let episodeCalls = 0;
   let resourceEvents = 0;
   const recorder = native.createRecorder({
-    rateLimiter: createRateLimiter(),
+    logger: createLoggerDouble(),
+    rateLimiter: createRateLimiter({
+      wait: wait,
+      nowMonotonicMs: nowMonotonicMs,
+      logger: createLoggerDouble(),
+    }),
     getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: {
       recordSettlementRefreshNeed: () => {
@@ -68,8 +80,14 @@ async function fixture() {
   const hold = createOrderHoldRegistry();
   const config = createTradingConfig();
   const ops = native.createOperations({
+    logger: createLoggerDouble(),
+    wait: wait,
     runtime,
-    rateLimiter: createRateLimiter(),
+    rateLimiter: createRateLimiter({
+      wait: wait,
+      nowMonotonicMs: nowMonotonicMs,
+      logger: createLoggerDouble(),
+    }),
     orderRecorder: recorder,
     orderHoldRegistry: hold,
     monitorConfig: config.monitor,
@@ -156,9 +174,9 @@ describe('zero execution actual shared resource settlement', () => {
     const beforeEvidence = f.daily.getExecutionTimeEvidence();
     const infoLogs: string[] = [];
     const originalInfo = logger.info;
-    logger.info = (message) => {
+    spyOn(logger, 'info').mockImplementation((message) => {
       infoLogs.push(message);
-    };
+    });
 
     try {
       const params = {
@@ -189,7 +207,7 @@ describe('zero execution actual shared resource settlement', () => {
       });
       expect(infoLogs).toEqual([]);
     } finally {
-      logger.info = originalInfo;
+      spyOn(logger, 'info').mockImplementation(originalInfo);
     }
   });
 

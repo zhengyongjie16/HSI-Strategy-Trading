@@ -1,3 +1,10 @@
+import {
+  createLoggerDouble,
+  createAccountSnapshotDouble,
+  createMarketDataClientDouble,
+  createQuoteSubscriptionRuntimeDouble,
+} from '../../helpers/testDoubles.js';
+
 /**
  * 激活订单读取栅栏集成。
  * 同一真实 recorder/Daily owner 中 LONG 旧订单读取与 SHORT 新 SELL 交错；旧输入不得覆盖新事实，追赶不消耗外部重试。
@@ -7,13 +14,9 @@ import { describe, expect, it, spyOn } from 'bun:test';
 import { createOrderRecorder } from '../../../src/application/orderTracking/recorder/index.js';
 import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
 import type { OrderFact } from '../../../src/types/trade.js';
-import {
-  createAccountSnapshotDouble,
-  createMarketDataClientDouble,
-  createQuoteSubscriptionRuntimeDouble,
-} from '../../helpers/testDoubles.js';
-import { createMonitorContext } from '../../main/asyncProgram/utils.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+
+import { createMonitorContext } from '../../helpers/asyncProgram.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createSeatActivationFixture } from './fixtures.js';
 
 function createExecutedOrder(params: {
@@ -62,6 +65,7 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
     });
     const needs: string[] = [];
     const recorder = createOrderRecorder({
+      logger: createLoggerDouble(),
       orderSnapshotReadPort: {
         fetchSnapshots: async () => {
           throw new Error('本测试只授权已捕获 query 输入');
@@ -113,7 +117,7 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
     const entered = Promise.withResolvers<undefined>();
     const oldRead = Promise.withResolvers<ReadonlyArray<OrderFact>>();
     let reads = 0;
-    recorder.fetchAllOrdersFromAPI = async () => {
+    spyOn(recorder, 'fetchAllOrdersFromAPI').mockImplementation(async () => {
       reads++;
       if (reads === 1) {
         entered.resolve();
@@ -123,13 +127,15 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
       expect(context.dailyLossTracker.getLossOffset('SHORT')).toBe('-5');
       expect(recorder.getBuyOrdersForSymbol('BEAR.HK', false)).toEqual([]);
       return [longBuy, shortBuy, shortSell];
-    };
+    });
     const stages: string[] = [];
     const prepare = context.dailyLossTracker.prepareRecalculationFromAllOrders;
-    context.dailyLossTracker.prepareRecalculationFromAllOrders = (...args) => {
-      stages.push('Daily.prepare');
-      return prepare(...args);
-    };
+    spyOn(context.dailyLossTracker, 'prepareRecalculationFromAllOrders').mockImplementation(
+      (...args) => {
+        stages.push('Daily.prepare');
+        return prepare(...args);
+      },
+    );
     const commit = recorder.commitRebuildSnapshot;
     const committed = spyOn(recorder, 'commitRebuildSnapshot').mockImplementation((...args) => {
       stages.push('O.commit');
@@ -138,16 +144,16 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
       return commit(...args);
     });
     const publish = context.dailyLossTracker.publishRecalculation;
-    context.dailyLossTracker.publishRecalculation = (candidate) => {
+    spyOn(context.dailyLossTracker, 'publishRecalculation').mockImplementation((candidate) => {
       stages.push('Daily.publish');
       publish(candidate);
-    };
+    });
     const risk = createUnrealizedLossChecker({
       maxUnrealizedLossPerSymbol: null,
       onMissingData: () => {},
     });
-    context.riskChecker.prepareUnrealizedLossData = risk.prepare;
-    context.riskChecker.publishUnrealizedLossData = risk.publish;
+    spyOn(context.riskChecker, 'prepareUnrealizedLossData').mockImplementation(risk.prepare);
+    spyOn(context.riskChecker, 'publishUnrealizedLossData').mockImplementation(risk.publish);
     const workflow = createSeatActivationFixture({
       clock: { now: () => now },
       monitorContext: context,

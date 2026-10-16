@@ -1,3 +1,13 @@
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../src/infrastructure/time/index.js';
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createMonitorConfigDouble,
+  createSymbolRegistryDouble,
+} from '../helpers/testDoubles.js';
+
 /**
  * 订单事件流、真实 DailyLossTracker 与结算流组合测试。
  *
@@ -8,11 +18,7 @@ import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createEventFlow as createProductionEventFlow } from '../../src/application/orderTracking/orderMonitor/eventFlow.js';
 import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
-import {
-  createMarketDataClientDouble,
-  createMonitorConfigDouble,
-  createSymbolRegistryDouble,
-} from '../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 async function flushIngress() {
@@ -70,6 +76,8 @@ async function realEventChain(
   f.runtime.running = true;
   const monitorConfig = createMonitorConfigDouble();
   const ops = native.createOperations({
+    logger: createLoggerDouble(),
+    wait: wait,
     runtime: f.runtime,
     monitorConfig,
     orderRecorder: f.recorder,
@@ -106,6 +114,7 @@ async function realEventChain(
   });
   f.recorder.submitSellOrder(orderId, 'BULL.HK', 'LONG', 100, [], true, revisionMs - 10);
   return createProductionEventFlow({
+    logger: createLoggerDouble(),
     runtime: f.runtime,
     monitorConfig,
     now: () => new Date(revisionMs),
@@ -149,6 +158,10 @@ describe('order monitor cumulative execution integration', () => {
 
     const stateChanges: string[] = [];
     const monitor = native.createMonitor({
+      logger: createLoggerDouble(),
+      wait: wait,
+      requestExternalApi: wrapExternalApiRequest,
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       now: () => new Date(revisionMs),
       scheduleTimer: setTimeout,
       clearTimer: clearTimeout,

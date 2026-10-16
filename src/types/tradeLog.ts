@@ -1,4 +1,3 @@
-import type { PersistableTradeRecord } from './trader.js';
 import type { ProtectiveLiquidationExecutionProgressInput } from './risk.js';
 
 /**
@@ -99,3 +98,71 @@ export interface MixedTradeLogRepository {
   ) => void;
   readonly appendTradeRecord: (record: PersistableTradeRecord) => void;
 }
+
+/**
+ * 交易记录。
+ * 类型用途：用于交易日志持久化（JSON 文件），描述单条成交或订单状态变更。
+ * 数据来源：由 TradeLogger、OrderMonitor 等根据订单与信号构造。
+ * 使用范围：仅作为 PersistableTradeRecord 的模块内部基础类型使用。
+ */
+type TradeRecord = {
+  readonly orderId: string | null;
+
+  /** 交易标的代码（如 55131.HK） */
+  readonly symbol: string | null;
+
+  /** 交易标的名称（如 阿里摩通六甲牛G） */
+  readonly symbolName: string | null;
+
+  /** 监控标的代码（如 HSI.HK） */
+  readonly monitorSymbol: string | null;
+
+  /** 信号动作（BUYCALL/SELLCALL/BUYPUT/SELLPUT） */
+  readonly action: string | null;
+
+  /** 订单方向（BUY/SELL） */
+  readonly side: string | null;
+
+  /** 成交数量 */
+  readonly quantity: string | null;
+
+  /** 成交价格 */
+  readonly price: string | null;
+
+  /** 订单类型（可为空） */
+  readonly orderType: string | null;
+
+  /** 订单状态（成交日志仅记录 FILLED） */
+  readonly status: string | null;
+
+  /** 错误信息（成交日志默认 null） */
+  readonly error: string | null;
+
+  /** 信号原因 */
+  readonly reason: string | null;
+
+  /** 信号触发时间（香港时间字符串） */
+  readonly signalTriggerTime: string | null;
+
+  /** 成交时间（香港时间字符串） */
+  readonly executedAt: string | null;
+
+  /** 成交时间（毫秒时间戳） */
+  readonly executedAtMs: number | null;
+
+  /** 日志记录时间（香港时间字符串） */
+  readonly timestamp: string | null;
+
+  /** 是否为保护性清仓（浮亏超阈值触发） */
+  readonly isProtectiveClearance: boolean | null;
+};
+
+/**
+ * 可持久化交易记录。
+ * 类型用途：在标准 TradeRecord 上补充执行时间戳，用于按香港交易日切分 mixed trade log。
+ * 数据来源：订单状态变化事件中的成交字段。
+ * 使用范围：订单事件持久化与 MixedTradeLogRepository。
+ */
+export type PersistableTradeRecord = TradeRecord & {
+  readonly executedAtMs: number;
+};

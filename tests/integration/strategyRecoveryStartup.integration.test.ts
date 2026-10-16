@@ -48,7 +48,7 @@ describe('T28 recovery → startup controlled acceptance', () => {
       const result = resultOf(app.run());
       await recovery.entered;
       expect(recovery.runtime.runtimeState).toBe('BOOTSTRAPPING');
-      expect(app.lastState.isTradingEnabled).toBe(false);
+      expect(app.stateFixtures.lifecycleState.isTradingEnabled).toBe(false);
       expect(app.starts).toEqual([]);
       recovery.complete();
       const error = await result;
@@ -74,8 +74,8 @@ describe('T28 recovery → startup controlled acceptance', () => {
       expect(recovery.events).toEqual([]);
       expect(recovery.runtime.trackedOrders.size).toBe(0);
       expect(app.starts).toEqual([]);
-      expect(app.lastState.isTradingEnabled).toBe(false);
-      expect(app.lastState.pendingOpenRebuild).toBe(false);
+      expect(app.stateFixtures.lifecycleState.isTradingEnabled).toBe(false);
+      expect(app.stateFixtures.lifecycleState.pendingOpenRebuild).toBe(false);
       expect(app.post.buyTaskQueue.isEmpty()).toBe(true);
       expect(app.post.sellTaskQueue.isEmpty()).toBe(true);
       expect(recovery.steps).toEqual(['cancel.enter', 'cancel.complete', 'recovery.reject']);
@@ -118,11 +118,11 @@ describe('T28 recovery → startup controlled acceptance', () => {
     expect(recovery.steps.indexOf('settlement.event')).toBeLessThan(
       recovery.steps.indexOf('recovery.complete'),
     );
-    expect(app.lastState.isTradingEnabled).toBe(true);
+    expect(app.stateFixtures.lifecycleState.isTradingEnabled).toBe(true);
     expect(app.starts).toContain('buyProcessor.start');
     expect(app.starts).toContain('sellProcessor.start');
     expect(app.starts).toContain('monitorTaskProcessor.start');
-    expect(app.starts).toContain('trader.startOrderMonitorRuntime');
+    expect(app.starts).toContain('tradeRuntime.orderMonitor.startRuntime');
     expect(app.starts).toContain('businessEventProgram.start');
     expect(app.post.buyTaskQueue.isEmpty()).toBe(true);
     expect(app.post.sellTaskQueue.isEmpty()).toBe(true);
@@ -160,9 +160,9 @@ describe('T28 recovery → startup controlled acceptance', () => {
     expect(app.classifiedErrors).toContain(externalError);
     expect(isExternalApiRequestError(recovery.error())).toBe(true);
     expect(app.fatalState()).toEqual({ hasFatalError: false });
-    expect(app.lastState.isTradingEnabled).toBe(false);
-    expect(app.lastState.pendingOpenRebuild).toBe(true);
-    expect(app.lastState.lifecycleState).toBe('OPEN_REBUILD_FAILED');
+    expect(app.stateFixtures.lifecycleState.isTradingEnabled).toBe(false);
+    expect(app.stateFixtures.lifecycleState.pendingOpenRebuild).toBe(true);
+    expect(app.stateFixtures.lifecycleState.lifecycleState).toBe('OPEN_REBUILD_FAILED');
     expect(app.starts).toEqual(['time.start']);
     expect(recovery.events).toEqual([]);
     recovery.useTrustedZero();
@@ -171,7 +171,7 @@ describe('T28 recovery → startup controlled acceptance', () => {
     expect(recovery.runtime.closedOrderIds.has('T28-BUY')).toBe(true);
     expect(recovery.events).toHaveLength(1);
     // 此处只验证失败运行态可重建，不冒充生命周期 timer 的重新放行。
-    expect(app.lastState.isTradingEnabled).toBe(false);
+    expect(app.stateFixtures.lifecycleState.isTradingEnabled).toBe(false);
     expect(app.starts).toEqual(['time.start']);
     app.shutdown();
     expect(await result).toBeNull();

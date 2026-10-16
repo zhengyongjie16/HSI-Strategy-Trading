@@ -1,3 +1,5 @@
+import { wrapExternalApiRequest } from '../../externalApi/index.js';
+
 /**
  * SELL执行前权威可卖量读取SDK边界，使用唯一注入的context，金融字段通过既有mapper保真。
  * caller已持真实授权并完成限流；本窄读不另排队或重试，避免在授权等待之后启动旧请求。
@@ -5,7 +7,6 @@
 import type { TradeContext } from 'longbridge';
 import type { Position } from '../../../types/account.js';
 import { isRecord } from '../../../utils/helpers/index.js';
-import { wrapExternalApiRequest } from '../../../utils/apiFailure/index.js';
 import { mapStockPositions } from './accountMapper.js';
 
 /**

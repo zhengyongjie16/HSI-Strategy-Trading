@@ -1,6 +1,6 @@
+import type { TradeRuntime } from '../../../../src/app/runtime/types.js';
 import type { AccountPositionSnapshot } from '../../../../src/types/accountPosition.js';
 import type { RuntimeScheduler, RuntimeTermination } from '../../../../src/types/runtime.js';
-import type { Trader } from '../../../../src/types/services.js';
 import type { MonitorTaskDataMap } from '../../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type { MonitorTaskQueue } from '../../../../src/runtime/asyncProgram/monitorTaskQueue/types.js';
 import type { PeriodicSwitchWakeupRuntime } from '../../../../src/runtime/periodicSwitchWakeupRuntime/types.js';
@@ -13,7 +13,7 @@ export type MonitorTaskRuntimeFixtureDeps = ActivationFixtureDeps &
     scheduler: RuntimeScheduler;
     monitorTaskQueue: MonitorTaskQueue<MonitorTaskDataMap>;
     snapshot: AccountPositionSnapshot;
-    trader: Trader;
+    tradeRuntime: TradeRuntime;
     switchWakeupRuntime: Pick<SwitchWakeupRuntime, 'handoffPendingSwitch'>;
     periodicSwitchWakeupRuntime: Pick<
       PeriodicSwitchWakeupRuntime,
@@ -30,7 +30,7 @@ export type CreateBusinessProcessorParams = Readonly<{
   context: ActivationFixtureDeps['monitorContext'];
   clock?: MonitorTaskRuntimeFixtureDeps['clock'];
   scheduler?: MonitorTaskRuntimeFixtureDeps['scheduler'];
-  trader?: MonitorTaskRuntimeFixtureDeps['trader'];
+  tradeRuntime?: MonitorTaskRuntimeFixtureDeps['tradeRuntime'];
   marketDataClient?: MonitorTaskRuntimeFixtureDeps['marketDataClient'];
   quoteSubscriptionRuntime?: MonitorTaskRuntimeFixtureDeps['quoteSubscriptionRuntime'];
   getCanProcessTask?: MonitorTaskRuntimeFixtureDeps['getCanProcessTask'];

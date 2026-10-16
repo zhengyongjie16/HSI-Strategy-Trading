@@ -1,4 +1,5 @@
-import type { LastState, MonitorContext } from '../../../src/types/state.js';
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
+import type { MonitorContextAssembly } from '../../../src/app/context/types.js';
 
 /**
  * cleanup 测试 disposer 覆盖项。
@@ -7,8 +8,8 @@ import type { LastState, MonitorContext } from '../../../src/types/state.js';
  * 使用范围：仅 tests/app/shutdown 测试使用。
  */
 export type CleanupTestOverrides = Readonly<{
-  lastState?: LastState;
-  monitorContext?: MonitorContext;
+  stateFixtures?: RuntimeStateFixtures;
+  monitorContext?: MonitorContextAssembly;
   abortWaiting?: () => void;
   stopBuyProcessorAndDrain?: () => Promise<void>;
 }>;

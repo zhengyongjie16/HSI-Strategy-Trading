@@ -17,7 +17,7 @@ import {
   createMarketDataClientDouble,
   createMonitorConfigDouble,
   createOrderRecorderDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
 import {
   captureSwitchSeatAuthorization,
@@ -64,11 +64,13 @@ function createDistanceFlowHarness(direction: 'LONG' | 'SHORT', sameSymbol = fal
     monitorConfig,
     symbolRegistry,
     riskChecker,
-    orderRecorder,
+
     marketDataClient: createMarketDataClientDouble(),
-    trader: createTraderDouble({
-      executeSignals: async () => {
-        throw new Error('距离换标 admission 不应提交订单');
+    ...createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async () => {
+          throw new Error('距离换标 admission 不应提交订单');
+        },
       },
     }),
     candidateSearch: {

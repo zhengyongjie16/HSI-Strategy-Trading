@@ -1,3 +1,4 @@
+import type { Logger } from '../../../types/logger.js';
 import type {
   OrdinarySellWorkflow,
   SellQuoteRetry,
@@ -14,6 +15,7 @@ export type ScheduledSellRetry = {
 
 /** SELL FIFO worker 依赖；不包含 snapshot、风险、账户或数量能力。 */
 export interface SellProcessorDeps {
+  readonly logger: Logger;
   readonly taskQueue: TaskQueue<SellTaskType>;
   readonly workflow: OrdinarySellWorkflow;
   readonly scheduler: RuntimeScheduler;

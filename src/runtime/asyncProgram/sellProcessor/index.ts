@@ -92,6 +92,7 @@ export function createSellProcessor(deps: SellProcessorDeps): Processor {
   }
 
   const base = createBaseProcessor({
+    logger: deps.logger,
     loggerPrefix: 'SellProcessor',
     taskQueue,
     processTask,

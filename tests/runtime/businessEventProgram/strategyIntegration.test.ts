@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../../helpers/testDoubles.js';
+
 /** 真实策略 + 宿主 emitter + 席位取消：验证私有 pending 跨异步回流而不是旧 verifier mock。 */
 import { describe, expect, it } from 'bun:test';
 import { prepareFixture } from '../strategy/intradayRegression/fixtures.js';
@@ -76,7 +78,7 @@ describe('真实策略 pending 集成', () => {
     expect(timers).toHaveLength(4);
     expect(h.contexts[0]?.seats.every((seat) => seat.hasFilledBuyOrders)).toBeTrue();
     h.mutable.filled = false;
-    h.lastState.openProtectionActive = true;
+    h.stateFixtures.tradingTimeState.openProtectionActive = true;
     h.mutable.nowMs += 65_000;
     setCandles(h, 80);
     h.publish();
@@ -107,6 +109,7 @@ describe('真实策略 pending 集成', () => {
     const timers: StrategyTimer[] = [];
     const strategy = attachStrategy(h, timers);
     const dispatcher = createSeatRuntimeCleanupDispatcher({
+      logger: createLoggerDouble(),
       symbolRegistry: h.symbolRegistry,
       monitorContext: {
         strategy,
@@ -114,7 +117,7 @@ describe('真实策略 pending 集成', () => {
       },
       buyTaskQueue: h.buyTaskQueue,
       sellTaskQueue: h.sellTaskQueue,
-      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(),
+      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
     });
     dispatcher.start();
     h.program.start();
@@ -131,7 +134,7 @@ describe('真实策略 pending 集成', () => {
       frozenTradingDayKey: null,
     });
     expect(timers.map((timer) => timer.cleared)).toEqual([true, true, false, false]);
-    h.lastState.openProtectionActive = true;
+    h.stateFixtures.tradingTimeState.openProtectionActive = true;
     h.mutable.nowMs += 65_000;
     setCandles(h, 80);
     h.publish();

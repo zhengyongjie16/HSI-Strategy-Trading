@@ -22,3 +22,11 @@ export interface QuoteRetainPort {
     params: Pick<QuoteRetainRequest, 'ownerKey' | 'reason'>,
   ) => Promise<void>;
 }
+
+/**
+ * 既有 quote 订阅集合的唯一可变发布槽；app 创建后共享同一对象。
+ * 启动/重建 loader 与 quote runtime 保留原有赋值及 await 次序，global clear 只清理此槽。
+ */
+export type QuoteSubscriptionState = {
+  allTradingSymbols: ReadonlySet<string>;
+};

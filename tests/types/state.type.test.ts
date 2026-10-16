@@ -1,15 +1,18 @@
+import type { TradingCalendarState } from '../../src/types/tradingCalendar.js';
+
 /**
  * 全局状态类型约束测试。
  * 交易日历必须完整注入；监控上下文只持有中性策略端口，不暴露私有指标运行态。
  */
 import { describe, expect, it } from 'bun:test';
-import type { LastState } from '../../src/types/state.js';
 import { createMonitorContextDouble, createStrategyDouble } from '../helpers/testDoubles.js';
 
 /** 使用类型层参数检验必需交易日历，不制造运行期伪造状态。 */
-function verifyRequiredCalendar(incomplete: Omit<LastState, 'tradingCalendarSnapshot'>): void {
+function verifyRequiredCalendar(
+  incomplete: Omit<TradingCalendarState, 'tradingCalendarSnapshot'>,
+): void {
   // @ts-expect-error 交易日历是必需事实，不得省略。
-  const missingCalendar: LastState = incomplete;
+  const missingCalendar: TradingCalendarState = incomplete;
   void missingCalendar;
 }
 void verifyRequiredCalendar;

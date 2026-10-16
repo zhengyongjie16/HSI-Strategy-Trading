@@ -1,12 +1,25 @@
+import type { DoomsdayOrderCancellation } from '../../types/orderCancellation.js';
+import type { OrderCacheManager } from '../../application/orderTracking/types.js';
+import type { DoomsdaySignalExecutor } from '../../types/orderExecutionPorts.js';
+import type { TradingSignalStrategy } from '../../types/strategy.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
+import type { SeatSwitchWorkflow } from '../../types/seatSwitch.js';
+import type { SymbolRegistry } from '../../types/seat.js';
+import type { MonitorConfig, TradingConfig } from '../../types/config.js';
+import type { TradingCalendarState } from '../../types/tradingCalendar.js';
+import type { LifecycleMutableState } from '../../types/lifecycle.js';
+import type {
+  TradingTimeState,
+  DayLifecycleManager,
+  TradingGatePublisher,
+} from '../../types/timeControlPlane.js';
 import type { DoomsdayClearanceWorkflow } from '../../application/doomsdayClearance/types.js';
 import type { AccountPositionSnapshot } from '../../types/accountPosition.js';
-import type { TradingConfig } from '../../types/config.js';
-import type { Trader } from '../../types/services.js';
+
 import type { MarketDataClient } from '../../types/marketPorts.js';
-import type { LastState, MonitorContext } from '../../types/state.js';
-import type { DayLifecycleManager, TradingGatePublisher } from '../../types/timeControlPlane.js';
+
 import type { TimeWakeupPlan } from '../timeWakeupPlanner/types.js';
-import type { Logger } from '../../utils/logger/types.js';
+import type { Logger } from '../../types/logger.js';
 
 /**
  * 单次时间唤醒评估结果。
@@ -27,14 +40,24 @@ export type TimeWakeupEvaluationResult = Readonly<{
 export type TimeWakeupEvaluationContext = Readonly<{
   logger: Pick<Logger, 'info' | 'warn'>;
   marketDataClient: MarketDataClient;
-  trader: Trader;
-  lastState: LastState;
+  readonly orderExecutor: DoomsdaySignalExecutor;
+  readonly cacheManager: Pick<OrderCacheManager, 'getPendingOrders'>;
+  readonly orderMonitor: DoomsdayOrderCancellation;
+  readonly tradingTimeState: TradingTimeState;
+  readonly lifecycleState: LifecycleMutableState;
+  readonly tradingCalendarState: TradingCalendarState;
 
   /** 唯一 canonical owner；持仓只读，账户失效由 doomsday 原 all-success/live 分支授权。 */
   snapshot: Pick<AccountPositionSnapshot, 'getView' | 'invalidateAccount'>;
   doomsdayClearanceWorkflow: Pick<DoomsdayClearanceWorkflow, 'evaluate'>;
   tradingConfig: TradingConfig;
-  monitorContext: MonitorContext;
+  monitorContext: {
+    readonly config: MonitorConfig;
+    readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+    readonly seatSwitch: SeatSwitchWorkflow;
+    readonly orderRecorder: OrderRecorder;
+    readonly strategy: Pick<TradingSignalStrategy, 'invalidateAll'>;
+  };
   tradingGateEventRuntime: TradingGatePublisher;
   dayLifecycleManager: DayLifecycleManager;
   now: () => Date;

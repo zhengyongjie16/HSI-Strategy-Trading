@@ -1,3 +1,4 @@
+import type { Logger } from '../../types/logger.js';
 import type { MonitorConfig } from '../../types/config.js';
 import type { OrderTypeConfig } from '../../types/signal.js';
 import {
@@ -73,7 +74,7 @@ function parseFailFastIntegerBoundedNumberConfig({
  * @param env 进程环境变量对象
  * @returns 解析后的监控配置，未配置时返回 null
  */
-export function parseMonitorConfig(env: NodeJS.ProcessEnv): MonitorConfig | null {
+export function parseMonitorConfig(logger: Logger, env: NodeJS.ProcessEnv): MonitorConfig | null {
   const monitorSymbol = getStringConfig(env, 'MONITOR_SYMBOL');
   if (!monitorSymbol) {
     return null;
@@ -129,9 +130,17 @@ export function parseMonitorConfig(env: NodeJS.ProcessEnv): MonitorConfig | null
         max: 120,
       })
     : 0;
-  const switchDistanceRangeBull = parseDecimalRangeConfig(env, 'SWITCH_DISTANCE_RANGE_BULL');
-  const switchDistanceRangeBear = parseDecimalRangeConfig(env, 'SWITCH_DISTANCE_RANGE_BEAR');
-  const orderOwnershipMapping = parseOrderOwnershipMapping(env, 'ORDER_OWNERSHIP_MAPPING');
+  const switchDistanceRangeBull = parseDecimalRangeConfig(
+    logger,
+    env,
+    'SWITCH_DISTANCE_RANGE_BULL',
+  );
+  const switchDistanceRangeBear = parseDecimalRangeConfig(
+    logger,
+    env,
+    'SWITCH_DISTANCE_RANGE_BEAR',
+  );
+  const orderOwnershipMapping = parseOrderOwnershipMapping(logger, env, 'ORDER_OWNERSHIP_MAPPING');
   const targetNotional =
     getFinancialConfig(env, 'TARGET_NOTIONAL', '1', true) ??
     FINANCIAL_CONFIG_DEFAULTS.targetNotional;

@@ -8,11 +8,11 @@ import path from 'node:path';
 import { TextDecoder } from 'node:util';
 import { LOGGING } from '../../../constants/index.js';
 import { isRecord } from '../../../utils/helpers/index.js';
-import { buildTradeLogPath } from '../../../utils/trading/tradeLogPath.js';
+import { buildTradeLogPath } from './tradeLogPath.js';
 import { getHKDateKey } from '../../../utils/time/index.js';
-import type { PersistableTradeRecord } from '../../../types/trader.js';
 import type { ProtectiveLiquidationExecutionProgressInput } from '../../../types/risk.js';
 import type {
+  PersistableTradeRecord,
   MixedTradeLogRecord,
   MixedTradeLogRepository,
   ProtectiveLiquidationCompletionInput,

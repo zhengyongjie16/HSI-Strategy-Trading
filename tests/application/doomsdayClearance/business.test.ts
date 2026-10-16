@@ -1,3 +1,5 @@
+import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
+
 /**
  * DoomsdayClearanceWorkflow 业务测试
  *
@@ -6,13 +8,13 @@
 import { describe, expect, it } from 'bun:test';
 import { createDoomsdayClearanceWorkflow } from '../../../src/application/doomsdayClearance/index.js';
 import type { DoomsdayEvaluationContext } from '../../../src/application/doomsdayClearance/types.js';
-import { createTimeWakeupRuntime } from '../../../src/main/timeWakeupRuntime/index.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+import { createTimeWakeupRuntime } from '../../../src/runtime/timeWakeupRuntime/index.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { TRADING } from '../../../src/constants/index.js';
 import type { Position } from '../../../src/types/account.js';
-import type { Logger } from '../../../src/utils/logger/types.js';
+import type { Logger } from '../../../src/types/logger.js';
 
 const logger: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 
@@ -39,13 +41,18 @@ async function createHarness() {
     },
     positions,
   });
-  const lastState = { isTradingEnabled: true };
+  const stateFixtures = createRuntimeStateFixtures({
+    tradingTimeState: {},
+    lifecycleState: { isTradingEnabled: true },
+    tradingCalendarState: {},
+    quoteSubscriptionState: {},
+  });
   const context: DoomsdayEvaluationContext = {
     currentTime,
     isHalfDay: false,
     dayEpoch: snapshot.getView().token.dayEpoch,
     snapshot,
-    lastState,
+    ...stateFixtures,
     monitorContext: {
       config: { monitorSymbol: 'HSI.HK' },
       symbolRegistry: {
@@ -84,14 +91,18 @@ async function createHarness() {
         );
       },
     },
-    trader: {
+    cacheManager: {
       getPendingOrders: async () => {
         calls.push('pending-buys');
         return [];
       },
+    },
+    orderMonitor: {
       cancelDoomsdayOrder: async () => {
         throw new Error('此场景没有买单，不得撤单');
       },
+    },
+    orderExecutor: {
       executeDoomsdayClearanceSignals: async (commands, isLive) => {
         expect(isLive()).toBe(true);
         calls.push('submit');
@@ -107,7 +118,7 @@ async function createHarness() {
     context,
     snapshot,
     calls,
-    lastState,
+    stateFixtures,
     workflow: createDoomsdayClearanceWorkflow({ now: () => currentTime, logger }),
   };
 }
@@ -165,8 +176,7 @@ describe('DoomsdayClearanceWorkflow', () => {
     const before = snapshot.getView();
     const result = await workflow.evaluate({
       ...context,
-      trader: {
-        ...context.trader,
+      orderExecutor: {
         executeDoomsdayClearanceSignals: async () => ({
           executedOrderIds: ['ACCEPTED:BULL.HK'],
           awaitingAuthoritativeTerminalSymbols: [],
@@ -217,8 +227,7 @@ describe('DoomsdayClearanceWorkflow', () => {
     const { workflow, context, snapshot, calls } = await createHarness();
     const result = await workflow.evaluate({
       ...context,
-      trader: {
-        ...context.trader,
+      cacheManager: {
         getPendingOrders: async () => {
           await snapshot.requestClear({ reason: 'DAY_CUT', dayEpoch: context.dayEpoch + 1 });
           return [];
@@ -231,7 +240,7 @@ describe('DoomsdayClearanceWorkflow', () => {
   });
 
   it('submit UNKNOWN 原错关闭准入，由既有 runtime/fatal 及正常 cleanup 排空；不查询、不重提', async () => {
-    const { workflow, context, snapshot, calls, lastState } = await createHarness();
+    const { workflow, context, snapshot, calls, stateFixtures } = await createHarness();
     const unknownError = await createExternalApiRequestError({
       operation: 'TradeContext.submitOrder',
       attempts: 1,
@@ -240,8 +249,7 @@ describe('DoomsdayClearanceWorkflow', () => {
     let evaluations = 0;
     const contextWithUnknown: DoomsdayEvaluationContext = {
       ...context,
-      trader: {
-        ...context.trader,
+      orderExecutor: {
         executeDoomsdayClearanceSignals: async () => {
           calls.push('submit');
           throw unknownError;
@@ -251,7 +259,7 @@ describe('DoomsdayClearanceWorkflow', () => {
     const before = snapshot.getView();
     const termination = createTerminationRuntime({
       closeTradingGate: () => {
-        lastState.isTradingEnabled = false;
+        stateFixtures.lifecycleState.isTradingEnabled = false;
         calls.push('gate-closed');
       },
       closeProducerAdmission: () => {
@@ -283,7 +291,7 @@ describe('DoomsdayClearanceWorkflow', () => {
     });
     await runtime.start();
     expect(termination.getFatalState()).toEqual({ hasFatalError: true, error: unknownError });
-    expect(lastState.isTradingEnabled).toBe(false);
+    expect(stateFixtures.lifecycleState.isTradingEnabled).toBe(false);
     expect(snapshot.getView()).toEqual(before);
     expect(calls).toEqual(['pending-buys', 'quotes', 'submit', 'gate-closed', 'admission-closed']);
     await termination.waitForTermination();

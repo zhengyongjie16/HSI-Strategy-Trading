@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
+
 /**
  * selectSellableOrders 单元测试
  *
@@ -9,9 +11,9 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { createOrderStorage } from '../../../../src/application/orderTracking/recorder/orderStorage.js';
 import type { OrderStorage } from '../../../../src/application/orderTracking/recorder/types.js';
-import type { OrderRecord } from '../../../../src/types/services.js';
+import type { OrderRecord } from '../../../../src/types/orderRecorder.js';
 
-mock.module('../../../src/utils/logger/index.js', () => ({
+mock.module('../../../src/infrastructure/logger/index.js', () => ({
   logger: {
     info: () => {},
     warn: () => {},
@@ -42,7 +44,7 @@ describe('selectSellableOrders', () => {
   let storage: OrderStorage;
 
   beforeEach(() => {
-    storage = createOrderStorage();
+    storage = createOrderStorage(createLoggerDouble());
   });
 
   it('PROFIT_ONLY 仅返回买入价小于当前价的订单', () => {

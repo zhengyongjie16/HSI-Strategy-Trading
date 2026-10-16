@@ -216,6 +216,56 @@ export function neutralLegacyCapability(key: string): boolean {
   return capabilities[target]?.includes(binding.imported) ?? false;
 }
 
+/** 固定模块的 query 仅隔离测试缓存，插值不能参与路径；所有边界仍按固定路径检查。 */
+function fixedQueryModule(argument: ts.Node | undefined): string | undefined {
+  if (argument === undefined) return undefined;
+
+  if (ts.isStringLiteral(argument)) return argument.text.split('?')[0];
+
+  if (!ts.isTemplateExpression(argument)) return undefined;
+
+  const fixed = argument.head.text;
+  return /^(?:\.\.?\/)+[^?#]+\.[cm]?[jt]s\?[^?#]+$/.test(fixed) ? fixed.split('?')[0] : undefined;
+}
+
+/** 唯一受 realpath/布局/入口白名单运行时校验的离线 fixture importer；不豁免文件中的其他 import。 */
+function guardedFixtureImport(file: string, node: ts.Node): boolean {
+  if (
+    file !== 'tests/helpers/importFixtureModule.ts' ||
+    !ts.isCallExpression(node) ||
+    node.expression.kind !== ts.SyntaxKind.ImportKeyword ||
+    functionName(node) !== 'importFixtureModule' ||
+    !ts.isReturnStatement(node.parent) ||
+    compact(node.getText()) !== 'import(pathToFileURL(file).href)'
+  )
+    return false;
+
+  const body = node.parent.parent;
+  if (!ts.isBlock(body)) return false;
+
+  const guards = new Set(
+    body.statements
+      .filter(ts.isIfStatement)
+      .map((statement) => compact(statement.expression.getText())),
+  );
+  const declarations = body.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) =>
+      [...statement.declarationList.declarations].map((declaration) =>
+        compact(declaration.getText()),
+      ),
+    );
+  return (
+    guards.has("url.protocol !== 'file:' || url.search !== '' || url.hash !== ''") &&
+    guards.has(
+      '!relative.startsWith(layout) || !relative.endsWith(extension) || (!entries.has(entry) && !definition)',
+    ) &&
+    declarations.includes(
+      '[directory, file] = await Promise.all([realpath(root), realpath(fileURLToPath(url))])',
+    )
+  );
+}
+
 /** §5.1 的 domain 直接文件/网络/调度能力边界；不追踪任意 caller 或间接数据流。 */
 function forbiddenDomainIo(file: string, specifier: string): boolean {
   return (
@@ -1702,12 +1752,15 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
           argument = node.argument.literal;
         else if (ts.isCallExpression(node)) argument = node.arguments[0];
 
-        if (argument !== undefined && ts.isStringLiteral(argument)) {
-          if (forbiddenDomainIo(file, argument.text))
-            violations.push(occurrenceKey(file, 'DOMAIN_DIRECT_IO', argument.text));
+        const fixedImport =
+          (argument !== undefined && ts.isStringLiteralLike(argument)) || file.startsWith('tests/');
+        const specifier = fixedImport ? fixedQueryModule(argument) : undefined;
+        if (specifier !== undefined) {
+          if (forbiddenDomainIo(file, specifier))
+            violations.push(occurrenceKey(file, 'DOMAIN_DIRECT_IO', specifier));
 
           const target = ts.resolveModuleName(
-            argument.text,
+            specifier,
             source.fileName,
             program.getCompilerOptions(),
             ts.sys,
@@ -1723,7 +1776,7 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
             );
 
           if (
-            (argument.text === 'longbridge' ||
+            (specifier === 'longbridge' ||
               target?.resolvedFileName
                 .replaceAll('\\', '/')
                 .includes('/node_modules/longbridge/')) &&
@@ -1753,11 +1806,25 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
                 compact(node.getText()),
               ),
             );
-        } else if (!ts.isCallExpression(node) || !selectedStrategyLoaderCall(root, node, checker))
+        } else if (
+          !guardedFixtureImport(file, node) &&
+          (!ts.isCallExpression(node) || !selectedStrategyLoaderCall(root, node, checker))
+        )
           violations.push(
             occurrenceKey(file, 'NONLITERAL', functionName(node), compact(node.getText())),
           );
       }
+
+      if (ts.isIdentifier(node) && /^(?:LastState|Trader|MonitorContext)$/.test(node.text))
+        violations.push(occurrenceKey(file, 'WIDE_CONTRACT', node.text));
+
+      if (
+        file.startsWith('src/') &&
+        !file.startsWith('src/app/') &&
+        ts.isIdentifier(node) &&
+        /^(?:MonitorContextAssembly|TradeRuntime)$/.test(node.text)
+      )
+        violations.push(occurrenceKey(file, 'ASSEMBLY_LOCATOR', node.text));
 
       if (
         file.startsWith('src/') &&

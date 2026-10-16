@@ -1,3 +1,9 @@
+import type {
+  ScheduleBoundedOneShotAt,
+  BoundedOneShotTimerController,
+} from '../../../types/timer.js';
+import type { ExternalApiRequest } from '../../../types/apiFailure.js';
+import type { Logger } from '../../../types/logger.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../../../domain/liquidation/episode/types.js';
 import type {
   OrderMonitorConfig,
@@ -11,7 +17,7 @@ import type { MonitorConfig, TradingConfig } from '../../../types/config.js';
 import type { MarketDataClient } from '../../../types/marketPorts.js';
 import type { OrderDetailReadPort } from '../../../types/orderDetailReadPorts.js';
 import type { OrderExecutionLedgerPort } from '../../../types/orderExecutionLedger.js';
-import type { OrderExecutionTimeEvidence } from '../../../types/orderRecorder.js';
+import type { OrderExecutionTimeEvidence, OrderRecorder } from '../../../types/orderRecorder.js';
 import type { Quote } from '../../../types/quote.js';
 import type {
   DailyLossCumulativeExecutionResult,
@@ -20,13 +26,10 @@ import type {
 } from '../../../types/risk.js';
 import type { RuntimeTermination } from '../../../types/runtime.js';
 import type { SymbolRegistry } from '../../../types/seat.js';
-import type {
-  OrderRecorder,
-  OrderStateChangedEvent,
-  RateLimiter,
-  TradeMutationPermit,
-  Unsubscribe,
-} from '../../../types/services.js';
+
+import type { OrderStateChangedEvent } from '../../../types/orderTracking.js';
+import type { RateLimiter, TradeMutationPermit } from '../../../types/rateLimit.js';
+import type { Unsubscribe } from '../../../types/events.js';
 import type { SettlementRefreshNeedRecorder } from '../../../types/settlement.js';
 import type { OrderFact } from '../../../types/trade.js';
 import type {
@@ -38,10 +41,9 @@ import type {
 import type {
   CancelOrderNotStartedOutcome,
   CancelOrderOutcome,
-  OrderClosedReason,
-  OrderStateCheckResult,
-} from '../../../types/trader.js';
-import type { BoundedOneShotTimerController } from '../../../utils/timer/types.js';
+} from '../../../types/orderCancellation.js';
+import type { OrderClosedReason, OrderStateCheckResult } from '../../../types/orderReadMetadata.js';
+
 import type {
   CancelOrderMutationRequest,
   OrderCacheManager,
@@ -188,6 +190,7 @@ export type RouteRuntimeProcessParams = Readonly<{
  * 使用范围：仅 orderMonitor/routeRuntime.ts 使用。
  */
 export type RouteRuntimeDeps = Readonly<{
+  readonly scheduleBoundedOneShotAt: ScheduleBoundedOneShotAt;
   readonly runtime: OrderMonitorRuntimeStore;
   readonly config: OrderMonitorConfig;
   readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated'>;
@@ -263,6 +266,7 @@ export type OrderMonitorRuntimeStore = {
  * 使用范围：仅 orderMonitor/recoveryFlow.ts 使用。
  */
 export type RecoveryFlowDeps = {
+  readonly logger: Logger;
   readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   readonly runtime: OrderMonitorRuntimeStore;
   readonly orderHoldRegistry: OrderHoldRegistry;
@@ -295,6 +299,7 @@ export interface RecoveryFlow {
  * 使用范围：仅 orderMonitor/eventFlow.ts 使用。
  */
 export type EventFlowDeps = {
+  readonly logger: Logger;
   readonly now: () => Date;
   readonly monitorConfig: MonitorConfig;
   readonly runtime: OrderMonitorRuntimeStore;
@@ -328,6 +333,7 @@ export interface EventFlow {
  * 使用范围：仅 orderMonitor/orderStatusQuery.ts 使用。
  */
 export type OrderStatusQueryDeps = {
+  readonly requestExternalApi: ExternalApiRequest;
   readonly orderDetailReadPort: OrderDetailReadPort;
   readonly executionLedgerPort: OrderExecutionLedgerPort;
   readonly rateLimiter: RateLimiter;
@@ -354,6 +360,9 @@ export interface OrderStatusQuery {
  * 使用范围：仅 orderMonitor/orderOps.ts 使用。
  */
 export type OrderOpsDeps = {
+  readonly wait: (delayMs: number) => Promise<void>;
+  readonly logger: Logger;
+
   /** 每operation捕获原 ingress generation；停止后不能发后继query或发布旧事实。 */
   readonly captureWorkGuard: () => () => boolean;
   readonly tradeMutationPort: TradeMutationPort;
@@ -421,6 +430,7 @@ export interface OrderOps {
  * 使用范围：仅 orderMonitor/routeProcessor.ts 使用。
  */
 export type RouteProcessorDeps = {
+  readonly logger: Logger;
   readonly tradeMutationPort: TradeMutationPort;
   readonly now: () => Date;
   readonly runtime: OrderMonitorRuntimeStore;
@@ -428,6 +438,9 @@ export type RouteProcessorDeps = {
   readonly orderRecorder: OrderRecorder;
   readonly rateLimiter: RateLimiter;
   readonly isContinuousTradingAllowed: () => boolean;
+
+  /** accepted 后先登记真实 S1→MO S2 身份，不受后续 tracking 同步结果撤销。 */
+  readonly recordAcceptedSellContinuation: (originalOrderId: string, marketOrderId: string) => void;
   readonly trackOrder: (params: TrackOrderParams) => void;
   readonly cancelOrder: (
     orderId: string,

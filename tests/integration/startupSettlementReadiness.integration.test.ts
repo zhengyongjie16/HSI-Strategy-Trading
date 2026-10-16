@@ -2,16 +2,16 @@
 
 import { describe, expect, it, spyOn } from 'bun:test';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { executeTradingDayOpenRebuild } from '../../src/app/lifecycle/rebuild.js';
-import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
-import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
+import { executeTradingDayOpenRebuild } from '../../src/application/tradingDayRebuild/openRebuild.js';
+import { createDayLifecycleManager } from '../../src/runtime/lifecycle/dayLifecycleManager.js';
+import { createQuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscriptionRuntime/index.js';
 import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 import {
   createAccountSnapshotDouble,
   createLoggerDouble,
   createMarketDataClientDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
 import { createStartupRecoveryHarness } from './strategyRecoveryStartup/appHarness.js';
 
@@ -25,7 +25,7 @@ function createOwner(onPositionsCommitted: () => Promise<void>) {
       getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
       getStockPositions: async () => [],
     },
-    getTrader: () => createTraderDouble(),
+    getTradeRuntime: () => createTradeRuntimeDouble(),
     onPositionsCommitted,
   });
   return owner;
@@ -113,9 +113,9 @@ describe('startup runApp settlement readiness', () => {
       snapshot: owner.snapshot,
       termination: owner.termination,
       symbolRegistry: app.post.monitorContext.symbolRegistry,
-      trader: app.post.trader,
+      orderHoldRegistry: app.post.tradeRuntime.orderHoldRegistry,
       tradingConfig: createTradingConfig({ monitor: app.post.monitorContext.config }),
-      lastState: app.lastState,
+      ...app.stateFixtures,
       logger: createLoggerDouble(),
       marketDataClient: createMarketDataClientDouble(),
     });
@@ -136,7 +136,7 @@ describe('startup runApp settlement readiness', () => {
         currentVersion: 0,
         staleVersion: 1,
       });
-      expect(app.lastState.isTradingEnabled).toBe(false);
+      expect(app.stateFixtures.lifecycleState.isTradingEnabled).toBe(false);
       const waiting = owner.sink.waitForFresh();
       // 实际 timer 已可运行，跨越原 300ms retry 边界而不是人工禁用 scheduler。
       await Bun.sleep(380);
@@ -146,7 +146,7 @@ describe('startup runApp settlement readiness', () => {
       expect(app.starts).not.toContain('buyProcessor.start');
       const now = new Date('2026-04-29T01:31:00Z');
       const manager = createDayLifecycleManager({
-        mutableState: app.lastState,
+        mutableState: app.stateFixtures.lifecycleState,
         snapshot: owner.snapshot,
         termination: owner.termination,
         logger: createLoggerDouble(),
@@ -190,7 +190,7 @@ describe('startup runApp settlement readiness', () => {
       expect(callbacks).toBe(2);
       expect(readyEvents).toBe(1);
       expect(owner.sink.isCurrent(ready)).toBe(true);
-      expect(app.lastState.isTradingEnabled).toBe(true);
+      expect(app.stateFixtures.lifecycleState.isTradingEnabled).toBe(true);
       expect(owner.snapshot.getStatus().admission).toBe('OPEN');
     } finally {
       app.shutdown();
@@ -267,8 +267,8 @@ describe('startup runApp settlement readiness', () => {
       await app.timeStarted;
       await flush();
       expect(app.classifiedErrors).toContain(fault);
-      expect(app.lastState.pendingOpenRebuild).toBe(true);
-      expect(app.lastState.isTradingEnabled).toBe(false);
+      expect(app.stateFixtures.lifecycleState.pendingOpenRebuild).toBe(true);
+      expect(app.stateFixtures.lifecycleState.isTradingEnabled).toBe(false);
       expect(ready).toBe(false);
       expect(app.starts).not.toContain('buyProcessor.start');
     } finally {

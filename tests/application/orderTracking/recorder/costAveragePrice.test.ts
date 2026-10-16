@@ -1,9 +1,11 @@
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
+
 /** 成本依据回归：保留原价格经济口径，使用精确金额/数量；动态买卖经真实 O/Daily/S。 */
 
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { createOrderStorage } from '../../../../src/application/orderTracking/recorder/orderStorage.js';
 import type { OrderStorage } from '../../../../src/application/orderTracking/recorder/types.js';
-import type { OrderRecord } from '../../../../src/types/services.js';
+import type { OrderRecord } from '../../../../src/types/orderRecorder.js';
 import { createExecutionFixture } from './executionFixture.js';
 
 function makeOrder(
@@ -26,7 +28,7 @@ function makeOrder(
 describe('getCostBasis', () => {
   let storage: OrderStorage;
   beforeEach(() => {
-    storage = createOrderStorage();
+    storage = createOrderStorage(createLoggerDouble());
   });
 
   it('无订单时返回 null', () => {

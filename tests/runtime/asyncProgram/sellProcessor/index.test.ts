@@ -1,9 +1,11 @@
+import { createLoggerDouble, createSignalDouble } from '../../../helpers/testDoubles.js';
+
 /** 普通 SELL runtime 镜像：application 重试指令回流 FIFO，取消句柄与迟到结果不恢复旧任务。 */
 import { describe, expect, it } from 'bun:test';
 import { createSellProcessor } from '../../../../src/runtime/asyncProgram/sellProcessor/index.js';
 import { createSellTaskQueue } from '../../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
-import { createSignalDouble } from '../../../helpers/testDoubles.js';
-import { waitUntil } from '../../../main/asyncProgram/utils.js';
+
+import { waitUntil } from '../../../helpers/asyncProgram.js';
 import type { ExecutableSellSignal } from '../../../../src/types/signal.js';
 import type {
   OrdinarySellWorkflow,
@@ -70,6 +72,7 @@ describe('SELL FIFO retry scheduling', () => {
       },
     };
     const worker = createSellProcessor({
+      logger: createLoggerDouble(),
       taskQueue: queue,
       workflow,
       scheduler: timers.scheduler,
@@ -95,6 +98,7 @@ describe('SELL FIFO retry scheduling', () => {
     const timers = schedulerFixture();
     const attempts: number[] = [];
     const worker = createSellProcessor({
+      logger: createLoggerDouble(),
       taskQueue: queue,
       scheduler: timers.scheduler,
       termination,
@@ -137,6 +141,7 @@ describe('SELL FIFO retry scheduling', () => {
       const normalAfter = signal('SECOND.HK');
       const calls: ExecutableSellSignal[] = [];
       const worker = createSellProcessor({
+        logger: createLoggerDouble(),
         taskQueue: queue,
         scheduler: timers.scheduler,
         termination,
@@ -180,6 +185,7 @@ describe('SELL FIFO retry scheduling', () => {
     const timers = schedulerFixture();
     let calls = 0;
     const worker = createSellProcessor({
+      logger: createLoggerDouble(),
       taskQueue: queue,
       scheduler: timers.scheduler,
       termination,

@@ -1,9 +1,12 @@
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
+import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
+
 /** 自动寻标 wakeup 旧 owner 集成测试：授权关闭/停止同步失效，旧候选不能激活或触发刷新。 */
 import {
   createEmptySnapshotFixture,
   createSnapshotFixture,
-} from '../../main/fixtures/accountPositionSnapshot.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+} from '../../helpers/accountPositionSnapshot.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
@@ -15,10 +18,9 @@ import { createAutoSearch } from '../../../src/application/autoSearch/index.js';
 import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import type { AutoSearchCandidate } from '../../../src/application/autoSearch/types.js';
 import type { SeatStateChangedEvent } from '../../../src/types/seat.js';
-import type { LastState } from '../../../src/types/state.js';
 import type { TradingConfig } from '../../../src/types/config.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
-import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../../src/main/tradingGateEventRuntime/index.js';
+import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../../src/runtime/tradingGateEventRuntime/index.js';
 import type {
   DayLifecycleTickResult,
   AutoSearchAuthorizationChangedEvent,
@@ -30,7 +32,7 @@ import {
   createMonitorConfigDouble,
   createMonitorContextDouble,
   createAccountSnapshotDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
 import {
   createDirectionalAutoSearchPolicy,
@@ -149,8 +151,9 @@ function createRuntimeHarness(params: {
     frozenTradingDayKey: null,
   });
 
-  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
   const seatActivationDispatcher = createSeatActivationDispatcher({
+    logger: createLoggerDouble(),
     termination,
     snapshot: createEmptySnapshotFixture(),
     symbolRegistry,
@@ -169,18 +172,19 @@ function createRuntimeHarness(params: {
     logger: createLoggerStub(),
   });
 
-  const lastState = {
-    canTrade: true,
-    isTradingEnabled: true,
-    isHalfDay: false,
-  };
+  const stateFixtures = createRuntimeStateFixtures({
+    tradingTimeState: { canTrade: true, isHalfDay: false },
+    lifecycleState: { isTradingEnabled: true },
+    tradingCalendarState: {},
+    quoteSubscriptionState: {},
+  });
   const tradingGateEventRuntime = createAutoSearchAuthorizationEventRuntimeHarness();
   const runtime = createAutoSearchWakeupRuntime({
     termination,
     symbolRegistry,
     autoSearch,
     autoSearchConfig: monitorConfig.autoSearchConfig,
-    lastState,
+    ...stateFixtures,
     tradingGateEventRuntime: tradingGateEventRuntime.port,
     doomsdayProtectionEnabled: true,
     now: () => new Date(currentNowMs),
@@ -195,7 +199,7 @@ function createRuntimeHarness(params: {
     symbolRegistry,
     monitorTaskQueue,
     seatActivationDispatcher,
-    lastState,
+    stateFixtures,
     tradingGateEventRuntime,
     setNow(nextNowMs: number): void {
       currentNowMs = nextNowMs;
@@ -236,8 +240,9 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       frozenTradingDayKey: null,
     });
 
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const seatActivationDispatcher = createSeatActivationDispatcher({
+      logger: createLoggerDouble(),
       termination,
       snapshot: createEmptySnapshotFixture(),
       symbolRegistry,
@@ -259,21 +264,24 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       logger: createLoggerStub(),
     });
     const monitorContext = createMonitorContextDouble({ config: monitorConfig, symbolRegistry });
-    const lastState: LastState = {
-      canTrade: true,
-      isHalfDay: false,
-      openProtectionActive: false,
-      currentDayKey: '2026-04-10',
-      lifecycleState: 'ACTIVE',
-      pendingOpenRebuild: false,
-      isTradingEnabled: true,
-      cachedTradingDayInfo: {
-        dateKey: '2026-04-10',
-        info: { isTradingDay: true, isHalfDay: false },
+    const stateFixtures: RuntimeStateFixtures = {
+      tradingTimeState: { canTrade: true, isHalfDay: false, openProtectionActive: false },
+      lifecycleState: {
+        currentDayKey: '2026-04-10',
+        lifecycleState: 'ACTIVE',
+        pendingOpenRebuild: false,
+        isTradingEnabled: true,
       },
-      tradingCalendarSnapshot: new Map([['2026-04-10', { isTradingDay: true, isHalfDay: false }]]),
-
-      allTradingSymbols: new Set<string>(),
+      tradingCalendarState: {
+        cachedTradingDayInfo: {
+          dateKey: '2026-04-10',
+          info: { isTradingDay: true, isHalfDay: false },
+        },
+        tradingCalendarSnapshot: new Map([
+          ['2026-04-10', { isTradingDay: true, isHalfDay: false }],
+        ]),
+      },
+      quoteSubscriptionState: { allTradingSymbols: new Set<string>() },
     };
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
@@ -281,7 +289,7 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      lastState,
+      ...stateFixtures,
       tradingGateEventRuntime,
       doomsdayProtectionEnabled: true,
       now: () => new Date(currentNowMs),
@@ -309,8 +317,8 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
     const timeWakeupContext: TimeWakeupEvaluationContext = {
       logger: createLoggerDouble(),
       marketDataClient: createMarketDataClientDouble(),
-      trader: createTraderDouble(),
-      lastState,
+      ...createTradeRuntimeDouble(),
+      ...stateFixtures,
       doomsdayClearanceWorkflow: createDoomsdayClearanceWorkflowDouble(),
       tradingConfig,
       monitorContext,
@@ -404,7 +412,7 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       const originalVersion = harness.symbolRegistry.getSeatVersion('LONG');
 
       harness.setNow(Date.parse('2026-04-10T04:00:00.000Z'));
-      harness.lastState.canTrade = false;
+      harness.stateFixtures.tradingTimeState.canTrade = false;
       harness.tradingGateEventRuntime.emitAutoSearchAuthorizationChanged({
         previousAuthorized: true,
         nextAuthorized: false,
@@ -424,7 +432,7 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       expect(harness.monitorTaskQueue.isEmpty()).toBeTrue();
 
       harness.setNow(Date.parse('2026-04-10T05:00:00.000Z'));
-      harness.lastState.canTrade = true;
+      harness.stateFixtures.tradingTimeState.canTrade = true;
       harness.tradingGateEventRuntime.emitAutoSearchAuthorizationChanged({
         previousAuthorized: false,
         nextAuthorized: true,
@@ -523,7 +531,7 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       expect(finderCalls).toBe(1);
       const originalVersion = harness.symbolRegistry.getSeatVersion('LONG');
 
-      harness.lastState.isTradingEnabled = false;
+      harness.stateFixtures.lifecycleState.isTradingEnabled = false;
       harness.tradingGateEventRuntime.emitAutoSearchAuthorizationChanged({
         previousAuthorized: true,
         nextAuthorized: false,
@@ -609,7 +617,7 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       await Bun.sleep(0);
       expect(finderCalls).toBe(1);
 
-      harness.lastState.isTradingEnabled = false;
+      harness.stateFixtures.lifecycleState.isTradingEnabled = false;
       harness.tradingGateEventRuntime.emitAutoSearchAuthorizationChanged({
         previousAuthorized: true,
         nextAuthorized: false,
@@ -639,7 +647,7 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
         searchFailCountToday: 1,
         frozenTradingDayKey: null,
       });
-      harness.lastState.isTradingEnabled = true;
+      harness.stateFixtures.lifecycleState.isTradingEnabled = true;
       harness.tradingGateEventRuntime.emitAutoSearchAuthorizationChanged({
         previousAuthorized: false,
         nextAuthorized: true,

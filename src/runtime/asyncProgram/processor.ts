@@ -1,5 +1,4 @@
 /** FIFO 队列 worker：仅消费、调度、stop/drain 与 fatal 路由，不判定买卖业务结果。 */
-import { logger } from '../../utils/logger/index.js';
 import { formatError } from '../../utils/error/index.js';
 import type { BaseProcessorConfig, Processor } from './types.js';
 
@@ -32,6 +31,7 @@ export function scheduleWhenTaskAdded(
 export function createBaseProcessor<TType extends string>(
   config: BaseProcessorConfig<TType>,
 ): Processor {
+  const { logger } = config;
   const { loggerPrefix, taskQueue, processTask, getCanProcessTask, termination } = config;
   let running = false;
   let immediateHandle: ReturnType<typeof setImmediate> | null = null;

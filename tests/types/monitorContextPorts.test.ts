@@ -2,27 +2,30 @@
  * monitor context ports 架构测试
  *
  * 覆盖：
- * - MonitorContext 使用共享行为端口而非在 state.ts 复制本地契约
+ * - 唯一 app 装配契约使用共享行为端口，不恢复已删除的共享 state 契约
  */
 
 import { describe, expect, it } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-const stateTypesPath = path.join(process.cwd(), 'src/types/state.ts');
+const assemblyTypesPath = path.join(process.cwd(), 'src/app/context/types.ts');
 const configTypesPath = path.join(process.cwd(), 'src/config/types.ts');
 
 describe('monitor context shared ports', () => {
-  it('does not declare local AutoSymbolManager or DelayedSignalVerifier interfaces in state.ts', () => {
-    const content = readFileSync(stateTypesPath, 'utf8');
+  it('keeps the deleted shared state contract absent and avoids local verifier port copies', () => {
+    expect(existsSync(path.join(process.cwd(), 'src/types/state.ts'))).toBeFalse();
+    const content = readFileSync(assemblyTypesPath, 'utf8');
 
     expect(content).not.toContain('interface AutoSymbolManager');
     expect(content).not.toContain('interface DelayedSignalVerifier');
   });
 
   it('exposes only strategy lifecycle, not host-owned verification or indicator state', () => {
-    const content = readFileSync(stateTypesPath, 'utf8');
-    expect(content).toContain('readonly strategy: TradingSignalStrategy');
+    const content = readFileSync(assemblyTypesPath, 'utf8');
+    expect(content).toContain('MonitorSymbolNames &');
+    expect(content).toContain('Readonly<{');
+    expect(content).toMatch(/strategy:\s*TradingSignalStrategy/);
     expect(content).not.toMatch(
       /DelayedSignalVerifier|indicatorProfile|MonitorState|IndicatorIncrementalRuntime/,
     );

@@ -16,11 +16,13 @@ import {
   ORDER_READ_TYPE_VALUES,
 } from '../../constants/orderReadMetadata.js';
 import { isOpenOrderReadStatus } from '../../domain/order/orderReadLifecycle.js';
-import type { OrderReadStatus, OrderReadType } from '../../types/orderReadMetadata.js';
-import type { PendingOrder } from '../../types/services.js';
-import { wrapExternalApiRequest } from '../../utils/apiFailure/index.js';
+import type {
+  OrderReadStatus,
+  OrderReadType,
+  PendingOrder,
+} from '../../types/orderReadMetadata.js';
+
 import { isRecord } from '../../utils/helpers/index.js';
-import { logger } from '../../utils/logger/index.js';
 import { canonicalDecimal } from '../../utils/numeric/exact.js';
 import type {
   OrderCacheManager,
@@ -84,6 +86,7 @@ function isValidTodayOrder(order: unknown): order is TodayOrderForPendingCache {
  * @returns OrderCacheManager 接口实例
  */
 export const createOrderCacheManager = (deps: OrderCacheManagerDeps): OrderCacheManager => {
+  const { logger } = deps;
   const { ctx, rateLimiter, now } = deps;
 
   // 闭包捕获的私有状态
@@ -129,7 +132,7 @@ export const createOrderCacheManager = (deps: OrderCacheManagerDeps): OrderCache
     // 这样无论查询多少个标的，都只需要 1 次 API 调用
     // 避免了之前为每个标的单独调用导致的 API 限流问题
     await rateLimiter.throttle();
-    const todayOrdersRaw = await wrapExternalApiRequest({
+    const todayOrdersRaw = await deps.requestExternalApi({
       operation: 'TradeContext.todayOrders',
       request: () => ctx.todayOrders(),
     });

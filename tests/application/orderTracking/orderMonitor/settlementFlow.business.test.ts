@@ -17,7 +17,7 @@ import type { OrderMonitorTrackedOrder } from '../../../../src/domain/order/type
 import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
 import type { BrokerOrderExecutionFact } from '../../../../src/types/orderRecorder.js';
 import type { ProtectiveLiquidationExecutionProgressInput } from '../../../../src/types/risk.js';
-import type { OrderStateChangedEvent } from '../../../../src/types/services.js';
+import type { OrderStateChangedEvent } from '../../../../src/types/orderTracking.js';
 import { toHongKongTimeIso } from '../../../../src/utils/time/index.js';
 import {
   createAccountSnapshotDouble,

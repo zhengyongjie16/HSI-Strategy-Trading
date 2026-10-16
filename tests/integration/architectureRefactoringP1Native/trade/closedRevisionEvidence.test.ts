@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
+
 /** closed 观察仍保存权威 revision 水位；经济投影、S stale 与资源收尾单独幂等。 */
 
 import { expect, test } from 'bun:test';
@@ -62,6 +64,7 @@ test('closed terminal pure revision stores O/Daily watermark without economic/S/
   const stale = f.sink.getStatus().staleVersion;
   const events = f.events.length;
   const flow = createEventFlow({
+    logger: createLoggerDouble(),
     runtime: f.runtime,
     monitorConfig: monitor,
     now: () => new Date(now + 300),

@@ -4,9 +4,9 @@
  * 验证 purpose/seat 授权、UNKNOWN 与内部失败穿透、明确外部失败及 accepted 后失效不重提或发布旧风险。
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createSettlementRuntimeFixture } from '../../main/fixtures/settlementRuntime.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../../helpers/settlementRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createUnrealizedLossMonitor } from '../../../src/application/protectiveLiquidation/unrealizedLossExecutor.js';
 import { createRiskChecker } from '../../../src/domain/risk/index.js';
 import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
@@ -20,7 +20,7 @@ import {
   createQuoteDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
   createLoggerDouble,
 } from '../../helpers/testDoubles.js';
 
@@ -67,11 +67,13 @@ describe('protective liquidation executor', () => {
     const riskChecker = createRiskCheckerDouble({
       checkUnrealizedLoss: () => ({ shouldLiquidate: true, reason: 'loss limit', quantity: 100 }),
     });
-    const trader = createTraderDouble({
-      executeSignals: async (_signals, callerAuthorization) => {
-        expect(callerAuthorization).toBe(isCurrent);
-        expect(callerAuthorization()).toBeTrue();
-        throw submitError;
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          expect(callerAuthorization).toBe(isCurrent);
+          expect(callerAuthorization()).toBeTrue();
+          throw submitError;
+        },
       },
     });
     const orderRecorder = createOrderRecorderDouble();
@@ -85,7 +87,7 @@ describe('protective liquidation executor', () => {
         seatVersion: 2,
         quote: createQuoteDouble('BULL.HK', '1.1', 100),
         riskChecker,
-        trader,
+        orderExecutor: tradeRuntime.orderExecutor,
         orderRecorder,
         dailyLossTracker,
         isCurrent,
@@ -97,7 +99,7 @@ describe('protective liquidation executor', () => {
     expect(caught).toBe(submitError);
   });
 
-  it('rethrows internal trader execution errors during protective liquidation', async () => {
+  it('rethrows internal tradeRuntime execution errors during protective liquidation', async () => {
     const authorization = { revision: 1 };
     const capturedRevision = authorization.revision;
     const isCurrent = () => authorization.revision === capturedRevision;
@@ -105,7 +107,7 @@ describe('protective liquidation executor', () => {
       logger: createLoggerDouble(),
       maxUnrealizedLossPerSymbol: '1000',
     });
-    const internalError = new TypeError('trader execution invariant broken');
+    const internalError = new TypeError('tradeRuntime execution invariant broken');
 
     const execution = monitor.monitorDirectionalUnrealizedLoss({
       symbol: 'BULL.HK',
@@ -119,11 +121,13 @@ describe('protective liquidation executor', () => {
           quantity: 100,
         }),
       }),
-      trader: createTraderDouble({
-        executeSignals: async (_signals, callerAuthorization) => {
-          expect(callerAuthorization).toBe(isCurrent);
-          expect(callerAuthorization()).toBeTrue();
-          throw internalError;
+      ...createTradeRuntimeDouble({
+        orderExecutor: {
+          executeSignals: async (_signals, callerAuthorization) => {
+            expect(callerAuthorization).toBe(isCurrent);
+            expect(callerAuthorization()).toBeTrue();
+            throw internalError;
+          },
         },
       }),
       orderRecorder: createOrderRecorderDouble(),
@@ -173,12 +177,14 @@ describe('protective liquidation executor', () => {
           refreshedUnrealizedLoss = true;
         },
       }),
-      trader: createTraderDouble({
-        executeSignals: async (_signals, callerAuthorization) => {
-          expect(callerAuthorization).toBe(isCurrent);
-          expect(callerAuthorization()).toBeTrue();
-          executionAttempts += 1;
-          throw externalError;
+      ...createTradeRuntimeDouble({
+        orderExecutor: {
+          executeSignals: async (_signals, callerAuthorization) => {
+            expect(callerAuthorization).toBe(isCurrent);
+            expect(callerAuthorization()).toBeTrue();
+            executionAttempts += 1;
+            throw externalError;
+          },
         },
       }),
       orderRecorder: createOrderRecorderDouble({
@@ -211,11 +217,13 @@ describe('protective liquidation executor', () => {
         throw cleanupError;
       },
     });
-    const trader = createTraderDouble({
-      executeSignals: async (_signals, callerAuthorization) => {
-        expect(callerAuthorization).toBe(isCurrent);
-        expect(callerAuthorization()).toBeTrue();
-        return { executedOrderIds: ['order-1'], quoteFailures: [] };
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          expect(callerAuthorization).toBe(isCurrent);
+          expect(callerAuthorization()).toBeTrue();
+          return { executedOrderIds: ['order-1'], quoteFailures: [] };
+        },
       },
     });
     const orderRecorder = createOrderRecorderDouble();
@@ -229,7 +237,7 @@ describe('protective liquidation executor', () => {
         seatVersion: 2,
         quote: createQuoteDouble('BULL.HK', '1.1', 100),
         riskChecker,
-        trader,
+        orderExecutor: tradeRuntime.orderExecutor,
         orderRecorder,
         dailyLossTracker,
         isCurrent,
@@ -256,11 +264,13 @@ describe('protective liquidation executor', () => {
     const riskChecker = createRiskCheckerDouble({
       checkUnrealizedLoss: () => ({ shouldLiquidate: true, reason: 'loss limit', quantity: 100 }),
     });
-    const trader = createTraderDouble({
-      executeSignals: async (_signals, callerAuthorization) => {
-        expect(callerAuthorization).toBe(isCurrent);
-        expect(callerAuthorization()).toBeTrue();
-        throw syncFailure;
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          expect(callerAuthorization).toBe(isCurrent);
+          expect(callerAuthorization()).toBeTrue();
+          throw syncFailure;
+        },
       },
     });
     const orderRecorder = createOrderRecorderDouble();
@@ -274,7 +284,7 @@ describe('protective liquidation executor', () => {
         seatVersion: 2,
         quote: createQuoteDouble('BULL.HK', '1.1', 100),
         riskChecker,
-        trader,
+        orderExecutor: tradeRuntime.orderExecutor,
         orderRecorder,
         dailyLossTracker,
         isCurrent,
@@ -341,21 +351,23 @@ describe('protective liquidation executor', () => {
       seatVersion: 2,
       quote: createQuoteDouble('BULL.HK', '1', 100),
       riskChecker,
-      orderRecorder,
+
       dailyLossTracker: createDailyLossTrackerDouble(),
       isCurrent,
-      trader: createTraderDouble({
-        executeSignals: async (signals, callerAuthorization) => {
-          expect(callerAuthorization).toBe(isCurrent);
-          expect(callerAuthorization()).toBeTrue();
-          submitAttempts += 1;
-          expect(signals[0]?.isProtectiveLiquidation).toBeTrue();
-          expect(signals[0]?.seatVersion).toBe(2);
-          confirmSubmission();
-          await acknowledgement;
-          expect(callerAuthorization()).toBeFalse();
-          acknowledgedOrderIds.push('BROKER-PROTECTIVE-1');
-          return { executedOrderIds: ['BROKER-PROTECTIVE-1'], quoteFailures: [] };
+      ...createTradeRuntimeDouble({
+        orderExecutor: {
+          executeSignals: async (signals, callerAuthorization) => {
+            expect(callerAuthorization).toBe(isCurrent);
+            expect(callerAuthorization()).toBeTrue();
+            submitAttempts += 1;
+            expect(signals[0]?.isProtectiveLiquidation).toBeTrue();
+            expect(signals[0]?.seatVersion).toBe(2);
+            confirmSubmission();
+            await acknowledgement;
+            expect(callerAuthorization()).toBeFalse();
+            acknowledgedOrderIds.push('BROKER-PROTECTIVE-1');
+            return { executedOrderIds: ['BROKER-PROTECTIVE-1'], quoteFailures: [] };
+          },
         },
       }),
     });
@@ -376,17 +388,19 @@ describe('unrealizedLossMonitor directional execution', () => {
   it('writes seatVersion into the liquidation signal', async () => {
     const executedSignals: Array<{ readonly seatVersion: number | null; readonly action: string }> =
       [];
-    const trader = createTraderDouble({
-      executeSignals: async (signals, callerAuthorization) => {
-        expect(callerAuthorization()).toBe(true);
-        for (const signal of signals) {
-          executedSignals.push({
-            seatVersion: signal.seatVersion,
-            action: signal.action,
-          });
-        }
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(callerAuthorization()).toBe(true);
+          for (const signal of signals) {
+            executedSignals.push({
+              seatVersion: signal.seatVersion,
+              action: signal.action,
+            });
+          }
 
-        return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`), quoteFailures: [] };
+          return { executedOrderIds: signals.map(() => `EXECUTED-ORDER`), quoteFailures: [] };
+        },
       },
     });
     const riskChecker = createRiskCheckerDouble({
@@ -402,7 +416,11 @@ describe('unrealizedLossMonitor directional execution', () => {
     });
 
     const symbolRegistry = createSymbolRegistryDouble({ longVersion: 7 });
-    const context = createMonitorContextDouble({ symbolRegistry, riskChecker });
+    const context = createMonitorContextDouble({
+      orderRecorder: tradeRuntime.orderRecorder,
+      symbolRegistry,
+      riskChecker,
+    });
     const snapshot = await createSnapshotFixture({
       account: createAccountSnapshotDouble('100000'),
       positions: [],
@@ -414,10 +432,11 @@ describe('unrealizedLossMonitor directional execution', () => {
       onSecondaryError: () => {},
     });
     const settlement = createSettlementRuntimeFixture({
+      logger: createLoggerDouble(),
       snapshot,
       termination,
       monitorContext: context,
-      getTrader: () => trader,
+      getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
       onPositionsCommitted: async (token) => {
         expect(token).toBe(snapshot.getView().token);
       },
@@ -446,7 +465,7 @@ describe('unrealizedLossMonitor directional execution', () => {
       seatVersion: 7,
       quote: createQuoteDouble('BULL.HK', '1.23', 100),
       riskChecker,
-      trader,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder: createOrderRecorderDouble(),
       dailyLossTracker: createDailyLossTrackerDouble(),
     });

@@ -1,4 +1,4 @@
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 
 /**
  * createPreGateRuntime 最小启动门禁测试

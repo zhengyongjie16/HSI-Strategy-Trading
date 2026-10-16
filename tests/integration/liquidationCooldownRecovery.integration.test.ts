@@ -17,7 +17,7 @@ import {
   createOrderRecorderDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
 
 function createCompletedRecord(params: {
@@ -51,13 +51,15 @@ function createCompletedRecord(params: {
 }
 
 function createRiskContext(params: {
-  readonly trader: ReturnType<typeof createTraderDouble>;
+  readonly tradeRuntime: ReturnType<typeof createTradeRuntimeDouble>;
   readonly riskChecker: ReturnType<typeof createRiskCheckerDouble>;
   readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
   readonly monitorConfig: ReturnType<typeof createMonitorConfig>;
 }): BuyRiskCheckContext {
   return {
-    trader: params.trader,
+    accountService: params.tradeRuntime.accountService,
+    tradeFrequencyReader: params.tradeRuntime.orderExecutor,
+
     riskChecker: params.riskChecker,
     orderRecorder: params.orderRecorder,
     longQuote: createQuoteDouble(params.monitorConfig.longSymbol, '5', 100),
@@ -120,10 +122,12 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
     }),
   ).toBeGreaterThan(0);
 
-  const trader = createTraderDouble({
-    getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
-    getStockPositions: async () => [],
-    canTradeNow: () => ({ canTrade: true }),
+  const tradeRuntime = createTradeRuntimeDouble({
+    accountService: {
+      getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+      getStockPositions: async () => [],
+    },
+    orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
   });
   const checkRisk = createBuyRiskChecks({
     logger: createLoggerDouble(),
@@ -133,7 +137,7 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
     reportFatalError: () => {},
   });
   const context = createRiskContext({
-    trader,
+    tradeRuntime,
     riskChecker: createRiskCheckerDouble(),
     orderRecorder: createOrderRecorderDouble(),
     monitorConfig,
@@ -264,10 +268,12 @@ describe('liquidation-cooldown-recovery integration', () => {
 
     hydrator.hydrate();
 
-    const trader = createTraderDouble({
-      getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
-      getStockPositions: async () => [],
-      canTradeNow: () => ({ canTrade: true }),
+    const tradeRuntime = createTradeRuntimeDouble({
+      accountService: {
+        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+        getStockPositions: async () => [],
+      },
+      orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
     });
     const checkRisk = createBuyRiskChecks({
       logger: createLoggerDouble(),
@@ -277,7 +283,7 @@ describe('liquidation-cooldown-recovery integration', () => {
       reportFatalError: () => {},
     });
     const context = createRiskContext({
-      trader,
+      tradeRuntime,
       riskChecker: createRiskCheckerDouble(),
       orderRecorder: createOrderRecorderDouble(),
       monitorConfig,

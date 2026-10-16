@@ -28,7 +28,7 @@ export function createBrokerAccessAdapter(
   };
 }
 
-/** 捕获配置但不创建资源；由 createTrader 在原 try 内同步调用返回的 factory。 */
+/** 捕获配置但不创建资源；由 createTradeRuntime 在原 try 内同步调用返回的 factory。 */
 export function createBrokerAccessFactory(
   config: Config,
 ): (economics: OrderEconomics) => BrokerAccess {

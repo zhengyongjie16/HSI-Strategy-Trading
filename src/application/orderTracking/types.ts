@@ -1,3 +1,6 @@
+import type { ScheduleBoundedOneShotAt } from '../../types/timer.js';
+import type { ExternalApiRequest } from '../../types/apiFailure.js';
+import type { Logger } from '../../types/logger.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../../domain/liquidation/episode/types.js';
 import type {
   OrderMutationRequest,
@@ -16,15 +19,12 @@ import type {
 } from '../../types/risk.js';
 import type { RuntimeTermination } from '../../types/runtime.js';
 import type { SymbolRegistry } from '../../types/seat.js';
-import type {
-  OrderHoldSymbolsChangedEvent,
-  OrderRecorder,
-  OrderStateChangedEvent,
-  PendingOrder,
-  RateLimiter,
-  TradeMutationPermit,
-  Unsubscribe,
-} from '../../types/services.js';
+import type { OrderHoldSymbolsChangedEvent } from '../../types/orderHold.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
+import type { OrderStateChangedEvent } from '../../types/orderTracking.js';
+import type { PendingOrder } from '../../types/orderReadMetadata.js';
+import type { RateLimiter, TradeMutationPermit } from '../../types/rateLimit.js';
+import type { Unsubscribe } from '../../types/events.js';
 import type { SettlementRefreshNeedRecorder } from '../../types/settlement.js';
 import type { OrderFact } from '../../types/trade.js';
 import type { TradeMutationPort } from '../../types/tradeMutationPorts.js';
@@ -32,7 +32,7 @@ import type {
   CancelOrderOutcome,
   DoomsdayCancelOrderOutcome,
   DoomsdayCancelOrderRequest,
-} from '../../types/trader.js';
+} from '../../types/orderCancellation.js';
 
 /**
  * 订单监控运行态。
@@ -161,10 +161,13 @@ export interface OrderMonitor {
   /** 获取指定标的的未成交卖单快照 */
   getPendingSellOrders: (symbol: string) => ReadonlyArray<PendingSellOrderSnapshot>;
 
+  /** 原卖单及其已 accepted 的超时转市价单身份；不按标的合并，不持有成交金额。 */
+  readonly getSellOperationOrderIds: (originalOrderId: string) => ReadonlyArray<string>;
+
   /** 是否存在指定方向的未完成保护性清仓卖单链路 */
   hasPendingProtectiveLiquidationOrders: (direction: 'LONG' | 'SHORT') => boolean;
 
-  /** 清空恢复运行态（tracked order lifecycle / closed set）与 BOOTSTRAPPING 事件缓存 */
+  /** 生命周期完整清空 tracking、accepted 转单关联与 BOOTSTRAPPING 事件缓存 */
   clearTrackedOrders: () => void;
 }
 
@@ -175,6 +178,8 @@ export interface OrderMonitor {
  * 使用范围：仅在 trader 模块内部使用。
  */
 export type OrderCacheManagerDeps = {
+  readonly requestExternalApi: ExternalApiRequest;
+  readonly logger: Logger;
   readonly ctx: TodayOrdersReader;
   readonly rateLimiter: RateLimiter;
 
@@ -217,6 +222,10 @@ export interface OrderHoldRegistry {
  * 使用范围：仅在 trader 模块内部使用。
  */
 export type OrderMonitorDeps = {
+  readonly wait: (delayMs: number) => Promise<void>;
+  readonly scheduleBoundedOneShotAt: ScheduleBoundedOneShotAt;
+  readonly requestExternalApi: ExternalApiRequest;
+  readonly logger: Logger;
   readonly orderDetailReadPort: OrderDetailReadPort;
   readonly executionLedgerPort: OrderExecutionLedgerPort;
   readonly orderPushPort: OrderPushPort;

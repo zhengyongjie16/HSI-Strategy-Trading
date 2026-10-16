@@ -9,13 +9,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { createMixedTradeLogRepository } from '../../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import type {
+  PersistableTradeRecord,
   ProtectiveLiquidationCompletionInput,
   ProtectiveLiquidationCompletionRecordV1,
   ProtectiveLiquidationExecutionProgressRecordV1,
 } from '../../../../src/types/tradeLog.js';
 import type { ProtectiveLiquidationExecutionProgressInput } from '../../../../src/types/risk.js';
-import type { PersistableTradeRecord } from '../../../../src/types/trader.js';
-import { buildTradeLogPath } from '../../../../src/utils/trading/tradeLogPath.js';
+import { buildTradeLogPath } from '../../../../src/infrastructure/persistence/mixedTradeLogRepository/tradeLogPath.js';
 
 const tempDirs: string[] = [];
 const completionBoundaryMs = Date.parse('2026-07-11T10:00:00+08:00');

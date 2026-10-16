@@ -12,9 +12,10 @@ import type {
   OrderRecord,
   SellableOrderResult,
   SellableOrderSelectParams,
-} from '../../../src/types/services.js';
+  OrderCostBasis,
+} from '../../../src/types/orderRecorder.js';
 import type { TradingCalendarSnapshot } from '../../../src/types/tradingCalendar.js';
-import type { OrderCostBasis } from '../../../src/types/orderRecorder.js';
+
 import { createOrderRecorderDouble } from '../../helpers/testDoubles.js';
 
 function makeOrder(orderId: string, costAmount: string, quantity: number): OrderRecord {

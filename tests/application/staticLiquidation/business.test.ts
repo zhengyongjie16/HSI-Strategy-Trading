@@ -1,22 +1,5 @@
-/**
- * staticLiquidationExecutor 业务测试
- *
- * 功能：
- * - 验证 monitor quote 驱动的静态距回收价清仓执行语义
- * - 复用历史清仓执行态的业务契约
- */
-import { describe, expect, it } from 'bun:test';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-
-import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
-import { createStaticLiquidationExecutor } from '../../../src/application/staticLiquidation/index.js';
-import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
-import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
-import type { RuntimeWritableSeatState, SeatState } from '../../../src/types/seat.js';
-import type { MarketDataClient } from '../../../src/types/marketPorts.js';
 import {
+  createLoggerDouble,
   createAccountSnapshotDouble,
   createDailyLossTrackerDouble,
   createLiquidationCooldownTrackerDouble,
@@ -28,8 +11,27 @@ import {
   createQuoteDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
+
+/**
+ * staticLiquidationExecutor 业务测试
+ *
+ * 功能：
+ * - 验证 monitor quote 驱动的静态距回收价清仓执行语义
+ * - 复用历史清仓执行态的业务契约
+ */
+import { describe, expect, it } from 'bun:test';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
+import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+
+import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
+import { createStaticLiquidationExecutor } from '../../../src/application/staticLiquidation/index.js';
+import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
+import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
+import type { RuntimeWritableSeatState, SeatState } from '../../../src/types/seat.js';
+import type { MarketDataClient } from '../../../src/types/marketPorts.js';
 
 const EXECUTION_TIME_ISO = '2026-04-08T10:00:00+08:00';
 const EXECUTION_TIME_MS = new Date(EXECUTION_TIME_ISO).getTime();
@@ -202,40 +204,42 @@ async function createExecutorHarness(
     }),
   });
 
-  const trader = createTraderDouble({
-    executeSignals: async (signals, callerAuthorization) => {
-      expect(callerAuthorization()).toBe(true);
-      for (const signal of signals) {
-        expect(signal.executionOrigin).toBe('STATIC_DISTANCE_LIQUIDATION');
-        expect(signal.isProtectiveLiquidation).toBe(false);
-        submittedActions.push(signal.action);
-        if (signal.triggerTime instanceof Date) {
-          submittedTriggerTimes.push(signal.triggerTime.getTime());
-        }
-      }
-
-      params.onExecuteSignalsStarted?.();
-      await params.waitForExecuteSignals;
-
-      if (params.bumpLongSeatVersionAfterSubmission) {
-        const currentSeat = symbolRegistry.getSeatState('LONG');
-        if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
-          throw new Error('expected runtime ACTIVE LONG seat');
+  const tradeRuntime = createTradeRuntimeDouble({
+    orderExecutor: {
+      executeSignals: async (signals, callerAuthorization) => {
+        expect(callerAuthorization()).toBe(true);
+        for (const signal of signals) {
+          expect(signal.executionOrigin).toBe('STATIC_DISTANCE_LIQUIDATION');
+          expect(signal.isProtectiveLiquidation).toBe(false);
+          submittedActions.push(signal.action);
+          if (signal.triggerTime instanceof Date) {
+            submittedTriggerTimes.push(signal.triggerTime.getTime());
+          }
         }
 
-        symbolRegistry.updateSeatStateWithVersionBump('LONG', currentSeat);
-      }
+        params.onExecuteSignalsStarted?.();
+        await params.waitForExecuteSignals;
 
-      const executedCount =
-        params.executeSignalsExecutedCounts?.[executeSignalsCallIndex++] ??
-        params.executeSignalsExecutedCount ??
-        signals.length;
-      const executedOrderIds = Array.from(
-        { length: executedCount },
-        (_, index) => `STATIC-LIQUIDATION-${executeSignalsCallIndex}-${index}`,
-      );
-      acceptedOrderIds.push(...executedOrderIds);
-      return { executedOrderIds, quoteFailures: [] };
+        if (params.bumpLongSeatVersionAfterSubmission) {
+          const currentSeat = symbolRegistry.getSeatState('LONG');
+          if (currentSeat.status !== 'ACTIVE' || currentSeat.lastSeatActivatedAt === null) {
+            throw new Error('expected runtime ACTIVE LONG seat');
+          }
+
+          symbolRegistry.updateSeatStateWithVersionBump('LONG', currentSeat);
+        }
+
+        const executedCount =
+          params.executeSignalsExecutedCounts?.[executeSignalsCallIndex++] ??
+          params.executeSignalsExecutedCount ??
+          signals.length;
+        const executedOrderIds = Array.from(
+          { length: executedCount },
+          (_, index) => `STATIC-LIQUIDATION-${executeSignalsCallIndex}-${index}`,
+        );
+        acceptedOrderIds.push(...executedOrderIds);
+        return { executedOrderIds, quoteFailures: [] };
+      },
     },
   });
 
@@ -257,9 +261,10 @@ async function createExecutorHarness(
     },
   });
   const settlement = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     snapshot,
     termination,
-    getTrader: () => trader,
+    getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
     onPositionsCommitted: async (token) => {
       if (!snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
         throw new Error('Stale static liquidation positions callback');
@@ -308,7 +313,7 @@ async function createExecutorHarness(
     settlement.isCurrent(receipt);
 
   const productionExecutor = createStaticLiquidationExecutor({
-    trader,
+    orderExecutor: tradeRuntime.orderExecutor,
     snapshot,
     postTradeConsistencyRuntime: settlement,
     marketDataClient: createMarketDataClientDouble({

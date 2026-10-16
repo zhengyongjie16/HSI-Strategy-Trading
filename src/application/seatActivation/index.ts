@@ -10,8 +10,8 @@ import {
 } from '../../utils/apiFailure/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { exactCompare } from '../../utils/numeric/exact.js';
-import { isSeatVersionMatch } from '../../utils/seat/guards.js';
-import { resolveActivatingSeat } from '../../domain/seat/seatIdentity.js';
+import { isSeatVersionMatch, resolveActivatingSeat } from '../../domain/seat/seatIdentity.js';
+
 import { resolveOrderOwnership } from '../../domain/order/orderOwnership.js';
 import type {
   SeatActivationRequest,

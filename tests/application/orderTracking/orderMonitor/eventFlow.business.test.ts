@@ -1,3 +1,9 @@
+import {
+  createLoggerDouble,
+  createMonitorConfigDouble,
+  createOrderRecorderDouble,
+} from '../../../helpers/testDoubles.js';
+
 /**
  * orderMonitor/eventFlow 业务测试
  *
@@ -19,10 +25,7 @@ import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../../src/const
 import type { OrderMonitorTrackedOrder } from '../../../../src/domain/order/types.js';
 import type { OrderReadStatus } from '../../../../src/types/orderReadMetadata.js';
 import { exactMultiply } from '../../../../src/utils/numeric/exact.js';
-import {
-  createMonitorConfigDouble,
-  createOrderRecorderDouble,
-} from '../../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../recorder/executionFixture.js';
 
@@ -160,7 +163,7 @@ function createEventFlow(deps: TestEventFlowDeps) {
   };
 }
 
-mock.module('../../../../src/utils/logger/index.js', () => ({
+mock.module('../../../../src/infrastructure/logger/index.js', () => ({
   logger: {
     info: () => {},
     warn: () => {},
@@ -292,6 +295,7 @@ describe('orderMonitor eventFlow', () => {
       let durableProgressCalls = 0;
       const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
       const eventFlow = createEventFlow({
+        logger: createLoggerDouble(),
         runtime,
         orderRecorder: createOrderRecorderDouble({
           markSellPartialFilled: (_orderId, filledQuantity) => {
@@ -385,6 +389,7 @@ describe('orderMonitor eventFlow', () => {
     const persistenceError = new Error('protective open progress persistence failed');
     const partialFills: number[] = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble({
         markSellPartialFilled: (_orderId, filledQuantity) => {
@@ -436,6 +441,7 @@ describe('orderMonitor eventFlow', () => {
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     let settlementCalls = 0;
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -488,6 +494,7 @@ describe('orderMonitor eventFlow', () => {
       runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
       let settlementCalls = 0;
       const eventFlow = createEventFlow({
+        logger: createLoggerDouble(),
         runtime,
         orderRecorder: createOrderRecorderDouble(),
         recordCumulativeExecution: () => {},
@@ -539,6 +546,7 @@ describe('orderMonitor eventFlow', () => {
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const persistenceError = new Error('protective progress persistence failed');
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {
@@ -588,6 +596,7 @@ describe('orderMonitor eventFlow', () => {
     const persistenceError = new Error('protective timeout progress persistence failed');
     const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -666,6 +675,7 @@ describe('orderMonitor eventFlow', () => {
     const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
     let settlementCalls = 0;
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -731,6 +741,7 @@ describe('orderMonitor eventFlow', () => {
     > = [];
     const settlements: FinalizeOrderSettlementParams[] = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: (params) => {
@@ -803,6 +814,7 @@ describe('orderMonitor eventFlow', () => {
       runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
       const settlements: FinalizeOrderSettlementParams[] = [];
       const eventFlow = createEventFlow({
+        logger: createLoggerDouble(),
         runtime,
         orderRecorder: createOrderRecorderDouble(),
         recordCumulativeExecution: () => {},
@@ -865,6 +877,7 @@ describe('orderMonitor eventFlow', () => {
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const settlements: FinalizeOrderSettlementParams[] = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -923,6 +936,7 @@ describe('orderMonitor eventFlow', () => {
       let cumulativeExecutionCount = 0;
       let settlementCount = 0;
       const eventFlow = createEventFlow({
+        logger: createLoggerDouble(),
         runtime,
         orderRecorder: createOrderRecorderDouble(),
         recordCumulativeExecution: () => {
@@ -986,6 +1000,7 @@ describe('orderMonitor eventFlow', () => {
         });
         runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
         const eventFlow = createEventFlow({
+          logger: createLoggerDouble(),
           runtime,
           orderRecorder: createOrderRecorderDouble(),
           recordCumulativeExecution: () => {},
@@ -1066,6 +1081,7 @@ describe('orderMonitor eventFlow', () => {
     const originalFact = economic.recorder.getExecutionFact(trackedOrder.orderId);
     const originalSnapshotToken = economic.snapshot.getView().token;
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: economic.recorder,
       recordCumulativeExecution: (params) => {
@@ -1127,6 +1143,7 @@ describe('orderMonitor eventFlow', () => {
     trackedOrder.cancelRetryCount = 4;
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       now: () => new Date(injectedNowMs),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
@@ -1171,6 +1188,7 @@ describe('orderMonitor eventFlow', () => {
       trackedOrder.lastOrderUpdateAtMs = 100;
       runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
       const eventFlow = createEventFlow({
+        logger: createLoggerDouble(),
         runtime,
         orderRecorder: createOrderRecorderDouble(),
         recordCumulativeExecution: () => {},
@@ -1208,6 +1226,7 @@ describe('orderMonitor eventFlow', () => {
     trackedOrder.lastOrderUpdateAtMs = 100;
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -1244,6 +1263,7 @@ describe('orderMonitor eventFlow', () => {
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const partialFills: number[] = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble({
         markSellPartialFilled: (_orderId, executedQuantity) => {
@@ -1287,6 +1307,7 @@ describe('orderMonitor eventFlow', () => {
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const partialFills: number[] = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble({
         markSellPartialFilled: (_orderId, executedQuantity) => {
@@ -1343,6 +1364,7 @@ describe('orderMonitor eventFlow', () => {
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const partialFills: number[] = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble({
         markSellPartialFilled: (_orderId, executedQuantity) => {
@@ -1397,6 +1419,7 @@ describe('orderMonitor eventFlow', () => {
     });
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -1445,6 +1468,7 @@ describe('orderMonitor eventFlow', () => {
     let settlementCalls = 0;
     const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -1488,6 +1512,7 @@ describe('orderMonitor eventFlow', () => {
     );
     const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -1529,6 +1554,7 @@ describe('orderMonitor eventFlow', () => {
     );
     const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -1583,6 +1609,7 @@ describe('orderMonitor eventFlow', () => {
       readonly source: string;
     }> = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -1662,6 +1689,7 @@ describe('orderMonitor eventFlow', () => {
     });
     const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -1709,6 +1737,7 @@ describe('orderMonitor eventFlow', () => {
     const runtime = createRuntimeStore();
     const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},
@@ -1757,6 +1786,7 @@ describe('orderMonitor eventFlow', () => {
       let settlementCalls = 0;
       const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
       const eventFlow = createEventFlow({
+        logger: createLoggerDouble(),
         runtime,
         orderRecorder: createOrderRecorderDouble({
           markSellPartialFilled: (_orderId, filledQuantity) => {
@@ -1827,6 +1857,7 @@ describe('orderMonitor eventFlow', () => {
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     let settlementCalls = 0;
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: createOrderRecorderDouble(),
       recordCumulativeExecution: () => {},

@@ -1,3 +1,15 @@
+import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
+
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createOrderMonitorDouble,
+  createOrderRecorderDouble,
+  createQuoteDouble,
+  createRiskCheckerDouble,
+  createSymbolRegistryDouble,
+} from '../../../helpers/testDoubles.js';
+
 /** 实际Executor→生产FIFO→真实adapter/Decimal→离线SDK entry，非fake mutation port，无TradeContext构造。 */
 import { describe, expect, it } from 'bun:test';
 import {
@@ -11,14 +23,6 @@ import {
   createMonitorConfig,
 } from '../../../../mock/factories/configFactory.js';
 import { createSignal } from '../../../../mock/factories/signalFactory.js';
-import {
-  createMarketDataClientDouble,
-  createOrderMonitorDouble,
-  createOrderRecorderDouble,
-  createQuoteDouble,
-  createRiskCheckerDouble,
-  createSymbolRegistryDouble,
-} from '../../../helpers/testDoubles.js';
 
 const nowMs = Date.parse('2026-07-10T02:00:00.000Z');
 
@@ -36,9 +40,14 @@ function fixture(
   let live = true;
   const config = createTradingConfig();
   const executor = createOrderExecutor({
+    logger: createLoggerDouble(),
     tradeMutationPort: native.port,
     readSellPositions: async () => [],
-    rateLimiter: createRateLimiter(),
+    rateLimiter: createRateLimiter({
+      wait: wait,
+      nowMonotonicMs: nowMonotonicMs,
+      logger: createLoggerDouble(),
+    }),
     marketDataClient: createMarketDataClientDouble({
       getQuotes: async () => {
         if (params.quoteFault) throw params.quoteFault;

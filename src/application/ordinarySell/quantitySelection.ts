@@ -7,7 +7,7 @@ import {
 } from '../../domain/order/smartClose.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
-import type { OrderRecorder } from '../../types/services.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
 import type { TradingCalendarSnapshot } from '../../types/tradingCalendar.js';
 import type { SellContextValidationResult } from './types.js';
 

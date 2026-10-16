@@ -13,10 +13,7 @@ import { formatError } from '../../utils/error/index.js';
 import { isSettlementReadinessAbortError } from '../../application/postTradeSettlement/readinessGate.js';
 import type { SettlementReadinessReceipt } from '../../types/settlement.js';
 import type { TradingGateStateChangedEvent } from '../../types/timeControlPlane.js';
-import type {
-  AdvancePendingSwitchResult,
-  SwitchDriveResult,
-} from '../../types/monitorContextPorts.js';
+import type { AdvancePendingSwitchResult, SwitchDriveResult } from '../../types/seatSwitch.js';
 import { areStringSetsEqual } from './setUtils.js';
 import type {
   SwitchWakeupHandoffParams,
@@ -178,7 +175,7 @@ function isBaselineReady(deps: SwitchWakeupRuntimeDeps): boolean {
  * @returns 当前 pending switch route 必须终止时返回 true
  */
 function shouldTerminatePendingSwitchRoute(deps: SwitchWakeupRuntimeDeps): boolean {
-  return deps.termination.isTerminated() || !deps.lastState.isTradingEnabled;
+  return deps.termination.isTerminated() || !deps.lifecycleState.isTradingEnabled;
 }
 
 /**
@@ -189,10 +186,10 @@ function shouldTerminatePendingSwitchRoute(deps: SwitchWakeupRuntimeDeps): boole
 function isExecutionGateOpen(deps: SwitchWakeupRuntimeDeps): boolean {
   return (
     !shouldTerminatePendingSwitchRoute(deps) &&
-    deps.lastState.canTrade === true &&
+    deps.tradingTimeState.canTrade === true &&
     !(
       deps.doomsdayProtectionEnabled &&
-      isWithinDoomsdayClearanceTakeoverWindow(deps.now(), deps.lastState.isHalfDay ?? false)
+      isWithinDoomsdayClearanceTakeoverWindow(deps.now(), deps.tradingTimeState.isHalfDay ?? false)
     )
   );
 }
@@ -915,7 +912,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       handleQuoteUpdated(event.symbol);
     });
 
-    unsubscribeOrderStateChanged = deps.trader.onOrderStateChanged((event) => {
+    unsubscribeOrderStateChanged = deps.orderMonitor.onOrderStateChanged((event) => {
       handleOrderStateChanged(event.symbol);
     });
 

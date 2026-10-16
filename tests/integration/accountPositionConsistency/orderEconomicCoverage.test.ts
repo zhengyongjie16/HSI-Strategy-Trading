@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../../helpers/testDoubles.js';
+
 /**
  * 同一真实订单 owner 的累计经济覆盖与风险成本回归。
  * API 使用内部 plain RawOrder，在线使用中性累计 fact；仅 broker IO 是替身。
@@ -64,6 +66,7 @@ describe('same-instance economic coverage across neutral API and online facts', 
   it('accepts the original same-revision quantity and OPEN-to-TERMINAL amount protocol using phase-aware trusted times', () => {
     const io = createOfflineBrokerPort();
     const owner = createOrderRecorder({
+      logger: createLoggerDouble(),
       orderSnapshotReadPort: io.broker,
       getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,
@@ -146,6 +149,7 @@ describe('same-instance economic coverage across neutral API and online facts', 
   it('keeps cumulative SELL as one whole-order deduction after API/online replay', () => {
     const io = createOfflineBrokerPort();
     const owner = createOrderRecorder({
+      logger: createLoggerDouble(),
       orderSnapshotReadPort: io.broker,
       getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,
@@ -208,6 +212,7 @@ describe('same-instance economic coverage across neutral API and online facts', 
   it('retains exact authoritative revisions across clear without reviving cleared cost, but admits later quantity', () => {
     const io = createOfflineBrokerPort();
     const owner = createOrderRecorder({
+      logger: createLoggerDouble(),
       orderSnapshotReadPort: io.broker,
       getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,
@@ -247,6 +252,7 @@ describe('same-instance economic coverage across neutral API and online facts', 
   it('first terminal projects an OPEN partial once while pending-sell release remains a separate idempotent operation', () => {
     const io = createOfflineBrokerPort();
     const owner = createOrderRecorder({
+      logger: createLoggerDouble(),
       orderSnapshotReadPort: io.broker,
       getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,

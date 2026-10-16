@@ -18,11 +18,11 @@
 
 ## 既有基线引用
 
-- `tests/main/monitorQuoteEventRuntime/staticLiquidationExecutor.business.test.ts`：静态入口、门禁和本地清理；其 executeSignals 替身不代表隔离全链路。
-- `tests/core/trader/orderExecutor/orderExecutor.protectiveLiquidation.business.test.ts`：保护性目的与执行授权。
+- `tests/application/staticLiquidation/staticLiquidationExecutor.business.test.ts`：静态入口、门禁和本地清理；其 executeSignals 替身不代表隔离全链路。
+- `tests/application/orderExecution/orderExecutor.protectiveLiquidation.business.test.ts`：保护性目的与执行授权。
 - `tests/integration/protectiveLiquidation.integration.test.ts`：真实 tracking 成交 progress 与刷新需求。
 - `tests/app/runtime/createPostTradeConsistencyRuntime.test.ts`：completion 持久化、daily boundary/cooldown/episode 顺序及失败禁止提交。
-- `tests/main/asyncProgram/monitorTaskProcessor/business.test.ts`：activation preflight、席位失效及完成状态。
-- `tests/main/lifecycle/cacheDomains/signalRuntimeTermination.test.ts`、`tests/integration/postTradeDrainLifecycle.integration.test.ts`：具名 stop/drain 顺序。
+- `tests/runtime/asyncProgram/monitorTaskProcessor/business.test.ts`：activation preflight、席位失效及完成状态。
+- `tests/runtime/lifecycle/cacheDomains/signalRuntimeTermination.test.ts`、`tests/integration/postTradeDrainLifecycle.integration.test.ts`：具名 stop/drain 顺序。
 
 以上基线引用不豁免任何新增业务测试的 SDK fixture 边界。completedBoundary 前/等于 boundary 的同量高 revision 保持已确认旧规则；不新增渠道策略；flat 依据权威 total，不用 available cache 替代。

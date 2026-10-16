@@ -1,3 +1,5 @@
+import type { Logger } from '../../types/logger.js';
+
 /**
  * 席位运行态清理 dispatcher 类型定义
  *
@@ -6,7 +8,7 @@
  * - 约束清理所需的 SymbolRegistry、监控上下文与任务队列依赖
  */
 import type { TradingSignalStrategy } from '../../types/strategy.js';
-import type { RiskChecker } from '../../types/services.js';
+import type { RiskChecker } from '../../types/riskCheck.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { MonitorTaskQueue } from '../asyncProgram/monitorTaskQueue/types.js';
 import type { MonitorTaskDataMap } from '../asyncProgram/monitorTaskProcessor/types.js';
@@ -18,6 +20,7 @@ import type { BuyTaskType, SellTaskType, TaskQueue } from '../asyncProgram/trade
  * 使用范围：仅 SeatRuntimeCleanupDispatcher 工厂使用。
  */
 export type SeatRuntimeCleanupDispatcherDeps = Readonly<{
+  readonly logger: Logger;
   symbolRegistry: SymbolRegistry;
   monitorContext: {
     readonly strategy: Pick<TradingSignalStrategy, 'invalidateDirection'>;

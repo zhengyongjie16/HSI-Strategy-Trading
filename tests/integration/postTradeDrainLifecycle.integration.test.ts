@@ -1,3 +1,5 @@
+import type { RuntimeStateFixtures } from '../helpers/types.js';
+
 /**
  * T25：挂起真实 PostTrade 持仓请求，验证午夜/正常退出/fatal 排空均先完成 Quote 回调。
  * 测试只连接离线交易和行情端口，不启动真实应用或 Broker。
@@ -6,16 +8,16 @@
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
 import { createCleanup } from '../../src/app/shutdown/createCleanup.js';
-import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
+import type { PostTradeConsistencyRuntime } from '../../src/app/runtime/types.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createOrderRecorder } from '../../src/application/orderTracking/recorder/index.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
 import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import { createSignalRuntimeDomain } from '../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
-import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
+import { createSignalRuntimeDomain } from '../../src/runtime/lifecycle/cacheDomains/signalRuntimeDomain.js';
+import { createQuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscriptionRuntime/index.js';
 import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import {
   createBuyTaskQueue,
@@ -23,7 +25,6 @@ import {
 } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import type { Processor } from '../../src/runtime/asyncProgram/types.js';
 import type { Position } from '../../src/types/account.js';
-import type { LastState } from '../../src/types/state.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import {
   createAccountSnapshotDouble,
@@ -36,9 +37,9 @@ import {
   createPositionDouble,
   createSeatActivationDispatcherDouble,
   createSeatRuntimeCleanupDispatcherDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
-import { waitUntil } from '../main/asyncProgram/utils.js';
+import { waitUntil } from '../helpers/asyncProgram.js';
 import { createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
 
 /** 不承担待测在途工作的处理器，提供生命周期必需的完整启停端口。 */
@@ -61,21 +62,20 @@ describe('PostTrade drain and Quote lifetime integration', () => {
       });
       daily.resetAll(new Date('2026-02-16T01:31:00.000Z'));
       const episode = createProtectiveLiquidationEpisodeTracker();
-      const lastState: LastState = {
-        canTrade: true,
-        isHalfDay: false,
-        openProtectionActive: false,
-        currentDayKey: '2026-02-16',
-        lifecycleState: 'ACTIVE',
-        pendingOpenRebuild: false,
-        isTradingEnabled: true,
-        cachedTradingDayInfo: null,
-        tradingCalendarSnapshot: new Map(),
-        allTradingSymbols: new Set(),
+      const stateFixtures: RuntimeStateFixtures = {
+        tradingTimeState: { canTrade: true, isHalfDay: false, openProtectionActive: false },
+        lifecycleState: {
+          currentDayKey: '2026-02-16',
+          lifecycleState: 'ACTIVE',
+          pendingOpenRebuild: false,
+          isTradingEnabled: true,
+        },
+        tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+        quoteSubscriptionState: { allTradingSymbols: new Set() },
       };
       const termination = createTerminationRuntime({
         closeTradingGate: () => {
-          lastState.isTradingEnabled = false;
+          stateFixtures.lifecycleState.isTradingEnabled = false;
         },
         closeProducerAdmission: () => {},
         stopProducers: [],
@@ -100,6 +100,7 @@ describe('PostTrade drain and Quote lifetime integration', () => {
       });
       let recordNeedOwner: PostTradeConsistencyRuntime | null = null;
       const recorder = createOrderRecorder({
+        logger: createLoggerDouble(),
         orderSnapshotReadPort: {
           fetchSnapshots: async () => {
             throw new Error('Drain case does not authorize order IO');
@@ -118,12 +119,14 @@ describe('PostTrade drain and Quote lifetime integration', () => {
         orderRecorder: recorder,
         dailyLossTracker: daily,
       });
-      const trader = createTraderDouble({
+      const tradeRuntime = createTradeRuntimeDouble({
         orderRecorder: recorder,
-        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
-        getStockPositions: () => {
-          requested = true;
-          return positions.promise;
+        accountService: {
+          getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+          getStockPositions: () => {
+            requested = true;
+            return positions.promise;
+          },
         },
       });
       const marketDataClient = createMarketDataClientDouble({
@@ -136,8 +139,8 @@ describe('PostTrade drain and Quote lifetime integration', () => {
         tradingConfig: createTradingConfig(),
         symbolRegistry: monitorContext.symbolRegistry,
         marketDataClient,
-        trader,
-        lastState,
+        orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+        ...stateFixtures,
         snapshot,
         termination,
       });
@@ -153,8 +156,9 @@ describe('PostTrade drain and Quote lifetime integration', () => {
       await quotes.reconcileFromCurrentTruth();
       quotes.start();
       const postTrade = createPostTradeConsistencyRuntime({
+        logger: createLoggerDouble(),
         termination,
-        getTrader: () => trader,
+        getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
         snapshot,
         scheduler: h.deps.scheduler,
         onPositionsCommitted: async (token) => {
@@ -199,7 +203,7 @@ describe('PostTrade drain and Quote lifetime integration', () => {
       const fatal = new Error('injected-fatal');
       let cleanupPromise: Promise<void>;
       if (mode === 'midnight') {
-        lastState.isTradingEnabled = false;
+        stateFixtures.lifecycleState.isTradingEnabled = false;
         const idle = createIdleProcessor();
         const domain = createSignalRuntimeDomain({
           termination,
@@ -219,11 +223,11 @@ describe('PostTrade drain and Quote lifetime integration', () => {
           seatActivationDispatcher: createSeatActivationDispatcherDouble(),
           seatRuntimeCleanupDispatcher: createSeatRuntimeCleanupDispatcherDouble(),
           quoteSubscriptionRuntime: { ...quotes, stopAndDrain: drainQuotes },
-          trader,
+          orderMonitor: tradeRuntime.orderMonitor,
           postTradeConsistencyRuntime: { ...postTrade, stopAndDrain: drainPostTrade },
           buyTaskQueue: createBuyTaskQueue(),
           sellTaskQueue: createSellTaskQueue(),
-          monitorTaskQueue: createMonitorTaskQueue(),
+          monitorTaskQueue: createMonitorTaskQueue(createLoggerDouble()),
         });
         cleanupPromise = Promise.resolve(
           domain.midnightClear({
@@ -251,7 +255,7 @@ describe('PostTrade drain and Quote lifetime integration', () => {
         expect(cleanup.execute()).toBe(cleanupPromise);
       }
 
-      expect(lastState.isTradingEnabled).toBe(false);
+      expect(stateFixtures.lifecycleState.isTradingEnabled).toBe(false);
       await Promise.resolve();
       expect(trace).not.toContain('quote-stop-complete');
       expect(trace).not.toContain('post-trade-drain-complete');

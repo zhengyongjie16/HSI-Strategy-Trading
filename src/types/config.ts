@@ -15,7 +15,7 @@ export type DecimalRange = {
  * 自动寻标配置（单监控标的）。
  * 类型用途：单监控标的的自动寻标/换标参数，作为 MonitorConfig.autoSearchConfig 的类型。
  * 数据来源：配置解析。
- * 使用范围：MonitorConfig、autoSymbolManager、autoSymbolFinder 等；全项目可引用。
+ * 使用范围：MonitorConfig、席位换标与自动寻标 等；全项目可引用。
  */
 export type AutoSearchConfig = {
   /** 自动寻标开关 */
@@ -69,9 +69,9 @@ export type LiquidationCooldownConfig =
 
 /**
  * 单个监控标的的完整配置。
- * 类型用途：单监控标的的交易标的、席位、风控参数与执行政策，作为 MonitorContext.config、BuyRiskCheckContext.config 等类型。
+ * 类型用途：单监控标的的交易标的、席位、风控参数与执行政策，作为 app 监控装配与买入风控配置 等类型。
  * 数据来源：配置解析（环境变量/配置文件）。
- * 使用范围：MonitorContext、信号处理、风控等；全项目可引用。
+ * 使用范围：app 装配、信号用例、同步风险等；全项目可引用。
  */
 export type MonitorConfig = {
   /** 监控标的代码（如恒指期货） */

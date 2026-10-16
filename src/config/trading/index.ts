@@ -1,3 +1,5 @@
+import type { Logger } from '../../types/logger.js';
+
 /**
  * trading 配置模块。
  *
@@ -16,9 +18,15 @@ import {
  * @param params.env 进程环境变量对象
  * @returns 单 monitor 交易配置
  */
-export function createTradingConfig({ env }: { env: NodeJS.ProcessEnv }): TradingConfig {
+export function createTradingConfig({
+  logger,
+  env,
+}: {
+  readonly logger: Logger;
+  env: NodeJS.ProcessEnv;
+}): TradingConfig {
   getBooleanConfig(env, 'DEBUG', false);
-  const monitor = parseMonitorConfig(env);
+  const monitor = parseMonitorConfig(logger, env);
   if (monitor === null) {
     throw createConfigValidationError('[配置错误] MONITOR_SYMBOL 未配置');
   }

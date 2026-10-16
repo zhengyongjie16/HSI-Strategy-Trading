@@ -8,20 +8,21 @@ import { lstat, readdir, realpath } from 'node:fs/promises';
  */
 import { validateRuntimeSymbolsFromQuotesMap } from '../config/validator/index.js';
 import { createBusinessEventProgram } from '../runtime/businessEventProgram/index.js';
-import { createRebuildTradingDayState } from '../main/lifecycle/rebuildTradingDayState.js';
-import { createTimeWakeupRuntime } from '../main/timeWakeupRuntime/index.js';
+import { createRebuildTradingDayState } from '../application/tradingDayRebuild/rebuildTradingDayState.js';
+import { executeStartupRebuild } from '../application/tradingDayRebuild/startupRebuild.js';
+import { createTimeWakeupRuntime } from '../runtime/timeWakeupRuntime/index.js';
 import { displayAccountAndPositions } from '../infrastructure/display/accountDisplay/index.js';
-import { logger } from '../utils/logger/index.js';
+import { logger } from '../infrastructure/logger/index.js';
 import { formatError } from '../utils/error/index.js';
 import { createLifecycleRuntime } from './lifecycle/createLifecycleRuntime.js';
 import { createAsyncRuntime } from './runtime/createAsyncRuntime.js';
 import { createPostGateRuntime } from './runtime/createPostGateRuntime.js';
 import { createPreGateRuntime } from './runtime/createPreGateRuntime.js';
 import { createCleanup } from './shutdown/createCleanup.js';
-import { loadStartupSnapshot } from './startup/startupSnapshot.js';
+import { loadStartupSnapshot } from '../application/tradingDayRebuild/startupSnapshot.js';
 import { collectRuntimeValidationSymbols } from './startup/runtimeValidation.js';
 import { prepareStrategy } from './startup/prepareStrategy.js';
-import { applyStartupSnapshotFailureState } from '../main/lifecycle/startupFailureState.js';
+import { applyStartupSnapshotFailureState } from '../application/tradingDayRebuild/startupFailureState.js';
 import type { RunAppDeps } from './types.js';
 
 /** 在首次资源创建前订阅退出；回调同步关闭交易，清理由 root 等待装配落定后执行。 */
@@ -38,6 +39,7 @@ export const DEFAULT_RUN_APP_DEPS: RunAppDeps = {
   createPreGateRuntime,
   createPostGateRuntime,
   loadStartupSnapshot,
+  executeStartupRebuild,
   collectRuntimeValidationSymbols,
   createRebuildTradingDayState,
   displayAccountAndPositions,
@@ -56,6 +58,7 @@ export const DEFAULT_RUN_APP_DEPS: RunAppDeps = {
   subscribeShutdownSignal,
   logger,
   formatError,
-  validateRuntimeSymbolsFromQuotesMap,
+  validateRuntimeSymbolsFromQuotesMap: (params) =>
+    validateRuntimeSymbolsFromQuotesMap({ ...params, logger }),
   applyStartupSnapshotFailureState,
 };

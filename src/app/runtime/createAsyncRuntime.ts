@@ -10,7 +10,7 @@ import { createMonitorTaskProcessor } from '../../runtime/asyncProgram/monitorTa
 import { createSellProcessor } from '../../runtime/asyncProgram/sellProcessor/index.js';
 import { ordinarySignalGuard } from '../../domain/strategy/ordinarySignalGuard.js';
 import { createPeriodicSwitchTaskHandler } from '../../application/seatSwitch/periodicSwitchTask.js';
-import type { AsyncRuntime, AsyncRuntimeFactoryDeps } from '../types.js';
+import type { AsyncRuntime, AsyncRuntimeFactoryDeps } from './types.js';
 
 /**
  * 创建异步运行时对象。
@@ -34,7 +34,8 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   const {
     monitorContext,
     snapshot,
-    lastState,
+    tradingTimeState,
+    lifecycleState,
     ordinaryBuy,
     ordinarySell,
     buyTaskQueue,
@@ -47,7 +48,8 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   const canProcessOrdinaryTradeTask = (): boolean =>
     !termination.isTerminated() &&
     ordinarySignalGuard({
-      lastState,
+      tradingTimeState,
+      lifecycleState,
       now: clock.now(),
       doomsdayProtectionEnabled: tradingConfig.global.doomsdayProtection,
     });
@@ -68,7 +70,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     logger,
     handlePeriodicSwitchTask: periodicSwitchTaskHandler.handlePeriodicSwitchTask,
     onPeriodicSwitchTaskResult: periodicSwitchTaskHandler.onPeriodicSwitchTaskResult,
-    getCanProcessTask: () => !termination.isTerminated() && lastState.isTradingEnabled,
+    getCanProcessTask: () => !termination.isTerminated() && lifecycleState.isTradingEnabled,
     termination,
   });
 
@@ -82,6 +84,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   if (termination.isTerminated()) return null;
 
   const buyProcessor = createBuyProcessor({
+    logger,
     taskQueue: buyTaskQueue,
     workflow: ordinaryBuy,
     getCanProcessTask: canProcessOrdinaryTradeTask,
@@ -98,6 +101,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
   if (termination.isTerminated()) return null;
 
   const sellProcessor = createSellProcessor({
+    logger,
     scheduler,
     taskQueue: sellTaskQueue,
     workflow: ordinarySell,

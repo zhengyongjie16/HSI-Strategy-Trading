@@ -14,7 +14,8 @@ import {
 import type { Position, AccountSnapshot, CashInfo } from '../../types/account.js';
 import type { BuySignal } from '../../types/signal.js';
 
-import type { RiskCheckResult, UnrealizedLossMetrics, RiskChecker } from '../../types/services.js';
+import type { RiskCheckResult, RiskChecker } from '../../types/riskCheck.js';
+import type { UnrealizedLossMetrics } from '../../types/unrealizedLoss.js';
 import type { RiskCheckerDeps } from './types.js';
 
 /**

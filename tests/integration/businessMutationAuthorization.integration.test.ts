@@ -1,3 +1,9 @@
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { nowMonotonicMs, wait } from '../../src/infrastructure/time/index.js';
+
+import type { TradeRuntime } from '../../src/app/runtime/types.js';
+
 /**
  * 业务 mutation 授权跨 owner 交错测试。
  * 真实 switch/风险 runtime、monitor、Trader、FIFO、snapshot、settlement 与 broker adapter
@@ -7,7 +13,7 @@
 import { describe, expect, it } from 'bun:test';
 import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createProtectiveLiquidationWorkflow } from '../../src/application/protectiveLiquidation/index.js';
 import { createUnrealizedLossMonitor } from '../../src/application/protectiveLiquidation/unrealizedLossExecutor.js';
@@ -23,7 +29,6 @@ import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import { createTradingRiskEventRuntime } from '../../src/runtime/tradingRiskEventRuntime/tradingRiskEventRuntime.js';
 import type { QuoteUpdatedEvent } from '../../src/types/marketPorts.js';
 import type { Quote } from '../../src/types/quote.js';
-import type { Trader } from '../../src/types/services.js';
 import { getRequiredHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
 import {
   createLoggerStub,
@@ -172,14 +177,15 @@ async function createFixture() {
   });
   risk.setWarrantInfoFromCallPrice('BULL.HK', '20000', true);
   const episodeTracker = createProtectiveLiquidationEpisodeTracker();
-  let trader: Trader | null = null;
+  let tradeRuntime: TradeRuntime | null = null;
   const settlement = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     snapshot,
     termination,
-    getTrader: () => {
-      if (trader === null) throw new Error('Trader 未装配');
+    getProtectiveOrderReader: () => {
+      if (tradeRuntime === null) throw new Error('Trader 未装配');
 
-      return trader;
+      return tradeRuntime.orderMonitor;
     },
     onPositionsCommitted: async () => {},
     scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
@@ -202,7 +208,12 @@ async function createFixture() {
       return new Map([...symbols].map((symbol) => [symbol, { ...quote, symbol }]));
     },
   });
-  const actualTrader = await native.createTrader({
+  const actualTrader = await native.createTradeRuntime({
+    logger: createLoggerDouble(),
+    wait: wait,
+    nowMonotonicMs: nowMonotonicMs,
+    requestExternalApi: wrapExternalApiRequest,
+    scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
     tradingConfig: createTradingConfig({ monitor: config }),
     marketDataClient,
     symbolRegistry,
@@ -224,7 +235,7 @@ async function createFixture() {
     unrealizedLossBuyGate: risk,
     termination,
   });
-  trader = actualTrader;
+  tradeRuntime = actualTrader;
   const monitor = createUnrealizedLossMonitor({
     logger: createLoggerDouble(),
     maxUnrealizedLossPerSymbol: '10',
@@ -257,10 +268,10 @@ async function createFixture() {
       },
     },
   });
-  await actualTrader.initializeOrderMonitor();
-  await actualTrader.recoverOrderTrackingFromSnapshot([]);
+  await actualTrader.orderMonitor.initialize();
+  await actualTrader.orderMonitor.recoverOrderTrackingFromSnapshot([]);
   native.setOrderSnapshotReplies([], [frame]);
-  const allOrders = await actualTrader.fetchAllOrdersFromAPI();
+  const allOrders = await actualTrader.orderRecorder.fetchAllOrdersFromAPI();
   daily.recalculateFromAllOrders(allOrders, config, new Date(NOW_MS));
   expect(
     actualTrader.orderRecorder.commitRebuildSnapshot(
@@ -282,10 +293,11 @@ async function createFixture() {
   await settlement.waitForFresh();
   const workflow = createProtectiveLiquidationWorkflow({
     logger: createLoggerDouble(),
-    trader: actualTrader,
+    orderExecutor: actualTrader.orderExecutor,
     symbolRegistry,
     monitorContext,
-    lastState: gate,
+    tradingTimeState: gate,
+    lifecycleState: gate,
     postTradeConsistencyRuntime: settlement,
     snapshot,
     doomsdayProtectionEnabled: false,
@@ -302,7 +314,7 @@ async function createFixture() {
   });
   return {
     native,
-    trader: actualTrader,
+    tradeRuntime: actualTrader,
     snapshot,
     settlement,
     symbolRegistry,
@@ -345,8 +357,8 @@ async function createFixture() {
       settlement.abortWaiting();
       await runtime.stopAndDrain();
       await settlement.stopAndDrain();
-      await actualTrader.stopOrderMonitorRuntimeAndDrain();
-      await actualTrader.teardown();
+      await actualTrader.orderMonitor.stopRuntimeAndDrain();
+      await actualTrader.orderMonitor.teardown();
       expect(termination.isTerminated()).toBe(false);
       expect(fatalErrors).toEqual([]);
     },
@@ -360,8 +372,11 @@ async function createPendingSwitch(f: Awaited<ReturnType<typeof createFixture>>)
     monitorConfig: f.monitorContext.config,
     symbolRegistry: f.symbolRegistry,
     marketDataClient: f.marketDataClient,
-    trader: f.trader,
-    orderRecorder: f.trader.orderRecorder,
+    cacheManager: f.tradeRuntime.cacheManager,
+    orderHoldRegistry: f.tradeRuntime.orderHoldRegistry,
+    orderMonitor: f.tradeRuntime.orderMonitor,
+    orderExecutor: f.tradeRuntime.orderExecutor,
+    orderRecorder: f.tradeRuntime.orderRecorder,
     riskChecker: f.risk,
     candidateSearch: {
       resolveDistanceRange: (direction) =>
@@ -476,7 +491,9 @@ describe('switch cancellation original authorization through real FIFO', () => {
         issued.resolve();
         await release.promise;
       });
-      const blocker = f.trader.cancelOrder('ORDER-FACT-BLOCKER', { kind: 'ORDER_FACT' });
+      const blocker = f.tradeRuntime.orderMonitor.cancelOrder('ORDER-FACT-BLOCKER', {
+        kind: 'ORDER_FACT',
+      });
       await issued.promise;
       const receipt = await f.settlement.waitForFresh();
       const view = f.snapshot.getView();
@@ -532,7 +549,7 @@ describe('switch cancellation original authorization through real FIFO', () => {
         expect(f.symbolRegistry.getSeatState('LONG').status).toBe(
           change === 'SEAT' ? 'ACTIVE' : 'SWITCHING',
         );
-        const cleanupOutcome = await f.trader.cancelOrder('ORDER-FACT-CLEANUP', {
+        const cleanupOutcome = await f.tradeRuntime.orderMonitor.cancelOrder('ORDER-FACT-CLEANUP', {
           kind: 'ORDER_FACT',
         });
         expect(cleanupOutcome.kind).toBe('CANCEL_CONFIRMED');
@@ -585,8 +602,8 @@ describe('risk original owner supersession without another quote', () => {
       expect(
         f.native.nativeMutations().filter((mutation) => mutation.kind === 'SUBMIT'),
       ).toHaveLength(1);
-      expect(f.trader.getOrderHoldSymbols().has('BULL.HK')).toBe(true);
-      expect(f.trader.hasPendingProtectiveLiquidationOrders('LONG')).toBe(true);
+      expect(f.tradeRuntime.orderHoldRegistry.getHoldSymbols().has('BULL.HK')).toBe(true);
+      expect(f.tradeRuntime.orderMonitor.hasPendingProtectiveLiquidationOrders('LONG')).toBe(true);
     } finally {
       delayed.release();
       await f.cleanup();
@@ -639,7 +656,9 @@ describe('risk original owner supersession without another quote', () => {
       issued.resolve();
       await release.promise;
     });
-    const blocker = f.trader.cancelOrder('RISK-FIFO-BLOCKER', { kind: 'ORDER_FACT' });
+    const blocker = f.tradeRuntime.orderMonitor.cancelOrder('RISK-FIFO-BLOCKER', {
+      kind: 'ORDER_FACT',
+    });
     f.native.setSubmitBehavior(async () => 'RISK-FIFO-ACK');
     try {
       await issued.promise;
@@ -703,11 +722,11 @@ describe('risk original owner supersession without another quote', () => {
       await Bun.sleep(0);
       expect(f.monitorResults()).toEqual([true]);
       expect(f.monitorCalls()).toBe(1);
-      expect(f.trader.hasPendingProtectiveLiquidationOrders('LONG')).toBe(true);
+      expect(f.tradeRuntime.orderMonitor.hasPendingProtectiveLiquidationOrders('LONG')).toBe(true);
       expect(f.quoteReads()).toBe(1);
       expect(f.native.nativeSubmitObservations()).toHaveLength(1);
-      expect(f.trader.orderRecorder.getBuyOrdersForSymbol('BULL.HK', true)).toHaveLength(1);
-      expect(f.trader.getOrderHoldSymbols().has('BULL.HK')).toBe(true);
+      expect(f.tradeRuntime.orderRecorder.getBuyOrdersForSymbol('BULL.HK', true)).toHaveLength(1);
+      expect(f.tradeRuntime.orderHoldRegistry.getHoldSymbols().has('BULL.HK')).toBe(true);
     } finally {
       reply.resolve('RISK-ISSUED-ACK');
       await f.cleanup();
@@ -742,7 +761,7 @@ describe('risk original owner supersession without another quote', () => {
         expect(f.monitorCalls()).toBe(1);
         expect(f.quoteReads()).toBe(1);
         expect(f.native.nativeSubmitObservations()).toEqual([]);
-        expect(f.trader.orderRecorder.getBuyOrdersForSymbol('BULL.HK', true)).toHaveLength(1);
+        expect(f.tradeRuntime.orderRecorder.getBuyOrdersForSymbol('BULL.HK', true)).toHaveLength(1);
       } finally {
         delayed.release();
         await f.cleanup();

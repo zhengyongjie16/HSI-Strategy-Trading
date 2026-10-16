@@ -29,14 +29,14 @@ import type {
   TerminalStateSnapshot,
   TrackOrderParams,
 } from '../../../domain/order/types.js';
-import type { TradeMutationPermit } from '../../../types/services.js';
+import type { TradeMutationPermit } from '../../../types/rateLimit.js';
 import type { TradeCancelResult } from '../../../types/tradeMutationPorts.js';
-import type { CancelOrderOutcome, OrderStateCheckResult } from '../../../types/trader.js';
+import type { CancelOrderOutcome } from '../../../types/orderCancellation.js';
+import type { OrderStateCheckResult } from '../../../types/orderReadMetadata.js';
 import { createExternalApiRequestError } from '../../../utils/apiFailure/index.js';
 import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
-import { logger } from '../../../utils/logger/index.js';
 import { canonicalDecimal } from '../../../utils/numeric/exact.js';
-import { createTradeMutationUnknownError } from '../../../utils/trading/tradeMutation.js';
+import { createTradeMutationUnknownError } from '../../orderExecution/tradeMutationErrors.js';
 import type { CancelOrderMutationRequest } from '../types.js';
 import { attachTrackedOrder } from './routingIndex.js';
 import type {
@@ -281,6 +281,7 @@ async function invokeCancelOrderWithPermit(
  * UNKNOWN 必须先于过期结果丢弃暴露；不解析原 cause，也不接管 602013 的 tracking 退避和查询。
  */
 async function executeMutationRequest<TResult extends OrderMutationRequestResult>(
+  wait: (delayMs: number) => Promise<void>,
   request: () => Promise<TResult>,
   maxAttempts: number,
 ): Promise<TResult> {
@@ -301,9 +302,7 @@ async function executeMutationRequest<TResult extends OrderMutationRequestResult
       );
     }
 
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, API.DEFAULT_RETRY_DELAY_MS);
-    });
+    await wait(API.DEFAULT_RETRY_DELAY_MS);
   }
 }
 
@@ -370,6 +369,7 @@ function assertReplaceTempBlockedRetryIndex(retryIndex: number): void {
  * @returns 订单操作接口
  */
 export function createOrderOps(deps: OrderOpsDeps): OrderOps {
+  const { logger, wait } = deps;
   const {
     runtime,
     monitorConfig,
@@ -503,6 +503,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
     }
 
     const mutationOutcome = await executeMutationRequest(
+      wait,
       () =>
         rateLimiter.withTradeMutation(async (permit) => {
           if (!isWorkCurrent()) return { kind: 'AUTHORIZATION_REVOKED' } as const;
@@ -830,6 +831,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
 
     try {
       const mutationOutcome = await executeMutationRequest(
+        wait,
         () => runWithPermit(performMutation),
         deferConfirmation ? 1 : API.DEFAULT_RETRY_COUNT + 1,
       );

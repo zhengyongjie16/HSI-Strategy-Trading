@@ -1,9 +1,12 @@
+import type { LifecycleMutableState } from '../../types/lifecycle.js';
+import type {
+  TradingTimeState,
+  AutoSearchAuthorizationChangedEvent,
+} from '../../types/timeControlPlane.js';
 import type { RuntimeTermination } from '../../types/runtime.js';
-import type { LastState } from '../../types/state.js';
 import type { AutoSearchConfig } from '../../types/config.js';
 import type { AutoSearchWorkflow } from '../../application/autoSearch/types.js';
 import type { SymbolRegistry } from '../../types/seat.js';
-import type { AutoSearchAuthorizationChangedEvent } from '../../types/timeControlPlane.js';
 
 /** 自动寻标授权的窄订阅能力，由 app 注入真实时间门禁事件源，不传播旧 main runtime 类型。 */
 export interface AutoSearchAuthorizationSource {
@@ -31,7 +34,8 @@ export type AutoSearchWakeupRuntimeDeps = Readonly<{
   symbolRegistry: SymbolRegistry;
   autoSearch: AutoSearchWorkflow;
   autoSearchConfig: Pick<AutoSearchConfig, 'autoSearchEnabled' | 'autoSearchOpenDelayMinutes'>;
-  lastState: Pick<LastState, 'canTrade' | 'isTradingEnabled' | 'isHalfDay'>;
+  readonly tradingTimeState: Readonly<Pick<TradingTimeState, 'canTrade' | 'isHalfDay'>>;
+  readonly lifecycleState: Readonly<Pick<LifecycleMutableState, 'isTradingEnabled'>>;
   tradingGateEventRuntime: AutoSearchAuthorizationSource;
 
   /** 是否启用末日保护清仓接管门禁。 */

@@ -9,11 +9,8 @@
 
 import { withTrustedOrderExecutionTimes } from '../../../domain/order/executionFact.js';
 import { resolveOrderClosedReasonFromStatus } from '../../../domain/order/orderTrackingPolicy.js';
-import type { OrderStateCheckResult } from '../../../types/trader.js';
-import {
-  isExternalApiRequestError,
-  wrapExternalApiRequest,
-} from '../../../utils/apiFailure/index.js';
+import type { OrderStateCheckResult } from '../../../types/orderReadMetadata.js';
+import { isExternalApiRequestError } from '../../../utils/apiFailure/index.js';
 import type { OrderStatusQuery, OrderStatusQueryDeps } from './types.js';
 
 /**
@@ -45,7 +42,7 @@ export function createOrderStatusQuery(deps: OrderStatusQueryDeps): OrderStatusQ
       requireOriginWork();
       await rateLimiter.throttle();
       requireOriginWork();
-      const detail = await wrapExternalApiRequest({
+      const detail = await deps.requestExternalApi({
         operation: 'TradeContext.orderDetail',
         request: () => {
           requireOriginWork();
@@ -58,7 +55,7 @@ export function createOrderStatusQuery(deps: OrderStatusQueryDeps): OrderStatusQ
       requireOriginWork();
       await rateLimiter.throttle();
       requireOriginWork();
-      const executions = await wrapExternalApiRequest({
+      const executions = await deps.requestExternalApi({
         operation: 'TradeContext.todayExecutions',
         request: () => {
           requireOriginWork();

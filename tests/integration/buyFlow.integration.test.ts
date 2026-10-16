@@ -1,3 +1,17 @@
+import {
+  createLoggerDouble,
+  createLiquidationCooldownTrackerDouble,
+  createMarketDataClientDouble,
+  createMonitorContextDouble,
+  createOrderMonitorDouble,
+  createOrderRecorderDouble,
+  createQuoteDouble,
+  createRateLimiterDouble,
+  createRiskCheckerDouble,
+  createSymbolRegistryDouble,
+  createTradeRuntimeDouble,
+} from '../helpers/testDoubles.js';
+
 /**
  * buy-flow 集成测试
  *
@@ -8,7 +22,7 @@
 import { afterEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
-import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
 import type { OrderExecutorDeps } from '../../src/application/orderExecution/types.js';
 import type { OrderMonitor } from '../../src/application/orderTracking/types.js';
 import { createOrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/index.js';
@@ -18,23 +32,12 @@ import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../src/constants/index.js';
 import { createBuyProcessor } from '../../src/runtime/asyncProgram/buyProcessor/index.js';
 import { createBuyTaskQueue } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import type { ExecutableSignal } from '../../src/types/signal.js';
-import type { SignalCallerAuthorization } from '../../src/types/trader.js';
-import { logger } from '../../src/utils/logger/index.js';
-import {
-  createLiquidationCooldownTrackerDouble,
-  createMarketDataClientDouble,
-  createMonitorContextDouble,
-  createOrderMonitorDouble,
-  createOrderRecorderDouble,
-  createQuoteDouble,
-  createRateLimiterDouble,
-  createRiskCheckerDouble,
-  createSymbolRegistryDouble,
-  createTraderDouble,
-} from '../helpers/testDoubles.js';
-import { runProcessorFlow } from '../main/asyncProgram/utils.js';
-import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
-import { createSettlementRuntimeFixture } from '../main/fixtures/settlementRuntime.js';
+import type { SignalCallerAuthorization } from '../../src/types/orderExecutionPorts.js';
+import { logger } from '../../src/infrastructure/logger/index.js';
+
+import { runProcessorFlow } from '../helpers/asyncProgram.js';
+import { createSnapshotFixture } from '../helpers/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../helpers/settlementRuntime.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const createMutationRateLimiter = createRateLimiterDouble;
@@ -121,10 +124,11 @@ async function createOrderExecutor(deps: OrderExecutorTestDeps) {
     orderRecorder: deps.orderRecorder,
   });
   const settlement = createSettlementRuntimeFixture({
+    logger: createLoggerDouble(),
     snapshot,
     monitorContext,
     termination,
-    getTrader: () => createTraderDouble({ ...accountService }),
+    getProtectiveOrderReader: () => createTradeRuntimeDouble({ accountService }).orderMonitor,
     onPositionsCommitted: async (token) => {
       if (!snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
         throw new Error('Stale positions callback');
@@ -190,7 +194,7 @@ function withMockedNow<T>(
 }
 
 function createRiskContext(params: {
-  readonly trader: ReturnType<typeof createTraderDouble>;
+  readonly tradeRuntime: ReturnType<typeof createTradeRuntimeDouble>;
   readonly riskChecker: ReturnType<typeof createRiskCheckerDouble>;
   readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
   readonly currentTime: Date;
@@ -198,7 +202,9 @@ function createRiskContext(params: {
   const monitorConfig = createTradingConfig().monitor;
 
   return {
-    trader: params.trader,
+    accountService: params.tradeRuntime.accountService,
+    tradeFrequencyReader: params.tradeRuntime.orderExecutor,
+
     riskChecker: params.riskChecker,
     orderRecorder: params.orderRecorder,
     longQuote: createQuoteDouble('BULL.HK', '5', 100),
@@ -238,6 +244,7 @@ describe('buy-flow integration', () => {
       },
     });
     const executor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: market,
@@ -267,11 +274,9 @@ describe('buy-flow integration', () => {
       symbolRegistry: registry,
       orderRecorder: recorder,
       riskChecker: createRiskCheckerDouble(),
-      trader: {
-        ...executor.accountService,
-        canTradeNow: executor.canTradeNow,
-        executeSignals: executor.executeSignals,
-      },
+      accountService: executor.accountService,
+      tradeFrequencyReader: executor,
+      orderExecutor: executor,
       marketDataClient: market,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
       snapshot: executor.snapshot,
@@ -281,6 +286,7 @@ describe('buy-flow integration', () => {
       termination,
     });
     const processor = createBuyProcessor({
+      logger: createLoggerDouble(),
       taskQueue: queue,
       workflow,
       getCanProcessTask: () => true,
@@ -324,6 +330,7 @@ describe('buy-flow integration', () => {
     const tradeCtx = await createNativeBuyIngress();
     let currentTime = new Date(scenario.beforeCutoff);
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble({
         onMutationPermitAcquired: async () => {
@@ -403,6 +410,7 @@ describe('buy-flow integration', () => {
     const tradeCtx = await createNativeBuyIngress();
     let currentTime = new Date('2026-07-12T03:30:00.000Z');
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble({
         onMutationPermitAcquired: async () => {
@@ -478,6 +486,7 @@ describe('buy-flow integration', () => {
     const tradeCtx = await createNativeBuyIngress();
     const currentTime = new Date('2026-07-12T06:30:00.000Z');
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
@@ -530,6 +539,7 @@ describe('buy-flow integration', () => {
     const tradeCtx = await createNativeBuyIngress();
     const currentTimeMs = Date.parse('2026-07-12T02:00:00.000Z');
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
@@ -596,6 +606,7 @@ describe('buy-flow integration', () => {
       return '';
     });
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createMarketDataClientDouble({
@@ -665,6 +676,7 @@ describe('buy-flow integration', () => {
     tradeCtx.setSubmitBehavior(async () => 'LOCAL-SYNC-ACCEPTED');
     const localTrackingFailure = new Error('track failed after submit');
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createMarketDataClientDouble({
@@ -742,6 +754,7 @@ describe('buy-flow integration', () => {
     const currentTime = new Date('2026-07-10T02:00:00.000Z');
     let trackedOrderCount = 0;
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
@@ -810,6 +823,7 @@ describe('buy-flow integration', () => {
     const initialSeatVersion = symbolRegistry.getSeatVersion('LONG');
     let mutationPermitAcquisitions = 0;
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble({
         onMutationPermitAcquired: async () => {
@@ -876,6 +890,7 @@ describe('buy-flow integration', () => {
     const currentTime = new Date('2026-07-10T02:00:00.000Z');
     let trackedOrderCount = 0;
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
@@ -943,6 +958,7 @@ describe('buy-flow integration', () => {
     const currentTime = new Date('2026-07-10T02:00:00.000Z');
     let trackedOrderCount = 0;
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1016,6 +1032,7 @@ describe('buy-flow integration', () => {
       executionSide: 'BUY' | 'SELL';
     }> = [];
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1050,9 +1067,9 @@ describe('buy-flow integration', () => {
       }),
     });
 
-    const trader = createTraderDouble({
+    const tradeRuntime = createTradeRuntimeDouble({
       ...orderExecutor.accountService,
-      canTradeNow: orderExecutor.canTradeNow,
+      orderExecutor: { canTradeNow: orderExecutor.canTradeNow },
     });
     const riskChecker = createRiskCheckerDouble();
     const orderRecorder = createOrderRecorderDouble();
@@ -1069,7 +1086,7 @@ describe('buy-flow integration', () => {
 
         const checkedSignals = await checkBuyRisk(
           [signal],
-          createRiskContext({ trader, riskChecker, orderRecorder, currentTime }),
+          createRiskContext({ tradeRuntime, riskChecker, orderRecorder, currentTime }),
         );
         const result = await orderExecutor.executeSignals(
           checkedSignals,
@@ -1106,6 +1123,7 @@ describe('buy-flow integration', () => {
       executionSide: 'BUY' | 'SELL';
     }> = [];
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1183,6 +1201,7 @@ describe('buy-flow integration', () => {
       executionSide: 'BUY' | 'SELL';
     }> = [];
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1242,6 +1261,7 @@ describe('buy-flow integration', () => {
     const tradingConfig = createTradingConfig();
     const tradeCtx = await createNativeBuyIngress();
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1335,6 +1355,7 @@ describe('buy-flow integration', () => {
     });
 
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1419,6 +1440,7 @@ describe('buy-flow integration', () => {
     let successClockMs = successAuthorizationMs;
     const successTradeCtx = await createNativeBuyIngress();
     const successOrderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: successTradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1451,9 +1473,9 @@ describe('buy-flow integration', () => {
       }),
     });
 
-    const successTrader = createTraderDouble({
+    const successTrader = createTradeRuntimeDouble({
       ...successOrderExecutor.accountService,
-      canTradeNow: successOrderExecutor.canTradeNow,
+      orderExecutor: { canTradeNow: successOrderExecutor.canTradeNow },
     });
     const successRiskChecker = createRiskCheckerDouble();
     const successOrderRecorder = createOrderRecorderDouble();
@@ -1469,7 +1491,7 @@ describe('buy-flow integration', () => {
       const checkedSignals = await checkBuyRisk(
         [successfulSignal],
         createRiskContext({
-          trader: successTrader,
+          tradeRuntime: successTrader,
           riskChecker: successRiskChecker,
           orderRecorder: successOrderRecorder,
           currentTime: new Date(successClockMs),
@@ -1495,7 +1517,7 @@ describe('buy-flow integration', () => {
       const blockedResult = await checkBuyRisk(
         [blockedSignal],
         createRiskContext({
-          trader: successTrader,
+          tradeRuntime: successTrader,
           riskChecker: successRiskChecker,
           orderRecorder: successOrderRecorder,
           currentTime: new Date(successClockMs),
@@ -1515,6 +1537,7 @@ describe('buy-flow integration', () => {
     });
 
     const failedOrderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: failedTradeCtx,
       rateLimiter: createMutationRateLimiter(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1547,9 +1570,14 @@ describe('buy-flow integration', () => {
       }),
     });
 
-    const failedTrader = createTraderDouble({
+    const failedTrader = createTradeRuntimeDouble({
+      accountService: successTrader.accountService,
+      cacheManager: successTrader.cacheManager,
+      orderRecorder: successTrader.orderRecorder,
+      orderHoldRegistry: successTrader.orderHoldRegistry,
+      orderMonitor: successTrader.orderMonitor,
       ...failedOrderExecutor.accountService,
-      canTradeNow: failedOrderExecutor.canTradeNow,
+      orderExecutor: { canTradeNow: failedOrderExecutor.canTradeNow },
     });
     const failedRiskChecker = createRiskCheckerDouble();
     const failedOrderRecorder = createOrderRecorderDouble();
@@ -1565,7 +1593,7 @@ describe('buy-flow integration', () => {
       const checkedSignals = await checkBuyRisk(
         [firstFailedSignal],
         createRiskContext({
-          trader: failedTrader,
+          tradeRuntime: failedTrader,
           riskChecker: failedRiskChecker,
           orderRecorder: failedOrderRecorder,
           currentTime: new Date(failedClockMs),
@@ -1606,7 +1634,7 @@ describe('buy-flow integration', () => {
       const allowedResult = await checkBuyRisk(
         [secondAllowedSignal],
         createRiskContext({
-          trader: failedTrader,
+          tradeRuntime: failedTrader,
           riskChecker: failedRiskChecker,
           orderRecorder: failedOrderRecorder,
           currentTime: new Date(failedClockMs),

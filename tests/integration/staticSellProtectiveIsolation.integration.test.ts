@@ -1,3 +1,8 @@
+import type { RuntimeStateFixtures } from '../helpers/types.js';
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { nowMonotonicMs, wait } from '../../src/infrastructure/time/index.js';
+
 /** §13.4.1 真实 static→共享执行→订单事实→Daily/episode→settlement；每场景经正式 loader/rebuild/hydration，离线边界仅 IO。 */
 
 import { describe, expect, it } from 'bun:test';
@@ -31,10 +36,9 @@ import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLos
 import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
 import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import { createMixedTradeLogRepository } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
-import { createLoadTradingDayRuntimeSnapshot } from '../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
-import { createRebuildTradingDayState } from '../../src/main/lifecycle/rebuildTradingDayState.js';
+import { createLoadTradingDayRuntimeSnapshot } from '../../src/application/tradingDayRebuild/loadTradingDayRuntimeSnapshot.js';
+import { createRebuildTradingDayState } from '../../src/application/tradingDayRebuild/rebuildTradingDayState.js';
 import type { ProtectiveLiquidationExecutionProgressInput } from '../../src/types/risk.js';
-import type { LastState } from '../../src/types/state.js';
 import { exactMultiply } from '../../src/utils/numeric/exact.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import {
@@ -42,7 +46,7 @@ import {
   createMarketDataClientDouble,
   createMonitorContextDouble,
   createQuoteDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
 import {
   createBrokerIngressFixture,
@@ -166,7 +170,11 @@ async function createHarness(
   const history = params.history ?? [];
   const inputOrders = [...(params.associated ? [BUY] : []), ...history, initial];
   const native = await createBrokerIngressFixture(initial, orderEconomics);
-  const limiter = createRateLimiter();
+  const limiter = createRateLimiter({
+    wait: wait,
+    nowMonotonicMs: nowMonotonicMs,
+    logger: createLoggerDouble(),
+  });
   const logger = createLoggerDouble();
   const trace: string[] = [];
   const fatal: unknown[] = [];
@@ -266,6 +274,7 @@ async function createHarness(
     isExternalFailure: () => false,
   });
   const recorderOwner = createOrderRecorder({
+    logger: createLoggerDouble(),
     orderSnapshotReadPort: native.ports.createOrderSnapshotReadPort({
       rateLimiter: limiter,
       executionLedgerPort: native.executionLedgerPort,
@@ -354,6 +363,10 @@ async function createHarness(
   });
   const holds = createOrderHoldRegistry();
   const monitor = createOrderMonitor({
+    wait: wait,
+    requestExternalApi: wrapExternalApiRequest,
+    scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
+    logger: createLoggerDouble(),
     orderDetailReadPort: native.ports.createOrderDetailReadPort(),
     orderPushPort: native.ports.createOrderPushPort(),
     executionLedgerPort: native.executionLedgerPort,
@@ -378,6 +391,7 @@ async function createHarness(
   tracking = monitor;
   const cancelOutcomes: Awaited<ReturnType<typeof monitor.cancelOrder>>[] = [];
   const executor = createOrderExecutor({
+    logger: createLoggerDouble(),
     readSellPositions: native.ports.createSellPositionReader(),
     tradeMutationPort: native.ports.createTradeMutationPort(),
     rateLimiter: limiter,
@@ -403,28 +417,30 @@ async function createHarness(
       info: { isTradingDay: true, isHalfDay: false },
     }),
   });
-  const trader = createTraderDouble({
+  const tradeRuntime = createTradeRuntimeDouble({
     ...account,
-    orderRecorder: recorder,
-    executeSignals: executor.executeSignals,
-    initializeOrderMonitor: monitor.initialize,
-    fetchAllOrdersFromAPI: recorder.fetchAllOrdersFromAPI,
-    seedOrderHoldSymbols: holds.seedFromOrders,
-    getOrderHoldSymbols: holds.getHoldSymbols,
-    recoverOrderTrackingFromSnapshot: monitor.recoverOrderTrackingFromSnapshot,
-    hasPendingProtectiveLiquidationOrders: monitor.hasPendingProtectiveLiquidationOrders,
+    orderExecutor: { executeSignals: executor.executeSignals },
+    orderMonitor: {
+      initialize: monitor.initialize,
+      recoverOrderTrackingFromSnapshot: monitor.recoverOrderTrackingFromSnapshot,
+      hasPendingProtectiveLiquidationOrders: monitor.hasPendingProtectiveLiquidationOrders,
+    },
+    orderRecorder: { fetchAllOrdersFromAPI: recorder.fetchAllOrdersFromAPI },
+    orderHoldRegistry: {
+      seedFromOrders: holds.seedFromOrders,
+      getHoldSymbols: holds.getHoldSymbols,
+    },
   });
-  const lastState: LastState = {
-    canTrade: false,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: DAY,
-    lifecycleState: 'ACTIVE',
-    pendingOpenRebuild: false,
-    isTradingEnabled: false,
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-    allTradingSymbols: new Set(),
+  const stateFixtures: RuntimeStateFixtures = {
+    tradingTimeState: { canTrade: false, isHalfDay: false, openProtectionActive: false },
+    lifecycleState: {
+      currentDayKey: DAY,
+      lifecycleState: 'ACTIVE',
+      pendingOpenRebuild: false,
+      isTradingEnabled: false,
+    },
+    tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
   };
   const hydrator = createTradeLogHydrator({
     mixedTradeLogRepository: repository,
@@ -434,10 +450,13 @@ async function createHarness(
     liquidationCooldownTracker: cooldown,
   });
   const load = createLoadTradingDayRuntimeSnapshot({
+    logger: createLoggerDouble(),
     snapshot,
     marketDataClient: market,
-    trader,
-    lastState,
+    orderRecorder: tradeRuntime.orderRecorder,
+    orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+    orderMonitor: tradeRuntime.orderMonitor,
+    ...stateFixtures,
     tradingConfig,
     symbolRegistry: seats,
     dailyLossTracker: daily,
@@ -473,8 +492,8 @@ async function createHarness(
   const rebuild = createRebuildTradingDayState({
     snapshot,
     marketDataClient: market,
-    trader,
-    lastState,
+    orderMonitor: tradeRuntime.orderMonitor,
+    ...stateFixtures,
     symbolRegistry: seats,
     monitorContext: context,
     dailyLossTracker: daily,
@@ -487,7 +506,7 @@ async function createHarness(
     }),
   });
   const runStatic = createStaticLiquidationExecutor({
-    trader,
+    orderExecutor: tradeRuntime.orderExecutor,
     marketDataClient: market,
     snapshot,
     postTradeConsistencyRuntime: settlement,

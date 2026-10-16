@@ -1,9 +1,11 @@
+import { createLoggerDouble, createSignalDouble } from '../../../helpers/testDoubles.js';
+
 /** 普通 BUY runtime 镜像：FIFO 串行、入队门禁、独立 stop/drain 只调度 application。 */
 import { describe, expect, it } from 'bun:test';
 import { createBuyProcessor } from '../../../../src/runtime/asyncProgram/buyProcessor/index.js';
 import { createBuyTaskQueue } from '../../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
-import { createSignalDouble } from '../../../helpers/testDoubles.js';
-import { waitUntil } from '../../../main/asyncProgram/utils.js';
+
+import { waitUntil } from '../../../helpers/asyncProgram.js';
 
 const termination = {
   isTerminated: () => false,
@@ -21,6 +23,7 @@ describe('BUY FIFO worker', () => {
       release = resolve;
     });
     const worker = createBuyProcessor({
+      logger: createLoggerDouble(),
       taskQueue: queue,
       termination,
       getCanProcessTask: () => true,
@@ -50,6 +53,7 @@ describe('BUY FIFO worker', () => {
     const queue = createBuyTaskQueue();
     let calls = 0;
     const worker = createBuyProcessor({
+      logger: createLoggerDouble(),
       taskQueue: queue,
       termination,
       getCanProcessTask: () => false,

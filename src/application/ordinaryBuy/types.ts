@@ -1,9 +1,14 @@
-import type { Logger } from '../../utils/logger/types.js';
+import type { Logger } from '../../types/logger.js';
+import type { AccountSnapshot, Position } from '../../types/account.js';
+import type { AccountService } from '../../types/accountReadPorts.js';
+import type { ExternalApiRetryConfig } from '../../types/apiFailure.js';
 import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
 import type { MonitorConfig } from '../../types/config.js';
 import type { Quote } from '../../types/quote.js';
 import type { BuySignal } from '../../types/signal.js';
-import type { OrderRecorder, RiskChecker, Trader } from '../../types/services.js';
+import type { TradeFrequencyReader, SignalExecutor } from '../../types/orderExecutionPorts.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
+import type { RiskChecker } from '../../types/riskCheck.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { MarketDataClient } from '../../types/marketPorts.js';
 import type { RuntimeClock, RuntimeTermination } from '../../types/runtime.js';
@@ -11,7 +16,8 @@ import type { LiquidationCooldownTracker } from '../../domain/liquidation/cooldo
 
 /** 单次买入检查事实；实时账户/持仓读取不提交 canonical snapshot 或 settlement ready。 */
 export type BuyRiskCheckContext = {
-  readonly trader: Pick<Trader, 'canTradeNow' | 'getAccountSnapshot' | 'getStockPositions'>;
+  readonly accountService: AccountService;
+  readonly tradeFrequencyReader: TradeFrequencyReader;
   readonly riskChecker: Pick<
     RiskChecker,
     'checkBeforeOrder' | 'checkWarrantRisk' | 'checkUnrealizedLoss'
@@ -49,7 +55,9 @@ export interface OrdinaryBuyWorkflowDeps {
   readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
   readonly orderRecorder: BuyRiskCheckContext['orderRecorder'];
   readonly riskChecker: BuyRiskCheckContext['riskChecker'];
-  readonly trader: BuyRiskCheckContext['trader'] & Pick<Trader, 'executeSignals'>;
+  readonly accountService: AccountService;
+  readonly tradeFrequencyReader: TradeFrequencyReader;
+  readonly orderExecutor: SignalExecutor;
   readonly marketDataClient: Pick<MarketDataClient, 'getQuotes'>;
   readonly liquidationCooldownTracker: BuyRiskCheckDeps['liquidationCooldownTracker'];
   readonly snapshot: Pick<AccountPositionSnapshotReader, 'getView'>;
@@ -64,3 +72,16 @@ export interface OrdinaryBuyWorkflow {
   readonly execute: (signal: BuySignal) => Promise<void>;
   readonly resetRiskCheckCooldown: () => void;
 }
+
+/** 普通买入风控的临时双读取能力；fatal 必须显式注入，不持有快照 writer 或 readiness。 */
+export interface AccountPositionsReadParams {
+  readonly accountService: AccountService;
+  readonly retryConfig?: ExternalApiRetryConfig;
+  readonly reportFatalError: RuntimeTermination['reportFatalError'];
+}
+
+/** 两个临时读取均成功后的风控事实，仅供当前买入检查使用，不构成 canonical commit。 */
+export type AccountPositionsReadResult = {
+  readonly account: AccountSnapshot;
+  readonly positions: ReadonlyArray<Position>;
+};

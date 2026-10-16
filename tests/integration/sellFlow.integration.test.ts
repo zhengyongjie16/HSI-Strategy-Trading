@@ -1,31 +1,8 @@
-/**
- * sell-flow 集成测试
- *
- * 功能：
- * - 验证卖出流程端到端场景与业务期望。
- */
-
-import { afterEach, describe, expect, it, setSystemTime } from 'bun:test';
-import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { createSignal } from '../../mock/factories/signalFactory.js';
-import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
-import type { OrderExecutorDeps } from '../../src/application/orderExecution/types.js';
-import { createOrderStorage } from '../../src/application/orderTracking/recorder/orderStorage.js';
-import type { OrderStorage } from '../../src/application/orderTracking/recorder/types.js';
-import type { OrderMonitor } from '../../src/application/orderTracking/types.js';
-import { processSellSignals } from '../../src/application/ordinarySell/quantityResolver.js';
-import type { ProcessedSellSignal } from '../../src/application/ordinarySell/types.js';
-import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
-import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import type { DailyLossTracker } from '../../src/types/risk.js';
-import type { OrderRecord, OrderRecorder, RateLimiter } from '../../src/types/services.js';
-import type {
-  ExecutableSellSignal,
-  ProtectiveLiquidationSellSignal,
-} from '../../src/types/signal.js';
-import { getRequiredHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../src/infrastructure/time/index.js';
 import {
+  createLoggerDouble,
   createDailyLossTrackerDouble,
   createLiquidationCooldownTrackerDouble,
   createMarketDataClientDouble,
@@ -39,11 +16,41 @@ import {
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
   createTerminationDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
+
+/**
+ * sell-flow 集成测试
+ *
+ * 功能：
+ * - 验证卖出流程端到端场景与业务期望。
+ */
+
+import { afterEach, describe, expect, it, setSystemTime } from 'bun:test';
+import { createTradingConfig } from '../../mock/factories/configFactory.js';
+import { createSignal } from '../../mock/factories/signalFactory.js';
+import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import type { PostTradeConsistencyRuntime } from '../../src/app/runtime/types.js';
+import type { OrderExecutorDeps } from '../../src/application/orderExecution/types.js';
+import { createOrderStorage } from '../../src/application/orderTracking/recorder/orderStorage.js';
+import type { OrderStorage } from '../../src/application/orderTracking/recorder/types.js';
+import type { OrderMonitor } from '../../src/application/orderTracking/types.js';
+import { processSellSignals } from '../../src/application/ordinarySell/quantityResolver.js';
+import type { ProcessedSellSignal } from '../../src/application/ordinarySell/types.js';
+import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
+import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
+import type { DailyLossTracker } from '../../src/types/risk.js';
+import type { OrderRecord, OrderRecorder } from '../../src/types/orderRecorder.js';
+import type { RateLimiter } from '../../src/types/rateLimit.js';
+import type {
+  ExecutableSellSignal,
+  ProtectiveLiquidationSellSignal,
+} from '../../src/types/signal.js';
+import { getRequiredHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
+
 import type { BrokerIngressInput } from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
-import { waitUntil } from '../main/asyncProgram/utils.js';
-import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
+import { waitUntil } from '../helpers/asyncProgram.js';
+import { createSnapshotFixture } from '../helpers/accountPositionSnapshot.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 type NativeSellIngress = Awaited<ReturnType<typeof createBrokerIngressFixture>>;
@@ -125,9 +132,10 @@ async function createOrderExecutor(deps: OrderExecutorTestDeps) {
     },
   });
   const settlement = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     snapshot,
     termination,
-    getTrader: () => createTraderDouble(accountService),
+    getProtectiveOrderReader: () => createTradeRuntimeDouble({ accountService }).orderMonitor,
     onPositionsCommitted: async (token) => {
       if (!snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
         throw new Error('SELL paired commit stale');
@@ -420,6 +428,7 @@ describe('sell-flow integration', () => {
     const positionFailure = new Error('service unavailable');
 
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
@@ -481,7 +490,7 @@ describe('sell-flow integration', () => {
     const tradingConfig = createTradingConfig();
     const currentTimeMs = Date.parse('2026-07-12T07:45:01.000Z');
 
-    const storage = createOrderStorage();
+    const storage = createOrderStorage(createLoggerDouble());
     await seedStorageFromNative(storage, 'BULL.HK', '1', 100, true, Date.now() - 1000);
     await seedStorageFromNative(storage, 'BULL.HK', '1.2', 200, true, Date.now());
 
@@ -540,6 +549,7 @@ describe('sell-flow integration', () => {
       executionSide: 'BUY' | 'SELL';
     }> = [];
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
@@ -607,7 +617,7 @@ describe('sell-flow integration', () => {
   it('smart-close 最终可卖量不能把整单关联裁剪为不可表示数量', async () => {
     const tradingConfig = createTradingConfig();
 
-    const storage = createOrderStorage();
+    const storage = createOrderStorage(createLoggerDouble());
     await seedStorageFromNative(storage, 'BULL.HK', '1', 100, true, Date.now() - 1_000);
     await seedStorageFromNative(storage, 'BULL.HK', '1', 100, true, Date.now());
 
@@ -663,6 +673,7 @@ describe('sell-flow integration', () => {
       }),
     );
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
@@ -712,6 +723,7 @@ describe('sell-flow integration', () => {
       }),
     );
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
@@ -762,7 +774,7 @@ describe('sell-flow integration', () => {
   it('runs stage2+stage3 with pending occupancy and submits remaining timeout quantity', async () => {
     const tradingConfig = createTradingConfig();
 
-    const storage = createOrderStorage();
+    const storage = createOrderStorage(createLoggerDouble());
     const occupiedOrderExecutedTimeMs = Date.parse('2026-02-24T01:32:00.000Z');
     await seedStorageFromNative(
       storage,
@@ -859,6 +871,7 @@ describe('sell-flow integration', () => {
       executionSide: 'BUY' | 'SELL';
     }> = [];
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
@@ -919,7 +932,7 @@ describe('sell-flow integration', () => {
   it('supports SELLPUT symmetry with smart-close stage2+stage3 and submits short sell order', async () => {
     const tradingConfig = createTradingConfig();
 
-    const storage = createOrderStorage();
+    const storage = createOrderStorage(createLoggerDouble());
     await seedStorageFromNative(
       storage,
       'BEAR.HK',
@@ -996,6 +1009,7 @@ describe('sell-flow integration', () => {
       executionSide: 'BUY' | 'SELL';
     }> = [];
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1078,6 +1092,7 @@ describe('sell-flow integration', () => {
     const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
 
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1215,6 +1230,7 @@ describe('sell-flow integration', () => {
       },
     };
     const actualRecorder = tradeCtx.createRecorder({
+      logger: createLoggerDouble(),
       rateLimiter: createRateLimiterDouble(),
       getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: settlementNeedRecorder,
@@ -1274,6 +1290,10 @@ describe('sell-flow integration', () => {
     const ingressFatalErrors: unknown[] = [];
     const ledgerIssuedBaseline = tradeCtx.readCounts();
     const orderMonitor = await createSellMonitor(tradeCtx, {
+      logger: createLoggerDouble(),
+      wait: wait,
+      requestExternalApi: wrapExternalApiRequest,
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       now: () => new Date(submittedAtMs),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
@@ -1329,6 +1349,7 @@ describe('sell-flow integration', () => {
     });
     isExistingPendingSellTracked = true;
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter,
       cacheManager: {
@@ -1456,6 +1477,7 @@ describe('sell-flow integration', () => {
     }> = [];
     const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1562,6 +1584,7 @@ describe('sell-flow integration', () => {
     }> = [];
     const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1652,6 +1675,7 @@ describe('sell-flow integration', () => {
     let updatePendingSellCallCount = 0;
     const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1759,6 +1783,7 @@ describe('sell-flow integration', () => {
 
     const cancelCalls: string[] = [];
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
@@ -1845,6 +1870,7 @@ describe('sell-flow integration', () => {
     }> = [];
 
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createExecutableQuoteClient(),
@@ -2008,6 +2034,10 @@ describe('sell-flow integration', () => {
       },
     });
     const orderMonitorDeps: Parameters<NativeSellIngress['createMonitor']>[0] = {
+      logger: createLoggerDouble(),
+      wait: wait,
+      requestExternalApi: wrapExternalApiRequest,
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       now: () => new Date(),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
@@ -2062,6 +2092,7 @@ describe('sell-flow integration', () => {
     });
 
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter,
       marketDataClient: createExecutableQuoteClient(),
@@ -2151,6 +2182,10 @@ describe('sell-flow integration', () => {
       },
     });
     const orderMonitor = await createSellMonitor(tradeCtx, {
+      logger: createLoggerDouble(),
+      wait: wait,
+      requestExternalApi: wrapExternalApiRequest,
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       now: () => new Date(),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
@@ -2203,6 +2238,7 @@ describe('sell-flow integration', () => {
       orderType: marketFact.orderType,
     });
     const orderExecutor = await createOrderExecutor({
+      logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter,
       cacheManager: {

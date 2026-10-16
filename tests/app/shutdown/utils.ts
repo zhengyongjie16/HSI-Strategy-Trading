@@ -1,23 +1,22 @@
-import type { CleanupController } from '../../../src/app/types.js';
-import type { LastState } from '../../../src/types/state.js';
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
+import type { CleanupController } from '../../../src/app/shutdown/types.js';
 import { createMonitorContextDouble } from '../../helpers/testDoubles.js';
 import type { CleanupTestOverrides } from './types.js';
 
 /** 构造 cleanup 测试用宿主状态。
  * @returns 不含策略状态的宿主快照
  */
-export function createLastState(): LastState {
+export function createRuntimeStates(): RuntimeStateFixtures {
   return {
-    canTrade: true,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: '2026-02-16',
-    lifecycleState: 'ACTIVE',
-    pendingOpenRebuild: false,
-    isTradingEnabled: true,
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-    allTradingSymbols: new Set(),
+    tradingTimeState: { canTrade: true, isHalfDay: false, openProtectionActive: false },
+    lifecycleState: {
+      currentDayKey: '2026-02-16',
+      lifecycleState: 'ACTIVE',
+      pendingOpenRebuild: false,
+      isTradingEnabled: true,
+    },
+    tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
   };
 }
 
@@ -33,7 +32,7 @@ export function registerCleanupSteps(
   steps: string[],
   overrides: CleanupTestOverrides = {},
 ): void {
-  const lastState = overrides.lastState ?? createLastState();
+  const stateFixtures = overrides.stateFixtures ?? createRuntimeStates();
   const monitorContext = overrides.monitorContext ?? createMonitorContextDouble();
   const registerStep = (
     phase: Parameters<CleanupController['register']>[0]['phase'],
@@ -44,7 +43,7 @@ export function registerCleanupSteps(
   };
 
   registerStep('CLOSE_TRADING_GATE', '关闭交易门禁', () => {
-    lastState.isTradingEnabled = false;
+    stateFixtures.lifecycleState.isTradingEnabled = false;
   });
 
   registerStep('ABORT_FRESHNESS_WAITING', '终止 Freshness 等待', () => {

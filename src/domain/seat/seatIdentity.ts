@@ -1,7 +1,20 @@
 /** 席位身份纯校验：固定方向、版本、标的与激活基线，阻断失效任务。 */
-import { isSeatVersionMatch } from '../../utils/seat/guards.js';
 import type { SeatState, SeatStateChangedEvent, SymbolRegistry } from '../../types/seat.js';
 import type { SeatActivationIdentity, SeatSnapshot } from './types.js';
+
+/**
+ * 判断信号席位版本与当前席位版本是否一致。
+ *
+ * @param signalVersion 信号携带的 seatVersion
+ * @param currentVersion 当前席位版本
+ * @returns 版本为有限数且一致时返回 true
+ */
+export function isSeatVersionMatch(
+  signalVersion: number | null | undefined,
+  currentVersion: number,
+): boolean {
+  return Number.isFinite(signalVersion) && signalVersion === currentVersion;
+}
 
 /** 返回仍匹配的 ACTIVATING 席位；不改写席位或推进任何完成条件。 */
 export function resolveActivatingSeat(

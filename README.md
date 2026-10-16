@@ -162,13 +162,13 @@ README 只保留最关键的配置规则，完整参数请直接阅读 [`./.env.
 
 ### 单活跃策略与构建资产
 
-- 必须显式设置 `ACTIVE_STRATEGY_ID`，使用严格 kebab-case；如 `intraday-regression` 对应 `src/core/strategy/intradayRegression/`。策略目录必须包含 `definition.ts` 与 `config.json`，无需中心登记。启动只加载选中策略，先同步 `prepare()` 校验配置，再同步 `create(deps)` 创建唯一实例；两步均在 SDK 接入前完成，不存在默认策略或运行期热切换。
-- 当前策略的四个信号与 buy/sell 验证配置仅由 [策略 config.json](./src/core/strategy/intradayRegression/config.json) 提供，所有字段必须显式填写。`definition.ts` 静态导入相邻 JSON，由策略私有解析器完成字段、范围、DSL 与指标校验，并冻结规范化副本；未选策略入口不会被加载。
+- 必须显式设置 `ACTIVE_STRATEGY_ID`，使用严格 kebab-case；如 `intraday-regression` 的入口为 `src/app/startup/strategyDefinitions/intradayRegression/definition.ts`，私有规则、运行态及配置分别位于 `domain/strategy`、`runtime/strategy`、`config/strategy` 的同策略目录，无需中心登记。启动只加载选中策略，先同步 `prepare()` 校验配置，再同步 `create(deps)` 创建唯一实例；两步均在 SDK 接入前完成，不存在默认策略或运行期热切换。
+- 当前策略的四个信号与 buy/sell 验证配置仅由 [策略 config.json](./src/config/strategy/intradayRegression/config.json) 提供，所有字段必须显式填写。`definition.ts` 静态导入对应 `config/strategy` 目录的 JSON，由策略私有解析器完成字段、范围、DSL 与指标校验，并冻结规范化副本；未选策略入口不会被加载。
 - 升级前请从实际环境中**删除** `SIGNAL_BUYCALL`、`SIGNAL_SELLCALL`、`SIGNAL_BUYPUT`、`SIGNAL_SELLPUT`、`VERIFICATION_DELAY_SECONDS_BUY`、`VERIFICATION_DELAY_SECONDS_SELL`、`VERIFICATION_INDICATORS_BUY`、`VERIFICATION_INDICATORS_SELL`，即使值为空也会拒绝启动，再设置 `ACTIVE_STRATEGY_ID`。工具不会修改本地凭据或 `.env.local`。
-- 启动检查选中目录、入口和相邻 `config.json` 的精确大小写、真实路径边界，并拒绝 symlink/junction。
+- 启动检查选中策略目录、入口和对应配置目录的 `config.json` 的精确大小写、真实路径边界，并拒绝 symlink/junction。
 - `bun run build` 执行 `bun run clean && tsc -p tsconfig.build.json`，由 tsc 输出静态 JSON 依赖，不运行策略 `prepare()`；因此构建成功不等于策略配置校验通过。未选策略的业务配置错误不在启动时检查，但其静态依赖仍须通过编译。JSON 按工具链解析，不保证源码与产物字节一致。
 - `tsconfig.build.json` 仅 include `src/**/*`，`rootDir=./`、`outDir=./dist`，`noEmitOnError=true`；产物仅 `dist/src/**/*.js` 与静态依赖 JSON，关闭 declaration/declarationMap/sourceMap。开发类型检查仍覆盖 tools/tests/mock，工具和测试不进入生产闭包。
-- 产物启动命令为 `bun dist/src/index.js`。源码只加载相邻 `definition.ts`/JSON，产物只加载相邻 `definition.js`/JSON，不回退到源码。
+- 产物启动命令为 `bun dist/src/index.js`。源码只加载 source 布局的 `definition.ts`/JSON，产物只加载对应 dist 布局的 `definition.js`/JSON，不回退到源码。
 - 源码、JSON 配置变更及策略目录增删后，产物部署必须重新完整构建，成功后才启动；直接运行源码也须重启，不支持热重载。先停旧进程并完成清理，再部署完整包，禁止替换运行中的文件或继续使用失败构建产物。
 
 ### 自动寻标说明

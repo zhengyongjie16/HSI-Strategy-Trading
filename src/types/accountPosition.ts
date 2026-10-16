@@ -84,19 +84,32 @@ export interface AccountPositionSnapshotReader {
   getStatus: () => SnapshotCommitStatus;
 }
 
-/** 唯一 canonical owner；composition 按消费者用途注入窄能力。 */
-export interface AccountPositionSnapshot extends AccountPositionSnapshotReader {
-  requestRefresh: (request: SnapshotRefreshRequest) => SnapshotRefreshHandle;
-  invalidate: () => void;
-  invalidateAccount: () => void;
+/** 由唯一 snapshot owner 执行的刷新参与能力；不公开独立 commit 或第二份 snapshot。 */
+export interface AccountPositionSnapshotRefresh {
+  readonly requestRefresh: (request: SnapshotRefreshRequest) => SnapshotRefreshHandle;
+}
+
+/** 同一 canonical snapshot 的失效、重建、关门及 drain 能力；消费方只取实际方法。 */
+export interface AccountPositionSnapshotLifecycle {
+  readonly invalidate: () => void;
+
+  readonly invalidateAccount: () => void;
 
   /** 仅等待调用时真正已发 IO 落定，不关门/失效、不把 participant cancel 当作 drain。 */
-  waitForIssuedDrain: () => Promise<void>;
+  readonly waitForIssuedDrain: () => Promise<void>;
 
   /** 同步关闭普通请求并推进读取代次，仅接受 LIFECYCLE_REBUILD source。 */
-  beginRebuild: () => void;
+  readonly beginRebuild: () => void;
 
   /** 同步失效与取消先于返回；Promise 仅在全部已发 broker IO settled 后完成。 */
-  requestClear: (request: SnapshotClearRequest) => Promise<void>;
-  openAdmission: () => void;
+  readonly requestClear: (request: SnapshotClearRequest) => Promise<void>;
+
+  readonly openAdmission: () => void;
 }
+
+/** 唯一 canonical owner 的完整产物；读取、刷新与生命周期能力全部引用同一实例。 */
+export interface AccountPositionSnapshot
+  extends
+    AccountPositionSnapshotReader,
+    AccountPositionSnapshotRefresh,
+    AccountPositionSnapshotLifecycle {}

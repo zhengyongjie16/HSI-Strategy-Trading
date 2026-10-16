@@ -1,3 +1,15 @@
+import { spyOn, describe, expect, it } from 'bun:test';
+import { wait } from '../../../../src/infrastructure/time/index.js';
+import {
+  createLoggerDouble,
+  createDailyLossTrackerDouble,
+  createLiquidationCooldownTrackerDouble,
+  createMonitorContextDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
+  createTerminationDouble,
+  createTradeRuntimeDouble,
+} from '../../../helpers/testDoubles.js';
+
 /**
  * orderMonitor 普通订单原始成交事实准入测试。
  *
@@ -5,7 +17,6 @@
  * 不允许把历史 tracked 时间当作新成交事实的替代来源。
  */
 
-import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createAccountPositionSnapshot } from '../../../../src/application/accountPositionSnapshot/index.js';
@@ -23,15 +34,8 @@ import type {
 } from '../../../../src/application/orderTracking/types.js';
 import { mergeMonotonicOrderFact } from '../../../../src/domain/order/orderFactMerge.js';
 import type { OrderMonitorTrackedOrder } from '../../../../src/domain/order/types.js';
-import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/services.js';
-import {
-  createDailyLossTrackerDouble,
-  createLiquidationCooldownTrackerDouble,
-  createMonitorContextDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
-  createTerminationDouble,
-  createTraderDouble,
-} from '../../../helpers/testDoubles.js';
+import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/rateLimit.js';
+
 import type { BrokerIngressInput } from '../../../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
@@ -174,14 +178,15 @@ async function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
 
   const dailyLossTracker = createDailyLossTrackerDouble();
   dailyLossTracker.resetAll(new Date(KNOWN_FACT_TIME_MS));
-  let trader: ReturnType<typeof createTraderDouble> | null = null;
+  let tradeRuntime: ReturnType<typeof createTradeRuntimeDouble> | null = null;
   const postTrade = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     snapshot,
     termination: createTerminationDouble(),
-    getTrader: () => {
-      if (trader === null) throw new Error('unbound trader');
+    getProtectiveOrderReader: () => {
+      if (tradeRuntime === null) throw new Error('unbound tradeRuntime');
 
-      return trader;
+      return tradeRuntime.orderMonitor;
     },
     onPositionsCommitted: async (token) => {
       if (!snapshot.isCurrent(token, { account: false, positions: true }))
@@ -190,15 +195,18 @@ async function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
     scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
   });
   const orderRecorder = native.createRecorder({
+    logger: createLoggerDouble(),
     rateLimiter: createRateLimiter(),
     getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: postTrade,
   });
-  trader = createTraderDouble({
+  tradeRuntime = createTradeRuntimeDouble({
     ...account,
     orderRecorder,
-    executeSignals: async () => {
-      throw new Error('raw observation must not submit');
+    orderExecutor: {
+      executeSignals: async () => {
+        throw new Error('raw observation must not submit');
+      },
     },
   });
   const protectiveTracker = createProtectiveLiquidationEpisodeTrackerDouble();
@@ -219,10 +227,10 @@ async function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
   const receipt = await postTrade.waitForFresh();
   expect(postTrade.isCurrent(receipt)).toBeTrue();
   const originalMark = orderRecorder.markSellPartialFilled;
-  orderRecorder.markSellPartialFilled = (orderId, quantity) => {
+  spyOn(orderRecorder, 'markSellPartialFilled').mockImplementation((orderId, quantity) => {
     pendingSellQuantities.push(quantity);
     return originalMark(orderId, quantity);
-  };
+  });
   const settlementFlow = createSettlementFlow({
     runtime,
     orderRecorder,
@@ -236,6 +244,7 @@ async function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
     emitOrderStateChanged: () => {},
   });
   const eventFlow = createEventFlow({
+    logger: createLoggerDouble(),
     runtime,
     monitorConfig: createTradingConfig().monitor,
     orderRecorder,
@@ -653,6 +662,8 @@ describe('orderMonitor 普通 OPEN state-check 原始成交事实准入', () => 
     const dailyLossInputs: OrderCumulativeExecutionParams[] = [];
     const routeWakeups: Array<Readonly<{ symbol: string; kind: string }>> = [];
     const orderOps = native.createOperations({
+      logger: createLoggerDouble(),
+      wait: wait,
       captureWorkGuard: () => () =>
         runtime.running && runtime.runtimeState === 'ACTIVE' && actualOwners.isOriginalCurrent(),
       termination: {

@@ -1,3 +1,10 @@
+import type { SignalExecutor } from '../../types/orderExecutionPorts.js';
+import type { UnrealizedLossMonitor } from '../../types/unrealizedLoss.js';
+import type { DailyLossTracker } from '../../types/risk.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
+import type { RiskChecker } from '../../types/riskCheck.js';
+import type { LifecycleMutableState } from '../../types/lifecycle.js';
+import type { TradingTimeState } from '../../types/timeControlPlane.js';
 import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
 import type { TradingConfig } from '../../types/config.js';
 import type { RuntimeTermination } from '../../types/runtime.js';
@@ -5,13 +12,11 @@ import type {
   PostTradeSettlementStatus,
   SettlementFreshnessReader,
 } from '../../types/settlement.js';
-import type { MonitorContext, LastState } from '../../types/state.js';
-import type { Trader } from '../../types/services.js';
 import type { QuoteUpdatedEvent } from '../../types/marketPorts.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { MixedTradeLogRepository } from '../../types/tradeLog.js';
 import type { LiquidationCooldownTracker } from '../../domain/liquidation/cooldown/types.js';
-import type { Logger } from '../../utils/logger/types.js';
+import type { Logger } from '../../types/logger.js';
 
 /** 当前 ACTIVE 方向的保护性清仓执行身份；runtime 路由缓存由席位 truth 事件重建。 */
 export type ProtectiveLiquidationRoute = {
@@ -51,13 +56,16 @@ export interface ProtectiveLiquidationConsistencyPort extends Pick<
 /** protective 真正业务 owner 的协作者；不接 completion 持久化或 episode/cooldown 提交能力。 */
 export interface ProtectiveLiquidationWorkflowDeps {
   readonly logger: Pick<Logger, 'error'>;
-  readonly trader: Pick<Trader, 'executeSignals'>;
+  readonly orderExecutor: SignalExecutor;
   readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
-  readonly monitorContext: Pick<
-    MonitorContext,
-    'riskChecker' | 'orderRecorder' | 'dailyLossTracker' | 'unrealizedLossMonitor'
-  >;
-  readonly lastState: Pick<LastState, 'canTrade' | 'isTradingEnabled' | 'isHalfDay'>;
+  readonly monitorContext: {
+    readonly riskChecker: RiskChecker;
+    readonly orderRecorder: OrderRecorder;
+    readonly dailyLossTracker: DailyLossTracker;
+    readonly unrealizedLossMonitor: UnrealizedLossMonitor;
+  };
+  readonly tradingTimeState: Readonly<Pick<TradingTimeState, 'canTrade' | 'isHalfDay'>>;
+  readonly lifecycleState: Readonly<Pick<LifecycleMutableState, 'isTradingEnabled'>>;
   readonly postTradeConsistencyRuntime: ProtectiveLiquidationConsistencyPort;
   readonly snapshot: Pick<AccountPositionSnapshotReader, 'getView' | 'isCurrent'>;
   readonly doomsdayProtectionEnabled: boolean;

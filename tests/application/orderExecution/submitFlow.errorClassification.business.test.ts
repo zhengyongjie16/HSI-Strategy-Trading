@@ -1,10 +1,22 @@
+import { spyOn, describe, expect, it } from 'bun:test';
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createOrderMonitorDouble,
+  createOrderRecorderDouble,
+  createRateLimiterDouble,
+  createQuoteDouble,
+  createRiskCheckerDouble,
+  createSymbolRegistryDouble,
+} from '../../helpers/testDoubles.js';
+
 /**
  * submitFlow 错误分类业务测试
  *
  * 覆盖最终下单边界按提交阶段区分内部失败、已明确的 broker 业务拒绝、
  * 提交结果不确定以及 broker 接受后的本地同步失败的约束。
  */
-import { describe, expect, it } from 'bun:test';
+
 import { createSubmitFlowFailureFixture } from '../../infrastructure/longbridge/trade/submitFlowFailureFixture.js';
 import { createOrderExecutor } from '../../../src/application/orderExecution/index.js';
 import type { OrderExecutionTrackingPort } from '../../../src/application/orderExecution/types.js';
@@ -15,25 +27,17 @@ import type {
   TradeMutationPort,
   TradeSubmitCommand,
 } from '../../../src/types/tradeMutationPorts.js';
-import { logger } from '../../../src/utils/logger/index.js';
-import type { Logger } from '../../../src/utils/logger/types.js';
-import type { OrderRecord, OrderRecorder } from '../../../src/types/services.js';
+import { logger } from '../../../src/infrastructure/logger/index.js';
+import type { Logger } from '../../../src/types/logger.js';
+import type { OrderRecord, OrderRecorder } from '../../../src/types/orderRecorder.js';
 import type { OrderFact } from '../../../src/types/trade.js';
 import { createMonitorConfig, createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createSignal } from '../../../mock/factories/signalFactory.js';
-import {
-  createMarketDataClientDouble,
-  createOrderMonitorDouble,
-  createOrderRecorderDouble,
-  createRateLimiterDouble,
-  createQuoteDouble,
-  createRiskCheckerDouble,
-  createSymbolRegistryDouble,
-} from '../../helpers/testDoubles.js';
 
 const EXECUTION_NOW_MS = Date.parse('2026-07-10T02:00:00.000Z');
 
 type SubmitFlowFixtureParams = {
+  readonly logger?: Logger;
   readonly submitOrder?: Parameters<typeof createSubmitFlowFailureFixture>[0];
   readonly getQuote?: () => Promise<ReturnType<typeof createQuoteDouble>>;
   readonly clearCache?: () => void;
@@ -69,6 +73,7 @@ function createSubmitFlowFixture(params: SubmitFlowFixtureParams = {}) {
       submitSellOrder: () => {},
     });
   const executor = createOrderExecutor({
+    logger: params.logger ?? createLoggerDouble(),
     tradeMutationPort: {
       ...native.tradeMutationPort,
       submitOrder: async (command, onRemoteIssued) => {
@@ -388,15 +393,16 @@ describe('submitFlow staged error classification', () => {
       cause: Object.assign(new Error('broker denied the order'), { code: 601011 }),
     });
     const fixture = createSubmitFlowFixture({
+      logger,
       submitOrder: async () => {
         throw brokerRejection;
       },
     });
     const errorLogs: string[] = [];
     const originalErrorLogger = logger.error;
-    logger.error = ((message: string) => {
+    spyOn(logger, 'error').mockImplementation(((message: string) => {
       errorLogs.push(message);
-    }) satisfies Logger['error'];
+    }) satisfies Logger['error']);
 
     try {
       const result = await fixture.executor.executeSignals([createBuySignal()], () => true);
@@ -407,7 +413,7 @@ describe('submitFlow staged error classification', () => {
       expect(errorLogs).toHaveLength(1);
       expect(fixture.submitCallCount()).toBe(1);
     } finally {
-      logger.error = originalErrorLogger;
+      spyOn(logger, 'error').mockImplementation(originalErrorLogger);
     }
   });
 

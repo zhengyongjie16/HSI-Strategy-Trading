@@ -1,17 +1,20 @@
-/** 普通 SELL 镜像装配：真实 canonical H 和真实 settlement S 发行当前 receipt，外部边界显式替身。 */
-import { logger } from '../../../src/utils/logger/index.js';
-import { createOrdinarySellWorkflow } from '../../../src/application/ordinarySell/index.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createSettlementRuntimeFixture } from '../../main/fixtures/settlementRuntime.js';
-import { createMonitorContext } from '../../main/asyncProgram/utils.js';
 import {
+  createLoggerDouble,
   createAccountSnapshotDouble,
   createMarketDataClientDouble,
   createPositionDouble,
   createQuoteDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
+
+/** 普通 SELL 镜像装配：真实 canonical H 和真实 settlement S 发行当前 receipt，外部边界显式替身。 */
+import { logger } from '../../../src/infrastructure/logger/index.js';
+import { createOrdinarySellWorkflow } from '../../../src/application/ordinarySell/index.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../../helpers/settlementRuntime.js';
+import { createMonitorContext } from '../../helpers/asyncProgram.js';
+
 import type { OrdinarySellWorkflowDeps } from '../../../src/application/ordinarySell/types.js';
 import type { SellHarness } from './types.js';
 import type { Position } from '../../../src/types/account.js';
@@ -37,9 +40,9 @@ export async function createSellHarness(
     },
   });
   const context = createMonitorContext();
-  const trader = createTraderDouble({
-    getStockPositions: async () => positions,
-    executeSignals: async () => ({ executedOrderIds: [], quoteFailures: [] }),
+  const tradeRuntime = createTradeRuntimeDouble({
+    accountService: { getStockPositions: async () => positions },
+    orderExecutor: { executeSignals: async () => ({ executedOrderIds: [], quoteFailures: [] }) },
   });
   const termination = createTerminationRuntime({
     closeTradingGate: () => {},
@@ -48,10 +51,11 @@ export async function createSellHarness(
     onSecondaryError: () => {},
   });
   const settlement = createSettlementRuntimeFixture({
+    logger: createLoggerDouble(),
     snapshot,
     termination,
     monitorContext: context,
-    getTrader: () => trader,
+    getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
     onPositionsCommitted: async (token) => {
       if (!snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
         throw new Error('fixture stale paired commit');
@@ -66,8 +70,9 @@ export async function createSellHarness(
     logger,
     config: { smartCloseEnabled: false, smartCloseTimeoutMinutes: null },
     symbolRegistry: context.symbolRegistry,
-    orderRecorder: context.orderRecorder,
-    trader,
+
+    orderRecorder: tradeRuntime.orderRecorder,
+    orderExecutor: tradeRuntime.orderExecutor,
     marketDataClient: createMarketDataClientDouble({
       getQuotes: async () =>
         new Map([

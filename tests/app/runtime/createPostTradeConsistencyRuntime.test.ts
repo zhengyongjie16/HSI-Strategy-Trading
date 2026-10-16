@@ -1,11 +1,5 @@
-/** app settlement wiring 测试：窄能力映射、配置绑定和启动构造环，业务案例由 application owner 测试。 */
-import { describe, expect, test } from 'bun:test';
-import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
-import type { PostTradeConsistencyRuntimeBusinessDeps } from '../../../src/app/types.js';
-import type { RuntimeScheduler } from '../../../src/types/runtime.js';
 import {
+  createLoggerDouble,
   createAccountSnapshotDouble,
   createDailyLossTrackerDouble,
   createLiquidationCooldownTrackerDouble,
@@ -14,8 +8,16 @@ import {
   createOrderRecorderDouble,
   createRiskCheckerDouble,
   createTerminationDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
+
+/** app settlement wiring 测试：窄能力映射、配置绑定和启动构造环，业务案例由 application owner 测试。 */
+import { describe, expect, test } from 'bun:test';
+import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
+import type { PostTradeConsistencyRuntimeBusinessDeps } from '../../../src/app/runtime/types.js';
+import type { RuntimeScheduler } from '../../../src/types/runtime.js';
 
 function deferred() {
   let resolve!: () => void;
@@ -42,7 +44,7 @@ function createFixture(onPositionsCommitted: () => Promise<void> = async () => {
       callbacks.delete(handle);
     },
   };
-  const trader = createTraderDouble();
+  const tradeRuntime = createTradeRuntimeDouble();
   const snapshot = createAccountPositionSnapshot({
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
@@ -53,8 +55,9 @@ function createFixture(onPositionsCommitted: () => Promise<void> = async () => {
     },
   });
   const runtime = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     termination: createTerminationDouble(),
-    getTrader: () => trader,
+    getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
     snapshot,
     scheduler,
     onPositionsCommitted,

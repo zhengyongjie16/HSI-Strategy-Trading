@@ -1,7 +1,10 @@
+import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
+
 /** 高层自然 Actor 组装：依赖 core/application 与 infra producer 的中性 ports，SDK DTO 不越界。 */
 
-import { createTrader } from '../../../../src/app/runtime/createTrader.js';
-import type { TraderDeps } from '../../../../src/app/runtime/types.js';
+import { createTradeRuntime } from '../../../../src/app/runtime/createTradeRuntime.js';
+import type { CreateTradeRuntimeDeps } from '../../../../src/app/runtime/types.js';
 import { createAccountService } from '../../../../src/application/accountQuery/index.js';
 import { createOrderExecutor } from '../../../../src/application/orderExecution/index.js';
 import type { OrderExecutorDeps } from '../../../../src/application/orderExecution/types.js';
@@ -29,7 +32,8 @@ import { orderEconomics } from '../../../../src/domain/order/orderEconomics.js';
 import type { AccountServiceDeps } from '../../../../src/types/accountReadPorts.js';
 import type { OrderExecutor } from '../../../../src/types/orderExecutionPorts.js';
 import type { OrderPushPort } from '../../../../src/types/orderPushPorts.js';
-import type { OrderRecorder, RateLimiter } from '../../../../src/types/services.js';
+import type { OrderRecorder } from '../../../../src/types/orderRecorder.js';
+import type { RateLimiter } from '../../../../src/types/rateLimit.js';
 import type { OrderFact } from '../../../../src/types/trade.js';
 import { createBrokerIngressFixture as createSdkFixture } from '../../../infrastructure/longbridge/trade/brokerIngressFixture.js';
 
@@ -45,7 +49,9 @@ export async function createBrokerIngressFixture(
       createApiManager: (
         deps: Readonly<{ rateLimiter: Pick<RateLimiter, 'throttle'> }>,
       ) => ReturnType<typeof createOrderAPIManager>;
-      createTrader: (deps: Omit<TraderDeps, 'brokerAccess'>) => ReturnType<typeof createTrader>;
+      createTradeRuntime: (
+        deps: Omit<CreateTradeRuntimeDeps, 'brokerAccess'>,
+      ) => ReturnType<typeof createTradeRuntime>;
       createAccountService: (
         deps: Omit<AccountServiceDeps, 'accountReadPort'>,
       ) => ReturnType<typeof createAccountService>;
@@ -79,7 +85,10 @@ export async function createBrokerIngressFixture(
   return {
     ...facts,
     createCacheManager: (deps) =>
-      createOrderCacheManager({ ...deps, ctx: ports.createPendingOrdersReader() }),
+      createOrderCacheManager({
+        ...deps,
+        ctx: ports.createPendingOrdersReader(),
+      }),
     createApiManager: (deps) =>
       createOrderAPIManager({
         orderSnapshotReadPort: ports.createOrderSnapshotReadPort({
@@ -87,8 +96,8 @@ export async function createBrokerIngressFixture(
           executionLedgerPort: facts.executionLedgerPort,
         }),
       }),
-    createTrader: (deps) =>
-      createTrader({
+    createTradeRuntime: (deps) =>
+      createTradeRuntime({
         ...deps,
         brokerAccess: facts.brokerAccess,
       }),
@@ -121,6 +130,7 @@ export async function createBrokerIngressFixture(
     },
     createRecorder: (deps) =>
       createOrderRecorder({
+        logger: createLoggerDouble(),
         getExecutionTimeEvidence: deps.getExecutionTimeEvidence,
         settlementRefreshNeedRecorder: deps.settlementRefreshNeedRecorder,
         orderSnapshotReadPort: ports.createOrderSnapshotReadPort({
@@ -141,6 +151,7 @@ export async function createBrokerIngressFixture(
         ...deps,
         tradeMutationPort: ports.createTradeMutationPort(),
         orderStatusQuery: createOrderStatusQuery({
+          requestExternalApi: wrapExternalApiRequest,
           orderDetailReadPort: ports.createOrderDetailReadPort(),
           executionLedgerPort: facts.executionLedgerPort,
           rateLimiter: deps.rateLimiter,
@@ -148,6 +159,9 @@ export async function createBrokerIngressFixture(
         }),
       }),
     createRoute: (deps) =>
-      createRouteProcessor({ ...deps, tradeMutationPort: ports.createTradeMutationPort() }),
+      createRouteProcessor({
+        ...deps,
+        tradeMutationPort: ports.createTradeMutationPort(),
+      }),
   };
 }

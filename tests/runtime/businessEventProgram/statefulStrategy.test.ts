@@ -1,9 +1,9 @@
 /** 有状态替代策略验收：验证宿主 delayed emitter 与策略生命周期公共契约。 */
 import { describe, expect, it } from 'bun:test';
-import { createOpenRebuildContextFixture } from '../../main/fixtures/openRebuildContext.js';
+import { createOpenRebuildContextFixture } from '../lifecycle/fixtures/openRebuildContext.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import { createSelectedStrategy } from '../../../src/app/startup/createSelectedStrategy.js';
-import { createSignalRuntimeDomain } from '../../../src/main/lifecycle/cacheDomains/signalRuntimeDomain.js';
+import { createSignalRuntimeDomain } from '../../../src/runtime/lifecycle/cacheDomains/signalRuntimeDomain.js';
 import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import { createSeatRuntimeCleanupDispatcher } from '../../../src/runtime/seatRuntimeCleanupDispatcher/index.js';
 import { createEventHarness } from './fixtures.js';
@@ -12,7 +12,7 @@ import { createLoggerDouble, createMonitorContextDouble } from '../../helpers/te
 import type { PreparedStrategySelection } from '../../../src/app/startup/types.js';
 import type { StrategyDeps } from '../../../src/types/strategy.js';
 import type { RuntimeScheduler } from '../../../src/types/runtime.js';
-import type { SignalRuntimeDomainDeps } from '../../../src/main/lifecycle/cacheDomains/types.js';
+import type { SignalRuntimeDomainDeps } from '../../../src/runtime/lifecycle/cacheDomains/types.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type { EventHarness } from './types.js';
 
@@ -104,15 +104,12 @@ function createSignalDomain(h: EventHarness) {
     autoSearchWakeupRuntime: owner,
     seatActivationDispatcher: seatOwner,
     seatRuntimeCleanupDispatcher: seatOwner,
-    trader: {
-      startOrderMonitorRuntime: () => {},
-      stopOrderMonitorRuntimeAndDrain: async () => {},
-    },
+    orderMonitor: { startRuntime: () => {}, stopRuntimeAndDrain: async () => {} },
     postTradeConsistencyRuntime: postTradeOwner,
     quoteSubscriptionRuntime: quoteSubscriptionOwner,
     buyTaskQueue: h.buyTaskQueue,
     sellTaskQueue: h.sellTaskQueue,
-    monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(),
+    monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
   };
   return { domain: createSignalRuntimeDomain(deps), monitorContext };
 }
@@ -123,6 +120,7 @@ describe('stateful replacement strategy public contract', () => {
     const fixture = createStatefulStrategyFixture(scheduler.runtime);
     const h = createEventHarness({ strategy: fixture.strategy });
     const dispatcher = createSeatRuntimeCleanupDispatcher({
+      logger: createLoggerDouble(),
       symbolRegistry: h.symbolRegistry,
       monitorContext: {
         strategy: h.strategy,
@@ -130,7 +128,7 @@ describe('stateful replacement strategy public contract', () => {
       },
       buyTaskQueue: h.buyTaskQueue,
       sellTaskQueue: h.sellTaskQueue,
-      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(),
+      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
     });
 
     const originTime = h.mutable.nowMs;
@@ -197,7 +195,7 @@ describe('stateful replacement strategy public contract', () => {
     expect(h.buyTaskQueue.isEmpty()).toBeTrue();
     expect(h.sellTaskQueue.isEmpty()).toBeTrue();
 
-    h.lastState.currentDayKey = '2026-07-16';
+    h.stateFixtures.lifecycleState.currentDayKey = '2026-07-16';
     h.mutable.nowMs = Date.parse('2026-07-16T02:00:00.000Z');
     const ctx = await createOpenRebuildContextFixture({
       now: new Date(h.mutable.nowMs),

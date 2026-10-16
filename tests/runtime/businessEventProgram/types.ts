@@ -1,3 +1,4 @@
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
 import type {
   CandlestickPeriod,
   CandlestickCacheSnapshot,
@@ -34,7 +35,7 @@ export type EventHarnessMutable = {
 /** 本包真实 owner/registry/queue 离线测试端口。 */
 export type EventHarness = {
   readonly mutable: EventHarnessMutable;
-  readonly lastState: BusinessEventProgramDeps['lastState'];
+  readonly stateFixtures: RuntimeStateFixtures;
   readonly buyTaskQueue: TaskQueue<BuyTaskType>;
   readonly sellTaskQueue: TaskQueue<SellTaskType>;
   readonly symbolRegistry: SymbolRegistry;

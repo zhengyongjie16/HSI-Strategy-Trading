@@ -1,5 +1,5 @@
-import { createSnapshotFixture } from '../../../main/fixtures/accountPositionSnapshot.js';
-import { createSettlementRuntimeFixture } from '../../../main/fixtures/settlementRuntime.js';
+import { createSnapshotFixture } from '../../../helpers/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../../../helpers/settlementRuntime.js';
 
 /**
  * monitorRecovery 集成测试
@@ -12,7 +12,7 @@ import { describe, expect, it } from 'bun:test';
 import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessor } from './fixtures.js';
 import { createMonitorTaskQueue } from '../../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import { createPeriodicSwitchWakeupRuntime } from '../../../../src/runtime/periodicSwitchWakeupRuntime/index.js';
-import { createTradingGateEventRuntime } from '../../../../src/main/tradingGateEventRuntime/index.js';
+import { createTradingGateEventRuntime } from '../../../../src/runtime/tradingGateEventRuntime/index.js';
 import type { MonitorTaskDataMap } from '../../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type { PeriodicSwitchWakeupRuntime } from '../../../../src/runtime/periodicSwitchWakeupRuntime/types.js';
 import {
@@ -24,9 +24,9 @@ import {
   createQuoteSubscriptionRuntimeDouble,
   createSymbolRegistryDouble,
   createTerminationDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../../helpers/testDoubles.js';
-import { createMonitorContext, waitUntil } from '../../../main/asyncProgram/utils.js';
+import { createMonitorContext, waitUntil } from '../../../helpers/asyncProgram.js';
 
 const READY_MS = Date.parse('2026-02-16T01:30:00.000Z');
 
@@ -106,9 +106,9 @@ async function createLunchBreakHarness(): Promise<
     symbolRegistry,
     seatSwitch,
   });
-  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
   const tradingGateEventRuntime = createTradingGateEventRuntime({ logger: createLoggerDouble() });
-  const trader = createTraderDouble();
+  const tradeRuntime = createTradeRuntimeDouble();
 
   const snapshot = await createSnapshotFixture({
     account: createAccountSnapshotDouble('100000'),
@@ -120,10 +120,11 @@ async function createLunchBreakHarness(): Promise<
     },
   });
   const settlement = createSettlementRuntimeFixture({
+    logger: createLoggerDouble(),
     snapshot,
     monitorContext,
     termination,
-    getTrader: () => trader,
+    getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
     onPositionsCommitted: async (token) => {
       if (!snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
         throw new Error('Unexpected stale commit');
@@ -147,7 +148,7 @@ async function createLunchBreakHarness(): Promise<
     monitorContext,
     symbolRegistry,
     monitorTaskQueue,
-    trader,
+    orderMonitor: tradeRuntime.orderMonitor,
     postTradeConsistencyRuntime: settlement,
     tradingGateEventRuntime,
     calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
@@ -180,7 +181,7 @@ async function createLunchBreakHarness(): Promise<
     },
     monitorTaskQueue,
     monitorContext,
-    trader,
+    tradeRuntime,
     marketDataClient: createMarketDataClientDouble(),
     quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
     switchWakeupRuntime: { handoffPendingSwitch: () => {} },

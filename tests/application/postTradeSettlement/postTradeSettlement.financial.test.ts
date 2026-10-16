@@ -58,6 +58,7 @@ test('high-revision same-quantity authoritative corrections preserve exact cost/
   });
   daily.resetAll(new Date(now));
   const recorder = createOrderRecorder({
+    logger: createLoggerDouble(),
     orderSnapshotReadPort: {
       fetchSnapshots: async () => {
         throw new Error('financial test does not issue order IO');

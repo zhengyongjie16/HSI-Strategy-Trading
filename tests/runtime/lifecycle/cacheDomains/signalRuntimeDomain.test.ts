@@ -1,0 +1,520 @@
+/**
+ * 信号运行时缓存域单元测试
+ *
+ * 覆盖：midnightClear 停止并排空处理器、清空队列并释放信号、取消延迟信号、
+ * 调用 postTradeConsistencyRuntime.midnightClear、strategy.resetForTradingDay；
+ * openRebuild 按 runtime owner 顺序恢复处理器并完成 rebuild baseline
+ */
+import { describe, expect, it } from 'bun:test';
+import { createOpenRebuildContextFixture } from '../fixtures/openRebuildContext.js';
+import { createSignalRuntimeDomain } from '../../../../src/runtime/lifecycle/cacheDomains/signalRuntimeDomain.js';
+import type { SignalRuntimeDomainDeps } from '../../../../src/runtime/lifecycle/cacheDomains/types.js';
+import type {
+  MonitorTaskDataMap,
+  MonitorTaskProcessor,
+} from '../../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
+import type { MonitorTaskQueue } from '../../../../src/runtime/asyncProgram/monitorTaskQueue/types.js';
+import type { Processor } from '../../../../src/runtime/asyncProgram/types.js';
+import type {
+  BuyTaskType,
+  SellTaskType,
+  Task,
+  TaskQueue,
+} from '../../../../src/runtime/asyncProgram/tradeTaskQueue/types.js';
+import type { Signal } from '../../../../src/types/signal.js';
+import type { OrderedMethod } from '../types.js';
+import { createLoggerDouble, createMonitorContextDouble } from '../../../helpers/testDoubles.js';
+
+function createSignalDouble<TAction extends Signal['action']>(
+  action: TAction,
+): Signal & { readonly action: TAction; readonly seatVersion: number } {
+  return {
+    symbol: 'HSI.HK',
+    symbolName: 'HSI',
+    action,
+    seatVersion: 1,
+  };
+}
+
+function createOrderedRuntime(name: string, globalCalls: string[]) {
+  const calls: string[] = [];
+
+  const record = (method: OrderedMethod): void => {
+    const entry = `${name}.${method}`;
+    calls.push(entry);
+    globalCalls.push(entry);
+  };
+
+  return {
+    calls,
+    stopAndDrain: async () => {
+      record('stopAndDrain');
+    },
+    restart: () => {
+      record('restart');
+    },
+    start: () => {
+      record('start');
+    },
+    clearPending: () => {
+      record('clearPending');
+    },
+  };
+}
+
+function createOrderedProcessor(name: string, globalCalls: string[]): Processor {
+  return {
+    start: () => {
+      globalCalls.push(`${name}.start`);
+    },
+    stop: () => {},
+    stopAndDrain: async () => {
+      globalCalls.push(`${name}.stopAndDrain`);
+    },
+    restart: () => {
+      globalCalls.push(`${name}.restart`);
+    },
+  };
+}
+
+function createTaskQueueDouble<TType extends string>(
+  signals: ReadonlyArray<Task<TType>['data']>,
+  onClear: () => void,
+): TaskQueue<TType> {
+  return {
+    push: () => true,
+    close: () => {},
+    pop: () => null,
+    isEmpty: () => signals.length === 0,
+    removeTasks: () => 0,
+    clearAll: () => {
+      onClear();
+      return signals.length;
+    },
+    onTaskAdded: () => () => {},
+  };
+}
+
+function createMonitorTaskQueueDouble(onClear: () => void): MonitorTaskQueue<MonitorTaskDataMap> {
+  return {
+    scheduleLatest: () => true,
+    close: () => {},
+    pop: () => null,
+    isEmpty: () => true,
+    removeTasks: () => 0,
+    clearAll: () => {
+      onClear();
+      return 0;
+    },
+    onTaskAdded: () => () => {},
+  };
+}
+
+describe('createSignalRuntimeDomain', () => {
+  it('midnightClear 按全局顺序依次停止 runtime 与处理器，再执行后续清理步骤', async () => {
+    const globalCalls: string[] = [];
+    const buyProcessor = createOrderedProcessor('buyProcessor', globalCalls);
+    const sellProcessor = createOrderedProcessor('sellProcessor', globalCalls);
+    const monitorTaskProcessor = createOrderedProcessor(
+      'monitorTaskProcessor',
+      globalCalls,
+    ) as MonitorTaskProcessor;
+    const tradingRiskEventRuntime = createOrderedRuntime('tradingRiskEventRuntime', globalCalls);
+    const monitorQuoteEventRuntime = createOrderedRuntime('monitorQuoteEventRuntime', globalCalls);
+    const monitorDisplayRuntime = createOrderedRuntime('monitorDisplayRuntime', globalCalls);
+    const tradingQuoteDisplayRuntime = createOrderedRuntime(
+      'tradingQuoteDisplayRuntime',
+      globalCalls,
+    );
+    const switchWakeupRuntime = createOrderedRuntime('switchWakeupRuntime', globalCalls);
+    let cancelAllCount = 0;
+
+    const buyTaskQueue = createTaskQueueDouble<BuyTaskType>(
+      [createSignalDouble('BUYCALL'), createSignalDouble('BUYPUT')],
+      () => {
+        globalCalls.push('buyTaskQueue.clearAll');
+      },
+    );
+    const sellTaskQueue = createTaskQueueDouble<SellTaskType>(
+      [createSignalDouble('SELLCALL')],
+      () => {
+        globalCalls.push('sellTaskQueue.clearAll');
+      },
+    );
+    const monitorTaskQueue = createMonitorTaskQueueDouble(() => {
+      globalCalls.push('monitorTaskQueue.clearAll');
+    });
+    const monitorContext = createMonitorContextDouble({
+      strategy: {
+        ...createMonitorContextDouble().strategy,
+        resetForTradingDay: () => {
+          cancelAllCount += 1;
+          globalCalls.push('strategy.resetForTradingDay');
+        },
+      },
+    });
+    const postTradeConsistencyRuntime: SignalRuntimeDomainDeps['postTradeConsistencyRuntime'] = {
+      abortWaiting: () => {
+        globalCalls.push('postTradeConsistencyRuntime.abortWaiting');
+      },
+      resetAbort: () => {
+        globalCalls.push('postTradeConsistencyRuntime.resetAbort');
+      },
+      start: () => {
+        globalCalls.push('postTradeConsistencyRuntime.start');
+      },
+      stopAndDrain: async () => {
+        globalCalls.push('postTradeConsistencyRuntime.stopAndDrain');
+      },
+      midnightClear: () => {
+        globalCalls.push('postTradeConsistencyRuntime.midnightClear');
+      },
+      completeRebuildBaseline: async () => {
+        globalCalls.push('postTradeConsistencyRuntime.completeRebuildBaseline');
+        return true;
+      },
+    };
+    const tradeRuntime = {
+      orderMonitor: {
+        startRuntime: () => {
+          globalCalls.push('tradeRuntime.startOrderMonitorRuntime');
+        },
+        stopRuntimeAndDrain: async () => {
+          globalCalls.push('tradeRuntime.stopOrderMonitorRuntimeAndDrain');
+        },
+      },
+    };
+    const deps: SignalRuntimeDomainDeps = {
+      termination: { isTerminated: () => false },
+      logger: createLoggerDouble(),
+      monitorContext,
+      buyProcessor,
+      sellProcessor,
+      monitorTaskProcessor,
+      businessEventProgram: {
+        start: () => {
+          globalCalls.push('businessEventProgram.start');
+        },
+        stopAndDrain: async () => {
+          globalCalls.push('businessEventProgram.stopAndDrain');
+        },
+      },
+      tradingRiskEventRuntime: {
+        start: () => {
+          tradingRiskEventRuntime.start();
+        },
+        stopAndDrain: async () => {
+          await tradingRiskEventRuntime.stopAndDrain();
+        },
+      },
+      monitorQuoteEventRuntime: {
+        start: () => {
+          monitorQuoteEventRuntime.start();
+        },
+        stop: () => {},
+        stopAndDrain: async () => {
+          await monitorQuoteEventRuntime.stopAndDrain();
+        },
+      },
+      monitorDisplayRuntime: {
+        start: () => {
+          monitorDisplayRuntime.start();
+        },
+        stopAndDrain: async () => {
+          await monitorDisplayRuntime.stopAndDrain();
+        },
+      },
+      tradingQuoteDisplayRuntime: {
+        start: () => {
+          tradingQuoteDisplayRuntime.start();
+        },
+        stopAndDrain: async () => {
+          await tradingQuoteDisplayRuntime.stopAndDrain();
+        },
+      },
+      switchWakeupRuntime: {
+        start: () => {
+          switchWakeupRuntime.start();
+        },
+        stopAndDrain: async () => {
+          await switchWakeupRuntime.stopAndDrain();
+        },
+      },
+      periodicSwitchWakeupRuntime: {
+        start: () => {
+          globalCalls.push('periodicSwitchWakeupRuntime.start');
+        },
+        stopAndDrain: async () => {
+          globalCalls.push('periodicSwitchWakeupRuntime.stopAndDrain');
+        },
+      },
+      quoteSubscriptionRuntime: {
+        reconcileFromCurrentTruth: async () => {
+          globalCalls.push('quoteSubscriptionRuntime.reconcileFromCurrentTruth');
+        },
+        start: () => {
+          globalCalls.push('quoteSubscriptionRuntime.start');
+        },
+        stopAndDrain: async () => {
+          globalCalls.push('quoteSubscriptionRuntime.stopAndDrain');
+        },
+      },
+      autoSearchWakeupRuntime: {
+        start: () => {
+          globalCalls.push('autoSearchWakeupRuntime.start');
+        },
+        stopAndDrain: async () => {
+          globalCalls.push('autoSearchWakeupRuntime.stopAndDrain');
+        },
+      },
+      seatActivationDispatcher: {
+        start: () => {
+          globalCalls.push('seatActivationDispatcher.start');
+        },
+        stop: () => {
+          globalCalls.push('seatActivationDispatcher.stop');
+        },
+      },
+      seatRuntimeCleanupDispatcher: {
+        start: () => {
+          globalCalls.push('seatRuntimeCleanupDispatcher.start');
+        },
+        stop: () => {
+          globalCalls.push('seatRuntimeCleanupDispatcher.stop');
+        },
+      },
+      orderMonitor: tradeRuntime.orderMonitor,
+      postTradeConsistencyRuntime,
+      buyTaskQueue,
+      sellTaskQueue,
+      monitorTaskQueue,
+    };
+
+    const domain = createSignalRuntimeDomain(deps);
+    await domain.midnightClear({
+      now: new Date(),
+      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
+    });
+
+    expect(globalCalls).toEqual([
+      'postTradeConsistencyRuntime.abortWaiting',
+      'businessEventProgram.stopAndDrain',
+      'tradingRiskEventRuntime.stopAndDrain',
+      'monitorQuoteEventRuntime.stopAndDrain',
+      'monitorDisplayRuntime.stopAndDrain',
+      'tradingQuoteDisplayRuntime.stopAndDrain',
+      'switchWakeupRuntime.stopAndDrain',
+      'periodicSwitchWakeupRuntime.stopAndDrain',
+      'autoSearchWakeupRuntime.stopAndDrain',
+      'seatActivationDispatcher.stop',
+      'monitorTaskProcessor.stopAndDrain',
+      'seatRuntimeCleanupDispatcher.stop',
+      'buyProcessor.stopAndDrain',
+      'sellProcessor.stopAndDrain',
+      'tradeRuntime.stopOrderMonitorRuntimeAndDrain',
+      'postTradeConsistencyRuntime.stopAndDrain',
+      'quoteSubscriptionRuntime.stopAndDrain',
+      'buyTaskQueue.clearAll',
+      'sellTaskQueue.clearAll',
+      'monitorTaskQueue.clearAll',
+      'strategy.resetForTradingDay',
+      'postTradeConsistencyRuntime.midnightClear',
+    ]);
+    expect(cancelAllCount).toBe(1);
+  });
+
+  it('openRebuild 先完成 quote 与 postTrade 业务 baseline，再启动 runtime 与处理器', async () => {
+    const globalCalls: string[] = [];
+    const buyProcessor = createOrderedProcessor('buyProcessor', globalCalls);
+    const sellProcessor = createOrderedProcessor('sellProcessor', globalCalls);
+    const monitorTaskProcessor = createOrderedProcessor(
+      'monitorTaskProcessor',
+      globalCalls,
+    ) as MonitorTaskProcessor;
+    const tradingRiskEventRuntime = createOrderedRuntime('tradingRiskEventRuntime', globalCalls);
+    const monitorQuoteEventRuntime = createOrderedRuntime('monitorQuoteEventRuntime', globalCalls);
+    const monitorDisplayRuntime = createOrderedRuntime('monitorDisplayRuntime', globalCalls);
+    const tradingQuoteDisplayRuntime = createOrderedRuntime(
+      'tradingQuoteDisplayRuntime',
+      globalCalls,
+    );
+    const switchWakeupRuntime = createOrderedRuntime('switchWakeupRuntime', globalCalls);
+
+    const tradeRuntime = {
+      orderMonitor: {
+        startRuntime: () => {
+          globalCalls.push('tradeRuntime.startOrderMonitorRuntime');
+        },
+        stopRuntimeAndDrain: async () => {
+          globalCalls.push('tradeRuntime.stopOrderMonitorRuntimeAndDrain');
+        },
+      },
+    };
+
+    const deps: SignalRuntimeDomainDeps = {
+      termination: { isTerminated: () => false },
+      logger: createLoggerDouble(),
+      monitorContext: createMonitorContextDouble(),
+      buyProcessor,
+      sellProcessor,
+      monitorTaskProcessor,
+      businessEventProgram: {
+        start: () => {
+          globalCalls.push('businessEventProgram.start');
+        },
+        stopAndDrain: async () => {
+          globalCalls.push('businessEventProgram.stopAndDrain');
+        },
+      },
+      tradingRiskEventRuntime: {
+        start: () => {
+          tradingRiskEventRuntime.start();
+        },
+        stopAndDrain: async () => {
+          await tradingRiskEventRuntime.stopAndDrain();
+        },
+      },
+      monitorQuoteEventRuntime: {
+        start: () => {
+          monitorQuoteEventRuntime.start();
+        },
+        stop: () => {},
+        stopAndDrain: async () => {
+          await monitorQuoteEventRuntime.stopAndDrain();
+        },
+      },
+      monitorDisplayRuntime: {
+        start: () => {
+          monitorDisplayRuntime.start();
+        },
+        stopAndDrain: async () => {
+          await monitorDisplayRuntime.stopAndDrain();
+        },
+      },
+      tradingQuoteDisplayRuntime: {
+        start: () => {
+          tradingQuoteDisplayRuntime.start();
+        },
+        stopAndDrain: async () => {
+          await tradingQuoteDisplayRuntime.stopAndDrain();
+        },
+      },
+      switchWakeupRuntime: {
+        start: () => {
+          switchWakeupRuntime.start();
+        },
+        stopAndDrain: async () => {
+          await switchWakeupRuntime.stopAndDrain();
+        },
+      },
+      periodicSwitchWakeupRuntime: {
+        start: () => {
+          globalCalls.push('periodicSwitchWakeupRuntime.start');
+        },
+        stopAndDrain: async () => {
+          globalCalls.push('periodicSwitchWakeupRuntime.stopAndDrain');
+        },
+      },
+      quoteSubscriptionRuntime: {
+        reconcileFromCurrentTruth: async () => {
+          globalCalls.push('quoteSubscriptionRuntime.reconcileFromCurrentTruth');
+        },
+        start: () => {
+          globalCalls.push('quoteSubscriptionRuntime.start');
+        },
+        stopAndDrain: async () => {
+          globalCalls.push('quoteSubscriptionRuntime.stopAndDrain');
+        },
+      },
+      autoSearchWakeupRuntime: {
+        start: () => {
+          globalCalls.push('autoSearchWakeupRuntime.start');
+        },
+        stopAndDrain: async () => {
+          globalCalls.push('autoSearchWakeupRuntime.stopAndDrain');
+        },
+      },
+      seatActivationDispatcher: {
+        start: () => {
+          globalCalls.push('seatActivationDispatcher.start');
+        },
+        stop: () => {
+          globalCalls.push('seatActivationDispatcher.stop');
+        },
+      },
+      seatRuntimeCleanupDispatcher: {
+        start: () => {
+          globalCalls.push('seatRuntimeCleanupDispatcher.start');
+        },
+        stop: () => {
+          globalCalls.push('seatRuntimeCleanupDispatcher.stop');
+        },
+      },
+      orderMonitor: tradeRuntime.orderMonitor,
+      postTradeConsistencyRuntime: {
+        abortWaiting: () => {
+          globalCalls.push('postTradeConsistencyRuntime.abortWaiting');
+        },
+        resetAbort: () => {
+          globalCalls.push('postTradeConsistencyRuntime.resetAbort');
+        },
+        start: () => {
+          globalCalls.push('postTradeConsistencyRuntime.start');
+        },
+        stopAndDrain: async () => {
+          globalCalls.push('postTradeConsistencyRuntime.stopAndDrain');
+        },
+        midnightClear: () => {
+          globalCalls.push('postTradeConsistencyRuntime.midnightClear');
+        },
+        completeRebuildBaseline: async () => {
+          globalCalls.push('postTradeConsistencyRuntime.completeRebuildBaseline');
+          return true;
+        },
+      },
+      buyTaskQueue: createTaskQueueDouble<BuyTaskType>([], () => {
+        globalCalls.push('buyTaskQueue.clearAll');
+      }),
+      sellTaskQueue: createTaskQueueDouble<SellTaskType>([], () => {
+        globalCalls.push('sellTaskQueue.clearAll');
+      }),
+      monitorTaskQueue: createMonitorTaskQueueDouble(() => {
+        globalCalls.push('monitorTaskQueue.clearAll');
+      }),
+    };
+
+    const domain = createSignalRuntimeDomain(deps);
+    const ctx = await createOpenRebuildContextFixture({
+      now: new Date(),
+      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
+      termination: deps.termination,
+    });
+    const result = await domain.openRebuild(ctx);
+    expect(result.status).toBe('COMMITTED');
+    if (result.status !== 'COMMITTED') throw new Error('Signal domain work did not commit');
+
+    expect(result.snapshotToken).toBe(ctx.snapshotToken);
+
+    expect(globalCalls).toEqual([
+      'quoteSubscriptionRuntime.reconcileFromCurrentTruth',
+      'postTradeConsistencyRuntime.resetAbort',
+      'postTradeConsistencyRuntime.start',
+      'postTradeConsistencyRuntime.completeRebuildBaseline',
+      'tradingQuoteDisplayRuntime.start',
+      'quoteSubscriptionRuntime.start',
+      'seatRuntimeCleanupDispatcher.start',
+      'seatActivationDispatcher.start',
+      'autoSearchWakeupRuntime.start',
+      'periodicSwitchWakeupRuntime.start',
+      'monitorDisplayRuntime.start',
+      'businessEventProgram.start',
+      'tradingRiskEventRuntime.start',
+      'monitorQuoteEventRuntime.start',
+      'switchWakeupRuntime.start',
+      'buyProcessor.restart',
+      'sellProcessor.restart',
+      'monitorTaskProcessor.restart',
+      'tradeRuntime.startOrderMonitorRuntime',
+    ]);
+  });
+});

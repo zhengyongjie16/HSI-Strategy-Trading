@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
+
 /** T08–T13：直接创建策略，显式释放 scheduler，不通过旧 verifier 代理。 */
 import { describe, expect, it } from 'bun:test';
 import type { StrategyDecision } from '../../../../src/types/strategy.js';
@@ -527,6 +529,7 @@ describe('intraday regression instance', () => {
         ...h.deps,
         ...(fault === 'schedule'
           ? {
+              logger: createLoggerDouble(),
               scheduler: {
                 ...h.deps.scheduler,
                 scheduleTimer() {
@@ -534,7 +537,7 @@ describe('intraday regression instance', () => {
                 },
               },
             }
-          : {}),
+          : { logger: createLoggerDouble() }),
       });
       if (fault === 'symbol')
         strategy.onCandlestick({ ...marketContext(), allowNewEvaluation: false }, () => {});

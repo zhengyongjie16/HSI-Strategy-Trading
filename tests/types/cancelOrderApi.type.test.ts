@@ -1,3 +1,5 @@
+import type { TradeRuntime } from '../../src/app/runtime/types.js';
+
 /**
  * 撤单 API 类型边界测试
  *
@@ -7,41 +9,44 @@
 
 import { describe, expect, it } from 'bun:test';
 import type { OrderMonitor } from '../../src/application/orderTracking/types.js';
-import type { Trader } from '../../src/types/services.js';
 import type {
   CancelOrderOutcome,
   DoomsdayCancelOrderOutcome,
   DoomsdayCancelOrderRequest,
-} from '../../src/types/trader.js';
+} from '../../src/types/orderCancellation.js';
 
 const doomsdayRequest: DoomsdayCancelOrderRequest = {
   kind: 'DOOMSDAY_WINDOW',
   beforeBrokerCancel: () => true,
 };
 
-function assertTraderCancelApiBoundary(trader: Trader): void {
-  const normalOutcome: Promise<CancelOrderOutcome> = trader.cancelOrder('ORDER-FACT', {
-    kind: 'ORDER_FACT',
-  });
+function assertTraderCancelApiBoundary(tradeRuntime: TradeRuntime): void {
+  const normalOutcome: Promise<CancelOrderOutcome> = tradeRuntime.orderMonitor.cancelOrder(
+    'ORDER-FACT',
+    {
+      kind: 'ORDER_FACT',
+    },
+  );
   void normalOutcome;
 
-  const businessOutcome: Promise<CancelOrderOutcome> = trader.cancelOrder('SWITCH-ORDER', {
-    kind: 'SIGNAL_AUTHORIZED',
-    authorize: () => true,
-  });
+  const businessOutcome: Promise<CancelOrderOutcome> = tradeRuntime.orderMonitor.cancelOrder(
+    'SWITCH-ORDER',
+    {
+      kind: 'SIGNAL_AUTHORIZED',
+      authorize: () => true,
+    },
+  );
   void businessOutcome;
 
   // @ts-expect-error 公共撤单必须显式区分事实请求与业务原票，不能默认授权。
-  void trader.cancelOrder('MISSING-AUTHORIZATION');
+  void tradeRuntime.orderMonitor.cancelOrder('MISSING-AUTHORIZATION');
 
-  const doomsdayOutcome: Promise<DoomsdayCancelOrderOutcome> = trader.cancelDoomsdayOrder(
-    'DOOMSDAY-ORDER',
-    doomsdayRequest,
-  );
+  const doomsdayOutcome: Promise<DoomsdayCancelOrderOutcome> =
+    tradeRuntime.orderMonitor.cancelDoomsdayOrder('DOOMSDAY-ORDER', doomsdayRequest);
   void doomsdayOutcome;
 
   // @ts-expect-error 普通公开撤单不能携带末日 permit，因此不能产生 CANCEL_NOT_STARTED。
-  void trader.cancelOrder('DOOMSDAY-ORDER', doomsdayRequest);
+  void tradeRuntime.orderMonitor.cancelOrder('DOOMSDAY-ORDER', doomsdayRequest);
 }
 
 function assertOrderMonitorCancelApiBoundary(orderMonitor: OrderMonitor): void {

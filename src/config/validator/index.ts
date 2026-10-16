@@ -1,3 +1,5 @@
+import type { Logger } from '../../types/logger.js';
+
 /**
  * validator 配置校验模块。
  *
@@ -5,7 +7,6 @@
  * 保持当前错误收集顺序、日志输出语义与运行时标的校验行为不变。
  */
 import { exactCompare } from '../../utils/numeric/exact.js';
-import { logger } from '../../utils/logger/index.js';
 import { createConfigValidationError } from '../utils.js';
 import { readAuthMode } from '../auth/utils.js';
 import type { TradingConfig } from '../../types/config.js';
@@ -139,9 +140,11 @@ function validateTradingConfig(
  * @returns Promise<void>
  */
 export async function validateAllConfig({
+  logger,
   env,
   tradingConfig,
 }: {
+  readonly logger: Logger;
   env: NodeJS.ProcessEnv;
   tradingConfig: TradingConfig;
 }): Promise<void> {
@@ -237,9 +240,11 @@ export async function validateAllConfig({
  * @returns 验证结果
  */
 export function validateRuntimeSymbolsFromQuotesMap({
+  logger,
   inputs,
   quotesMap,
 }: {
+  readonly logger: Logger;
   readonly inputs: ReadonlyArray<RuntimeSymbolValidationInput>;
   readonly quotesMap: ReadonlyMap<string, Quote | null>;
 }): RuntimeSymbolValidationResult {
@@ -248,7 +253,13 @@ export function validateRuntimeSymbolsFromQuotesMap({
 
   for (const input of inputs) {
     const quote = quotesMap.get(input.symbol) ?? null;
-    const result = validateSymbolFromQuote(quote, input.symbol, input.label, input.requireLotSize);
+    const result = validateSymbolFromQuote(
+      logger,
+      quote,
+      input.symbol,
+      input.label,
+      input.requireLotSize,
+    );
     if (!result.valid) {
       const message = result.error ?? `${input.label} ${input.symbol} 验证失败`;
       if (input.required) {

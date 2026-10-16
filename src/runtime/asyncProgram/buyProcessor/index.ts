@@ -6,6 +6,7 @@ import type { BuyProcessorDeps } from './types.js';
 /** 独立 BUY 队列不阻塞 SELL；stopAndDrain 等待真实在途用例完成。 */
 export function createBuyProcessor(deps: BuyProcessorDeps): Processor {
   return createBaseProcessor({
+    logger: deps.logger,
     loggerPrefix: 'BuyProcessor',
     taskQueue: deps.taskQueue,
     processTask: (task) => deps.workflow.execute(task.data),

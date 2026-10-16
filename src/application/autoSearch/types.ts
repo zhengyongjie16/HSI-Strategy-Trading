@@ -1,7 +1,7 @@
 import type { AutoSearchConfig } from '../../types/config.js';
 import type { MarketDataClient } from '../../types/marketPorts.js';
 import type { SymbolRegistry } from '../../types/seat.js';
-import type { Logger } from '../../utils/logger/types.js';
+import type { Logger } from '../../types/logger.js';
 
 /**
  * 候选搜索的真实装配依赖。

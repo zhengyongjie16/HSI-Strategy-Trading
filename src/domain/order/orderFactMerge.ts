@@ -1,8 +1,8 @@
 /** 订单累计事实纯裁决：单调数量、独立 revision/执行时间与终态资源事实，不提交 tracking 状态。 */
 
-import type { OrderReadStatus } from '../../types/orderReadMetadata.js';
+import type { OrderReadStatus, OrderStateCheckResult } from '../../types/orderReadMetadata.js';
 import type { BrokerOrderExecutionFact } from '../../types/orderRecorder.js';
-import type { OrderStateCheckResult } from '../../types/trader.js';
+
 import { exactCompare } from '../../utils/numeric/exact.js';
 import { mergeBrokerOrderExecutionFact } from './executionFact.js';
 import { orderReadStatusPriority } from './orderReadLifecycle.js';

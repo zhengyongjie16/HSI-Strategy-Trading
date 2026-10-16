@@ -1,3 +1,5 @@
+import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
+
 /**
  * ProtectiveLiquidationWorkflow 授权测试
  *
@@ -6,9 +8,9 @@
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import { createProtectiveLiquidationWorkflow } from '../../../src/application/protectiveLiquidation/index.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createSettlementRuntimeFixture } from '../../main/fixtures/settlementRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../../helpers/settlementRuntime.js';
 import {
   createAccountSnapshotDouble,
   createLoggerDouble,
@@ -16,7 +18,7 @@ import {
   createPositionDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
   createUnrealizedLossMonitorDouble,
 } from '../../helpers/testDoubles.js';
 
@@ -59,20 +61,26 @@ async function createScenario() {
       },
     }),
   });
-  const lastState = { canTrade: true, isTradingEnabled: true, isHalfDay: false };
+  const stateFixtures = createRuntimeStateFixtures({
+    tradingTimeState: { canTrade: true, isHalfDay: false },
+    lifecycleState: { isTradingEnabled: true },
+    tradingCalendarState: {},
+    quoteSubscriptionState: {},
+  });
   const termination = createTerminationRuntime({
     closeTradingGate: () => {
-      lastState.isTradingEnabled = false;
+      stateFixtures.lifecycleState.isTradingEnabled = false;
     },
     closeProducerAdmission: () => {},
     stopProducers: [],
     onSecondaryError: () => {},
   });
-  const trader = createTraderDouble();
+  const tradeRuntime = createTradeRuntimeDouble();
   const settlement = createSettlementRuntimeFixture({
+    logger: createLoggerDouble(),
     snapshot,
     termination,
-    getTrader: () => trader,
+    getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
     monitorContext,
     onPositionsCommitted: async (token) => {
       expect(
@@ -103,10 +111,10 @@ async function createScenario() {
     deps: {
       logger: createLoggerDouble(),
       snapshot,
-      trader,
+      orderExecutor: tradeRuntime.orderExecutor,
       monitorContext,
       symbolRegistry: monitorContext.symbolRegistry,
-      lastState,
+      ...stateFixtures,
       termination,
       postTradeConsistencyRuntime: settlement,
       doomsdayProtectionEnabled: false,

@@ -8,7 +8,8 @@ import { createCleanup } from '../../src/app/shutdown/createCleanup.js';
 import { createMixedTradeLogRepository } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import type { MixedTradeLogRepositoryDeps } from '../../src/infrastructure/persistence/mixedTradeLogRepository/types.js';
 import { createMonitorContext } from '../../src/app/context/createMonitorContext.js';
-import { createTimeWakeupRuntime } from '../../src/main/timeWakeupRuntime/index.js';
+import { createTimeWakeupRuntime } from '../../src/runtime/timeWakeupRuntime/index.js';
+import { executeStartupRebuild } from '../../src/application/tradingDayRebuild/startupRebuild.js';
 
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createBrokerClientFactoryDouble } from '../helpers/brokerClientFactoryDouble.js';
@@ -22,7 +23,7 @@ import type {
   AppEnvironmentParams,
 } from '../../src/app/types.js';
 import type { RuntimeTermination } from '../../src/types/runtime.js';
-import type { TraderDeps } from '../../src/app/runtime/types.js';
+import type { CreateTradeRuntimeDeps } from '../../src/app/runtime/types.js';
 import type { StrategyDeps, TradingSignalStrategy } from '../../src/types/strategy.js';
 import type { Processor } from '../../src/runtime/asyncProgram/types.js';
 import {
@@ -30,7 +31,7 @@ import {
   createSignalDouble,
   createMarketDataClientDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
 
 /** 挂起工作由真实 owner 持有，不相关处理器仅补齐端口。 */
@@ -40,7 +41,10 @@ function idleProcessor(): Processor {
 let importSequence = 0;
 
 /** 每格通过唯一模块 URL 捕获独立装配依赖，真实 PostTrade/Quote/context 保留不替换。 */
-async function harness(stage: 'trader' | 'rebuild' | 'quote' | 'time', teardownError?: Error) {
+async function harness(
+  stage: 'tradeRuntime' | 'rebuild' | 'quote' | 'time',
+  teardownError?: Error,
+) {
   const controlled = Promise.withResolvers<undefined>();
   const reached = Promise.withResolvers<undefined>();
   const trace: string[] = [];
@@ -57,39 +61,41 @@ async function harness(stage: 'trader' | 'rebuild' | 'quote' | 'time', teardownE
   let traderListeners = 0;
   let quoteBlocked = false;
   let ownedStrategy: TradingSignalStrategy | undefined;
-  const trader = createTraderDouble({
-    teardown: async () => {
-      trace.push('trader-teardown');
-      if (teardownError) throw teardownError;
-    },
-    stopOrderMonitorRuntimeAndDrain: async () => {
-      trace.push('trader-drain');
-    },
-    onOrderStateChanged: () => {
-      traderListeners++;
-      return () => {
-        traderListeners--;
-        trace.push('trader-unsubscribe');
-      };
+  const tradeRuntime = createTradeRuntimeDouble({
+    orderMonitor: {
+      teardown: async () => {
+        trace.push('tradeRuntime-teardown');
+        if (teardownError) throw teardownError;
+      },
+      stopRuntimeAndDrain: async () => {
+        trace.push('tradeRuntime-drain');
+      },
+      onOrderStateChanged: () => {
+        traderListeners++;
+        return () => {
+          traderListeners--;
+          trace.push('tradeRuntime-unsubscribe');
+        };
+      },
     },
   });
   mock.module('../../src/app/runtime/createPostGateRuntimeDeps.js', () => ({
     DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS: {
-      createTrader: async (_deps: TraderDeps) => {
-        trace.push('trader-acquire');
-        if (stage === 'trader') {
+      createTradeRuntime: async (_deps: CreateTradeRuntimeDeps) => {
+        trace.push('tradeRuntime-acquire');
+        if (stage === 'tradeRuntime') {
           reached.resolve();
           await controlled.promise;
         }
 
-        trace.push('trader-return');
-        return trader;
+        trace.push('tradeRuntime-return');
+        return tradeRuntime;
       },
       createMonitorContext: (params: Parameters<typeof createMonitorContext>[0]) => {
         contextCount++;
-        expect(trace).toContain('trader-return');
+        expect(trace).toContain('tradeRuntime-return');
         expect(ownedStrategy).toBe(params.strategy);
-        expect(params.postGateRuntime.trader).toBe(trader);
+        expect(params.postGateRuntime.tradeRuntime).toBe(tradeRuntime);
         trace.push('context');
         return createMonitorContext(params);
       },
@@ -109,6 +115,7 @@ async function harness(stage: 'trader' | 'rebuild' | 'quote' | 'time', teardownE
   ) => ReturnType<RunAppDeps['createPostGateRuntime']>;
   const logger = createLoggerDouble();
   const deps: RunAppDeps = {
+    executeStartupRebuild,
     prepareStrategy: async () => {
       prepareCount++;
       return {
@@ -157,7 +164,7 @@ async function harness(stage: 'trader' | 'rebuild' | 'quote' | 'time', teardownE
       });
       if (runtime !== null) {
         expect(ownedStrategy).toBe(runtime.monitorContext.strategy);
-        expect(params.resources.lastState).toBe(runtime.lastState);
+        expect(params.resources.lifecycleState).toBe(runtime.lifecycleState);
         expect(params.resources.buyTaskQueue).toBe(runtime.buyTaskQueue);
         expect(params.resources.sellTaskQueue).toBe(runtime.sellTaskQueue);
       }
@@ -288,7 +295,7 @@ describe('root termination with real post-gate ownership', () => {
       it(`${stage} pending × ${mode}: waits for settlement and never reopens`, async () => {
         const h = await harness(stage);
         const failure = { stage, mode };
-        const state = h.resources.current?.lastState;
+        const state = h.resources.current?.lifecycleState;
         // 重建与订阅对账等待期间保持门闭，只有完成同 token H/S 准入后才进入 time 阶段。
         expect(state?.isTradingEnabled).toBe(stage === 'time');
         if (mode === 'fatal') h.termination.current?.reportFatalError(failure);
@@ -328,7 +335,7 @@ describe('root termination with real post-gate ownership', () => {
         ).toBe(false);
         expect(h.counts().destroyCount).toBe(0);
         await Promise.resolve();
-        expect(h.trace).not.toContain('trader-drain');
+        expect(h.trace).not.toContain('tradeRuntime-drain');
         h.controlled.resolve();
         const result = await h.outcome;
         expect(result.error).toBe(mode === 'fatal' ? failure : undefined);
@@ -342,13 +349,13 @@ describe('root termination with real post-gate ownership', () => {
           traderListeners: 0,
           shutdownListeners: 0,
         });
-        expect(h.trace.filter((step) => step === 'trader-teardown')).toHaveLength(1);
-        expect(h.trace.indexOf('trader-drain')).toBeLessThan(
-          h.trace.lastIndexOf('trader-unsubscribe'),
+        expect(h.trace.filter((step) => step === 'tradeRuntime-teardown')).toHaveLength(1);
+        expect(h.trace.indexOf('tradeRuntime-drain')).toBeLessThan(
+          h.trace.lastIndexOf('tradeRuntime-unsubscribe'),
         );
 
-        expect(h.trace.lastIndexOf('trader-unsubscribe')).toBeLessThan(
-          h.trace.indexOf('trader-teardown'),
+        expect(h.trace.lastIndexOf('tradeRuntime-unsubscribe')).toBeLessThan(
+          h.trace.indexOf('tradeRuntime-teardown'),
         );
         h.shutdown();
         expect(h.counts().cleanupCount).toBe(1);
@@ -357,20 +364,20 @@ describe('root termination with real post-gate ownership', () => {
   }
 
   it('fatal during Trader acquire cleans the late owner without constructing context', async () => {
-    const h = await harness('trader');
+    const h = await harness('tradeRuntime');
     const error = new Error('acquire fatal');
     h.termination.current?.reportFatalError(error);
-    expect(h.resources.current?.lastState?.isTradingEnabled).toBe(false);
+    expect(h.resources.current?.lifecycleState?.isTradingEnabled).toBe(false);
     expect(h.counts().cleanupCount).toBe(0);
     expect(h.counts().contextCount).toBe(0);
     h.controlled.resolve();
     const result = await h.outcome;
     expect(result.error).toBe(error);
     expect(h.trace).toEqual([
-      'trader-acquire',
-      'trader-return',
-      'trader-drain',
-      'trader-teardown',
+      'tradeRuntime-acquire',
+      'tradeRuntime-return',
+      'tradeRuntime-drain',
+      'tradeRuntime-teardown',
       'shutdown-unsubscribe',
     ]);
 
@@ -386,13 +393,13 @@ describe('root termination with real post-gate ownership', () => {
   });
 
   it('terminal unsubscribe failure does not replace original fatal or stop later cleanup', async () => {
-    const h = await harness('trader', new Error('unsubscribe failed'));
+    const h = await harness('tradeRuntime', new Error('unsubscribe failed'));
     const originalFatal = new Error('original fatal');
     h.termination.current?.reportFatalError(originalFatal);
     h.controlled.resolve();
     const result = await h.outcome;
     expect(result.error).toBe(originalFatal);
-    expect(h.trace.filter((step) => step === 'trader-teardown')).toHaveLength(1);
+    expect(h.trace.filter((step) => step === 'tradeRuntime-teardown')).toHaveLength(1);
     expect(h.trace).toContain('shutdown-unsubscribe');
     expect(h.counts().destroyCount).toBe(1);
   });

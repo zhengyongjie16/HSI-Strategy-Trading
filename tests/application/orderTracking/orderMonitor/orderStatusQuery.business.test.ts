@@ -1,3 +1,5 @@
+import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
+
 /** 单订单权威查询：原23例经实际 SDK 读取与 mapper；查询任务的 abort owner 跨 await 保持不变。 */
 
 import { describe, expect, it } from 'bun:test';
@@ -40,6 +42,7 @@ async function createQueryContext(frames: ReadonlyArray<BrokerIngressInput>) {
   native.setExecutionReplies([]);
   const abortOwner = new AbortController();
   const query = native.createStateQuery({
+    requestExternalApi: wrapExternalApiRequest,
     rateLimiter: createRateLimiterDouble(),
     getExecutionTimeEvidence: () => [],
   });

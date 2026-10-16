@@ -790,7 +790,7 @@ pending
 以下是现存来源路径。P1 在 loader/rebuild 原调用链完成 snapshot writer/readers 与安全协议改造，不要求同时迁移整套订单/风险/席位重建用例。完整重建 owner 统一在 P5 闭合至 `application/tradingDayRebuild`，日切协调归 `runtime/lifecycle`；P3C 先完成其 activation barrier 接入。P1 若某旧 helper 已仅剩转发，立即删除并让调用方直接使用窄 snapshot 能力，不保留 façade：
 
 - 来源 `src/main/lifecycle/loadTradingDayRuntimeSnapshot.ts`、`src/main/lifecycle/rebuildTradingDayState.ts` -> `src/runtime/lifecycle/` 调度 + `src/application/tradingDayRebuild/` 用例。
-- 来源 `src/app/startup/startupSnapshot.ts`、`src/app/runApp.ts` -> `src/app/startup/` 与 composition；app 仅装配/验证调用。
+- 来源 `src/app/startup/startupSnapshot.ts`、`src/app/runApp.ts` -> `src/application/tradingDayRebuild/{startupSnapshot,startupRebuild}.ts` 承接启动快照与初次重建，`src/runtime/lifecycle/startupRuntime.ts` 承接具名启动协调；app 仅装配/验证调用。
 - canonical read/commit -> `src/application/accountPositionSnapshot/`，共享契约 -> `src/types/accountPosition.ts`。
 
 要求：
@@ -1611,6 +1611,8 @@ finalDrainAndDispose
 
 在 P1 已完成 snapshot 安全改造、P3C 已闭合 activation 门禁的基础上，此阶段完整迁移 `src/main/lifecycle/rebuildTradingDayState.ts` 的业务重建入口、完成条件和失败策略到 `application/tradingDayRebuild`；拆出 `runtime/lifecycle` 的具名日切/启停协调。迁移所有调用方与镜像测试，删除旧入口，不改变既有加载、恢复、激活和开门顺序。§4 的生命周期来源行中 P1/P3 只代表前置安全切片，P5 是完整 owner 的唯一截止阶段；P6 仅扫残留。
 
+具名接线固定为 `application/tradingDayRebuild/startupRebuild.ts::executeStartupRebuild` 与 `openRebuild.ts::executeTradingDayOpenRebuild`；启动本地重载、captured token、reconcile 和 baseline/fresh 完成条件不在 `runApp` 保留第二实现。`runtime/lifecycle/startupRuntime.ts::startRuntimeAfterStartupRebuild` 保留原启动顺序与 TimeWakeup 持续运行策略，`terminationRuntime.ts::createTerminationRuntime` 仅同步关门/停产并锁存首错，最终 drain 仍由顶层 await 唯一 cleanup。交易日解析器落于 `app/startup/tradingDayInfoResolver.ts`，日期键枚举直接使用 `utils/time/index.ts`。
+
 以 `src/app/runApp.ts`、`src/app/runtime/createPostGateRuntime.ts`（factory only）、迁移前来源 `src/main/lifecycle/cacheDomains/signalRuntimeDomain.ts`、`src/app/shutdown/createCleanup.ts` 为入口；最终目录分别是 `src/app/`, 具名 `src/runtime/*`, `src/application/tradingDayRebuild/` 和唯一 cleanup。登记：
 
 - 创建位置。
@@ -2187,7 +2189,7 @@ src/config/constants/types/utils
 | 成本、累计金额与日损益 | `tests/domain/risk/dailyLossTracker.segment.business.test.ts`；`tests/application/postTradeSettlement/postTradeSettlement.financial.test.ts`；`tests/integration/dailyLossAmountRevision.integration.test.ts` |
 | progress/baseline 比较与择新 | `tests/integration/architectureRefactoringRecovery/recovery.integration.test.ts`；`tests/domain/risk/{dailyLossExecutionBoundary,dailyLossRebuildPreparation}.test.ts`；金额 revision 与恢复后财务状态回归 |
 | V1 durable 规则 | `tests/infrastructure/persistence/mixedTradeLogRepository/business.test.ts`；`tests/domain/risk/dailyLossDurableDuplicate.test.ts`；恢复 fixtures 的原字节保留、重复/冲突拒绝 |
-| 离线 fixtures 恢复 | `tests/integration/architectureRefactoringRecovery/recovery.integration.test.ts` 的完整 loader/rebuild、BUY/SELL baseline、crash-gap、损益分段/冷却与重启；`tests/main/lifecycle/loadTradingDayRuntimeSnapshot.test.ts`；低位冲突无独立持久证据时 fail-fast，不伪造 correction |
+| 离线 fixtures 恢复 | `tests/integration/architectureRefactoringRecovery/recovery.integration.test.ts` 的完整 loader/rebuild、BUY/SELL baseline、crash-gap、损益分段/冷却与重启；`tests/application/tradingDayRebuild/loadTradingDayRuntimeSnapshot.test.ts`；低位冲突无独立持久证据时 fail-fast，不伪造 correction |
 | 技术指标与非金融路径 | `tests/domain/strategy/intradayRegression/indicators/`、信号/延迟验证与 `numericBoundary.test.ts`；保持指标 number 算法及合法结构数值边界 |
 | 金融显示 | `tests/infrastructure/display/{accountDisplay,marketMonitor}/business.test.ts`；`tests/utils/numeric/exact.test.ts` 的一次 half-even、尾零/高位及 `1.0051` 防二次舍入 |
 

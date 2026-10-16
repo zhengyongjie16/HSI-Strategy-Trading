@@ -1,3 +1,4 @@
+import { importFixtureModule } from '../../helpers/importFixtureModule.js';
 import assert from 'node:assert/strict';
 
 /** 单活跃加载离线测试：只操作临时目录，不运行应用入口/SDK。 */
@@ -396,7 +397,7 @@ describe('prepareStrategy', () => {
           ...f.deps,
           importModule: async (href): Promise<unknown> => {
             imports++;
-            return import(href);
+            return importFixtureModule(f.root, href);
           },
         });
         throw new Error('expected failure');
@@ -440,7 +441,7 @@ export const strategyDefinition = {
         ...f.deps,
         importModule: async (href): Promise<unknown> => {
           imported.push(fileURLToPath(href));
-          return import(href);
+          return importFixtureModule(f.root, href);
         },
       },
     );

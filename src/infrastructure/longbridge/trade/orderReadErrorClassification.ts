@@ -5,7 +5,7 @@ import {
   ORDER_API_TRANSIENT_STATUS_CODE_SET,
 } from '../../../constants/index.js';
 import { isRecord } from '../../../utils/helpers/index.js';
-import { logger } from '../../../utils/logger/index.js';
+import { logger } from '../../logger/index.js';
 
 /**
  * 从对象字段中提取错误码。

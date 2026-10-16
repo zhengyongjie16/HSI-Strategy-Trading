@@ -1,3 +1,5 @@
+import type { RuntimeStateFixtures } from '../helpers/types.js';
+
 /**
  * periodic-auto-symbol-chain 集成测试
  *
@@ -11,18 +13,18 @@ import { describe, expect, it } from 'bun:test';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import type { AccountPositionSnapshot } from '../../src/types/accountPosition.js';
-import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
+import type { PostTradeConsistencyRuntime, TradeRuntime } from '../../src/app/runtime/types.js';
 import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import type { PeriodicSwitchTaskData } from '../../src/types/periodicSwitch.js';
 import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
 import { createPeriodicSwitchWakeupRuntime } from '../../src/runtime/periodicSwitchWakeupRuntime/index.js';
-import { calculateTradingDurationDueAtMs } from '../../src/utils/time/index.js';
+import { calculateTradingDurationDueAtMs } from '../../src/domain/tradingSession/index.js';
 import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import { createMonitorTaskProcessor } from '../../src/runtime/asyncProgram/monitorTaskProcessor/index.js';
 import { createSwitchWakeupRuntime } from '../../src/runtime/monitorQuoteEventRuntime/switchWakeupRuntime.js';
-import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
+import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../src/runtime/tradingGateEventRuntime/index.js';
 
-import type { LastState, MonitorContext } from '../../src/types/state.js';
+import type { MonitorContextAssembly } from '../../src/app/context/types.js';
 import type { MonitorTaskDataMap } from '../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type { SwitchWakeupRuntime } from '../../src/runtime/monitorQuoteEventRuntime/types.js';
 
@@ -38,7 +40,7 @@ import {
   createLiquidationCooldownTrackerDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createRiskCheckerDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
   createQuoteSubscriptionRuntimeDouble,
   createWarrantDistanceInfoDouble,
 } from '../helpers/testDoubles.js';
@@ -64,19 +66,17 @@ const MONITOR_TASK_RUNTIME = {
   },
 };
 
-function createLastState(): LastState {
+function createRuntimeStates(): RuntimeStateFixtures {
   return {
-    canTrade: true,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: '2026-02-16',
-    lifecycleState: 'ACTIVE',
-    pendingOpenRebuild: false,
-    isTradingEnabled: true,
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-
-    allTradingSymbols: new Set(),
+    tradingTimeState: { canTrade: true, isHalfDay: false, openProtectionActive: false },
+    lifecycleState: {
+      currentDayKey: '2026-02-16',
+      lifecycleState: 'ACTIVE',
+      pendingOpenRebuild: false,
+      isTradingEnabled: true,
+    },
+    tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
   };
 }
 
@@ -111,9 +111,9 @@ async function firePeriodicTimers(
 
 function createStartedSwitchWakeupRuntime(
   params: Readonly<{
-    monitorContext: MonitorContext;
-    trader: Parameters<typeof createSwitchWakeupRuntime>[0]['trader'];
-    lastState: LastState;
+    monitorContext: MonitorContextAssembly;
+    tradeRuntime: TradeRuntime;
+    stateFixtures: RuntimeStateFixtures;
     snapshot: AccountPositionSnapshot;
     settlement: PostTradeConsistencyRuntime;
     now: () => Date;
@@ -122,10 +122,10 @@ function createStartedSwitchWakeupRuntime(
   const runtime = createSwitchWakeupRuntime({
     logger: { error: () => {} },
     marketDataClient: createMarketDataClientDouble(),
-    trader: params.trader,
+    orderMonitor: params.tradeRuntime.orderMonitor,
     symbolRegistry: params.monitorContext.symbolRegistry,
     monitorContext: params.monitorContext,
-    lastState: params.lastState,
+    ...params.stateFixtures,
     snapshot: params.snapshot,
     postTradeConsistencyRuntime: params.settlement,
     tradingGateEventRuntime: createTradingGateEventRuntime(),
@@ -202,18 +202,22 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     let mutationCalls = 0;
-    const trader = createTraderDouble({
-      executeSignals: async (_signals, callerAuthorization) => {
-        mutationCalls += 1;
-        if (!callerAuthorization()) throw new Error('periodic stale mutation attempted');
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          mutationCalls += 1;
+          if (!callerAuthorization()) throw new Error('periodic stale mutation attempted');
 
-        throw new Error('periodic switch must never SELL or REBUY');
+          throw new Error('periodic switch must never SELL or REBUY');
+        },
       },
-      getPendingOrders: async () => [],
-      cancelOrder: async () => ({
-        kind: 'CANCEL_CONFIRMED',
-        relatedBuyOrderIds: null,
-      }),
+      cacheManager: { getPendingOrders: async () => [] },
+      orderMonitor: {
+        cancelOrder: async () => ({
+          kind: 'CANCEL_CONFIRMED',
+          relatedBuyOrderIds: null,
+        }),
+      },
     });
     const orderRecorder = createOrderRecorderDouble({
       getBuyOrdersForSymbol: () => [],
@@ -232,7 +236,10 @@ describe('periodic auto-symbol full chain integration', () => {
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble(),
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker,
       candidateSearch: {
@@ -246,7 +253,7 @@ describe('periodic auto-symbol full chain integration', () => {
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
 
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const dailyLossTracker = createDailyLossTrackerDouble();
     const preparedDaily = dailyLossTracker.prepareRecalculationFromAllOrders(
       [],
@@ -272,7 +279,7 @@ describe('periodic auto-symbol full chain integration', () => {
       }),
       seatSwitch: seatSwitch,
     };
-    const lastState = createLastState();
+    const stateFixtures = createRuntimeStates();
     const snapshot = createAccountPositionSnapshot({
       dayEpoch: 1,
       scheduler: { schedule: queueMicrotask },
@@ -291,9 +298,10 @@ describe('periodic auto-symbol full chain integration', () => {
     if (baseline.status !== 'COMMITTED') throw new Error('expected real canonical paired commit');
 
     const settlement = createPostTradeConsistencyRuntime({
+      logger: createLoggerDouble(),
       snapshot,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
-      getTrader: () => trader,
+      getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
       onPositionsCommitted: async (token) => {
         if (!snapshot.isCurrent(token, { account: false, positions: true }))
           throw new Error('old position subscription commit');
@@ -318,8 +326,8 @@ describe('periodic auto-symbol full chain integration', () => {
     expect(settlement.isCurrent(readinessReceipt)).toBeTrue();
     const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
       monitorContext,
-      trader,
-      lastState,
+      tradeRuntime,
+      stateFixtures: stateFixtures,
       snapshot,
       settlement,
       now: () => new Date(currentNowMs),
@@ -343,9 +351,11 @@ describe('periodic auto-symbol full chain integration', () => {
           return monitorTaskQueue.scheduleLatest(task);
         },
       },
-      trader,
+      orderMonitor: tradeRuntime.orderMonitor,
       snapshot,
-      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      getCanTradeNow: () =>
+        stateFixtures.lifecycleState.isTradingEnabled &&
+        stateFixtures.tradingTimeState.canTrade === true,
       postTradeConsistencyRuntime: settlement,
       tradingGateEventRuntime: createTradingGateEventRuntime(),
       calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
@@ -371,7 +381,9 @@ describe('periodic auto-symbol full chain integration', () => {
       switchWakeupRuntime,
       periodicSwitchWakeupRuntime,
       snapshot,
-      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      getCanTradeNow: () =>
+        stateFixtures.lifecycleState.isTradingEnabled &&
+        stateFixtures.tradingTimeState.canTrade === true,
       logger: createLoggerStub(),
       now: () => new Date(currentNowMs),
     });
@@ -470,19 +482,23 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     let mutationCalls = 0;
-    const trader = createTraderDouble({
-      executeSignals: async (_signals, callerAuthorization) => {
-        mutationCalls += 1;
-        if (!callerAuthorization()) throw new Error('periodic stale mutation attempted');
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          mutationCalls += 1;
+          if (!callerAuthorization()) throw new Error('periodic stale mutation attempted');
 
-        throw new Error('periodic switch must never SELL or REBUY');
+          throw new Error('periodic switch must never SELL or REBUY');
+        },
       },
-      getPendingOrders: async () => [],
-      getOrderHoldSymbols: () => new Set(['OLD_BULL.HK']),
-      cancelOrder: async () => ({
-        kind: 'CANCEL_CONFIRMED',
-        relatedBuyOrderIds: null,
-      }),
+      cacheManager: { getPendingOrders: async () => [] },
+      orderHoldRegistry: { getHoldSymbols: () => new Set(['OLD_BULL.HK']) },
+      orderMonitor: {
+        cancelOrder: async () => ({
+          kind: 'CANCEL_CONFIRMED',
+          relatedBuyOrderIds: null,
+        }),
+      },
     });
 
     const orderRecorder = createOrderRecorderDouble({
@@ -502,7 +518,10 @@ describe('periodic auto-symbol full chain integration', () => {
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble(),
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker,
       candidateSearch: {
@@ -516,7 +535,7 @@ describe('periodic auto-symbol full chain integration', () => {
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
 
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const dailyLossTracker = createDailyLossTrackerDouble();
     const preparedDaily = dailyLossTracker.prepareRecalculationFromAllOrders(
       [],
@@ -542,7 +561,7 @@ describe('periodic auto-symbol full chain integration', () => {
       }),
       seatSwitch: seatSwitch,
     };
-    const lastState = createLastState();
+    const stateFixtures = createRuntimeStates();
     const snapshot = createAccountPositionSnapshot({
       dayEpoch: 1,
       scheduler: { schedule: queueMicrotask },
@@ -561,9 +580,10 @@ describe('periodic auto-symbol full chain integration', () => {
     if (baseline.status !== 'COMMITTED') throw new Error('expected real canonical paired commit');
 
     const settlement = createPostTradeConsistencyRuntime({
+      logger: createLoggerDouble(),
       snapshot,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
-      getTrader: () => trader,
+      getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
       onPositionsCommitted: async (token) => {
         if (!snapshot.isCurrent(token, { account: false, positions: true }))
           throw new Error('old position subscription commit');
@@ -588,8 +608,8 @@ describe('periodic auto-symbol full chain integration', () => {
     expect(settlement.isCurrent(readinessReceipt)).toBeTrue();
     const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
       monitorContext,
-      trader,
-      lastState,
+      tradeRuntime,
+      stateFixtures: stateFixtures,
       snapshot,
       settlement,
       now: () => new Date(currentNowMs),
@@ -613,9 +633,11 @@ describe('periodic auto-symbol full chain integration', () => {
           return monitorTaskQueue.scheduleLatest(task);
         },
       },
-      trader,
+      orderMonitor: tradeRuntime.orderMonitor,
       snapshot,
-      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      getCanTradeNow: () =>
+        stateFixtures.lifecycleState.isTradingEnabled &&
+        stateFixtures.tradingTimeState.canTrade === true,
       postTradeConsistencyRuntime: settlement,
       tradingGateEventRuntime: createTradingGateEventRuntime(),
       calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
@@ -641,7 +663,9 @@ describe('periodic auto-symbol full chain integration', () => {
       switchWakeupRuntime,
       periodicSwitchWakeupRuntime,
       snapshot,
-      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      getCanTradeNow: () =>
+        stateFixtures.lifecycleState.isTradingEnabled &&
+        stateFixtures.tradingTimeState.canTrade === true,
       logger: createLoggerStub(),
       now: () => new Date(currentNowMs),
     });
@@ -721,19 +745,23 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     let mutationCalls = 0;
-    const trader = createTraderDouble({
-      executeSignals: async (_signals, callerAuthorization) => {
-        mutationCalls += 1;
-        if (!callerAuthorization()) throw new Error('periodic stale mutation attempted');
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          mutationCalls += 1;
+          if (!callerAuthorization()) throw new Error('periodic stale mutation attempted');
 
-        throw new Error('periodic switch must never SELL or REBUY');
+          throw new Error('periodic switch must never SELL or REBUY');
+        },
       },
-      getPendingOrders: async () => [],
-      getOrderHoldSymbols: () => new Set(['OLD_BULL.HK']),
-      cancelOrder: async () => ({
-        kind: 'CANCEL_CONFIRMED',
-        relatedBuyOrderIds: null,
-      }),
+      cacheManager: { getPendingOrders: async () => [] },
+      orderHoldRegistry: { getHoldSymbols: () => new Set(['OLD_BULL.HK']) },
+      orderMonitor: {
+        cancelOrder: async () => ({
+          kind: 'CANCEL_CONFIRMED',
+          relatedBuyOrderIds: null,
+        }),
+      },
     });
 
     const orderRecorder = createOrderRecorderDouble({
@@ -753,7 +781,10 @@ describe('periodic auto-symbol full chain integration', () => {
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble(),
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker,
       candidateSearch: {
@@ -767,7 +798,7 @@ describe('periodic auto-symbol full chain integration', () => {
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
 
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const dailyLossTracker = createDailyLossTrackerDouble();
     const preparedDaily = dailyLossTracker.prepareRecalculationFromAllOrders(
       [],
@@ -793,7 +824,7 @@ describe('periodic auto-symbol full chain integration', () => {
       }),
       seatSwitch: seatSwitch,
     };
-    const lastState = createLastState();
+    const stateFixtures = createRuntimeStates();
     const snapshot = createAccountPositionSnapshot({
       dayEpoch: 1,
       scheduler: { schedule: queueMicrotask },
@@ -812,9 +843,10 @@ describe('periodic auto-symbol full chain integration', () => {
     if (baseline.status !== 'COMMITTED') throw new Error('expected real canonical paired commit');
 
     const settlement = createPostTradeConsistencyRuntime({
+      logger: createLoggerDouble(),
       snapshot,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
-      getTrader: () => trader,
+      getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
       onPositionsCommitted: async (token) => {
         if (!snapshot.isCurrent(token, { account: false, positions: true }))
           throw new Error('old position subscription commit');
@@ -839,8 +871,8 @@ describe('periodic auto-symbol full chain integration', () => {
     expect(settlement.isCurrent(readinessReceipt)).toBeTrue();
     const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
       monitorContext,
-      trader,
-      lastState,
+      tradeRuntime,
+      stateFixtures: stateFixtures,
       snapshot,
       settlement,
       now: () => new Date(currentNowMs),
@@ -864,9 +896,11 @@ describe('periodic auto-symbol full chain integration', () => {
           return monitorTaskQueue.scheduleLatest(task);
         },
       },
-      trader,
+      orderMonitor: tradeRuntime.orderMonitor,
       snapshot,
-      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      getCanTradeNow: () =>
+        stateFixtures.lifecycleState.isTradingEnabled &&
+        stateFixtures.tradingTimeState.canTrade === true,
       postTradeConsistencyRuntime: settlement,
       tradingGateEventRuntime: createTradingGateEventRuntime(),
       calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
@@ -892,7 +926,9 @@ describe('periodic auto-symbol full chain integration', () => {
       switchWakeupRuntime,
       periodicSwitchWakeupRuntime,
       snapshot,
-      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      getCanTradeNow: () =>
+        stateFixtures.lifecycleState.isTradingEnabled &&
+        stateFixtures.tradingTimeState.canTrade === true,
       logger: createLoggerStub(),
       now: () => new Date(currentNowMs),
     });
@@ -973,18 +1009,22 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     let mutationCalls = 0;
-    const trader = createTraderDouble({
-      executeSignals: async (_signals, callerAuthorization) => {
-        mutationCalls += 1;
-        if (!callerAuthorization()) throw new Error('periodic stale mutation attempted');
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          mutationCalls += 1;
+          if (!callerAuthorization()) throw new Error('periodic stale mutation attempted');
 
-        throw new Error('periodic switch must never SELL or REBUY');
+          throw new Error('periodic switch must never SELL or REBUY');
+        },
       },
-      getPendingOrders: async () => [],
-      cancelOrder: async () => ({
-        kind: 'CANCEL_CONFIRMED',
-        relatedBuyOrderIds: null,
-      }),
+      cacheManager: { getPendingOrders: async () => [] },
+      orderMonitor: {
+        cancelOrder: async () => ({
+          kind: 'CANCEL_CONFIRMED',
+          relatedBuyOrderIds: null,
+        }),
+      },
     });
 
     const orderRecorder = createOrderRecorderDouble({
@@ -1004,7 +1044,10 @@ describe('periodic auto-symbol full chain integration', () => {
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble(),
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker,
       candidateSearch: {
@@ -1018,7 +1061,7 @@ describe('periodic auto-symbol full chain integration', () => {
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
 
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const dailyLossTracker = createDailyLossTrackerDouble();
     const preparedDaily = dailyLossTracker.prepareRecalculationFromAllOrders(
       [],
@@ -1044,7 +1087,7 @@ describe('periodic auto-symbol full chain integration', () => {
       }),
       seatSwitch: seatSwitch,
     };
-    const lastState = createLastState();
+    const stateFixtures = createRuntimeStates();
     const snapshot = createAccountPositionSnapshot({
       dayEpoch: 1,
       scheduler: { schedule: queueMicrotask },
@@ -1063,9 +1106,10 @@ describe('periodic auto-symbol full chain integration', () => {
     if (baseline.status !== 'COMMITTED') throw new Error('expected real canonical paired commit');
 
     const settlement = createPostTradeConsistencyRuntime({
+      logger: createLoggerDouble(),
       snapshot,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
-      getTrader: () => trader,
+      getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
       onPositionsCommitted: async (token) => {
         if (!snapshot.isCurrent(token, { account: false, positions: true }))
           throw new Error('old position subscription commit');
@@ -1090,8 +1134,8 @@ describe('periodic auto-symbol full chain integration', () => {
     expect(settlement.isCurrent(readinessReceipt)).toBeTrue();
     const switchWakeupRuntime = createStartedSwitchWakeupRuntime({
       monitorContext,
-      trader,
-      lastState,
+      tradeRuntime,
+      stateFixtures: stateFixtures,
       snapshot,
       settlement,
       now: () => new Date(currentNowMs),
@@ -1115,9 +1159,11 @@ describe('periodic auto-symbol full chain integration', () => {
           return monitorTaskQueue.scheduleLatest(task);
         },
       },
-      trader,
+      orderMonitor: tradeRuntime.orderMonitor,
       snapshot,
-      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      getCanTradeNow: () =>
+        stateFixtures.lifecycleState.isTradingEnabled &&
+        stateFixtures.tradingTimeState.canTrade === true,
       postTradeConsistencyRuntime: settlement,
       tradingGateEventRuntime: createTradingGateEventRuntime(),
       calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
@@ -1143,7 +1189,9 @@ describe('periodic auto-symbol full chain integration', () => {
       switchWakeupRuntime,
       periodicSwitchWakeupRuntime,
       snapshot,
-      getCanTradeNow: () => lastState.isTradingEnabled && lastState.canTrade === true,
+      getCanTradeNow: () =>
+        stateFixtures.lifecycleState.isTradingEnabled &&
+        stateFixtures.tradingTimeState.canTrade === true,
       logger: createLoggerStub(),
       now: () => new Date(currentNowMs),
     });

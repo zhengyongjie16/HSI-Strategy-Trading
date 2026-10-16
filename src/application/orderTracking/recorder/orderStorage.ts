@@ -1,3 +1,5 @@
+import type { Logger } from '../../../types/logger.js';
+
 /**
  * 订单存储管理模块
  *
@@ -22,16 +24,16 @@ import {
   selectTimedOutOrders,
 } from '../../../domain/order/orderRecordPolicy.js';
 import { compareBuyOrdersBySellPriority } from '../../../domain/order/sellDeductionPolicy.js';
-import type { OrderCostBasis } from '../../../types/orderRecorder.js';
-import type { Quote } from '../../../types/quote.js';
 import type {
+  OrderCostBasis,
   OrderRecord,
   PendingSellInfo,
   SellableOrderResult,
   SellableOrderSelectParams,
-} from '../../../types/services.js';
+} from '../../../types/orderRecorder.js';
+import type { Quote } from '../../../types/quote.js';
+
 import { formatSymbolDisplayFromQuote } from '../../../utils/display/index.js';
-import { logger } from '../../../utils/logger/index.js';
 import type { OrderStorage } from './types.js';
 
 /**
@@ -39,7 +41,7 @@ import type { OrderStorage } from './types.js';
  * 管理本地订单增删改查、待成交卖单追踪与可卖订单策略筛选，供 orderRecorder 与风控使用。
  * @returns OrderStorage 接口实例
  */
-export const createOrderStorage = (): OrderStorage => {
+export const createOrderStorage = (logger: Logger): OrderStorage => {
   // 使用 Map 存储订单，key 为 symbol，提供 O(1) 查找性能
   const longBuyOrdersMap: Map<string, OrderRecord[]> = new Map();
   const shortBuyOrdersMap: Map<string, OrderRecord[]> = new Map();

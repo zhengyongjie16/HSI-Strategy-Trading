@@ -46,15 +46,15 @@ export function createProtectiveLiquidationWorkflow(
     if (
       !isExecutionActive() ||
       deps.termination.isTerminated() ||
-      !deps.lastState.isTradingEnabled ||
-      deps.lastState.canTrade !== true
+      !deps.lifecycleState.isTradingEnabled ||
+      deps.tradingTimeState.canTrade !== true
     ) {
       return false;
     }
 
     return (
       !deps.doomsdayProtectionEnabled ||
-      !isWithinDoomsdayClearanceTakeoverWindow(deps.now(), deps.lastState.isHalfDay ?? false)
+      !isWithinDoomsdayClearanceTakeoverWindow(deps.now(), deps.tradingTimeState.isHalfDay ?? false)
     );
   }
 
@@ -150,7 +150,7 @@ export function createProtectiveLiquidationWorkflow(
       riskChecker,
       orderRecorder,
       dailyLossTracker,
-      trader: deps.trader,
+      orderExecutor: deps.orderExecutor,
       isCurrent,
     });
     if (!isCurrent() && !accepted && isIdentityCurrent()) {

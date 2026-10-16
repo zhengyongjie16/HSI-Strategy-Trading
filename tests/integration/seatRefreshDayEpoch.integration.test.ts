@@ -1,18 +1,5 @@
-/**
- * M7 真实 dispatcher → latest-only queue → processor/handler 交错测试。
- * 入队 epoch 不被消费时新日洗白；首 await 与失败 retry/耗尽都不能向新日发布旧席位工作。
- */
-import { describe, expect, it, spyOn } from 'bun:test';
-import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
-import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
-import { createSeatActivationDispatcher } from '../../src/runtime/seatActivationDispatcher/index.js';
-import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
-import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessor } from '../runtime/asyncProgram/monitorTaskProcessor/fixtures.js';
-import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
-import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
-import type { MonitorTaskDataMap } from '../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
-import type { RuntimeScheduler } from '../../src/types/runtime.js';
 import {
+  createLoggerDouble,
   createAccountSnapshotDouble,
   createMarketDataClientDouble,
   createMonitorConfigDouble,
@@ -21,8 +8,23 @@ import {
   createQuoteDouble,
   createQuoteSubscriptionRuntimeDouble,
   createRiskCheckerDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
+
+/**
+ * M7 真实 dispatcher → latest-only queue → processor/handler 交错测试。
+ * 入队 epoch 不被消费时新日洗白；首 await 与失败 retry/耗尽都不能向新日发布旧席位工作。
+ */
+import { describe, expect, it, spyOn } from 'bun:test';
+import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
+import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
+import { createSeatActivationDispatcher } from '../../src/runtime/seatActivationDispatcher/index.js';
+import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
+import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessor } from '../runtime/asyncProgram/monitorTaskProcessor/fixtures.js';
+import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
+import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
+import type { MonitorTaskDataMap } from '../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
+import type { RuntimeScheduler } from '../../src/types/runtime.js';
 
 async function flush(): Promise<void> {
   await new Promise<void>((resolve) => {
@@ -57,7 +59,7 @@ async function createHarness(
   });
   const config = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK', longSymbol: 'BULL.HK' });
   const registry = createSymbolRegistry(config);
-  const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+  const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
   const timerCallbacks = new Map<ReturnType<typeof setTimeout>, () => void>();
   const scheduler: RuntimeScheduler = {
     scheduleTimer: (callback) => {
@@ -106,7 +108,9 @@ async function createHarness(
     monitorTaskQueue: queue,
     snapshot,
     monitorContext: context,
-    trader: createTraderDouble({ fetchAllOrdersFromAPI: async () => [] }),
+    tradeRuntime: createTradeRuntimeDouble({
+      orderRecorder: { fetchAllOrdersFromAPI: async () => [] },
+    }),
     marketDataClient: market,
     quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble({
       retainSymbols: async () => {
@@ -128,6 +132,7 @@ async function createHarness(
     termination,
   });
   const dispatcher = createSeatActivationDispatcher({
+    logger: createLoggerDouble(),
     snapshot,
     symbolRegistry: registry,
     monitorTaskQueue: queue,

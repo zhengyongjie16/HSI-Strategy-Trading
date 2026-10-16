@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../helpers/testDoubles.js';
+
 /**
  * 宿主配置边界测试：交易配置只包含执行、席位与风险政策，不读取或展示策略私有规则。
  */
@@ -5,7 +7,6 @@ import { describe, expect, it, spyOn } from 'bun:test';
 import { createTradingConfig as parseTradingConfig } from '../../src/config/trading/index.js';
 import { validateAllConfig } from '../../src/config/validator/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { logger } from '../../src/utils/logger/index.js';
 
 describe('host configuration boundary', () => {
   it('parses and validates complete host configuration without private strategy inputs', async () => {
@@ -43,7 +44,7 @@ describe('host configuration boundary', () => {
         },
       },
     );
-    const config = parseTradingConfig({ env });
+    const config = parseTradingConfig({ logger: createLoggerDouble(), env });
     const expectedMonitorKeys = [
       'monitorSymbol',
       'longSymbol',
@@ -76,11 +77,12 @@ describe('host configuration boundary', () => {
     expect(config.monitor.smartCloseTimeoutMinutes).toBe(0);
 
     const messages: string[] = [];
+    const logger = createLoggerDouble();
     const info = spyOn(logger, 'info').mockImplementation((message) => {
       messages.push(message);
     });
     try {
-      await validateAllConfig({ env, tradingConfig: config });
+      await validateAllConfig({ logger, env, tradingConfig: config });
       expect(messages).toContain('监控标的: HSI.HK');
       expect(messages).toContain('保护性清仓后买入冷却: half-day');
       expect(

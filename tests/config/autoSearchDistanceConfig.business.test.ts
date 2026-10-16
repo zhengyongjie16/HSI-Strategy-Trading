@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../helpers/testDoubles.js';
+
 /**
  * autoSearchDistance 配置业务测试
  *
@@ -49,6 +51,7 @@ async function validateMonitorConfig(
 ): Promise<boolean> {
   try {
     await validateAllConfig({
+      logger: createLoggerDouble(),
       env: {
         LONGBRIDGE_AUTH_MODE: 'oauth',
         LONGBRIDGE_CLIENT_ID: 'client-id',
@@ -67,6 +70,7 @@ async function validateMonitorConfig(
 describe('auto search distance config business flow', () => {
   it('keeps AUTO_SEARCH_MIN_DISTANCE_PCT_* as percent-value runtime units', () => {
     const config = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({
         AUTO_SEARCH_ENABLED: 'true',
         AUTO_SEARCH_MIN_DISTANCE_PCT_BULL: '0.35',

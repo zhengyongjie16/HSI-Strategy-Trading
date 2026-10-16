@@ -7,8 +7,7 @@
 import { createPostTradeSettlementWorkflow } from '../../application/postTradeSettlement/index.js';
 import { API } from '../../constants/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
-import { logger } from '../../utils/logger/index.js';
-import type { PostTradeConsistencyRuntime, PostTradeConsistencyRuntimeDeps } from '../types.js';
+import type { PostTradeConsistencyRuntime, PostTradeConsistencyRuntimeDeps } from './types.js';
 
 /** 创建真实 application owner，仅装配事实能力与配置绑定，不包裹逐方法业务委托。 */
 export function createPostTradeConsistencyRuntime(
@@ -18,12 +17,12 @@ export function createPostTradeConsistencyRuntime(
     snapshot: deps.snapshot,
     scheduler: deps.scheduler,
     termination: deps.termination,
-    logger,
+    logger: deps.logger,
     retryDelayMs: API.DEFAULT_RETRY_DELAY_MS,
     isExternalFailure: isExternalApiRequestError,
     onPositionsCommitted: deps.onPositionsCommitted,
     hasPendingProtectiveOrders: (direction) =>
-      deps.getTrader().hasPendingProtectiveLiquidationOrders(direction),
+      deps.getProtectiveOrderReader().hasPendingProtectiveLiquidationOrders(direction),
   });
 
   return {

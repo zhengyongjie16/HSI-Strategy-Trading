@@ -1,10 +1,11 @@
-import type { Logger } from '../../utils/logger/types.js';
+import type { SignalExecutor } from '../../types/orderExecutionPorts.js';
+import type { Logger } from '../../types/logger.js';
 import type { Position } from '../../types/account.js';
 import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
 import type { MonitorConfig } from '../../types/config.js';
 import type { Quote } from '../../types/quote.js';
 import type { ExecutableSellSignal } from '../../types/signal.js';
-import type { OrderRecorder, Trader } from '../../types/services.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { SettlementFreshnessReader } from '../../types/settlement.js';
 import type { MarketDataClient } from '../../types/marketPorts.js';
@@ -65,7 +66,7 @@ export interface OrdinarySellWorkflowDeps {
   readonly config: Pick<MonitorConfig, 'smartCloseEnabled' | 'smartCloseTimeoutMinutes'>;
   readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
   readonly orderRecorder: ProcessSellSignalsParams['orderRecorder'];
-  readonly trader: Pick<Trader, 'executeSignals'>;
+  readonly orderExecutor: SignalExecutor;
   readonly marketDataClient: Pick<MarketDataClient, 'getQuotes'>;
   readonly snapshot: Pick<
     AccountPositionSnapshotReader,

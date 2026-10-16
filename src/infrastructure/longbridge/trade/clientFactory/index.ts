@@ -1,7 +1,7 @@
 /**
  * Longbridge 客户端装配工厂。
  * 私有持有唯一 SDK Config，只向 app 返回中性创建能力；不在认证阶段创建行情或交易 context。
- * 行情仍由 pre-gate 创建，交易 context 仍在 createTrader 原 try 内同步延迟创建。
+ * 行情仍由 pre-gate 创建，交易 context 仍在 createTradeRuntime 原 try 内同步延迟创建。
  */
 import { createMarketDataClient } from '../../market/quoteClient.js';
 import { createBrokerAccessFactory } from '../brokerAccessAdapter.js';

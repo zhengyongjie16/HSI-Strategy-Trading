@@ -1008,7 +1008,7 @@ export async function createBrokerIngressFixture(
       positionsSymbols.map((symbols) =>
         symbols === null || symbols === undefined ? symbols : [...symbols],
       ),
-    // 与生产相同同步创建边沿；createTrader 的原 try 负责失败 Promise 化。
+    // 与生产相同同步创建边沿；createTradeRuntime 的原 try 负责失败 Promise 化。
     brokerAccess: () => {
       contextCreations++;
       if (contextCreationFailure !== null) throw contextCreationFailure;

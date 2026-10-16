@@ -1,3 +1,7 @@
+import { nowMonotonicMs, wait } from '../../../src/infrastructure/time/index.js';
+
+import { createLoggerDouble } from '../../helpers/testDoubles.js';
+
 /**
  * rateLimiter 业务测试
  *
@@ -31,6 +35,9 @@ describe('rateLimiter business behavior', () => {
 
     try {
       const limiter = createRateLimiter({
+        wait: wait,
+        nowMonotonicMs: nowMonotonicMs,
+        logger: createLoggerDouble(),
         config: {
           maxCalls: 30,
           windowMs: 30_000,
@@ -74,6 +81,9 @@ describe('rateLimiter business behavior', () => {
 
     try {
       const limiter = createRateLimiter({
+        wait: wait,
+        nowMonotonicMs: nowMonotonicMs,
+        logger: createLoggerDouble(),
         config: {
           maxCalls: 30,
           windowMs: 30_000,
@@ -106,6 +116,9 @@ describe('rateLimiter business behavior', () => {
 
   it('serializes concurrent cancel submit and replace mutations through one callback permit', async () => {
     const limiter = createRateLimiter({
+      wait: wait,
+      nowMonotonicMs: nowMonotonicMs,
+      logger: createLoggerDouble(),
       config: {
         maxCalls: 30,
         windowMs: 30_000,
@@ -184,6 +197,9 @@ describe('rateLimiter business behavior', () => {
 
     try {
       const limiter = createRateLimiter({
+        wait: wait,
+        nowMonotonicMs: nowMonotonicMs,
+        logger: createLoggerDouble(),
         config: {
           maxCalls: 1,
           windowMs: 30_000,

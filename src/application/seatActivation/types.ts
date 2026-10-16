@@ -7,9 +7,10 @@ import type { Quote } from '../../types/quote.js';
 import type { DailyLossMonitorScope, DailyLossTracker } from '../../types/risk.js';
 import type { RuntimeClock } from '../../types/runtime.js';
 import type { SeatState, SymbolRegistry } from '../../types/seat.js';
-import type { PreparedUnrealizedLossData, WarrantRefreshResult } from '../../types/services.js';
+import type { PreparedUnrealizedLossData } from '../../types/unrealizedLoss.js';
+import type { WarrantRefreshResult } from '../../types/warrantRisk.js';
 import type { OrderFact } from '../../types/trade.js';
-import type { Logger } from '../../utils/logger/types.js';
+import type { Logger } from '../../types/logger.js';
 
 /** 入队时固定的激活身份；重试保留 epoch、方向、版本与真实 previousSymbol，不改用当前身份。 */
 export type SeatActivationRequest = Readonly<{

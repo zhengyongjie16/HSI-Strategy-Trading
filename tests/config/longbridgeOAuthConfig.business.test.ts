@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../helpers/testDoubles.js';
+
 /**
  * Longbridge 认证配置业务测试
  *
@@ -22,6 +24,7 @@ function createTradingConfigForValidation() {
 async function validateEnv(env: NodeJS.ProcessEnv): Promise<unknown> {
   try {
     await validateAllConfig({
+      logger: createLoggerDouble(),
       env,
       tradingConfig: createTradingConfigForValidation(),
     });

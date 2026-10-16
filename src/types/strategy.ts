@@ -1,6 +1,6 @@
 import type { CandlestickPeriod } from './marketPorts.js';
 import type { NormalizedCandle } from './data.js';
-import type { Logger } from '../utils/logger/types.js';
+import type { Logger } from './logger.js';
 import type { RuntimeClock, RuntimeScheduler } from './runtime.js';
 import type { SignalType } from './signal.js';
 
@@ -108,7 +108,7 @@ export type StrategyDeps = {
  * 交易信号策略运行端口。
  * 类型用途：为宿主提供与具体策略无关的行情处理、普通意图输出和生命周期清理能力。
  * 数据来源：由具体策略 definition 的 PreparedStrategy.create 创建。
- * 使用范围：MonitorContext、businessEventProgram、生命周期与 cleanup。
+ * 使用范围：app 监控装配、businessEventProgram、生命周期与 cleanup。
  * 生命周期约束：onCandlestick 必须同步消费一次宿主 latestOnly 选出的权威快照；策略可以保存 emit 供私有延迟验证稍后使用，但不得把异步 Promise 作为返回值或把宿主交易能力带入策略。
  */
 export interface TradingSignalStrategy {

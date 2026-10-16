@@ -1,22 +1,25 @@
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createSettlementRuntimeFixture } from '../../main/fixtures/settlementRuntime.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { beforeEach, describe, expect, it } from 'bun:test';
-import { TIME, TRADING } from '../../../src/constants/index.js';
-import { createPeriodicSwitchWakeupRuntime } from '../../../src/runtime/periodicSwitchWakeupRuntime/index.js';
 import {
+  createLoggerDouble,
   createAccountSnapshotDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../../helpers/settlementRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
+import { beforeEach, describe, expect, it } from 'bun:test';
+import { TIME, TRADING } from '../../../src/constants/index.js';
+import { createPeriodicSwitchWakeupRuntime } from '../../../src/runtime/periodicSwitchWakeupRuntime/index.js';
+
 import type { MonitorConfig } from '../../../src/types/config.js';
 import type { AccountPositionSnapshotReader } from '../../../src/types/accountPosition.js';
 import type { RuntimeWritableSeatState } from '../../../src/types/seat.js';
-import type { MonitorContext } from '../../../src/types/state.js';
-import type { PostTradeConsistencyRuntime } from '../../../src/app/types.js';
-import type { OrderStateChangedEvent, Unsubscribe } from '../../../src/types/services.js';
+import type { MonitorContextAssembly } from '../../../src/app/context/types.js';
+import type { PostTradeConsistencyRuntime } from '../../../src/app/runtime/types.js';
+import type { OrderStateChangedEvent } from '../../../src/types/orderTracking.js';
+import type { Unsubscribe } from '../../../src/types/events.js';
 import type { TradingGateStateChangedEvent } from '../../../src/types/timeControlPlane.js';
 import type { PeriodicSwitchWakeupRuntimeDeps } from '../../../src/runtime/periodicSwitchWakeupRuntime/types.js';
 import type { MonitorTaskInput } from '../../../src/runtime/asyncProgram/monitorTaskQueue/types.js';
@@ -25,7 +28,7 @@ import type {
   PeriodicSwitchRouteBaseline,
   PeriodicSwitchTaskAuthorization,
 } from '../../../src/types/periodicSwitch.js';
-import { calculateTradingDurationDueAtMs } from '../../../src/utils/time/index.js';
+import { calculateTradingDurationDueAtMs } from '../../../src/domain/tradingSession/index.js';
 
 let termination: ReturnType<typeof createTerminationRuntime>;
 beforeEach(() => {
@@ -145,12 +148,14 @@ function createSubscriptionHarness(settlement: PostTradeConsistencyRuntime) {
   const gateListeners = new Set<(event: TradingGateStateChangedEvent) => void>();
 
   return {
-    trader: createTraderDouble({
-      onOrderStateChanged: (listener) => {
-        orderListeners.add(listener);
-        return () => {
-          orderListeners.delete(listener);
-        };
+    tradeRuntime: createTradeRuntimeDouble({
+      orderMonitor: {
+        onOrderStateChanged: (listener) => {
+          orderListeners.add(listener);
+          return () => {
+            orderListeners.delete(listener);
+          };
+        },
       },
     }),
     getCanTradeNow: () => canTradeNow,
@@ -216,7 +221,7 @@ async function createHarness(
     readonly nowMs?: number;
     readonly monitorConfig?: MonitorConfig;
     readonly symbolRegistry?: ReturnType<typeof createSymbolRegistryDouble>;
-    readonly monitorContext?: Pick<MonitorContext, 'config'>;
+    readonly monitorContext?: Pick<MonitorContextAssembly, 'config'>;
     readonly calculateDueAtMs?: PeriodicSwitchWakeupRuntimeDeps['calculateDueAtMs'];
   } = {},
 ): Promise<PeriodicHarness> {
@@ -240,10 +245,11 @@ async function createHarness(
     positions: [],
   });
   const settlement = createSettlementRuntimeFixture({
+    logger: createLoggerDouble(),
     snapshot,
     termination,
     monitorContext,
-    getTrader: () => createTraderDouble(),
+    getProtectiveOrderReader: () => createTradeRuntimeDouble().orderMonitor,
     onPositionsCommitted: async (token) => {
       expect(snapshot.isCurrent(token, { account: true, positions: true, paired: true })).toBe(
         true,
@@ -292,7 +298,7 @@ async function createHarness(
         return true;
       },
     },
-    trader: subscriptions.trader,
+    orderMonitor: subscriptions.tradeRuntime.orderMonitor,
     postTradeConsistencyRuntime: subscriptions.postTradeConsistencyRuntime,
     tradingGateEventRuntime: subscriptions.tradingGateEventRuntime,
     calculateDueAtMs:

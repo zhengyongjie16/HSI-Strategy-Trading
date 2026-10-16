@@ -7,14 +7,11 @@
  * - 每次唤醒重新读取权威状态，不维护 seat 事实副本
  */
 import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../constants/index.js';
-import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
+import { scheduleBoundedOneShotAt } from '../timer/index.js';
 import type { SeatStateChangedEvent } from '../../types/seat.js';
-import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';
-import {
-  getRequiredHKDateKey,
-  resolveHKDayStartUtcMs,
-  isWithinMorningOpenWindow,
-} from '../../utils/time/index.js';
+import type { BoundedOneShotTimerController } from '../../types/timer.js';
+import { getRequiredHKDateKey, resolveHKDayStartUtcMs } from '../../utils/time/index.js';
+import { isWithinMorningOpenWindow } from '../../domain/tradingSession/index.js';
 import type { AutoSearchAuthorizationChangedEvent } from '../../types/timeControlPlane.js';
 import type {
   AutoSearchRouteKey,
@@ -119,7 +116,8 @@ export function createAutoSearchWakeupRuntime(
     }
 
     return ordinarySignalGuard({
-      lastState: deps.lastState,
+      tradingTimeState: deps.tradingTimeState,
+      lifecycleState: deps.lifecycleState,
       now: deps.now(),
       doomsdayProtectionEnabled: deps.doomsdayProtectionEnabled,
     });

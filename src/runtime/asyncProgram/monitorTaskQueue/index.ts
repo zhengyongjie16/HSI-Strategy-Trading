@@ -1,3 +1,5 @@
+import type { Logger } from '../../../types/logger.js';
+
 /**
  * 监控任务队列模块
  *
@@ -16,7 +18,6 @@
  */
 import { randomUUID } from 'node:crypto';
 
-import { logger } from '../../../utils/logger/index.js';
 import type { TaskAddedCallback } from '../tradeTaskQueue/types.js';
 import { notifyTaskAddedCallbacks, registerTaskAddedCallback } from '../taskNotifications.js';
 import type { MonitorTask, MonitorTaskInput, MonitorTaskQueue } from './types.js';
@@ -36,6 +37,7 @@ function readNumberField(record: Record<string, unknown>, key: string): string {
 }
 
 function logSeatRefreshReplaced<TDataMap extends Readonly<Record<string, unknown>>>(
+  logger: Logger,
   task: MonitorTaskInput<TDataMap>,
   removedCount: number,
 ): void {
@@ -54,9 +56,9 @@ function logSeatRefreshReplaced<TDataMap extends Readonly<Record<string, unknown
  *
  * @returns 监控任务队列实例，含 scheduleLatest、pop、isEmpty、removeTasks、clearAll、onTaskAdded
  */
-export function createMonitorTaskQueue<
-  TDataMap extends Readonly<Record<string, unknown>>,
->(): MonitorTaskQueue<TDataMap> {
+export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, unknown>>>(
+  logger: Logger,
+): MonitorTaskQueue<TDataMap> {
   let items: Array<MonitorTask<TDataMap>> = [];
   let headIndex = 0;
   let closed = false;
@@ -124,7 +126,7 @@ export function createMonitorTaskQueue<
       cancelledTaskIds.add(previousTask.id);
     }
 
-    logSeatRefreshReplaced(task, removedCount);
+    logSeatRefreshReplaced(logger, task, removedCount);
 
     const fullTask = {
       id: randomUUID(),

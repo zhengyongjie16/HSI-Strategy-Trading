@@ -1,6 +1,6 @@
 /** 席位激活测试装配：绑定同一 Context 的真实事实 owner，不复制激活规则或重试决定。 */
 import { createSeatActivationWorkflow } from '../../../src/application/seatActivation/index.js';
-import { logger } from '../../../src/utils/logger/index.js';
+import { logger } from '../../../src/infrastructure/logger/index.js';
 import type { SeatActivationWorkflow } from '../../../src/application/seatActivation/types.js';
 import type { ActivationFixtureDeps } from './types.js';
 

@@ -1,8 +1,8 @@
 /** 激活失败策略属于 application：不经 worker/timer 即可裁决一次重试、耗尽 EMPTY 和方向隔离。 */
 import { describe, expect, it } from 'bun:test';
 import { createSeatActivationFixture } from './fixtures.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createMonitorContext } from '../../main/asyncProgram/utils.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createMonitorContext } from '../../helpers/asyncProgram.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import {
   createAccountSnapshotDouble,

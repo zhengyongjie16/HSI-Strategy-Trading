@@ -1,21 +1,3 @@
-import type { RuntimeTermination } from '../../../src/types/runtime.js';
-
-/** T28 独立 app 装配 helper：替换离线外围 owners，保留真实 runApp 启动和错误分类。 */
-import { mock } from 'bun:test';
-import { AsyncLocalStorage } from 'node:async_hooks';
-
-import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
-import { loadStartupSnapshot as loadRealStartupSnapshot } from '../../../src/app/startup/startupSnapshot.js';
-import type {
-  AsyncRuntime,
-  CreatePostGateRuntimeParams,
-  CreatePreGateRuntimeParams,
-  PostGateRuntime,
-  PreGateRuntime,
-  RunAppDeps,
-} from '../../../src/app/types.js';
-import { createWarrantListCache } from '../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
-import type { LastState } from '../../../src/types/state.js';
 import {
   createAutoSearchWakeupRuntimeDouble,
   createDoomsdayClearanceWorkflowDouble,
@@ -31,13 +13,33 @@ import {
   createWarrantRiskRefreshDouble,
   createSeatRuntimeCleanupDispatcherDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
   createTradingGateEventRuntimeDouble,
 } from '../../helpers/testDoubles.js';
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
+import type { RuntimeTermination } from '../../../src/types/runtime.js';
+
+/** T28 独立 app 装配 helper：替换离线外围 owners，保留真实 runApp 启动和错误分类。 */
+import { mock } from 'bun:test';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
+import { loadStartupSnapshot as loadRealStartupSnapshot } from '../../../src/application/tradingDayRebuild/startupSnapshot.js';
+import { executeStartupRebuild } from '../../../src/application/tradingDayRebuild/startupRebuild.js';
+import type {
+  CreatePostGateRuntimeParams,
+  CreatePreGateRuntimeParams,
+  PostGateRuntime,
+  PreGateRuntime,
+  RunAppDeps,
+} from '../../../src/app/types.js';
+import type { AsyncRuntime } from '../../../src/app/runtime/types.js';
+import { createWarrantListCache } from '../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
+
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createBrokerClientFactoryDouble } from '../../helpers/brokerClientFactoryDouble.js';
 
-import { applyStartupSnapshotFailureState } from '../../../src/main/lifecycle/startupFailureState.js';
+import { applyStartupSnapshotFailureState } from '../../../src/application/tradingDayRebuild/startupFailureState.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
@@ -46,19 +48,17 @@ import type { StartupRecoveryHarnessParams, StartupRecoveryHarness } from './typ
 
 const startsContext = new AsyncLocalStorage<string[]>();
 let importSequence = 0;
-function createMinimalLastState(): LastState {
+function createMinimalRuntimeStates(): RuntimeStateFixtures {
   return {
-    canTrade: false,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: '2026-04-29',
-    lifecycleState: 'ACTIVE',
-    pendingOpenRebuild: false,
-    isTradingEnabled: true,
-
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-    allTradingSymbols: new Set(),
+    tradingTimeState: { canTrade: false, isHalfDay: false, openProtectionActive: false },
+    lifecycleState: {
+      currentDayKey: '2026-04-29',
+      lifecycleState: 'ACTIVE',
+      pendingOpenRebuild: false,
+      isTradingEnabled: true,
+    },
+    tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
   };
 }
 
@@ -136,7 +136,7 @@ function createMockPreGateRuntime(): PreGateRuntime {
 }
 
 function createMockPostGateRuntime(
-  lastState: LastState,
+  stateFixtures: RuntimeStateFixtures,
   monitorContext: PostGateRuntime['monitorContext'],
   owner: StartupRecoveryHarnessParams['executionOwner'],
 ): PostGateRuntime {
@@ -148,9 +148,11 @@ function createMockPostGateRuntime(
       recordSteadyRuntimeStart('quoteSubscriptionRuntime.start');
     },
   });
-  const trader = createTraderDouble({
-    startOrderMonitorRuntime: () => {
-      recordSteadyRuntimeStart('trader.startOrderMonitorRuntime');
+  const tradeRuntime = createTradeRuntimeDouble({
+    orderMonitor: {
+      startRuntime: () => {
+        recordSteadyRuntimeStart('tradeRuntime.orderMonitor.startRuntime');
+      },
     },
   });
 
@@ -220,8 +222,8 @@ function createMockPostGateRuntime(
         return owner.sink.completeRebuildBaseline(...args);
       },
     },
-    lastState,
-    trader,
+    ...stateFixtures,
+    tradeRuntime,
     loadTradingDayRuntimeSnapshot: async (params) => {
       const receipt = await owner.snapshot.requestRefresh({
         source: params.source === 'OPEN_REBUILD' ? 'LIFECYCLE_REBUILD' : 'STARTUP',
@@ -260,9 +262,9 @@ export function createStartupRecoveryHarness(
   params: StartupRecoveryHarnessParams,
 ): StartupRecoveryHarness {
   const starts: string[] = [];
-  const lastState = createMinimalLastState();
+  const stateFixtures = createMinimalRuntimeStates();
   const post = createMockPostGateRuntime(
-    lastState,
+    stateFixtures,
     createMonitorContextDouble(),
     params.executionOwner,
   );
@@ -280,13 +282,14 @@ export function createStartupRecoveryHarness(
       return createMockPreGateRuntime();
     },
     createPostGateRuntime: async ({ resources }: CreatePostGateRuntimeParams) => {
-      resources.lastState = lastState;
+      resources.lifecycleState = stateFixtures.lifecycleState;
       resources.buyTaskQueue = post.buyTaskQueue;
       resources.sellTaskQueue = post.sellTaskQueue;
       resources.monitorTaskQueue = post.monitorTaskQueue;
       return post;
     },
     loadStartupSnapshot: loadRealStartupSnapshot,
+    executeStartupRebuild,
     collectRuntimeValidationSymbols: () => ({ runtimeValidationInputs: [] }),
     createRebuildTradingDayState:
       () =>
@@ -301,14 +304,17 @@ export function createStartupRecoveryHarness(
         )
           return { status: 'ABORTED' };
 
-        lastState.isTradingEnabled = true;
+        stateFixtures.lifecycleState.isTradingEnabled = true;
         return { status: 'COMMITTED', snapshotToken };
       },
     displayAccountAndPositions: noop,
     createBusinessEventProgram: () => createStartStopRecorder('businessEventProgram.start'),
     createAsyncRuntime: createMockAsyncRuntime,
     createLifecycleRuntime: () => ({
-      tick: async () => ({ nextRetryAtMs: null, pendingOpenRebuild: lastState.pendingOpenRebuild }),
+      tick: async () => ({
+        nextRetryAtMs: null,
+        pendingOpenRebuild: stateFixtures.lifecycleState.pendingOpenRebuild,
+      }),
     }),
     createCleanup,
     subscribeShutdownSignal: (callback) => {
@@ -335,7 +341,7 @@ export function createStartupRecoveryHarness(
   };
   return {
     starts,
-    lastState,
+    stateFixtures: stateFixtures,
     post,
     classifiedErrors,
     timeStarted: timeStarted.promise,

@@ -11,9 +11,10 @@ src/
 ├── config/       # 配置模块
 ├── constants/    # 全局常量定义
 ├── types/        # 全局公共类型定义
-├── main/         # 主程序架构模块
-├── core/         # 核心业务逻辑
-├── services/     # 外部服务
+├── domain/       # 纯业务规则
+├── application/  # 业务用例与事实 owner
+├── runtime/      # 事件路由、队列、时间唤醒与生命周期
+├── infrastructure/ # SDK、持久化、日志与显示适配器
 └── utils/        # 工具模块
 ```
 

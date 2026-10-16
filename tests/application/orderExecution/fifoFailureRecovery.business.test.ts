@@ -1,3 +1,16 @@
+import { nowMonotonicMs, wait } from '../../../src/infrastructure/time/index.js';
+
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createOrderMonitorDouble,
+  createOrderRecorderDouble,
+  createPositionDouble,
+  createQuoteDouble,
+  createRiskCheckerDouble,
+  createSymbolRegistryDouble,
+} from '../../helpers/testDoubles.js';
+
 /** 实际executor REPLACE→OrderOps→同context query与同一FIFO；保602013退避/WAIT_WS_ONLY及ACK事实。 */
 
 import { describe, expect, it } from 'bun:test';
@@ -7,16 +20,8 @@ import { createOrderExecutor } from '../../../src/application/orderExecution/ind
 import { createRateLimiter } from '../../../src/application/orderExecution/rateLimiter.js';
 import { createOrderHoldRegistry } from '../../../src/application/orderTracking/orderHoldRegistry.js';
 import type { OrderMonitorRuntimeStore } from '../../../src/application/orderTracking/orderMonitor/types.js';
-import type { RateLimiter } from '../../../src/types/services.js';
-import {
-  createMarketDataClientDouble,
-  createOrderMonitorDouble,
-  createOrderRecorderDouble,
-  createPositionDouble,
-  createQuoteDouble,
-  createRiskCheckerDouble,
-  createSymbolRegistryDouble,
-} from '../../helpers/testDoubles.js';
+import type { RateLimiter } from '../../../src/types/rateLimit.js';
+
 import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 async function createFixture() {
@@ -55,7 +60,11 @@ async function createFixture() {
     running: true,
     unsubscribeQuoteUpdated: null,
   };
-  const fifo = createRateLimiter();
+  const fifo = createRateLimiter({
+    wait: wait,
+    nowMonotonicMs: nowMonotonicMs,
+    logger: createLoggerDouble(),
+  });
   const limiter: RateLimiter = {
     throttle: async () => {
       expect(held).toBeFalse();
@@ -78,6 +87,8 @@ async function createFixture() {
   };
   const recorder = createOrderRecorderDouble();
   const ops = native.createOperations({
+    logger: createLoggerDouble(),
+    wait: wait,
     runtime,
     rateLimiter: limiter,
     orderRecorder: recorder,
@@ -114,6 +125,7 @@ async function createFixture() {
   if (!tracked) throw new Error('actual trackOrder must publish tracked state');
 
   const executor = createOrderExecutor({
+    logger: createLoggerDouble(),
     readSellPositions: async () => [
       createPositionDouble({ symbol: 'BULL.HK', quantity: 500, availableQuantity: 500 }),
     ],

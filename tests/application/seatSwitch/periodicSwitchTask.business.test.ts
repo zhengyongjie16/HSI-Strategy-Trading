@@ -1,3 +1,16 @@
+import {
+  createLoggerDouble,
+  createAccountSnapshotDouble,
+  createMonitorConfigDouble,
+  createMonitorContextDouble,
+  createSymbolRegistryDouble,
+  createMarketDataClientDouble,
+  createOrderRecorderDouble,
+  createRiskCheckerDouble,
+  createTradeRuntimeDouble,
+  createTerminationDouble,
+} from '../../helpers/testDoubles.js';
+
 /**
  * 周期换标真实任务回调测试。
  * 从生产 periodic runtime 获取原 epoch/receipt/baseline 任务，再消费真实 workflow，覆盖发布 WAIT 后关门与失效结果丢弃。
@@ -8,27 +21,17 @@ import { createPeriodicSwitchTaskHandler } from '../../../src/application/seatSw
 import { createPeriodicSwitchWakeupRuntime } from '../../../src/runtime/periodicSwitchWakeupRuntime/index.js';
 import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import { createMonitorTaskProcessor } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/index.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createSettlementRuntimeFixture } from '../../main/fixtures/settlementRuntime.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../../helpers/settlementRuntime.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { TRADING } from '../../../src/constants/index.js';
-import {
-  createAccountSnapshotDouble,
-  createMonitorConfigDouble,
-  createMonitorContextDouble,
-  createSymbolRegistryDouble,
-  createMarketDataClientDouble,
-  createOrderRecorderDouble,
-  createRiskCheckerDouble,
-  createTraderDouble,
-  createTerminationDouble,
-} from '../../helpers/testDoubles.js';
+
 import { createLoggerStub, getDefaultAutoSearchConfig } from '../../helpers/seatTestUtils.js';
 import type { MonitorTaskInput } from '../../../src/runtime/asyncProgram/monitorTaskQueue/types.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type { SwitchWakeupHandoffParams } from '../../../src/runtime/monitorQuoteEventRuntime/types.js';
-import type { OrderStateChangedEvent } from '../../../src/types/services.js';
-import type { MonitorContext } from '../../../src/types/state.js';
+import type { OrderStateChangedEvent } from '../../../src/types/orderTracking.js';
+import type { MonitorContextAssembly } from '../../../src/app/context/types.js';
 
 const nowMs = Date.parse('2026-02-16T10:00:00+08:00');
 
@@ -62,7 +65,7 @@ async function createHarness(
     positions: [],
   });
   const handoffs: SwitchWakeupHandoffParams[] = [];
-  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
   const tasks: Array<MonitorTaskInput<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>> = [];
   const timers: Array<{
     handle: ReturnType<typeof setTimeout>;
@@ -74,22 +77,29 @@ async function createHarness(
       throw error;
     },
   });
-  const trader = createTraderDouble({
-    getOrderHoldSymbols: () => holdSymbols,
-    onOrderStateChanged: (listener) => {
-      orderListeners.add(listener);
-      return () => {
-        orderListeners.delete(listener);
-      };
+  const tradeRuntime = createTradeRuntimeDouble({
+    orderHoldRegistry: { getHoldSymbols: () => holdSymbols },
+    orderMonitor: {
+      onOrderStateChanged: (listener) => {
+        orderListeners.add(listener);
+        return () => {
+          orderListeners.delete(listener);
+        };
+      },
     },
-    executeSignals: async () => {
-      throw new Error('周期首次发布不得执行交易');
+    orderExecutor: {
+      executeSignals: async () => {
+        throw new Error('周期首次发布不得执行交易');
+      },
     },
   });
   const seatSwitch = createSeatSwitchWorkflow({
     monitorConfig,
     symbolRegistry,
-    trader,
+    cacheManager: tradeRuntime.cacheManager,
+    orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+    orderMonitor: tradeRuntime.orderMonitor,
+    orderExecutor: tradeRuntime.orderExecutor,
     marketDataClient: createMarketDataClientDouble(),
     orderRecorder: createOrderRecorderDouble(),
     riskChecker: createRiskCheckerDouble(),
@@ -99,8 +109,12 @@ async function createHarness(
     getTradingCalendarSnapshot: () =>
       new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]),
   });
-  const monitorContext: MonitorContext = {
-    ...createMonitorContextDouble({ config: monitorConfig, symbolRegistry }),
+  const monitorContext: MonitorContextAssembly = {
+    ...createMonitorContextDouble({
+      orderRecorder: tradeRuntime.orderRecorder,
+      config: monitorConfig,
+      symbolRegistry,
+    }),
     seatSwitch: {
       ...seatSwitch,
       evaluatePeriodicSwitchDue: async (params) => {
@@ -110,10 +124,11 @@ async function createHarness(
     },
   };
   const settlement = createSettlementRuntimeFixture({
+    logger: createLoggerDouble(),
     snapshot,
     monitorContext,
     termination,
-    getTrader: () => trader,
+    getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
     onPositionsCommitted: async (token) => {
       if (!snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
         throw new Error('stale settlement token');
@@ -132,7 +147,7 @@ async function createHarness(
     monitorContext,
     symbolRegistry,
     snapshot,
-    trader,
+    orderMonitor: tradeRuntime.orderMonitor,
     termination,
     getCanTradeNow: () => canTrade,
     postTradeConsistencyRuntime: settlement,

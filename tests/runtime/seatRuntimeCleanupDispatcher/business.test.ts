@@ -1,11 +1,13 @@
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createIssuedPeriodicTasksFixture } from '../../main/fixtures/issuedPeriodicTasks.js';
 import {
+  createLoggerDouble,
   createAccountSnapshotDouble,
   createMonitorContextDouble,
   createMonitorConfigDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createIssuedPeriodicTasksFixture } from '../../helpers/issuedPeriodicTasks.js';
+
 import { getDefaultAutoSearchConfig } from '../../helpers/seatTestUtils.js';
 
 /** 真实 registry mutation 的同步方向取消与队列清理；另一方向及 SEAT_REFRESH 保留。 */
@@ -65,7 +67,7 @@ describe('seatRuntimeCleanupDispatcher 同步方向取消', () => {
             autoSearchConfig: { ...getDefaultAutoSearchConfig(), switchIntervalMinutes: 1 },
           }),
         }),
-        trader: createTraderDouble(),
+        tradeRuntime: createTradeRuntimeDouble(),
         termination: h.termination,
         getCanTradeNow: () => true,
         nowMs: 200,
@@ -73,8 +75,9 @@ describe('seatRuntimeCleanupDispatcher 同步方向取消', () => {
       issuedFixtures.push(issued);
       const pending = new Set(['LONG', 'SHORT']);
       const order: string[] = [];
-      const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+      const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
       const dispatcher = createSeatRuntimeCleanupDispatcher({
+        logger: createLoggerDouble(),
         symbolRegistry: h.symbolRegistry,
         monitorContext: {
           strategy: {
@@ -170,6 +173,7 @@ describe('seatRuntimeCleanupDispatcher 同步方向取消', () => {
     const h = createEventHarness();
     const cancelled: string[] = [];
     const dispatcher = createSeatRuntimeCleanupDispatcher({
+      logger: createLoggerDouble(),
       symbolRegistry: h.symbolRegistry,
       monitorContext: {
         strategy: {
@@ -181,7 +185,7 @@ describe('seatRuntimeCleanupDispatcher 同步方向取消', () => {
       },
       buyTaskQueue: h.buyTaskQueue,
       sellTaskQueue: h.sellTaskQueue,
-      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(),
+      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
     });
     dispatcher.start();
     h.symbolRegistry.updateSeatState('LONG', activeSeat('BULL.HK'));

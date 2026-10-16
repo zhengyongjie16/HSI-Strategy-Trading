@@ -1,3 +1,5 @@
+import { spyOn, afterEach, describe, expect, it } from 'bun:test';
+
 /**
  * monitorTaskProcessor 业务测试
  *
@@ -5,8 +7,7 @@
  * - 验证监控任务处理器相关场景意图、边界条件与业务期望。
  */
 
-import { afterEach, describe, expect, it } from 'bun:test';
-import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createSeatSwitchWorkflow } from '../../../../src/application/seatSwitch/index.js';
 import type { PeriodicSwitchTaskStatus } from '../../../../src/application/seatSwitch/types.js';
 import { mergeBrokerOrderExecutionFact } from '../../../../src/domain/order/executionFact.js';
@@ -43,7 +44,7 @@ import {
   createPositionDouble,
   createQuoteSubscriptionRuntimeDouble,
   createRiskCheckerDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../../helpers/testDoubles.js';
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import {
@@ -51,9 +52,9 @@ import {
   rethrowFatalError,
   runProcessorFlow,
   waitUntil,
-} from '../../../main/asyncProgram/utils.js';
-import { createSnapshotFixture } from '../../../main/fixtures/accountPositionSnapshot.js';
-import { createIssuedPeriodicTasksFixture } from '../../../main/fixtures/issuedPeriodicTasks.js';
+} from '../../../helpers/asyncProgram.js';
+import { createSnapshotFixture } from '../../../helpers/accountPositionSnapshot.js';
+import { createIssuedPeriodicTasksFixture } from '../../../helpers/issuedPeriodicTasks.js';
 import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessorImpl } from './fixtures.js';
 import type { CreateBusinessProcessorParams, MonitorTaskRuntimeFixtureDeps } from './types.js';
 
@@ -155,7 +156,7 @@ async function issueTasksForProcessor(
   const fixture = await createIssuedPeriodicTasksFixture({
     snapshot: owner.snapshot,
     monitorContext: owner.monitorContext,
-    trader: owner.trader,
+    tradeRuntime: owner.tradeRuntime,
     termination: owner.termination,
     getCanTradeNow: owner.getCanTradeNow,
     nowMs,
@@ -180,10 +181,12 @@ function createRealPeriodicPublicationContext(params: {
     lastSeatActivatedAt: params.now().getTime() - 120_000,
     callPrice: null,
   });
-  const trader = createTraderDouble({
-    executeSignals: async () => {
-      brokerCalls += 1;
-      throw new Error('Initial WAIT publication must not submit a broker order');
+  const tradeRuntime = createTradeRuntimeDouble({
+    orderExecutor: {
+      executeSignals: async () => {
+        brokerCalls += 1;
+        throw new Error('Initial WAIT publication must not submit a broker order');
+      },
     },
   });
   const marketDataClient = createMarketDataClientDouble({
@@ -194,7 +197,10 @@ function createRealPeriodicPublicationContext(params: {
     logger: createLoggerDouble(),
     monitorConfig: base.config,
     symbolRegistry: base.symbolRegistry,
-    trader,
+    cacheManager: tradeRuntime.cacheManager,
+    orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+    orderMonitor: tradeRuntime.orderMonitor,
+    orderExecutor: tradeRuntime.orderExecutor,
     marketDataClient,
     orderRecorder: base.orderRecorder,
     riskChecker: base.riskChecker,
@@ -210,7 +216,7 @@ function createRealPeriodicPublicationContext(params: {
     },
   });
   return {
-    trader,
+    tradeRuntime,
     marketDataClient,
     getBrokerCalls: () => brokerCalls,
     getPublications: () => publications,
@@ -269,7 +275,7 @@ async function createBusinessProcessor(
     context,
     clock = MONITOR_TASK_RUNTIME.clock,
     scheduler = MONITOR_TASK_RUNTIME.scheduler,
-    trader,
+    tradeRuntime,
     marketDataClient = createMarketDataClientDouble(),
     quoteSubscriptionRuntime = createQuoteSubscriptionRuntimeDouble(),
     getCanProcessTask,
@@ -282,7 +288,7 @@ async function createBusinessProcessor(
     termination,
   } = params;
   const resolvedTrader = {
-    ...(trader ?? createTraderDouble()),
+    ...(tradeRuntime ?? createTradeRuntimeDouble()),
     orderRecorder: context.orderRecorder,
   };
 
@@ -293,15 +299,16 @@ async function createBusinessProcessor(
     readPort: {
       getAccountSnapshot: async () =>
         taskReadsEnabled
-          ? resolvedTrader.getAccountSnapshot()
+          ? resolvedTrader.accountService.getAccountSnapshot()
           : createAccountSnapshotDouble('100000'),
-      getStockPositions: async () => (taskReadsEnabled ? resolvedTrader.getStockPositions() : []),
+      getStockPositions: async () =>
+        taskReadsEnabled ? resolvedTrader.accountService.getStockPositions() : [],
     },
   });
   taskReadsEnabled = true;
   const commitBatch = context.orderRecorder.commitRebuildSnapshot;
   const validateBatch = context.orderRecorder.validateRebuildSnapshot;
-  context.orderRecorder.validateRebuildSnapshot = (symbol, orders) => {
+  spyOn(context.orderRecorder, 'validateRebuildSnapshot').mockImplementation((symbol, orders) => {
     validateBatch(symbol, orders);
     classifyOrdersForRebuild(orders.filter((order) => order.symbol === symbol));
     for (const order of orders.filter((candidate) => candidate.symbol === symbol)) {
@@ -316,20 +323,22 @@ async function createBusinessProcessor(
         updatedAtMs: order.updatedAtMs,
       });
     }
-  };
+  });
 
-  context.orderRecorder.commitRebuildSnapshot = (targets, orders, isCurrent, mode) => {
-    expect(mode).toBe('ACTIVATION');
-    if (!isCurrent()) return { status: 'ABORTED' };
+  spyOn(context.orderRecorder, 'commitRebuildSnapshot').mockImplementation(
+    (targets, orders, isCurrent, mode) => {
+      expect(mode).toBe('ACTIVATION');
+      if (!isCurrent()) return { status: 'ABORTED' };
 
-    return commitBatch(targets, orders, isCurrent, mode);
-  };
+      return commitBatch(targets, orders, isCurrent, mode);
+    },
+  );
   const processor = createMonitorTaskProcessor({
     clock,
     scheduler,
     monitorTaskQueue: queue,
     monitorContext: context,
-    trader: resolvedTrader,
+    tradeRuntime: resolvedTrader,
     marketDataClient,
     quoteSubscriptionRuntime,
     switchWakeupRuntime: {
@@ -395,7 +404,7 @@ function createDeferred<T>(): {
 
 describe('monitorTaskProcessor business flow', () => {
   it('hands AUTO_SYMBOL_TICK WAIT result to switchWakeupRuntime', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const handoffCalls: Array<{
       direction: 'LONG' | 'SHORT';
       seatVersion: number;
@@ -410,10 +419,12 @@ describe('monitorTaskProcessor business flow', () => {
       lastSeatActivatedAt: MONITOR_TASK_NOW_MS - 120_000,
       callPrice: null,
     });
-    const ownerTrader = createTraderDouble({
-      executeSignals: async () => {
-        brokerCalls += 1;
-        return { executedOrderIds: ['SHOULD-NOT-SUBMIT'], quoteFailures: [] };
+    const ownerTrader = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async () => {
+          brokerCalls += 1;
+          return { executedOrderIds: ['SHOULD-NOT-SUBMIT'], quoteFailures: [] };
+        },
       },
     });
     const marketDataClient = createMarketDataClientDouble({
@@ -427,7 +438,10 @@ describe('monitorTaskProcessor business flow', () => {
         monitorConfig: baseContext.config,
         symbolRegistry: baseContext.symbolRegistry,
         marketDataClient,
-        trader: ownerTrader,
+        cacheManager: ownerTrader.cacheManager,
+        orderHoldRegistry: ownerTrader.orderHoldRegistry,
+        orderMonitor: ownerTrader.orderMonitor,
+        orderExecutor: ownerTrader.orderExecutor,
         riskChecker: baseContext.riskChecker,
         orderRecorder: baseContext.orderRecorder,
         clock: MONITOR_TASK_RUNTIME.clock,
@@ -447,7 +461,7 @@ describe('monitorTaskProcessor business flow', () => {
       ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue: queue,
       monitorContext: context,
-      trader: ownerTrader,
+      tradeRuntime: ownerTrader,
       marketDataClient: marketDataClient,
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime: {
@@ -501,7 +515,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('API 错误标记为普通任务失败且不进入 fatal 通道', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const fatalErrors: unknown[] = [];
     const context = createPeriodicMonitorContext({
       seatSwitch: {
@@ -538,7 +552,7 @@ describe('monitorTaskProcessor business flow', () => {
       ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue: queue,
       monitorContext: context,
-      trader: createTraderDouble(),
+      tradeRuntime: createTradeRuntimeDouble(),
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime: {
@@ -581,7 +595,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('非 API 程序错误进入 fatal 通道后停止调度并保留后续任务', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const fatalErrors: unknown[] = [];
     let periodicEvaluationCalls = 0;
     const context = createPeriodicMonitorContext({
@@ -616,7 +630,7 @@ describe('monitorTaskProcessor business flow', () => {
       ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue: queue,
       monitorContext: context,
-      trader: createTraderDouble(),
+      tradeRuntime: createTradeRuntimeDouble(),
       marketDataClient: createMarketDataClientDouble(),
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime: {
@@ -669,7 +683,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('processes AUTO_SYMBOL_TICK with valid seat snapshot', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const intervalCallArgs: Array<{
       direction: 'LONG' | 'SHORT';
       currentTime: Date;
@@ -736,7 +750,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('blocks AUTO_SYMBOL_TICK switch flow outside ordinary trade gate', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const intervalCallArgs: Array<{
       direction: 'LONG' | 'SHORT';
       currentTime: Date;
@@ -810,7 +824,7 @@ describe('monitorTaskProcessor business flow', () => {
     const releasePeriodicEvaluation = createDeferred<null>();
     const handoffCalls: string[] = [];
     const periodicWakeupCalls: Array<{ kind: string; status?: PeriodicSwitchTaskStatus }> = [];
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const publication = createRealPeriodicPublicationContext({
       now: () => new Date(currentNowMs),
       afterPublication: async () => {
@@ -828,7 +842,7 @@ describe('monitorTaskProcessor business flow', () => {
       ...MONITOR_TASK_RUNTIME,
       monitorTaskQueue: queue,
       monitorContext: context,
-      trader: publication.trader,
+      tradeRuntime: publication.tradeRuntime,
       marketDataClient: publication.marketDataClient,
       quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
       switchWakeupRuntime: {
@@ -885,7 +899,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('marks periodic route waiting-empty when AUTO_SYMBOL_TICK leaves periodic pending state', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const markCalls: Array<{
       direction: 'LONG' | 'SHORT';
       symbol: string;
@@ -959,7 +973,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('clears periodic waiting-empty and replans route after processed AUTO_SYMBOL_TICK without pending state', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const clearCalls: Array<{
       direction: 'LONG' | 'SHORT';
       symbol: string;
@@ -1055,7 +1069,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('reports blocked outcome to periodic route outside ordinary trade gate so gate reopen can recover', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const replanCalls: Array<{
       direction: 'LONG' | 'SHORT';
       symbol: string;
@@ -1146,7 +1160,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips AUTO_SYMBOL_TICK when seat snapshot is stale', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
 
     const context = createPeriodicMonitorContext({
       seatSwitch: {
@@ -1207,7 +1221,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips AUTO_SYMBOL_TICK when seat activation baseline is stale', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     let periodicDueCalls = 0;
 
     const context = createPeriodicMonitorContext({
@@ -1270,7 +1284,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips stale SEAT_REFRESH when seatVersion no longer matches', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     let getQuotesCalls = 0;
     let clearLongWarrantCalls = 0;
 
@@ -1319,7 +1333,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips AUTO_SYMBOL_TICK when lifecycle gate denies processing', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
 
     const context = createPeriodicMonitorContext({
       seatSwitch: {
@@ -1372,7 +1386,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('processes SEAT_REFRESH and rebuilds long-side runtime caches', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const allOrders: ReadonlyArray<OrderFact> = [];
     const expectedRelatedTradingSymbols: ReadonlyArray<string> = [
       'BULL.HK',
@@ -1468,20 +1482,22 @@ describe('monitorTaskProcessor business flow', () => {
     const processor = await createBusinessProcessor({
       queue,
       context,
-      trader: createTraderDouble({
-        getAccountSnapshot: async () => {
-          accountSnapshotCalls += 1;
-          return createAccountSnapshotDouble('200000');
-        },
-        getStockPositions: async () => {
-          stockPositionCalls += 1;
-          return [
-            createPositionDouble({
-              symbol: 'BULL.HK',
-              quantity: 100,
-              availableQuantity: 100,
-            }),
-          ];
+      tradeRuntime: createTradeRuntimeDouble({
+        accountService: {
+          getAccountSnapshot: async () => {
+            accountSnapshotCalls += 1;
+            return createAccountSnapshotDouble('200000');
+          },
+          getStockPositions: async () => {
+            stockPositionCalls += 1;
+            return [
+              createPositionDouble({
+                symbol: 'BULL.HK',
+                quantity: 100,
+                availableQuantity: 100,
+              }),
+            ];
+          },
         },
       }),
       marketDataClient: createMarketDataClientDouble({
@@ -1539,7 +1555,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('fails SEAT_REFRESH fatally before cache, account, risk, or activation writes when the actual query mapper rejects updatedAt', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const fatalErrors: unknown[] = [];
     let refreshOrdersCalls = 0;
     let accountSnapshotCalls = 0;
@@ -1610,25 +1626,27 @@ describe('monitorTaskProcessor business flow', () => {
       callPrice: '20000',
     });
     const updateSeatState = context.symbolRegistry.updateSeatState;
-    context.symbolRegistry.updateSeatState = (direction, nextState) => {
+    spyOn(context.symbolRegistry, 'updateSeatState').mockImplementation((direction, nextState) => {
       if (direction === 'LONG' && nextState.status === 'ACTIVE') {
         activationWrites += 1;
       }
 
       return updateSeatState(direction, nextState);
-    };
+    });
 
     const processor = await createBusinessProcessor({
       queue,
       context,
-      trader: createTraderDouble({
-        getAccountSnapshot: async () => {
-          accountSnapshotCalls += 1;
-          return createAccountSnapshotDouble('100000');
-        },
-        getStockPositions: async () => {
-          stockPositionCalls += 1;
-          return [];
+      tradeRuntime: createTradeRuntimeDouble({
+        accountService: {
+          getAccountSnapshot: async () => {
+            accountSnapshotCalls += 1;
+            return createAccountSnapshotDouble('100000');
+          },
+          getStockPositions: async () => {
+            stockPositionCalls += 1;
+            return [];
+          },
         },
       }),
       marketDataClient: createMarketDataClientDouble({
@@ -1677,7 +1695,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('preflights SEAT_REFRESH before DailyLoss rejects a relevant unowned execution', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const fatalErrors: unknown[] = [];
     const now = new Date(MONITOR_TASK_NOW_MS);
     const ingress = await createBrokerIngressFixture({
@@ -1758,14 +1776,16 @@ describe('monitorTaskProcessor business flow', () => {
     const processor = await createBusinessProcessor({
       queue,
       context,
-      trader: createTraderDouble({
-        getAccountSnapshot: async () => {
-          accountReads += 1;
-          return createAccountSnapshotDouble('100000');
-        },
-        getStockPositions: async () => {
-          positionReads += 1;
-          return [];
+      tradeRuntime: createTradeRuntimeDouble({
+        accountService: {
+          getAccountSnapshot: async () => {
+            accountReads += 1;
+            return createAccountSnapshotDouble('100000');
+          },
+          getStockPositions: async () => {
+            positionReads += 1;
+            return [];
+          },
         },
       }),
       marketDataClient: createMarketDataClientDouble({
@@ -1815,7 +1835,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('fails SEAT_REFRESH fatally before post-refresh writes when a positive execution fact is malformed', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const fatalErrors: unknown[] = [];
     let refreshOrdersCalls = 0;
     let accountSnapshotCalls = 0;
@@ -1873,25 +1893,27 @@ describe('monitorTaskProcessor business flow', () => {
       callPrice: '20000',
     });
     const updateSeatState = context.symbolRegistry.updateSeatState;
-    context.symbolRegistry.updateSeatState = (direction, nextState) => {
+    spyOn(context.symbolRegistry, 'updateSeatState').mockImplementation((direction, nextState) => {
       if (direction === 'LONG' && nextState.status === 'ACTIVE') {
         activationWrites += 1;
       }
 
       return updateSeatState(direction, nextState);
-    };
+    });
 
     const processor = await createBusinessProcessor({
       queue,
       context,
-      trader: createTraderDouble({
-        getAccountSnapshot: async () => {
-          accountSnapshotCalls += 1;
-          return createAccountSnapshotDouble('100000');
-        },
-        getStockPositions: async () => {
-          stockPositionCalls += 1;
-          return [];
+      tradeRuntime: createTradeRuntimeDouble({
+        accountService: {
+          getAccountSnapshot: async () => {
+            accountSnapshotCalls += 1;
+            return createAccountSnapshotDouble('100000');
+          },
+          getStockPositions: async () => {
+            stockPositionCalls += 1;
+            return [];
+          },
         },
       }),
       marketDataClient: createMarketDataClientDouble({
@@ -1952,7 +1974,7 @@ describe('monitorTaskProcessor business flow', () => {
     },
   ] as const) {
     it(`fails SEAT_REFRESH fatally before post-refresh writes for Unknown-side ${unknownSideCase.label}`, async () => {
-      const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+      const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
       const fatalErrors: unknown[] = [];
       let preflightCalls = 0;
       let refreshOrdersCalls = 0;
@@ -2044,25 +2066,29 @@ describe('monitorTaskProcessor business flow', () => {
       );
       expect(dailyLossTracker.getLossOffset('LONG')).toBe('-10');
       const updateSeatState = context.symbolRegistry.updateSeatState;
-      context.symbolRegistry.updateSeatState = (direction, nextState) => {
-        if (direction === 'LONG' && nextState.status === 'ACTIVE') {
-          activationWrites += 1;
-        }
+      spyOn(context.symbolRegistry, 'updateSeatState').mockImplementation(
+        (direction, nextState) => {
+          if (direction === 'LONG' && nextState.status === 'ACTIVE') {
+            activationWrites += 1;
+          }
 
-        return updateSeatState(direction, nextState);
-      };
+          return updateSeatState(direction, nextState);
+        },
+      );
 
       const processor = await createBusinessProcessor({
         queue,
         context,
-        trader: createTraderDouble({
-          getAccountSnapshot: async () => {
-            accountSnapshotCalls += 1;
-            return createAccountSnapshotDouble('100000');
-          },
-          getStockPositions: async () => {
-            stockPositionCalls += 1;
-            return [];
+        tradeRuntime: createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              accountSnapshotCalls += 1;
+              return createAccountSnapshotDouble('100000');
+            },
+            getStockPositions: async () => {
+              stockPositionCalls += 1;
+              return [];
+            },
           },
         }),
         marketDataClient: createMarketDataClientDouble({
@@ -2145,7 +2171,7 @@ describe('monitorTaskProcessor business flow', () => {
     },
   ] as const) {
     it(`fails SEAT_REFRESH before DailyLoss writes for non-target related ${relatedOrderCase.label}`, async () => {
-      const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+      const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
       const fatalErrors: unknown[] = [];
       const now = new Date(MONITOR_TASK_NOW_MS);
       const ingress = await createBrokerIngressFixture({
@@ -2224,13 +2250,15 @@ describe('monitorTaskProcessor business flow', () => {
       );
       expect(dailyLossTracker.getLossOffset('LONG')).toBe('-10');
       const updateSeatState = context.symbolRegistry.updateSeatState;
-      context.symbolRegistry.updateSeatState = (direction, nextState) => {
-        if (direction === 'LONG' && nextState.status === 'ACTIVE') {
-          activationWrites += 1;
-        }
+      spyOn(context.symbolRegistry, 'updateSeatState').mockImplementation(
+        (direction, nextState) => {
+          if (direction === 'LONG' && nextState.status === 'ACTIVE') {
+            activationWrites += 1;
+          }
 
-        return updateSeatState(direction, nextState);
-      };
+          return updateSeatState(direction, nextState);
+        },
+      );
 
       const processor = await createBusinessProcessor({
         queue,
@@ -2289,7 +2317,7 @@ describe('monitorTaskProcessor business flow', () => {
   }
 
   it('processes SHORT SEAT_REFRESH and updates short-side symbol name', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     let refreshOrdersCalls = 0;
     const context = createMonitorContext({
       orderRecorder: createOrderRecorderDouble({
@@ -2346,7 +2374,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('marks SHORT SEAT_REFRESH business failure as EMPTY and clears short-side symbol name', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const context = createMonitorContext({
       shortSymbolName: 'OLD_BEAR',
     });
@@ -2388,7 +2416,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('waits for quote admission to resolve before rebuilding SEAT_REFRESH caches', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const admissionDeferred = createDeferred<null>();
     const admissionStartedDeferred = createDeferred<null>();
     let getQuotesCalls = 0;
@@ -2463,7 +2491,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('does not leave stale warrant risk cache after SEAT_REFRESH skips on changed seat', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const baseRiskChecker = createRiskChecker({
       warrantRiskChecker: createWarrantRiskChecker({
         onInvalidCallPrice: () => {},
@@ -2536,7 +2564,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('does not write shared refresh state when SEAT_REFRESH becomes stale before cache rebuild starts', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     let dailyLossPrepareCalls = 0;
     let dailyLossPublishCalls = 0;
     const dailyLossOwner = createDailyLossTrackerDouble();
@@ -2583,20 +2611,22 @@ describe('monitorTaskProcessor business flow', () => {
     const processor = await createBusinessProcessor({
       queue,
       context,
-      trader: createTraderDouble({
-        getAccountSnapshot: async () => {
-          accountSnapshotCalls += 1;
-          return createAccountSnapshotDouble('123000');
-        },
-        getStockPositions: async () => {
-          stockPositionCalls += 1;
-          return [
-            createPositionDouble({
-              symbol: 'BULL.HK',
-              quantity: 100,
-              availableQuantity: 100,
-            }),
-          ];
+      tradeRuntime: createTradeRuntimeDouble({
+        accountService: {
+          getAccountSnapshot: async () => {
+            accountSnapshotCalls += 1;
+            return createAccountSnapshotDouble('123000');
+          },
+          getStockPositions: async () => {
+            stockPositionCalls += 1;
+            return [
+              createPositionDouble({
+                symbol: 'BULL.HK',
+                quantity: 100,
+                availableQuantity: 100,
+              }),
+            ];
+          },
         },
       }),
       marketDataClient: createMarketDataClientDouble({
@@ -2644,7 +2674,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('marks activating seat EMPTY after SEAT_REFRESH API retry is exhausted', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const fatalErrors: unknown[] = [];
     const retryCallbacks: Array<() => void> = [];
     let getQuotesCalls = 0;
@@ -2713,7 +2743,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('sends SEAT_REFRESH non API order refresh errors to fatal channel', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const fatalErrors: unknown[] = [];
     let getQuotesCalls = 0;
 
@@ -2775,7 +2805,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips SEAT_REFRESH seat-owned work when the seat changes while order rebuild is pending', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const rebuildStarted = createDeferred<null>();
     const releaseRebuild = createDeferred<null>();
     let dailyLossPrepareCalls = 0;
@@ -2828,25 +2858,27 @@ describe('monitorTaskProcessor business flow', () => {
       callPrice: '20000',
     });
     const updateSeatState = context.symbolRegistry.updateSeatState;
-    context.symbolRegistry.updateSeatState = (direction, nextState) => {
+    spyOn(context.symbolRegistry, 'updateSeatState').mockImplementation((direction, nextState) => {
       if (direction === 'LONG' && nextState.status === 'ACTIVE') {
         activationWrites += 1;
       }
 
       return updateSeatState(direction, nextState);
-    };
+    });
 
     const processor = await createBusinessProcessor({
       queue,
       context,
-      trader: createTraderDouble({
-        getAccountSnapshot: async () => {
-          accountSnapshotCalls += 1;
-          return createAccountSnapshotDouble('100000');
-        },
-        getStockPositions: async () => {
-          stockPositionCalls += 1;
-          return [];
+      tradeRuntime: createTradeRuntimeDouble({
+        accountService: {
+          getAccountSnapshot: async () => {
+            accountSnapshotCalls += 1;
+            return createAccountSnapshotDouble('100000');
+          },
+          getStockPositions: async () => {
+            stockPositionCalls += 1;
+            return [];
+          },
         },
       }),
       marketDataClient: createMarketDataClientDouble({
@@ -2885,7 +2917,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips SEAT_REFRESH risk and seat-owned writes when the seat changes during account cache refresh', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const accountRefreshStarted = createDeferred<null>();
     const releaseAccountRefresh = createDeferred<null>();
     let riskRefreshCalls = 0;
@@ -2921,24 +2953,26 @@ describe('monitorTaskProcessor business flow', () => {
       callPrice: '20000',
     });
     const updateSeatState = context.symbolRegistry.updateSeatState;
-    context.symbolRegistry.updateSeatState = (direction, nextState) => {
+    spyOn(context.symbolRegistry, 'updateSeatState').mockImplementation((direction, nextState) => {
       if (direction === 'LONG' && nextState.status === 'ACTIVE') {
         activationWrites += 1;
       }
 
       return updateSeatState(direction, nextState);
-    };
+    });
 
     const processor = await createBusinessProcessor({
       queue,
       context,
-      trader: createTraderDouble({
-        getAccountSnapshot: async () => {
-          accountRefreshStarted.resolve(null);
-          await releaseAccountRefresh.promise;
-          return createAccountSnapshotDouble('100000');
+      tradeRuntime: createTradeRuntimeDouble({
+        accountService: {
+          getAccountSnapshot: async () => {
+            accountRefreshStarted.resolve(null);
+            await releaseAccountRefresh.promise;
+            return createAccountSnapshotDouble('100000');
+          },
+          getStockPositions: async () => [],
         },
-        getStockPositions: async () => [],
       }),
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
@@ -2975,7 +3009,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips SEAT_REFRESH post-risk writes when the seat changes during risk refresh', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const riskRefreshStarted = createDeferred<null>();
     const releaseRiskRefresh = createDeferred<null>();
     let clearBuyOrdersCalls = 0;
@@ -3010,13 +3044,13 @@ describe('monitorTaskProcessor business flow', () => {
       callPrice: '20000',
     });
     const updateSeatState = context.symbolRegistry.updateSeatState;
-    context.symbolRegistry.updateSeatState = (direction, nextState) => {
+    spyOn(context.symbolRegistry, 'updateSeatState').mockImplementation((direction, nextState) => {
       if (direction === 'LONG' && nextState.status === 'ACTIVE') {
         activationWrites += 1;
       }
 
       return updateSeatState(direction, nextState);
-    };
+    });
 
     const processor = await createBusinessProcessor({
       queue,
@@ -3028,9 +3062,11 @@ describe('monitorTaskProcessor business flow', () => {
           await releaseRiskRefresh.promise;
         },
       }),
-      trader: createTraderDouble({
-        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
-        getStockPositions: async () => [],
+      tradeRuntime: createTradeRuntimeDouble({
+        accountService: {
+          getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+          getStockPositions: async () => [],
+        },
       }),
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
@@ -3066,7 +3102,7 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips SEAT_REFRESH final activation when seat snapshot changes during refresh', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const context = createMonitorContext();
     context.symbolRegistry.updateSeatState('LONG', {
       ...context.symbolRegistry.getSeatState('LONG'),
@@ -3075,17 +3111,19 @@ describe('monitorTaskProcessor business flow', () => {
       callPrice: '20000',
     });
 
-    context.riskChecker.prepareUnrealizedLossData = (_recorder, symbol) => {
-      const latestSeat = context.symbolRegistry.getSeatState('LONG');
-      context.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
-        ...latestSeat,
-        symbol: 'NEXT_BULL.HK',
-        status: 'SWITCHING',
-        lastSwitchAt: Date.now(),
-        callPrice: null,
-      });
-      return { symbol, data: { r1: '0', n1: 0 } };
-    };
+    spyOn(context.riskChecker, 'prepareUnrealizedLossData').mockImplementation(
+      (_recorder, symbol) => {
+        const latestSeat = context.symbolRegistry.getSeatState('LONG');
+        context.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+          ...latestSeat,
+          symbol: 'NEXT_BULL.HK',
+          status: 'SWITCHING',
+          lastSwitchAt: Date.now(),
+          callPrice: null,
+        });
+        return { symbol, data: { r1: '0', n1: 0 } };
+      },
+    );
 
     const processor = await createBusinessProcessor({
       queue,
@@ -3118,7 +3156,7 @@ describe('monitorTaskProcessor business flow', () => {
 
 describe('SEAT_REFRESH retry identity', () => {
   it('stop 后同 key 新激活重试不会被旧取消 callback 删除或消费', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const context = createMonitorContext();
     const callbacks: Array<() => void> = [];
     const failure = await createExternalApiRequestError({

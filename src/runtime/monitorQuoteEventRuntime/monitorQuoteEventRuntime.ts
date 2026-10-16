@@ -10,7 +10,7 @@
 import { isWithinDoomsdayClearanceTakeoverWindow } from '../../domain/liquidation/doomsday/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isSettlementReadinessAbortError } from '../../application/postTradeSettlement/readinessGate.js';
-import { scheduleBoundedOneShotAt } from '../../utils/timer/index.js';
+import { scheduleBoundedOneShotAt } from '../timer/index.js';
 import type { SettlementReadinessReceipt } from '../../types/settlement.js';
 import { exactCompare } from '../../utils/numeric/exact.js';
 import { areStringSetsEqual } from './setUtils.js';
@@ -60,11 +60,7 @@ function assertValidStartedSwitchResult(result: unknown): void {
 function isExecutionGateOpen(deps: CreateMonitorQuoteEventRuntimeDeps): boolean {
   if (deps.termination.isTerminated()) return false;
 
-  if (!deps.lastState) {
-    return true;
-  }
-
-  if (!deps.lastState.isTradingEnabled || deps.lastState.canTrade !== true) {
+  if (!deps.lifecycleState.isTradingEnabled || deps.tradingTimeState.canTrade !== true) {
     return false;
   }
 
@@ -72,7 +68,10 @@ function isExecutionGateOpen(deps: CreateMonitorQuoteEventRuntimeDeps): boolean 
     return true;
   }
 
-  return !isWithinDoomsdayClearanceTakeoverWindow(deps.now(), deps.lastState.isHalfDay ?? false);
+  return !isWithinDoomsdayClearanceTakeoverWindow(
+    deps.now(),
+    deps.tradingTimeState.isHalfDay ?? false,
+  );
 }
 
 /**
@@ -138,7 +137,8 @@ export function createDefaultMonitorQuoteEventRuntime(
     ...(deps.quoteSubscriptionRuntime
       ? { quoteSubscriptionRuntime: deps.quoteSubscriptionRuntime }
       : {}),
-    lastState: deps.lastState,
+    tradingTimeState: deps.tradingTimeState,
+    lifecycleState: deps.lifecycleState,
     snapshot: deps.snapshot,
     postTradeConsistencyRuntime: deps.postTradeConsistencyRuntime,
     doomsdayProtectionEnabled: deps.doomsdayProtectionEnabled,

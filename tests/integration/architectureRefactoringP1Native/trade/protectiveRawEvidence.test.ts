@@ -1,15 +1,22 @@
+import { scheduleBoundedOneShotAt } from '../../../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../../../src/infrastructure/time/index.js';
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createSymbolRegistryDouble,
+} from '../../../helpers/testDoubles.js';
+
 /** 注册 broker callback→真实 Monitor/eventFlow/settlement：保护性缺价拒绝与普通同量复用分别守护。 */
 
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../../src/runtime/lifecycle/terminationRuntime.js';
 import type { OrderMonitorDeps } from '../../../../src/application/orderTracking/types.js';
-import type { OrderStateChangedEvent, RateLimiter } from '../../../../src/types/services.js';
+import type { OrderStateChangedEvent } from '../../../../src/types/orderTracking.js';
+import type { RateLimiter } from '../../../../src/types/rateLimit.js';
 import { createExecutionFixture } from '../../../application/orderTracking/recorder/executionFixture.js';
-import {
-  createMarketDataClientDouble,
-  createSymbolRegistryDouble,
-} from '../../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 /** 仅排空已发 callback 的微任务，不靠 stop 使尚未处理的 ingress 失效。 */
@@ -84,6 +91,10 @@ async function fixture(protective: boolean) {
   });
   const events: OrderStateChangedEvent[] = [];
   const monitor = native.createMonitor({
+    logger: createLoggerDouble(),
+    wait: wait,
+    requestExternalApi: wrapExternalApiRequest,
+    scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
     rateLimiter,
     cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
     marketDataClient: createMarketDataClientDouble(),

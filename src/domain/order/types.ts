@@ -1,20 +1,39 @@
-import type { OrderReadStatus, OrderReadType } from '../../types/orderReadMetadata.js';
+import type {
+  OrderReadStatus,
+  OrderReadType,
+  OrderClosedReason,
+  OrderStateCheckResult,
+} from '../../types/orderReadMetadata.js';
+import type { Quote } from '../../types/quote.js';
 import type {
   BrokerOrderExecutionFact,
   OrderExecutionRecordObservation,
   OrderFactCommitReceipt,
   OrderFilteringEngine,
   OrderOwnership,
+  OrderRecord,
 } from '../../types/orderRecorder.js';
 import type {
   DailyLossCumulativeExecutionResult,
   DailyLossMonitorScope,
   DailyLossOrderSnapshot,
 } from '../../types/risk.js';
-import type { OrderRecord } from '../../types/services.js';
+
 import type { OrderTypeConfig } from '../../types/signal.js';
 import type { OrderFact } from '../../types/trade.js';
-import type { OrderClosedReason, OrderStateCheckResult } from '../../types/trader.js';
+
+/** 订单动作所需的行情字段；由执行或换标用例显式选择，不构成查询/交易授权。 */
+type QuoteReadinessRequirement = 'PRICE' | 'PRICE_AND_LOT_SIZE';
+
+/** 订单动作的行情分类事实，供卖出、清仓、换标及盯单用例区分缺失和无效字段。 */
+export type QuoteReadinessStatus =
+  'READY' | 'MISSING' | 'INVALID_PRICE' | 'MISSING_LOT_SIZE' | 'INVALID_LOT_SIZE';
+
+/** 行情分类规则的只读输入，来自当前用例读取的 quote，不要求或改变 snapshot readiness。 */
+export type IsQuoteReadyForRequirementParams = {
+  readonly quote: Quote | null | undefined;
+  readonly requirement: QuoteReadinessRequirement;
+};
 
 /**
  * 订单过滤算法的中间状态类型。

@@ -1,3 +1,5 @@
+import { scheduleBoundedOneShotAt } from '../../../../src/runtime/timer/index.js';
+
 /**
  * orderMonitor route runtime 业务测试
  *
@@ -278,6 +280,7 @@ describe('orderMonitor route runtime', () => {
     const processedSymbols: string[] = [];
     const { marketDataClient, emitQuote } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -305,6 +308,7 @@ describe('orderMonitor route runtime', () => {
     const processedSymbols: string[] = [];
     const { marketDataClient, emitQuote } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -331,6 +335,7 @@ describe('orderMonitor route runtime', () => {
     let processCount = 0;
     const { marketDataClient, emitQuote } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -382,6 +387,7 @@ describe('orderMonitor route runtime', () => {
     const wakeupKinds: string[] = [];
     const { marketDataClient } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -424,6 +430,7 @@ describe('orderMonitor route runtime', () => {
     const wakeupKinds: string[] = [];
     const { marketDataClient } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: {
         ...routeConfig,
@@ -448,6 +455,7 @@ describe('orderMonitor route runtime', () => {
     const wakeupKinds: string[] = [];
     const { marketDataClient } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -484,6 +492,7 @@ describe('orderMonitor route runtime', () => {
     const wakeupKinds: string[] = [];
     const { marketDataClient, emitQuote } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -509,6 +518,7 @@ describe('orderMonitor route runtime', () => {
     const processedSymbols: string[] = [];
     const { marketDataClient, emitQuote } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -538,6 +548,7 @@ describe('orderMonitor route runtime', () => {
     });
     const { marketDataClient } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -557,6 +568,7 @@ describe('orderMonitor route runtime', () => {
     const processedGenerations: number[] = [];
     const { marketDataClient } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -603,6 +615,7 @@ describe('orderMonitor route runtime', () => {
     runtime.routeStatesBySymbol.set('BULL.HK', createRouteState('BULL.HK'));
     const { marketDataClient } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -640,6 +653,7 @@ describe('orderMonitor route runtime', () => {
     runtime.routeStatesBySymbol.set('BULL.HK', createRouteState('BULL.HK'));
     const { marketDataClient } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -680,6 +694,7 @@ describe('orderMonitor route runtime', () => {
       const wakeupKinds: string[] = [];
       const { marketDataClient } = createQuoteEmitter();
       const routeRuntime = createRouteRuntime({
+        scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
         runtime,
         config: {
           ...routeConfig,
@@ -733,6 +748,7 @@ describe('orderMonitor route runtime', () => {
     runtime.routeStatesBySymbol.set('BULL.HK', createRouteState('BULL.HK'));
     const { marketDataClient } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -773,6 +789,7 @@ describe('orderMonitor route runtime', () => {
       const wakeupKinds: string[] = [];
       const { marketDataClient } = createQuoteEmitter();
       const routeRuntime = createRouteRuntime({
+        scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
         runtime,
         config: {
           ...routeConfig,
@@ -820,6 +837,7 @@ describe('orderMonitor route runtime', () => {
       const processedWakeupKinds: string[] = [];
       const { marketDataClient } = createQuoteEmitter();
       const routeRuntime = createRouteRuntime({
+        scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
         runtime,
         config: {
           ...routeConfig,
@@ -859,6 +877,7 @@ describe('orderMonitor route runtime', () => {
     const releaseFirstPass = createDeferred();
     const { marketDataClient } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -886,6 +905,7 @@ describe('orderMonitor route runtime', () => {
     const fatalErrors: unknown[] = [];
     const { marketDataClient } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -915,6 +935,7 @@ describe('orderMonitor route runtime', () => {
     const releaseFirstPass = createDeferred();
     const { marketDataClient } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,
@@ -946,6 +967,7 @@ describe('orderMonitor route runtime', () => {
     const wakeupKinds: string[] = [];
     const { marketDataClient, emitQuote } = createQuoteEmitter();
     const routeRuntime = createRouteRuntime({
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       runtime,
       config: routeConfig,
       marketDataClient,

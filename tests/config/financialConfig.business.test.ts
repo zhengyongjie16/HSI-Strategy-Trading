@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../helpers/testDoubles.js';
+
 /**
  * 金融配置文本业务测试。
  * 验证金额配置的 10+3 边界、非金融 number 保留及金融阈值不经浮点投影。
@@ -6,7 +8,10 @@ import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../src/config/trading/index.js';
 
 function parse(overrides: Readonly<Record<string, string>> = {}) {
-  return createTradingConfig({ env: { MONITOR_SYMBOL: 'HSI.HK', ...overrides } }).monitor;
+  return createTradingConfig({
+    logger: createLoggerDouble(),
+    env: { MONITOR_SYMBOL: 'HSI.HK', ...overrides },
+  }).monitor;
 }
 
 describe('金融配置文本边界', () => {

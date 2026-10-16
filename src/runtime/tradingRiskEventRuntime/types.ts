@@ -2,7 +2,7 @@ import type { RuntimeTermination } from '../../types/runtime.js';
 import type { SettlementFreshnessReader } from '../../types/settlement.js';
 import type { MarketDataClient } from '../../types/marketPorts.js';
 import type { SymbolRegistry } from '../../types/seat.js';
-import type { Logger } from '../../utils/logger/types.js';
+import type { Logger } from '../../types/logger.js';
 import type {
   ProtectiveLiquidationRoute,
   ProtectiveLiquidationTrigger,

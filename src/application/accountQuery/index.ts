@@ -8,7 +8,7 @@
  * 依赖：accountReadPort（中性账户读取能力）、rateLimiter（频率限制）
  */
 import { exactSubtract } from '../../utils/numeric/exact.js';
-import type { ExternalApiRetryConfig } from '../../utils/apiFailure/types.js';
+import type { ExternalApiRetryConfig } from '../../types/apiFailure.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
 import type { AccountService, AccountServiceDeps } from '../../types/accountReadPorts.js';
 

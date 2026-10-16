@@ -4,7 +4,7 @@
  * 功能：
  * - 验证风险检查管道相关场景意图、边界条件与业务期望。
  */
-import { logger } from '../../../src/utils/logger/index.js';
+import { logger } from '../../../src/infrastructure/logger/index.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { rejects } from 'node:assert/strict';
 import type { BuyRiskCheckContext } from '../../../src/application/ordinaryBuy/types.js';
@@ -18,7 +18,7 @@ import {
   createQuoteDouble,
   createRiskCheckerDouble,
   createSignalDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createBuyThrottle } from '../../../src/application/orderExecution/buyThrottle.js';
@@ -33,7 +33,7 @@ function withMockedNow<T>(nowMs: number, run: () => Promise<T>): Promise<T> {
 }
 
 function createContext(params: {
-  readonly trader: ReturnType<typeof createTraderDouble>;
+  readonly tradeRuntime: ReturnType<typeof createTradeRuntimeDouble>;
   readonly riskChecker: ReturnType<typeof createRiskCheckerDouble>;
   readonly orderRecorder: ReturnType<typeof createOrderRecorderDouble>;
   readonly currentTimeMs?: number;
@@ -42,7 +42,9 @@ function createContext(params: {
   const monitorConfig = createMonitorConfigDouble();
 
   return {
-    trader: params.trader,
+    accountService: params.tradeRuntime.accountService,
+    tradeFrequencyReader: params.tradeRuntime.orderExecutor,
+
     riskChecker: params.riskChecker,
     orderRecorder: params.orderRecorder,
     longQuote: createQuoteDouble('BULL.HK', '10'),
@@ -73,14 +75,16 @@ describe('ordinaryBuy riskChecks business flow', () => {
     'rejects invalid internal monitor price %s before cooldown or risk side effects',
     async (price) => {
       let tradeChecks = 0;
-      const trader = createTraderDouble({
-        canTradeNow: () => {
-          tradeChecks += 1;
-          return { canTrade: true };
+      const tradeRuntime = createTradeRuntimeDouble({
+        orderExecutor: {
+          canTradeNow: () => {
+            tradeChecks += 1;
+            return { canTrade: true };
+          },
         },
       });
       const context = createContext({
-        trader,
+        tradeRuntime,
         riskChecker: createRiskCheckerDouble(),
         orderRecorder: createOrderRecorderDouble(),
       });
@@ -114,18 +118,22 @@ describe('ordinaryBuy riskChecks business flow', () => {
     let baseRiskCheckCount = 0;
     let accountCallCount = 0;
     let positionCallCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => {
-        canTradeNowCount += 1;
-        return { canTrade: true };
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        canTradeNow: () => {
+          canTradeNowCount += 1;
+          return { canTrade: true };
+        },
       },
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble('100000');
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
+      accountService: {
+        getAccountSnapshot: async () => {
+          accountCallCount += 1;
+          return createAccountSnapshotDouble('100000');
+        },
+        getStockPositions: async () => {
+          positionCallCount += 1;
+          return [];
+        },
       },
     });
 
@@ -149,7 +157,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       pipeline(
         [signal],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker: createRiskCheckerDouble({
             checkWarrantRisk: () => {
               warrantRiskCheckCount += 1;
@@ -196,10 +204,12 @@ describe('ordinaryBuy riskChecks business flow', () => {
     const result = await pipeline(
       [createSignalDouble('BUYCALL', 'BULL.HK')],
       createContext({
-        trader: createTraderDouble({
-          canTradeNow: () => {
-            checks += 1;
-            return { canTrade: true };
+        tradeRuntime: createTradeRuntimeDouble({
+          orderExecutor: {
+            canTradeNow: () => {
+              checks += 1;
+              return { canTrade: true };
+            },
           },
         }),
         riskChecker: createRiskCheckerDouble(),
@@ -214,18 +224,22 @@ describe('ordinaryBuy riskChecks business flow', () => {
   it('runs buy light checks before both realtime fetch calls and before base risk check', async () => {
     const steps: string[] = [];
 
-    const trader = createTraderDouble({
-      canTradeNow: () => {
-        steps.push('canTradeNow');
-        return { canTrade: true };
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        canTradeNow: () => {
+          steps.push('canTradeNow');
+          return { canTrade: true };
+        },
       },
-      getAccountSnapshot: async () => {
-        steps.push('getAccountSnapshot');
-        return createAccountSnapshotDouble('100000');
-      },
-      getStockPositions: async () => {
-        steps.push('getStockPositions');
-        return [];
+      accountService: {
+        getAccountSnapshot: async () => {
+          steps.push('getAccountSnapshot');
+          return createAccountSnapshotDouble('100000');
+        },
+        getStockPositions: async () => {
+          steps.push('getStockPositions');
+          return [];
+        },
       },
     });
 
@@ -264,7 +278,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       pipeline(
         [createSignalDouble('BUYCALL', 'BULL.HK')],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker,
           orderRecorder,
         }),
@@ -296,15 +310,17 @@ describe('ordinaryBuy riskChecks business flow', () => {
     let positionCallCount = 0;
     let baseRiskCheckCount = 0;
     let unrealizedLossCheckCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble('100000');
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
+      accountService: {
+        getAccountSnapshot: async () => {
+          accountCallCount += 1;
+          return createAccountSnapshotDouble('100000');
+        },
+        getStockPositions: async () => {
+          positionCallCount += 1;
+          return [];
+        },
       },
     });
     const riskChecker = createRiskCheckerDouble({
@@ -337,7 +353,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       pipeline(
         [createSignalDouble('BUYCALL', 'BULL.HK')],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker,
           orderRecorder: createOrderRecorderDouble(),
         }),
@@ -358,15 +374,17 @@ describe('ordinaryBuy riskChecks business flow', () => {
     let unrealizedLossCheckCount = 0;
     let accountCallCount = 0;
     let positionCallCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble('100000');
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
+      accountService: {
+        getAccountSnapshot: async () => {
+          accountCallCount += 1;
+          return createAccountSnapshotDouble('100000');
+        },
+        getStockPositions: async () => {
+          positionCallCount += 1;
+          return [];
+        },
       },
     });
     const riskChecker = createRiskCheckerDouble({
@@ -391,7 +409,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       pipeline(
         [createSignalDouble('BUYCALL', 'BULL.HK')],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker,
           orderRecorder: createOrderRecorderDouble(),
         }),
@@ -410,10 +428,12 @@ describe('ordinaryBuy riskChecks business flow', () => {
       buyIntervalSeconds: monitorConfig.buyIntervalSeconds,
       clock: { now: () => new Date(Date.now()) },
     });
-    const trader = createTraderDouble({
-      canTradeNow: buyThrottle.canTradeNow,
-      getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
-      getStockPositions: async () => [],
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: { canTradeNow: buyThrottle.canTradeNow },
+      accountService: {
+        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+        getStockPositions: async () => [],
+      },
     });
 
     const pipeline = createBuyRiskChecks({
@@ -431,7 +451,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       pipeline(
         [firstBuySignal],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker: createRiskCheckerDouble(),
           orderRecorder: createOrderRecorderDouble(),
           currentTimeMs: 40_000,
@@ -444,7 +464,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       pipeline(
         [secondBuySignal],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker: createRiskCheckerDouble(),
           orderRecorder: createOrderRecorderDouble(),
           currentTimeMs: 50_001,
@@ -471,10 +491,12 @@ describe('ordinaryBuy riskChecks business flow', () => {
       }),
     ];
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => realtimeAccount,
-      getStockPositions: async () => realtimePositions,
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
+      accountService: {
+        getAccountSnapshot: async () => realtimeAccount,
+        getStockPositions: async () => realtimePositions,
+      },
     });
 
     const pipeline = createBuyRiskChecks({
@@ -489,7 +511,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       pipeline(
         [signal],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker: createRiskCheckerDouble({
             checkWarrantRisk: () => ({ allowed: true }),
             checkBeforeOrder: ({ account, positions }) => ({
@@ -508,12 +530,14 @@ describe('ordinaryBuy riskChecks business flow', () => {
   it('throws plain account fetch errors and does not turn them into business rejection or enter base risk check', async () => {
     let baseRiskCheckCount = 0;
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => {
-        throw new Error('unexpected parser failure');
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
+      accountService: {
+        getAccountSnapshot: async () => {
+          throw new Error('unexpected parser failure');
+        },
+        getStockPositions: async () => [],
       },
-      getStockPositions: async () => [],
     });
 
     const pipeline = createBuyRiskChecks({
@@ -530,7 +554,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
         pipeline(
           [signal],
           createContext({
-            trader,
+            tradeRuntime,
             riskChecker: createRiskCheckerDouble({
               checkWarrantRisk: () => ({ allowed: true }),
               checkBeforeOrder: () => {
@@ -556,12 +580,14 @@ describe('ordinaryBuy riskChecks business flow', () => {
   it('throws TypeError from realtime account fetch and keeps cooldown occupied without entering base risk check', async () => {
     let baseRiskCheckCount = 0;
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => {
-        throw new TypeError('TradeContext.accountBalance returned no primary account');
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
+      accountService: {
+        getAccountSnapshot: async () => {
+          throw new TypeError('TradeContext.accountBalance returned no primary account');
+        },
+        getStockPositions: async () => [],
       },
-      getStockPositions: async () => [],
     });
 
     const pipeline = createBuyRiskChecks({
@@ -578,7 +604,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
         pipeline(
           [signal],
           createContext({
-            trader,
+            tradeRuntime,
             riskChecker: createRiskCheckerDouble({
               checkWarrantRisk: () => ({ allowed: true }),
               checkBeforeOrder: () => {
@@ -610,10 +636,12 @@ describe('ordinaryBuy riskChecks business flow', () => {
       clock: { now: () => new Date(Date.now()) },
     });
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const trader = createTraderDouble({
-      canTradeNow: buyThrottle.canTradeNow,
-      getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
-      getStockPositions: async () => [],
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: { canTradeNow: buyThrottle.canTradeNow },
+      accountService: {
+        getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+        getStockPositions: async () => [],
+      },
     });
 
     const pipeline = createBuyRiskChecks({
@@ -628,7 +656,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       pipeline(
         [signal],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker: createRiskCheckerDouble({
             checkWarrantRisk: () => ({ allowed: true }),
             checkBeforeOrder: () => ({
@@ -657,15 +685,17 @@ describe('ordinaryBuy riskChecks business flow', () => {
     let baseRiskCheckCount = 0;
     let accountCallCount = 0;
     let positionCallCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: false, waitSeconds: 30 }),
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble('100000');
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: { canTradeNow: () => ({ canTrade: false, waitSeconds: 30 }) },
+      accountService: {
+        getAccountSnapshot: async () => {
+          accountCallCount += 1;
+          return createAccountSnapshotDouble('100000');
+        },
+        getStockPositions: async () => {
+          positionCallCount += 1;
+          return [];
+        },
       },
     });
 
@@ -687,7 +717,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       pipeline(
         [signal],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker: createRiskCheckerDouble({
             checkWarrantRisk: () => {
               warrantRiskCheckCount += 1;
@@ -724,15 +754,17 @@ describe('ordinaryBuy riskChecks business flow', () => {
     let baseRiskCheckCount = 0;
     let accountCallCount = 0;
     let positionCallCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble('100000');
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
+      accountService: {
+        getAccountSnapshot: async () => {
+          accountCallCount += 1;
+          return createAccountSnapshotDouble('100000');
+        },
+        getStockPositions: async () => {
+          positionCallCount += 1;
+          return [];
+        },
       },
     });
 
@@ -757,7 +789,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       pipeline(
         [signal],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker: createRiskCheckerDouble({
             checkWarrantRisk: () => {
               warrantRiskCheckCount += 1;
@@ -792,15 +824,17 @@ describe('ordinaryBuy riskChecks business flow', () => {
     let baseRiskCheckCount = 0;
     let accountCallCount = 0;
     let positionCallCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble('100000');
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
+      accountService: {
+        getAccountSnapshot: async () => {
+          accountCallCount += 1;
+          return createAccountSnapshotDouble('100000');
+        },
+        getStockPositions: async () => {
+          positionCallCount += 1;
+          return [];
+        },
       },
     });
 
@@ -817,7 +851,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       pipeline(
         [signal],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker: createRiskCheckerDouble({
             checkWarrantRisk: () => {
               warrantRiskCheckCount += 1;
@@ -853,15 +887,17 @@ describe('ordinaryBuy riskChecks business flow', () => {
       let baseRiskCheckCount = 0;
       let accountCallCount = 0;
       let positionCallCount = 0;
-      const trader = createTraderDouble({
-        canTradeNow: () => ({ canTrade: true }),
-        getAccountSnapshot: async () => {
-          accountCallCount += 1;
-          return createAccountSnapshotDouble('100000');
-        },
-        getStockPositions: async () => {
-          positionCallCount += 1;
-          return [];
+      const tradeRuntime = createTradeRuntimeDouble({
+        orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
+        accountService: {
+          getAccountSnapshot: async () => {
+            accountCallCount += 1;
+            return createAccountSnapshotDouble('100000');
+          },
+          getStockPositions: async () => {
+            positionCallCount += 1;
+            return [];
+          },
         },
       });
 
@@ -878,7 +914,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
         pipeline(
           [signal],
           createContext({
-            trader,
+            tradeRuntime,
             riskChecker: createRiskCheckerDouble({
               checkWarrantRisk: () => {
                 warrantRiskCheckCount += 1;
@@ -909,15 +945,17 @@ describe('ordinaryBuy riskChecks business flow', () => {
     let baseRiskCheckCount = 0;
     let accountCallCount = 0;
     let positionCallCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble('100000');
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
+      accountService: {
+        getAccountSnapshot: async () => {
+          accountCallCount += 1;
+          return createAccountSnapshotDouble('100000');
+        },
+        getStockPositions: async () => {
+          positionCallCount += 1;
+          return [];
+        },
       },
     });
 
@@ -934,7 +972,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       pipeline(
         [signal],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker: createRiskCheckerDouble({
             checkWarrantRisk: () => ({
               allowed: false,
@@ -964,26 +1002,30 @@ describe('ordinaryBuy riskChecks business flow', () => {
     let positionCallCount = 0;
     const buySignal = createSignalDouble('BUYCALL', 'BULL.HK');
 
-    const trader = createTraderDouble({
-      canTradeNow: () => {
-        steps.push('canTradeNow');
-        return { canTrade: true };
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        canTradeNow: () => {
+          steps.push('canTradeNow');
+          return { canTrade: true };
+        },
       },
-      getAccountSnapshot: async (params) => {
-        accountCallCount += 1;
-        steps.push('getAccountSnapshot');
-        expect(params?.retryConfig).toEqual({ retries: 0, delayMs: 0 });
-        throw await createExternalApiRequestError({
-          operation: 'TradeContext.accountBalance',
-          attempts: 1,
-          cause: new Error('temporary'),
-        });
-      },
-      getStockPositions: async (params) => {
-        positionCallCount += 1;
-        steps.push('getStockPositions');
-        expect(params?.retryConfig).toEqual({ retries: 0, delayMs: 0 });
-        return [];
+      accountService: {
+        getAccountSnapshot: async (params) => {
+          accountCallCount += 1;
+          steps.push('getAccountSnapshot');
+          expect(params?.retryConfig).toEqual({ retries: 0, delayMs: 0 });
+          throw await createExternalApiRequestError({
+            operation: 'TradeContext.accountBalance',
+            attempts: 1,
+            cause: new Error('temporary'),
+          });
+        },
+        getStockPositions: async (params) => {
+          positionCallCount += 1;
+          steps.push('getStockPositions');
+          expect(params?.retryConfig).toEqual({ retries: 0, delayMs: 0 });
+          return [];
+        },
       },
     });
 
@@ -1006,7 +1048,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
         pipeline(
           [buySignal],
           createContext({
-            trader,
+            tradeRuntime,
             riskChecker: createRiskCheckerDouble({
               checkWarrantRisk: () => {
                 steps.push('checkWarrantRisk');
@@ -1063,26 +1105,30 @@ describe('ordinaryBuy riskChecks business flow', () => {
     let positionCallCount = 0;
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
 
-    const trader = createTraderDouble({
-      canTradeNow: () => {
-        steps.push('canTradeNow');
-        return { canTrade: true };
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        canTradeNow: () => {
+          steps.push('canTradeNow');
+          return { canTrade: true };
+        },
       },
-      getAccountSnapshot: async (params) => {
-        accountCallCount += 1;
-        steps.push('getAccountSnapshot');
-        expect(params?.retryConfig).toEqual({ retries: 0, delayMs: 0 });
-        return createAccountSnapshotDouble('100000');
-      },
-      getStockPositions: async (params) => {
-        positionCallCount += 1;
-        steps.push('getStockPositions');
-        expect(params?.retryConfig).toEqual({ retries: 0, delayMs: 0 });
-        throw await createExternalApiRequestError({
-          operation: 'TradeContext.stockPositions',
-          attempts: 1,
-          cause: new Error('positions api down'),
-        });
+      accountService: {
+        getAccountSnapshot: async (params) => {
+          accountCallCount += 1;
+          steps.push('getAccountSnapshot');
+          expect(params?.retryConfig).toEqual({ retries: 0, delayMs: 0 });
+          return createAccountSnapshotDouble('100000');
+        },
+        getStockPositions: async (params) => {
+          positionCallCount += 1;
+          steps.push('getStockPositions');
+          expect(params?.retryConfig).toEqual({ retries: 0, delayMs: 0 });
+          throw await createExternalApiRequestError({
+            operation: 'TradeContext.stockPositions',
+            attempts: 1,
+            cause: new Error('positions api down'),
+          });
+        },
       },
     });
 
@@ -1105,7 +1151,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
         pipeline(
           [signal],
           createContext({
-            trader,
+            tradeRuntime,
             riskChecker: createRiskCheckerDouble({
               checkWarrantRisk: () => {
                 steps.push('checkWarrantRisk');
@@ -1158,18 +1204,22 @@ describe('ordinaryBuy riskChecks business flow', () => {
     let latestBuyOrderPriceCount = 0;
     let warrantRiskCheckCount = 0;
     let baseRiskCheckCount = 0;
-    const trader = createTraderDouble({
-      canTradeNow: () => {
-        canTradeNowCount += 1;
-        return { canTrade: true };
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        canTradeNow: () => {
+          canTradeNowCount += 1;
+          return { canTrade: true };
+        },
       },
-      getAccountSnapshot: async () => {
-        accountCallCount += 1;
-        return createAccountSnapshotDouble('100000');
-      },
-      getStockPositions: async () => {
-        positionCallCount += 1;
-        return [];
+      accountService: {
+        getAccountSnapshot: async () => {
+          accountCallCount += 1;
+          return createAccountSnapshotDouble('100000');
+        },
+        getStockPositions: async () => {
+          positionCallCount += 1;
+          return [];
+        },
       },
     });
 
@@ -1193,7 +1243,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       await pipeline(
         [forcedSellSignal],
         createContext({
-          trader,
+          tradeRuntime,
           riskChecker: createRiskCheckerDouble({
             checkWarrantRisk: () => {
               warrantRiskCheckCount += 1;
@@ -1239,14 +1289,16 @@ describe('ordinaryBuy riskChecks business flow', () => {
     let baseRiskCheckCount = 0;
     const fatalErrors: unknown[] = [];
     const signal = createSignalDouble('BUYCALL', 'BULL.HK');
-    const trader = createTraderDouble({
-      canTradeNow: () => ({ canTrade: true }),
-      getAccountSnapshot: async () => {
-        throw externalError;
-      },
-      getStockPositions: async () => {
-        await positionsRelease.promise;
-        throw internalError;
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
+      accountService: {
+        getAccountSnapshot: async () => {
+          throw externalError;
+        },
+        getStockPositions: async () => {
+          await positionsRelease.promise;
+          throw internalError;
+        },
       },
     });
 
@@ -1264,7 +1316,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     const pending = pipeline(
       [signal],
       createContext({
-        trader,
+        tradeRuntime,
         riskChecker: createRiskCheckerDouble({
           checkWarrantRisk: () => ({ allowed: true }),
           checkBeforeOrder: () => {

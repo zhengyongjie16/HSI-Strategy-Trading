@@ -1,22 +1,21 @@
+import type { TradeRuntime } from '../../../src/app/runtime/types.js';
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
+
 /** 成交后 workflow 业务测试：完整刷新/完成事务、单次绑定、受控 baseline、重试与生命周期排空。 */
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import { createQuoteSubscriptionRuntime } from '../../../src/main/quoteSubscriptionRuntime/index.js';
+import { createQuoteSubscriptionRuntime } from '../../../src/runtime/quoteSubscriptionRuntime/index.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createPostTradeSettlementWorkflow } from '../../../src/application/postTradeSettlement/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import { API } from '../../../src/constants/index.js';
 import type { PostTradeSettlementWorkflow } from '../../../src/application/postTradeSettlement/types.js';
 import type { SnapshotToken, AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
-import type { LastState } from '../../../src/types/state.js';
 import type { RuntimeScheduler } from '../../../src/types/runtime.js';
-import type {
-  Trader,
-  RiskChecker,
-  PreparedUnrealizedLossData,
-} from '../../../src/types/services.js';
+import type { RiskChecker } from '../../../src/types/riskCheck.js';
+import type { PreparedUnrealizedLossData } from '../../../src/types/unrealizedLoss.js';
 import {
   createLoggerDouble,
   createSettlementBusinessDeps,
@@ -30,7 +29,7 @@ import {
   createProtectiveLiquidationEpisodeTrackerDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
 
 /**
@@ -128,16 +127,13 @@ beforeEach(() => {
 });
 
 function createPostTradeHarness(deps: {
-  readonly getTrader: () => Pick<
-    Trader,
-    'getAccountSnapshot' | 'getStockPositions' | 'hasPendingProtectiveLiquidationOrders'
-  >;
+  readonly getTradeRuntime: () => TradeRuntime;
   readonly onPositionsCommitted: (token: SnapshotToken) => Promise<void>;
 }): { readonly runtime: PostTradeSettlementWorkflow; readonly snapshot: AccountPositionSnapshot } {
   const snapshot = createAccountPositionSnapshot({
     readPort: {
-      getAccountSnapshot: () => deps.getTrader().getAccountSnapshot(),
-      getStockPositions: () => deps.getTrader().getStockPositions(),
+      getAccountSnapshot: () => deps.getTradeRuntime().accountService.getAccountSnapshot(),
+      getStockPositions: () => deps.getTradeRuntime().accountService.getStockPositions(),
     },
     scheduler: { schedule: queueMicrotask },
     reportFatalError: termination.reportFatalError,
@@ -147,7 +143,7 @@ function createPostTradeHarness(deps: {
     snapshot,
     runtime: createPostTradeSettlementWorkflow({
       hasPendingProtectiveOrders: (direction) =>
-        deps.getTrader().hasPendingProtectiveLiquidationOrders(direction),
+        deps.getTradeRuntime().orderMonitor.hasPendingProtectiveLiquidationOrders(direction),
       onPositionsCommitted: deps.onPositionsCommitted,
       snapshot,
       scheduler: manualScheduler.runtime,
@@ -182,18 +178,17 @@ function createObservedRiskChecker(
   });
 }
 
-function createLastState(): LastState {
+function createRuntimeStates(): RuntimeStateFixtures {
   return {
-    canTrade: true,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: '2026-04-04',
-    lifecycleState: 'ACTIVE',
-    pendingOpenRebuild: false,
-    isTradingEnabled: true,
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-    allTradingSymbols: new Set(),
+    tradingTimeState: { canTrade: true, isHalfDay: false, openProtectionActive: false },
+    lifecycleState: {
+      currentDayKey: '2026-04-04',
+      lifecycleState: 'ACTIVE',
+      pendingOpenRebuild: false,
+      isTradingEnabled: true,
+    },
+    tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
   };
 }
 
@@ -253,20 +248,22 @@ describe('PostTradeSettlementWorkflow', () => {
       cause: new Error('positions unavailable'),
     });
     let failing = true;
-    const trader = createTraderDouble({
-      getAccountSnapshot: async () => {
-        if (failing) throw accountError;
+    const tradeRuntime = createTradeRuntimeDouble({
+      accountService: {
+        getAccountSnapshot: async () => {
+          if (failing) throw accountError;
 
-        return createAccountSnapshotDouble('100000');
-      },
-      getStockPositions: async () => {
-        if (failing) throw positionsError;
+          return createAccountSnapshotDouble('100000');
+        },
+        getStockPositions: async () => {
+          if (failing) throw positionsError;
 
-        return [];
+          return [];
+        },
       },
     });
     const { runtime } = createPostTradeHarness({
-      getTrader: () => trader,
+      getTradeRuntime: () => tradeRuntime,
       onPositionsCommitted: async () => {},
     });
     bindMinimalBusinessDeps(runtime);
@@ -292,7 +289,7 @@ describe('PostTradeSettlementWorkflow', () => {
     let callbacks = 0;
     let events = 0;
     const { runtime, snapshot } = createPostTradeHarness({
-      getTrader: () => createTraderDouble(),
+      getTradeRuntime: () => createTradeRuntimeDouble(),
       onPositionsCommitted: async () => {
         callbacks += 1;
         entered.resolve(null);
@@ -327,7 +324,7 @@ describe('PostTradeSettlementWorkflow', () => {
 
   it('signs a readiness receipt for the paired canonical token and invalidates it on newer settlement demand', async () => {
     const { runtime, snapshot } = createPostTradeHarness({
-      getTrader: () => createTraderDouble(),
+      getTradeRuntime: () => createTradeRuntimeDouble(),
       onPositionsCommitted: async () => {},
     });
     bindMinimalBusinessDeps(runtime);
@@ -365,21 +362,23 @@ describe('PostTradeSettlementWorkflow', () => {
     let freshEventCount = 0;
 
     const { runtime, snapshot } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => {
-            accountRefreshCalls += 1;
-            return createAccountSnapshotDouble('88000');
-          },
-          getStockPositions: async () => {
-            positionRefreshCalls += 1;
-            return [
-              createPositionDouble({
-                symbol: 'BULL.HK',
-                quantity: 300,
-                availableQuantity: 300,
-              }),
-            ];
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              accountRefreshCalls += 1;
+              return createAccountSnapshotDouble('88000');
+            },
+            getStockPositions: async () => {
+              positionRefreshCalls += 1;
+              return [
+                createPositionDouble({
+                  symbol: 'BULL.HK',
+                  quantity: 300,
+                  availableQuantity: 300,
+                }),
+              ];
+            },
           },
         }),
       onPositionsCommitted: async () => {},
@@ -430,16 +429,18 @@ describe('PostTradeSettlementWorkflow', () => {
       readonly cacheQuantity: number | null;
     }> = [];
     const { runtime, snapshot } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble('88000'),
-          getStockPositions: async () => [
-            createPositionDouble({
-              symbol: 'BULL.HK',
-              quantity: 300,
-              availableQuantity: 300,
-            }),
-          ],
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => createAccountSnapshotDouble('88000'),
+            getStockPositions: async () => [
+              createPositionDouble({
+                symbol: 'BULL.HK',
+                quantity: 300,
+                availableQuantity: 300,
+              }),
+            ],
+          },
         }),
       onPositionsCommitted: async () => {
         await Promise.resolve();
@@ -484,29 +485,31 @@ describe('PostTradeSettlementWorkflow', () => {
     let positionRefreshCalls = 0;
 
     const { runtime, snapshot } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => {
-            accountRefreshCalls += 1;
-            if (accountRefreshCalls === 1) {
-              return firstAccountRefresh.promise;
-            }
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              accountRefreshCalls += 1;
+              if (accountRefreshCalls === 1) {
+                return firstAccountRefresh.promise;
+              }
 
-            return createAccountSnapshotDouble('99000');
-          },
-          getStockPositions: async () => {
-            positionRefreshCalls += 1;
-            if (positionRefreshCalls === 1) {
-              return firstPositionRefresh.promise;
-            }
+              return createAccountSnapshotDouble('99000');
+            },
+            getStockPositions: async () => {
+              positionRefreshCalls += 1;
+              if (positionRefreshCalls === 1) {
+                return firstPositionRefresh.promise;
+              }
 
-            return [
-              createPositionDouble({
-                symbol: 'BULL.HK',
-                quantity: 500,
-                availableQuantity: 500,
-              }),
-            ];
+              return [
+                createPositionDouble({
+                  symbol: 'BULL.HK',
+                  quantity: 500,
+                  availableQuantity: 500,
+                }),
+              ];
+            },
           },
         }),
       onPositionsCommitted: async () => {},
@@ -606,27 +609,29 @@ describe('PostTradeSettlementWorkflow', () => {
     });
 
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => {
-            accountCallCount += 1;
-            if (accountCallCount === 1) {
-              throw await createExternalApiRequestError({
-                operation: 'TradeContext.accountBalance',
-                attempts: 1,
-                cause: new Error('account API temporary unavailable'),
-              });
-            }
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              accountCallCount += 1;
+              if (accountCallCount === 1) {
+                throw await createExternalApiRequestError({
+                  operation: 'TradeContext.accountBalance',
+                  attempts: 1,
+                  cause: new Error('account API temporary unavailable'),
+                });
+              }
 
-            return createAccountSnapshotDouble('66000');
+              return createAccountSnapshotDouble('66000');
+            },
+            getStockPositions: async () => [
+              createPositionDouble({
+                symbol: 'BULL.HK',
+                quantity: 300,
+                availableQuantity: 300,
+              }),
+            ],
           },
-          getStockPositions: async () => [
-            createPositionDouble({
-              symbol: 'BULL.HK',
-              quantity: 300,
-              availableQuantity: 300,
-            }),
-          ],
         }),
       onPositionsCommitted: async () => {},
     });
@@ -667,19 +672,21 @@ describe('PostTradeSettlementWorkflow', () => {
   it('lets a new settlement need preempt the 300ms retry and clears the superseded timer', async () => {
     let accountRefreshCalls = 0;
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => {
-            accountRefreshCalls += 1;
-            if (accountRefreshCalls === 1) {
-              throw await createExternalApiRequestError({
-                operation: 'TradeContext.accountBalance',
-                attempts: 1,
-                cause: new Error('temporary failure'),
-              });
-            }
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              accountRefreshCalls += 1;
+              if (accountRefreshCalls === 1) {
+                throw await createExternalApiRequestError({
+                  operation: 'TradeContext.accountBalance',
+                  attempts: 1,
+                  cause: new Error('temporary failure'),
+                });
+              }
 
-            return createAccountSnapshotDouble('88000');
+              return createAccountSnapshotDouble('88000');
+            },
           },
         }),
       onPositionsCommitted: async () => {},
@@ -710,11 +717,13 @@ describe('PostTradeSettlementWorkflow', () => {
   it('clears a queued 0ms run on stop but preserves its need for the next start', async () => {
     let accountRefreshCalls = 0;
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => {
-            accountRefreshCalls += 1;
-            return createAccountSnapshotDouble('88000');
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              accountRefreshCalls += 1;
+              return createAccountSnapshotDouble('88000');
+            },
           },
         }),
       onPositionsCommitted: async () => {},
@@ -742,15 +751,17 @@ describe('PostTradeSettlementWorkflow', () => {
   it('clears a queued 300ms retry and discards its need during midnight cleanup', async () => {
     let accountRefreshCalls = 0;
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => {
-            accountRefreshCalls += 1;
-            throw await createExternalApiRequestError({
-              operation: 'TradeContext.accountBalance',
-              attempts: 1,
-              cause: new Error('temporary failure'),
-            });
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              accountRefreshCalls += 1;
+              throw await createExternalApiRequestError({
+                operation: 'TradeContext.accountBalance',
+                attempts: 1,
+                cause: new Error('temporary failure'),
+              });
+            },
           },
         }),
       onPositionsCommitted: async () => {},
@@ -822,10 +833,12 @@ describe('PostTradeSettlementWorkflow', () => {
       ),
     });
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble('66000'),
-          getStockPositions: async () => [],
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => createAccountSnapshotDouble('66000'),
+            getStockPositions: async () => [],
+          },
         }),
       onPositionsCommitted: async () => {},
     });
@@ -868,13 +881,15 @@ describe('PostTradeSettlementWorkflow', () => {
   it('fails fast when account refresh hits TypeError and exposes the fatal channel immediately', async () => {
     let accountCallCount = 0;
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => {
-            accountCallCount += 1;
-            throw new TypeError('TradeContext.accountBalance returned no primary account');
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              accountCallCount += 1;
+              throw new TypeError('TradeContext.accountBalance returned no primary account');
+            },
+            getStockPositions: async () => [],
           },
-          getStockPositions: async () => [],
         }),
       onPositionsCommitted: async () => {},
     });
@@ -937,16 +952,18 @@ describe('PostTradeSettlementWorkflow', () => {
   it('fails fast when positions committed hook throws ordinary Error', async () => {
     const internalError = new Error('position commit failed');
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble('100'),
-          getStockPositions: async () => [
-            createPositionDouble({
-              symbol: 'BULL.HK',
-              quantity: 1,
-              availableQuantity: 1,
-            }),
-          ],
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => createAccountSnapshotDouble('100'),
+            getStockPositions: async () => [
+              createPositionDouble({
+                symbol: 'BULL.HK',
+                quantity: 1,
+                availableQuantity: 1,
+              }),
+            ],
+          },
         }),
       onPositionsCommitted: async () => {
         throw internalError;
@@ -1026,19 +1043,21 @@ describe('PostTradeSettlementWorkflow', () => {
     });
 
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => {
-            accountCallCount += 1;
-            return createAccountSnapshotDouble('77000');
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              accountCallCount += 1;
+              return createAccountSnapshotDouble('77000');
+            },
+            getStockPositions: async () => [
+              createPositionDouble({
+                symbol: 'BULL.HK',
+                quantity: 300,
+                availableQuantity: 300,
+              }),
+            ],
           },
-          getStockPositions: async () => [
-            createPositionDouble({
-              symbol: 'BULL.HK',
-              quantity: 300,
-              availableQuantity: 300,
-            }),
-          ],
         }),
       onPositionsCommitted: async () => {},
     });
@@ -1146,13 +1165,17 @@ describe('PostTradeSettlementWorkflow', () => {
     });
 
     const { runtime, snapshot } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble('77000'),
-          getStockPositions: async () => [],
-          hasPendingProtectiveLiquidationOrders: (direction) => {
-            pendingProtectiveDirections.push(direction);
-            return false;
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => createAccountSnapshotDouble('77000'),
+            getStockPositions: async () => [],
+          },
+          orderMonitor: {
+            hasPendingProtectiveLiquidationOrders: (direction) => {
+              pendingProtectiveDirections.push(direction);
+              return false;
+            },
           },
         }),
       onPositionsCommitted: async () => {},
@@ -1237,11 +1260,13 @@ describe('PostTradeSettlementWorkflow', () => {
     const boundaryExecutedTimeMs = Date.parse('2026-07-11T03:00:00.000Z');
     const commits: string[] = [];
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble('10000'),
-          getStockPositions: async () => [],
-          hasPendingProtectiveLiquidationOrders: () => false,
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => createAccountSnapshotDouble('10000'),
+            getStockPositions: async () => [],
+          },
+          orderMonitor: { hasPendingProtectiveLiquidationOrders: () => false },
         }),
       onPositionsCommitted: async () => {},
     });
@@ -1294,7 +1319,7 @@ describe('PostTradeSettlementWorkflow', () => {
 
   it('fails fast when start is called before bindBusinessDeps', () => {
     const { runtime } = createPostTradeHarness({
-      getTrader: () => createTraderDouble(),
+      getTradeRuntime: () => createTradeRuntimeDouble(),
       onPositionsCommitted: async () => {},
     });
 
@@ -1305,7 +1330,7 @@ describe('PostTradeSettlementWorkflow', () => {
 
   it('fails fast when bindBusinessDeps is called more than once', () => {
     const { runtime } = createPostTradeHarness({
-      getTrader: () => createTraderDouble(),
+      getTradeRuntime: () => createTradeRuntimeDouble(),
       onPositionsCommitted: async () => {},
     });
 
@@ -1342,10 +1367,12 @@ describe('PostTradeSettlementWorkflow', () => {
       symbolRegistry,
     });
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble('10000'),
-          getStockPositions: async () => [],
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => createAccountSnapshotDouble('10000'),
+            getStockPositions: async () => [],
+          },
         }),
       onPositionsCommitted: async () => {},
     });
@@ -1367,7 +1394,7 @@ describe('PostTradeSettlementWorkflow', () => {
   it('invalid baseline stops ordinary timers without clearing pending work; explicit rebuild consumes it before fresh', async () => {
     let freshEventCount = 0;
     const { runtime, snapshot } = createPostTradeHarness({
-      getTrader: () => createTraderDouble(),
+      getTradeRuntime: () => createTradeRuntimeDouble(),
       onPositionsCommitted: async () => {},
     });
 
@@ -1414,7 +1441,7 @@ describe('PostTradeSettlementWorkflow', () => {
 
   it('aborts waiters without marking fresh during shutdown', async () => {
     const { runtime } = createPostTradeHarness({
-      getTrader: () => createTraderDouble(),
+      getTradeRuntime: () => createTradeRuntimeDouble(),
       onPositionsCommitted: async () => {},
     });
 
@@ -1444,13 +1471,15 @@ describe('PostTradeSettlementWorkflow', () => {
     let freshEventCount = 0;
 
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => {
-            accountRefreshCalls += 1;
-            return accountRefresh.promise;
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              accountRefreshCalls += 1;
+              return accountRefresh.promise;
+            },
+            getStockPositions: async () => [],
           },
-          getStockPositions: async () => [],
         }),
       onPositionsCommitted: async () => {},
     });
@@ -1486,13 +1515,15 @@ describe('PostTradeSettlementWorkflow', () => {
     let freshEventCount = 0;
 
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => {
-            accountRefreshCalls += 1;
-            return accountRefresh.promise;
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              accountRefreshCalls += 1;
+              return accountRefresh.promise;
+            },
+            getStockPositions: async () => [],
           },
-          getStockPositions: async () => [],
         }),
       onPositionsCommitted: async () => {},
     });
@@ -1570,17 +1601,19 @@ describe('PostTradeSettlementWorkflow', () => {
     });
 
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => createAccountSnapshotDouble('77000'),
-          getStockPositions: async () => [
-            createPositionDouble({
-              symbol: 'BULL.OLD.HK',
-              quantity: 100,
-              availableQuantity: 100,
-            }),
-          ],
-          hasPendingProtectiveLiquidationOrders: () => false,
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => createAccountSnapshotDouble('77000'),
+            getStockPositions: async () => [
+              createPositionDouble({
+                symbol: 'BULL.OLD.HK',
+                quantity: 100,
+                availableQuantity: 100,
+              }),
+            ],
+          },
+          orderMonitor: { hasPendingProtectiveLiquidationOrders: () => false },
         }),
       onPositionsCommitted: async () => {},
     });
@@ -1650,11 +1683,13 @@ describe('PostTrade drain dependency', () => {
     });
     let accountCalls = 0;
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => {
-            accountCalls += 1;
-            throw failure;
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              accountCalls += 1;
+              throw failure;
+            },
           },
         }),
       onPositionsCommitted: async () => {},
@@ -1690,11 +1725,13 @@ describe('PostTrade drain dependency', () => {
       const events: Array<string> = [];
       let positionCalls = 0;
       const { runtime } = createPostTradeHarness({
-        getTrader: () =>
-          createTraderDouble({
-            getStockPositions: () => {
-              positionCalls += 1;
-              return positions.promise;
+        getTradeRuntime: () =>
+          createTradeRuntimeDouble({
+            accountService: {
+              getStockPositions: () => {
+                positionCalls += 1;
+                return positions.promise;
+              },
             },
           }),
         onPositionsCommitted: async () => {
@@ -1748,7 +1785,10 @@ describe('PostTrade drain dependency', () => {
     const committed = createDeferred<null>();
     const events: string[] = [];
     const { runtime } = createPostTradeHarness({
-      getTrader: () => createTraderDouble({ getStockPositions: () => positions.promise }),
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: { getStockPositions: () => positions.promise },
+        }),
       onPositionsCommitted: async () => {
         events.push('callback-start');
         await committed.promise;
@@ -1790,12 +1830,14 @@ describe('PostTrade → Quote shutdown dependency', () => {
     const pendingPositions =
       createDeferred<ReadonlyArray<ReturnType<typeof createPositionDouble>>>();
     const subscription = createDeferred<null>();
-    const lastState = createLastState();
+    const stateFixtures = createRuntimeStates();
     const events: string[] = [];
-    const trader = createTraderDouble({ getStockPositions: () => pendingPositions.promise });
+    const tradeRuntime = createTradeRuntimeDouble({
+      accountService: { getStockPositions: () => pendingPositions.promise },
+    });
     let quoteOwner: ReturnType<typeof createQuoteSubscriptionRuntime> | null = null;
     const { runtime, snapshot } = createPostTradeHarness({
-      getTrader: () => trader,
+      getTradeRuntime: () => tradeRuntime,
       onPositionsCommitted: async (capturedToken) => {
         if (quoteOwner === null) throw new Error('quote owner has not been bound');
 
@@ -1808,8 +1850,8 @@ describe('PostTrade → Quote shutdown dependency', () => {
       logger: createLoggerDouble(),
       tradingConfig: createTradingConfig(),
       symbolRegistry: createSymbolRegistryDouble(),
-      trader,
-      lastState,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      ...stateFixtures,
       termination,
       marketDataClient: {
         subscribeSymbols: async () => {
@@ -1857,7 +1899,7 @@ describe('PostTrade → Quote shutdown dependency', () => {
       symbols: ['AFTER.HK'],
     });
     expect(events.at(-1)).toBe('quote-drained');
-    expect(lastState.allTradingSymbols.size).toBe(0);
+    expect(stateFixtures.quoteSubscriptionState.allTradingSymbols.size).toBe(0);
   });
 });
 
@@ -1867,12 +1909,14 @@ describe('PostTrade rejected request drain', () => {
     const failure = new TypeError('account invariant');
     let drained = false;
     const { runtime } = createPostTradeHarness({
-      getTrader: () =>
-        createTraderDouble({
-          getAccountSnapshot: async () => {
-            throw failure;
+      getTradeRuntime: () =>
+        createTradeRuntimeDouble({
+          accountService: {
+            getAccountSnapshot: async () => {
+              throw failure;
+            },
+            getStockPositions: () => positions.promise,
           },
-          getStockPositions: () => positions.promise,
         }),
       onPositionsCommitted: async () => {},
     });

@@ -1,24 +1,27 @@
+import {
+  createOrderRecorderDouble,
+  createLoggerDouble,
+  createAccountSnapshotDouble,
+  createLiquidationCooldownTrackerDouble,
+  createMarketDataClientDouble,
+  createQuoteDouble,
+  createRiskCheckerDouble,
+  createSignalDouble,
+  createTradeRuntimeDouble,
+} from '../../helpers/testDoubles.js';
+
 /** 普通 BUY owner：真实风险顺序/实时双读、旧席位失效、有限外部失败与 UNKNOWN fatal 语义。 */
-import { logger } from '../../../src/utils/logger/index.js';
+import { logger } from '../../../src/infrastructure/logger/index.js';
 import { describe, expect, it } from 'bun:test';
 import { createOrdinaryBuyWorkflow } from '../../../src/application/ordinaryBuy/index.js';
 import { createBuyProcessor } from '../../../src/runtime/asyncProgram/buyProcessor/index.js';
 import { createBuyTaskQueue } from '../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createMonitorContext, runProcessorFlow } from '../../main/asyncProgram/utils.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createMonitorContext, runProcessorFlow } from '../../helpers/asyncProgram.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
-import {
-  createAccountSnapshotDouble,
-  createLiquidationCooldownTrackerDouble,
-  createMarketDataClientDouble,
-  createOrderRecorderDouble,
-  createQuoteDouble,
-  createRiskCheckerDouble,
-  createSignalDouble,
-  createTraderDouble,
-} from '../../helpers/testDoubles.js';
+
 import type { OrdinaryBuyWorkflowDeps } from '../../../src/application/ordinaryBuy/types.js';
 
 /** 通过真实 H 发布基线，窄能力直接创建完整 owner，不经过 SignalProcessor 或旧处理器。 */
@@ -29,14 +32,16 @@ async function createWorkflow(overrides: Partial<OrdinaryBuyWorkflowDeps> = {}) 
     account: createAccountSnapshotDouble('100000'),
     positions: [],
   });
+  const tradeRuntime = createTradeRuntimeDouble();
   const deps: OrdinaryBuyWorkflowDeps = {
+    tradeFrequencyReader: tradeRuntime.orderExecutor,
     logger,
     config: config.monitor,
     doomsdayProtection: config.global.doomsdayProtection,
     symbolRegistry: context.symbolRegistry,
-    orderRecorder: createOrderRecorderDouble(),
+
     riskChecker: createRiskCheckerDouble(),
-    trader: createTraderDouble(),
+    ...tradeRuntime,
     marketDataClient: createMarketDataClientDouble({
       getQuotes: async () =>
         new Map([
@@ -69,8 +74,8 @@ describe('ordinaryBuy owner', () => {
   it('fetches one risk quote set, then uses realtime reads without modifying canonical facts', async () => {
     const steps: string[] = [];
     const account = createAccountSnapshotDouble('77777');
-    const { workflow, snapshot } = await createWorkflow({
-      trader: createTraderDouble({
+    const tradeInstances1 = createTradeRuntimeDouble({
+      accountService: {
         getAccountSnapshot: async () => {
           steps.push('account');
           return account;
@@ -79,13 +84,21 @@ describe('ordinaryBuy owner', () => {
           steps.push('positions');
           return [];
         },
+      },
+      orderExecutor: {
         executeSignals: async (signals, authorize) => {
           expect(authorize()).toBeTrue();
           expect(signals[0]?.quantity).toBeUndefined();
           steps.push('execute');
           return { executedOrderIds: ['BUY'], quoteFailures: [] };
         },
-      }),
+      },
+    });
+    const { workflow, snapshot } = await createWorkflow({
+      accountService: tradeInstances1.accountService,
+      orderRecorder: tradeInstances1.orderRecorder,
+      orderExecutor: tradeInstances1.orderExecutor,
+      tradeFrequencyReader: tradeInstances1.orderExecutor,
       riskChecker: createRiskCheckerDouble({
         checkBeforeOrder: (params) => {
           expect(params.account).toBe(account);
@@ -114,20 +127,27 @@ describe('ordinaryBuy owner', () => {
     let reads = 0;
     let checks = 0;
     let price = '1';
-    const { workflow } = await createWorkflow({
-      orderRecorder: createOrderRecorderDouble({
-        getLatestBuyOrderCost: () => ({ costAmount: '1000', quantity: 1000 }),
-      }),
-      trader: createTraderDouble({
+    const tradeInstances2 = createTradeRuntimeDouble({
+      orderExecutor: {
         canTradeNow: () => {
           checks += 1;
           return { canTrade: true };
         },
+      },
+      accountService: {
         getAccountSnapshot: async () => {
           reads += 1;
           return createAccountSnapshotDouble('100000');
         },
+      },
+    });
+    const { workflow } = await createWorkflow({
+      accountService: tradeInstances2.accountService,
+      orderRecorder: createOrderRecorderDouble({
+        getLatestBuyOrderCost: () => ({ costAmount: '1000', quantity: 1000 }),
       }),
+      orderExecutor: tradeInstances2.orderExecutor,
+      tradeFrequencyReader: tradeInstances2.orderExecutor,
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () =>
           new Map([
@@ -149,9 +169,8 @@ describe('ordinaryBuy owner', () => {
   it('does not submit after seat identity changes during the realtime account read', async () => {
     let submits = 0;
     const context = createMonitorContext();
-    const { workflow } = await createWorkflow({
-      symbolRegistry: context.symbolRegistry,
-      trader: createTraderDouble({
+    const tradeInstances3 = createTradeRuntimeDouble({
+      accountService: {
         getAccountSnapshot: async () => {
           context.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
             symbol: 'BULL.HK',
@@ -164,11 +183,20 @@ describe('ordinaryBuy owner', () => {
           });
           return createAccountSnapshotDouble('100000');
         },
+      },
+      orderExecutor: {
         executeSignals: async () => {
           submits += 1;
           return { executedOrderIds: ['INVALID'], quoteFailures: [] };
         },
-      }),
+      },
+    });
+    const { workflow } = await createWorkflow({
+      symbolRegistry: context.symbolRegistry,
+      accountService: tradeInstances3.accountService,
+      orderRecorder: tradeInstances3.orderRecorder,
+      orderExecutor: tradeInstances3.orderExecutor,
+      tradeFrequencyReader: tradeInstances3.orderExecutor,
     });
     await workflow.execute(buySignal());
     expect(submits).toBe(0);
@@ -176,13 +204,19 @@ describe('ordinaryBuy owner', () => {
 
   it('drops missing risk-time quote and stale-seat signal before realtime reads', async () => {
     let reads = 0;
-    const { workflow } = await createWorkflow({
-      trader: createTraderDouble({
+    const tradeInstances4 = createTradeRuntimeDouble({
+      accountService: {
         getAccountSnapshot: async () => {
           reads += 1;
           return createAccountSnapshotDouble('100000');
         },
-      }),
+      },
+    });
+    const { workflow } = await createWorkflow({
+      accountService: tradeInstances4.accountService,
+      orderRecorder: tradeInstances4.orderRecorder,
+      orderExecutor: tradeInstances4.orderExecutor,
+      tradeFrequencyReader: tradeInstances4.orderExecutor,
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () => new Map([['HSI.HK', createQuoteDouble('HSI.HK', '20000')]]),
       }),
@@ -208,16 +242,22 @@ describe('ordinaryBuy owner', () => {
         onSecondaryError: () => {},
       });
       let executions = 0;
-      const { workflow } = await createWorkflow({
-        termination,
-        trader: createTraderDouble({
+      const tradeInstances5 = createTradeRuntimeDouble({
+        orderExecutor: {
           executeSignals: async () => {
             executions += 1;
             if (operation === 'submitOrder') throw failure;
 
             return { executedOrderIds: [], quoteFailures: [] };
           },
-        }),
+        },
+      });
+      const { workflow } = await createWorkflow({
+        termination,
+        accountService: tradeInstances5.accountService,
+        orderRecorder: tradeInstances5.orderRecorder,
+        orderExecutor: tradeInstances5.orderExecutor,
+        tradeFrequencyReader: tradeInstances5.orderExecutor,
         marketDataClient: createMarketDataClientDouble({
           getQuotes: async () => {
             if (operation === 'getQuotes') throw failure;
@@ -230,6 +270,7 @@ describe('ordinaryBuy owner', () => {
         }),
       });
       const processor = createBuyProcessor({
+        logger: createLoggerDouble(),
         taskQueue: queue,
         workflow,
         getCanProcessTask: () => true,

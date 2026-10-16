@@ -5,8 +5,8 @@ import {
   ORDER_PRICE_DIFF_THRESHOLD,
 } from '../../constants/index.js';
 import type { GlobalConfig } from '../../types/config.js';
-import type { OrderReadStatus } from '../../types/orderReadMetadata.js';
-import type { OrderClosedReason } from '../../types/trader.js';
+import type { OrderReadStatus, OrderClosedReason } from '../../types/orderReadMetadata.js';
+
 import { exactCompare, exactSubtract, formatDecimal } from '../../utils/numeric/exact.js';
 import { isOpenOrderReadStatus, isTerminalOrderReadStatus } from './orderReadLifecycle.js';
 import type { OrderMonitorConfig, TrackedOrder } from './types.js';

@@ -229,7 +229,7 @@ Longbridge push / order query
 当前确认的直接写入点：
 
 | 路径 | 文件 | 语义 |
-|---|---|---|
+| --- | --- | --- |
 | 启动/重建 | `src/main/lifecycle/loadTradingDayRuntimeSnapshot.ts` | 成对读取账户和持仓后提交初始快照 |
 | 席位刷新 | `src/main/asyncProgram/monitorTaskProcessor/helpers/refreshHelpers.ts` | 激活/换标期间的局部刷新 |
 | 成交后刷新 | `src/app/runtime/createPostTradeConsistencyRuntime.ts` | settlement refresh 与 post-trade business |
@@ -539,11 +539,7 @@ interface AccountPositionSnapshotCoordinator {
 
 ```ts
 type SnapshotRefreshRequest = Readonly<{
-  readonly source:
-    | 'STARTUP_REBUILD'
-    | 'OPEN_REBUILD'
-    | 'SEAT_ACTIVATION'
-    | 'POST_TRADE_SETTLEMENT';
+  readonly source: 'STARTUP_REBUILD' | 'OPEN_REBUILD' | 'SEAT_ACTIVATION' | 'POST_TRADE_SETTLEMENT';
   readonly dayEpoch: number;
   readonly refreshAccount: boolean;
   readonly refreshPositions: boolean;
@@ -624,12 +620,12 @@ SnapshotCoordinator 内部允许：
 
 ### 5.6 失败 owner 不合并
 
-| 失败来源 | 负责重试的 owner | 不应发生的行为 |
-|---|---|---|
+| 失败来源     | 负责重试的 owner                       | 不应发生的行为                          |
+| ------------ | -------------------------------------- | --------------------------------------- |
 | 席位激活刷新 | `MonitorTaskProcessor` / seat workflow | 不推进 settlement stale，不影响另一方向 |
-| 成交后刷新 | `PostTradeSettlementWorkflow` | 不由 seat runtime 再重试一份 |
-| 启动快照 | startup/lifecycle | 不伪装成 seat refresh 失败 |
-| 开盘重建 | day lifecycle | 不让普通业务 runtime 自行恢复 |
+| 成交后刷新   | `PostTradeSettlementWorkflow`          | 不由 seat runtime 再重试一份            |
+| 启动快照     | startup/lifecycle                      | 不伪装成 seat refresh 失败              |
+| 开盘重建     | day lifecycle                          | 不让普通业务 runtime 自行恢复           |
 
 submit UNKNOWN 不属于 snapshot refresh 来源：直接经既有 fatal 通道终止，不安排专用查询或重评估；撤单终态等待等既有末日业务重评估不变。
 
@@ -640,7 +636,7 @@ SnapshotCoordinator 可以负责请求合并和结果分类，但不应该再建
 内部只保留 `admissionState + epoch + generation + inFlight + pending`。不要把所有请求做成另一条通用持久化任务队列。
 
 | 时点 | 原子操作 | 后续动作 |
-|---|---|---|
+| --- | --- | --- |
 | 请求入队 | 检查 epoch/admission；记录请求字段和独立 waiter，合入 pending | 若无 inFlight，安排 pump |
 | pump 发读 | 将 pending 整体移动到 inFlight；**此时**捕获当前 generation、字段并集和参与者；清空 pending | 按冻结字段发 API |
 | 已知事实失效 | 同步 generation++；settlement 来源同时登记 staleVersion 和刷新需求 | 后来的请求进入 pending，不改 inFlight token |
@@ -811,7 +807,7 @@ DoomsdayClearance
 ### 7.2 清仓目的及既有副作用矩阵
 
 | 路径 | protective 标识 / 委托 | 数量与归属 | 买单记录及完成副作用 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 浮亏保护性 | `isProtectiveLiquidation=true`，原保护性委托类型 | 风险判定数量，executor 按最新可卖量裁剪 | 保护性 execution progress、episode、completion durable boundary、亏损分段和冷却保持当前顺序 |
 | 静态距回收价 | `isProtectiveLiquidation=false`，WARRANT_LIQUIDATION_ORDER_TYPE | 原缓存可用量发起，executor 最终裁剪；新增量不得扩入 protective 旧单 | 保留提交成功后的原买单记录清理和浮亏刷新；静态成交不创建或推进 protective progress/episode。此前真实 protective episode 仍可在完成条件满足时提交 completion 并按原规则计冷却 |
 | 末日 | 专用命令，非 protective，全局交易订单类型 + Day | 当前席位可证明归属；不要求整手、不智能选单、不关联买单；撤旧卖单后等权威终态再取量 | 保留既有提交成功条件下的买单记录投影清理；提交不证明空仓，不新建保护性分段/冷却。已有保护性 episode 仍按实际事实完成 |
@@ -927,12 +923,12 @@ trigger
 
 本设计中的四类消息必须保持分离：
 
-| 类型 | 作用 | 能否推进业务完成 |
-|---|---|---|
-| Command | 表达要执行的业务意图 | 由 workflow 接收并执行 |
-| Gate | 判断当前动作是否允许 | 只能授权/拒绝当前动作 |
-| Fact Event | 表达已经发生且可审计的事实 | 只有对应 owner 可据此推进状态 |
-| Notification | 面向日志、监控、告警和报表的观察消息 | 不能作为完成依据 |
+| 类型         | 作用                                 | 能否推进业务完成              |
+| ------------ | ------------------------------------ | ----------------------------- |
+| Command      | 表达要执行的业务意图                 | 由 workflow 接收并执行        |
+| Gate         | 判断当前动作是否允许                 | 只能授权/拒绝当前动作         |
+| Fact Event   | 表达已经发生且可审计的事实           | 只有对应 owner 可据此推进状态 |
+| Notification | 面向日志、监控、告警和报表的观察消息 | 不能作为完成依据              |
 
 因此：
 
@@ -950,7 +946,7 @@ queued notification 完成 != durable business commit
 Backtest Kit 使用 discriminated union 限制非法状态。本项目应将同一原则用于多个较小的状态机，而不是建立一个统一 signal lifecycle：
 
 | 聚合状态 | 允许操作 | 禁止操作 |
-|---|---|---|
+| --- | --- | --- |
 | `SEAT.ACTIVATING` | 重建、校验事实、取消激活 | 普通 BUY/SELL |
 | `SEAT.ACTIVE` | 普通意图、受控换标 | 直接改身份 |
 | `ORDER.SUBMIT_UNKNOWN` | 直接 fatal、关闭交易放行、等待人工/后续独立处理 | 原命令自动重提、在本次重构中新增查询接管 |
@@ -1038,7 +1034,7 @@ type OrderCommand = Readonly<{
 ### 8.3 结果必须保留不确定性和结构化分类
 
 | 操作 | 内部结果/失败分类 | owner 行为 |
-|---|---|---|
+| --- | --- | --- |
 | submit | ACCEPTED(orderId)、明确业务 REJECTED、请求已尝试但结果 UNKNOWN | UNKNOWN 直接 fatal、关闭交易放行且不自动重提；已接受后本地记录失败保留 orderId 和一致性错误 |
 | replace | ACKNOWLEDGED、明确拒绝、ORDER_ALREADY_CLOSED、可重试外部错误、UNKNOWN | 保留现有改单路由、错误码退避及权威查询；ack 不改写终态 |
 | cancel | ACKNOWLEDGED、ALREADY_TERMINAL(权威 fact)、可重试外部错误、UNKNOWN | 接受后等事实；上层保留 CANCEL_NOT_STARTED；不凭错误文本推导 terminal |
@@ -1062,7 +1058,7 @@ SDK 解耦不等于精度升级，也不允许把现有十进制计算降为普�
 **转换位置与职责基线：**
 
 | 链路及当前来源 | 必须保留的运算与转换 |
-|---|---|
+| --- | --- |
 | 买量：`utils/numeric`、`trader/orderExecutor/quantityResolver`、`autoSymbolManager/signalBuilder` | 有限 number 按 `toString()`、string 按文本进入十进制；名义金额除价格后向下取整，再按每手向下对齐。普通提交量原先仍是 Decimal，不能先转 number 再计算/重建；换标回补结果在构造 signal 前原本转为 number，保留该位置。 |
 | 回收价距离：`riskController/warrantRiskChecker`、`autoSymbolManager/switchStateMachine` | number 价格进入十进制，按 `(现价 - 回收价) / 回收价 × 100` 计算并进行阈值/区间比较；比较前不预舍入、不投影为 number。供换标比较的距离值继续保留十进制语义，原风险结果/展示的 number 转换仍在原位置。 |
 | 日损益：`riskController/dailyLossTracker`、`riskController/utils#sumOrderCost` | 成交价/量与事实字段已有 number 边界；累计金额先做十进制乘法，成本汇总先做十进制乘加，baseline 差额、分段均价、已实现盈亏也用十进制。各自原有的 `toNumber()`、再进入十进制及 number 状态字段均保留，不能合并为一段“全精确”计算或全部改成 number。 |
@@ -1318,15 +1314,15 @@ descriptor 只能降低漏列风险，不能取代 termination 的首个 fatal �
 
 ### 11.2 明确通道类型
 
-| 通道 | 语义 | 规则 |
-|---|---|---|
-| Monitor candle | 最新观察 | single-flight/latest-only |
-| Monitor task | 业务事项最新安排 | 同 key 可替换，版本失效 |
-| Buy task | 已获准的顺序意图 | FIFO，不能擅自丢弃 |
-| Sell task | 已获准的顺序意图 | FIFO，不能擅自丢弃；执行前仍复核 |
-| Order fact | 权威事实 | 保序、不得丢失、单订单串行 |
-| Snapshot refresh | canonical read/commit | 单飞、合并、generation 校验 |
-| Time wakeup | 系统时点 | one-shot，持有下一时点 |
+| 通道             | 语义                  | 规则                             |
+| ---------------- | --------------------- | -------------------------------- |
+| Monitor candle   | 最新观察              | single-flight/latest-only        |
+| Monitor task     | 业务事项最新安排      | 同 key 可替换，版本失效          |
+| Buy task         | 已获准的顺序意图      | FIFO，不能擅自丢弃               |
+| Sell task        | 已获准的顺序意图      | FIFO，不能擅自丢弃；执行前仍复核 |
+| Order fact       | 权威事实              | 保序、不得丢失、单订单串行       |
+| Snapshot refresh | canonical read/commit | 单飞、合并、generation 校验      |
+| Time wakeup      | 系统时点              | one-shot，持有下一时点           |
 
 ### 11.3 不新增未经业务确认的容量策略
 
@@ -1354,7 +1350,7 @@ descriptor 只能降低漏列风险，不能取代 termination 的首个 fatal �
 ### 12.1 可以借鉴
 
 | `backtest-kit` 设计 | 当前采用方式 |
-|---|---|
+| --- | --- |
 | Schema/Connection/Client 分层 | Definition/Factory/Runtime 分离，减少实例创建散落 |
 | DI container 与 scoped context | 显式 factory 注入；只对一次执行/工作流使用局部、显式传递的上下文，不把关键业务 token 隐藏在 ambient context 中 |
 | 版本与执行 token | 显式传播 `dayEpoch`、`seatVersion`、`settlementVersion`、`snapshotGeneration`；不额外引入统一 `mode` 作为业务主轴 |
@@ -1497,7 +1493,7 @@ Phase 1 是一个不可拆开的正确性纵切：上述全部 writer、消费�
 
 工作：
 
-- 在 P1 snapshot 安全切片和 P3C activation 接入基础上，完整迁移重建用例到 application/tradingDayRebuild、日切协调到 runtime/lifecycle，删除旧重建入口；不改变恢复/开门次序；
+- 在 P1 snapshot 安全切片和 P3C activation 接入基础上，完整迁移重建用例到 application/tradingDayRebuild、日切协调到 runtime/lifecycle，删除旧重建入口；不改变恢复/开门次序；启动初次重建由 `startupRebuild.ts::executeStartupRebuild` 独占，启动/终止协调分别落于 `runtime/lifecycle/{startupRuntime,terminationRuntime}.ts`，app 仅装配并 await 唯一 cleanup；
 - 在 composition root 维护静态 checklist；
 - checklist 校验 startup/midnight/rebuild/termination 的现有静态顺序和资源覆盖，不生成通用执行器；
 - 保留当前特殊 lifecycle policy；
@@ -1763,7 +1759,7 @@ orderId
 以下为统一后的目标位置。原有路径只用于定位迁移来源，不授权在旧混合目录继续增加新 owner；不要求一次创建全部空目录。完整去向、阶段和测试镜像映射见实施计划第 4 节。
 
 | 切面 | 目标 owner/位置（拟新增或迁入） | 必须同时修改的现有路径 |
-|---|---|---|
+| --- | --- | --- |
 | 账户持仓事实 | `src/application/accountPositionSnapshot/`：完整 coordinator、私有 store/pump；对外只读 view 与 request capability | `src/types/state.ts`、`src/app/runtime/createPostGateRuntime.ts`、`src/main/lifecycle/loadTradingDayRuntimeSnapshot.ts`、`src/main/lifecycle/cacheDomains/globalStateDomain.ts`、`src/main/asyncProgram/monitorTaskProcessor/helpers/refreshHelpers.ts`、`src/main/timeWakeupEvaluationProgram/index.ts`、`src/core/doomsdayProtection/index.ts`、`src/app/runtime/createPostTradeConsistencyRuntime.ts` |
 | 消费者与派生结果 | 原有 `positionCache` 查询能力收窄；业务 owner 持有 receipt，不持有 update | `src/main/asyncProgram/sellProcessor/index.ts`、`src/main/quoteSubscriptionRuntime/index.ts`、`src/main/monitorQuoteEventRuntime/`、`src/main/asyncProgram/monitorTaskProcessor/handlers/seatRefresh.ts` 以及全部 LastState account/position 读取调用方 |
 | 成交后业务 | `src/application/postTradeSettlement/`：承接业务完成条件和 readiness；runtime 调度、app 工厂仅组装 | `src/app/runtime/createPostTradeConsistencyRuntime.ts`、`src/core/trader/orderMonitor/settlementFlow.ts`、`src/utils/refreshGate/index.ts`、`src/main/lifecycle/cacheDomains/signalRuntimeDomain.ts` |
@@ -1792,7 +1788,7 @@ orderId
 ### B.1 关键新增检查（不以覆盖率为目的）
 
 | 检查 | 可控时序 | 必须断言 |
-|---|---|---|
+| --- | --- | --- |
 | batch 冻结 | position-only 在途后入队 account+positions | 后者不由已发读批次 resolve；后继成对读取 |
 | 过期错误优先级 | 旧 batch 已失效后返回内部契约错误 | 仍进入 fatal/首错路径，不被 supersession 吞掉；成功或预期外部错误才按后继协议处理 |
 | 真实 single-flight | account 已失败，positions 尚 pending | 不 commit、不提前 drain、不发并行 canonical batch |
@@ -1821,7 +1817,7 @@ orderId
 以文件路径和行为为主，行号仅表示本次基线定位：
 
 | 证据 | 定位 |
-|---|---|
+| --- | --- |
 | 席位直接写账户/持仓 | `src/main/asyncProgram/monitorTaskProcessor/helpers/refreshHelpers.ts:49–61` |
 | 成交后双读、提交、后置业务与 markFresh | `src/app/runtime/createPostTradeConsistencyRuntime.ts:415–493` |
 | completion 先持久化后提交内存 | 同上 `:194–229` |

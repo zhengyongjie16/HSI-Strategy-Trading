@@ -1,3 +1,5 @@
+import type { Logger } from '../../../types/logger.js';
+
 /**
  * 订单快照来源标识。
  * 类型用途：标记同一 orderId 的来源（history/today），用于去重覆盖决策。
@@ -5,15 +7,17 @@
  * 使用范围：orderRecorder/orderApiManager 内部使用。
  */
 
-import type { OrderCostBasis, OrderExecutionTimeEvidence } from '../../../types/orderRecorder.js';
-import type { OrderSnapshotReadPort } from '../../../types/orderSnapshotReadPorts.js';
-import type { Quote } from '../../../types/quote.js';
 import type {
+  OrderCostBasis,
+  OrderExecutionTimeEvidence,
   OrderRecord,
   PendingSellInfo,
   SellableOrderResult,
   SellableOrderSelectParams,
-} from '../../../types/services.js';
+} from '../../../types/orderRecorder.js';
+import type { OrderSnapshotReadPort } from '../../../types/orderSnapshotReadPorts.js';
+import type { Quote } from '../../../types/quote.js';
+
 import type { SettlementRefreshNeedRecorder } from '../../../types/settlement.js';
 import type { OrderFact } from '../../../types/trade.js';
 
@@ -104,6 +108,7 @@ export type OrderAPIManagerDeps = {
  * 使用范围：仅 orderRecorder 对外工厂使用。
  */
 export type OrderRecorderFactoryDeps = {
+  readonly logger: Logger;
   readonly orderSnapshotReadPort: OrderSnapshotReadPort;
   readonly getExecutionTimeEvidence: () => ReadonlyArray<OrderExecutionTimeEvidence>;
   readonly settlementRefreshNeedRecorder: SettlementRefreshNeedRecorder;

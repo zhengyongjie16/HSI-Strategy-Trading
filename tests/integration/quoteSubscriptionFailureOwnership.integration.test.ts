@@ -1,3 +1,5 @@
+import type { RuntimeStateFixtures } from '../helpers/types.js';
+
 /**
  * Quote 订阅失败归属集成回归。
  * 连接真实 canonical H、PostTrade、Quote owner、SymbolRegistry 与 Termination，
@@ -7,13 +9,12 @@ import { describe, expect, it } from 'bun:test';
 import { API } from '../../src/constants/index.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
-import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
+import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
+import { createQuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscriptionRuntime/index.js';
 import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import type { Position } from '../../src/types/account.js';
-import type { OrderHoldSymbolsChangedEvent } from '../../src/types/services.js';
-import type { LastState } from '../../src/types/state.js';
+import type { OrderHoldSymbolsChangedEvent } from '../../src/types/orderHold.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 import {
   createAccountSnapshotDouble,
@@ -25,7 +26,7 @@ import {
   createPositionDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createRiskCheckerDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
 
 /** 排空已排入的微任务，不推进失败重试 timer。 */
@@ -75,17 +76,16 @@ async function createOwnershipHarness(params: {
   const monitor = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' });
   const symbolRegistry = createSymbolRegistry(monitor);
   const scheduler = createManualScheduler();
-  const lastState: LastState = {
-    canTrade: true,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: '2026-04-10',
-    lifecycleState: 'ACTIVE',
-    pendingOpenRebuild: false,
-    isTradingEnabled: true,
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-    allTradingSymbols: new Set(),
+  const stateFixtures: RuntimeStateFixtures = {
+    tradingTimeState: { canTrade: true, isHalfDay: false, openProtectionActive: false },
+    lifecycleState: {
+      currentDayKey: '2026-04-10',
+      lifecycleState: 'ACTIVE',
+      pendingOpenRebuild: false,
+      isTradingEnabled: true,
+    },
+    tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
   };
   let positions = params.positions ?? [];
   let positionReads = 0;
@@ -113,7 +113,7 @@ async function createOwnershipHarness(params: {
   });
   const termination = createTerminationRuntime({
     closeTradingGate: () => {
-      lastState.isTradingEnabled = false;
+      stateFixtures.lifecycleState.isTradingEnabled = false;
     },
     closeProducerAdmission: () => {
       const drain = snapshot.requestClear({
@@ -136,13 +136,15 @@ async function createOwnershipHarness(params: {
     termination.reportFatalError(error);
   }
 
-  const trader = createTraderDouble({
-    getOrderHoldSymbols: () => new Set(holdSymbols),
-    onOrderHoldSymbolsChanged: (listener) => {
-      holdListeners.add(listener);
-      return () => {
-        holdListeners.delete(listener);
-      };
+  const tradeRuntime = createTradeRuntimeDouble({
+    orderHoldRegistry: {
+      getHoldSymbols: () => new Set(holdSymbols),
+      onOrderHoldSymbolsChanged: (listener) => {
+        holdListeners.add(listener);
+        return () => {
+          holdListeners.delete(listener);
+        };
+      },
     },
   });
   const quote = createQuoteSubscriptionRuntime({
@@ -151,8 +153,8 @@ async function createOwnershipHarness(params: {
     logger: createLoggerDouble(),
     tradingConfig: createTradingConfig({ monitor }),
     symbolRegistry,
-    trader,
-    lastState,
+    orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+    ...stateFixtures,
     marketDataClient: {
       subscribeSymbols: async (symbols) => {
         subscribed.push([...symbols]);
@@ -168,6 +170,7 @@ async function createOwnershipHarness(params: {
   });
   const dailyLossTracker = createDailyLossTrackerDouble();
   const context = createMonitorContextDouble({
+    orderRecorder: tradeRuntime.orderRecorder,
     config: monitor,
     symbolRegistry,
     dailyLossTracker,
@@ -178,10 +181,11 @@ async function createOwnershipHarness(params: {
     }),
   });
   const postTrade = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     termination,
     snapshot,
     scheduler: scheduler.runtime,
-    getTrader: () => trader,
+    getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
     onPositionsCommitted: async (token) => {
       try {
         await quote.reconcilePositionHoldFromCurrentTruth(token);
@@ -223,7 +227,7 @@ async function createOwnershipHarness(params: {
     termination,
     scheduler,
     symbolRegistry,
-    lastState,
+    ...stateFixtures,
     actualSubscriptions,
     baselineSubscriptions,
     subscribed,
@@ -285,7 +289,7 @@ describe('Quote 双向交错的工作失败归属', () => {
       });
       await h.scheduler.runNext(0);
       expect(h.snapshot.getView().positions.map((position) => position.symbol)).toEqual(['X.HK']);
-      expect(h.lastState.allTradingSymbols.has('X.HK')).toBe(false);
+      expect(h.quoteSubscriptionState.allTradingSymbols.has('X.HK')).toBe(false);
       release.resolve();
       await flushMicrotasks();
 
@@ -300,7 +304,7 @@ describe('Quote 双向交错的工作失败归属', () => {
       expect(h.scheduler.pendingDelays()).toEqual([API.DEFAULT_RETRY_DELAY_MS]);
       expect(h.publishedRisk).toEqual([]);
       expect(freshReached).toBe(false);
-      expect(h.lastState.allTradingSymbols).toEqual(h.actualSubscriptions);
+      expect(h.quoteSubscriptionState.allTradingSymbols).toEqual(h.actualSubscriptions);
       expect(h.actualSubscriptions).toEqual(new Set([...h.baselineSubscriptions, 'A.HK']));
 
       h.changeOrderHold('UNRELATED.HK', 'ADDED');
@@ -320,7 +324,7 @@ describe('Quote 双向交错的工作失败归属', () => {
       expect(receipt.settlementVersion).toBe(1);
       expect(h.publishedRisk).toEqual(['BULL.HK', 'BEAR.HK']);
       expect(h.positionErrors).toEqual([failure]);
-      expect(h.lastState.allTradingSymbols).toEqual(h.actualSubscriptions);
+      expect(h.quoteSubscriptionState.allTradingSymbols).toEqual(h.actualSubscriptions);
       expect(h.actualSubscriptions.has('X.HK')).toBe(true);
       expect(h.scheduler.pendingDelays()).toEqual([]);
       expect(h.secondaryErrors).toEqual([]);
@@ -385,13 +389,13 @@ describe('Quote 双向交错的工作失败归属', () => {
         await flushMicrotasks();
         expect(h.termination.getFatalState()).toEqual({ hasFatalError: true, error: failure });
         expect(h.termination.isTerminated()).toBe(true);
-        expect(h.lastState.isTradingEnabled).toBe(false);
+        expect(h.lifecycleState.isTradingEnabled).toBe(false);
         expect(h.positionErrors).toEqual([]);
         expect(h.positionAcks).toHaveLength(1);
         expect(ordinaryAttempts).toBe(1);
         expect(h.getPositionReads()).toBe(2);
         expect(h.scheduler.pendingDelays()).toEqual([]);
-        expect(h.lastState.allTradingSymbols).toEqual(h.actualSubscriptions);
+        expect(h.quoteSubscriptionState.allTradingSymbols).toEqual(h.actualSubscriptions);
         expect(h.actualSubscriptions.has('POSITION.HK')).toBe(true);
         expect(h.secondaryErrors).toEqual([]);
       } finally {
@@ -450,7 +454,7 @@ describe('Quote 双向交错的工作失败归属', () => {
       expect(h.getPositionReads()).toBe(3);
       expect(h.subscribed.slice(1)).toEqual([['SLOW.HK'], ['LATEST.HK']]);
       expect(h.unsubscribed).toEqual([['SLOW.HK']]);
-      expect(h.lastState.allTradingSymbols).toEqual(h.actualSubscriptions);
+      expect(h.quoteSubscriptionState.allTradingSymbols).toEqual(h.actualSubscriptions);
       expect(h.actualSubscriptions).toEqual(new Set([...h.baselineSubscriptions, 'LATEST.HK']));
       expect(h.positionErrors).toEqual([]);
       expect(h.termination.getFatalState()).toEqual({ hasFatalError: false });

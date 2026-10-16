@@ -4,8 +4,8 @@
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { exactAdd, exactCompare } from '../../utils/numeric/exact.js';
 import type { DailyLossMonitorScope, DailyLossOrderSnapshot } from '../../types/risk.js';
-import type { OrderOwnership } from '../../types/orderRecorder.js';
-import type { OrderRecord } from '../../types/services.js';
+import type { OrderOwnership, OrderRecord } from '../../types/orderRecorder.js';
+
 import type { OrderOwnershipDiagnostics, OrderOwnershipDiagnosticSample } from './types.js';
 
 /**
@@ -17,7 +17,7 @@ import type { OrderOwnershipDiagnostics, OrderOwnershipDiagnosticSample } from '
  * @returns 日键字符串 "YYYY/MM/DD"，无效时返回 null
  */
 export function resolveHongKongDayKey(
-  toHongKongTimeIso: (date: Date | null) => string,
+  toHongKongTimeIso: (date: Date) => string,
   date: Date,
 ): string | null {
   if (!Number.isFinite(date.getTime())) {
@@ -82,7 +82,7 @@ export function collectOrderOwnershipDiagnostics({
     order: DailyLossOrderSnapshot,
     monitor: DailyLossMonitorScope,
   ) => OrderOwnership | null;
-  readonly toHongKongTimeIso: (date: Date | null) => string;
+  readonly toHongKongTimeIso: (date: Date) => string;
   readonly maxSamples?: number;
 }): OrderOwnershipDiagnostics | null {
   const dayKey = resolveHongKongDayKey(toHongKongTimeIso, now);

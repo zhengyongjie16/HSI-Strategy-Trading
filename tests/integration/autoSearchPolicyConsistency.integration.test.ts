@@ -1,3 +1,13 @@
+import {
+  createMarketDataClientDouble,
+  createMonitorConfigDouble,
+  createOrderRecorderDouble,
+  createQuoteContextDouble,
+  createQuoteDouble,
+  createRiskCheckerDouble,
+  createTradeRuntimeDouble,
+} from '../helpers/testDoubles.js';
+
 /**
  * 自动寻标三入口一致性集成测试。
  * 使用真实候选用例、启动补席、运行期空席位 owner 与距离换标 owner，验证共享筛选但失败政策不合并。
@@ -10,21 +20,13 @@ import { createAutoSearch } from '../../src/application/autoSearch/index.js';
 import { createStartupSeatSearch } from '../../src/application/autoSearch/startupSeatSearch.js';
 import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
 import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
-import { prepareSeatsForRuntime } from '../../src/main/recovery/seatPreparation.js';
+import { prepareSeatsForRuntime } from '../../src/application/tradingDayRebuild/seatPreparation.js';
 import type { MarketWarrantListItem } from '../../src/types/marketPorts.js';
 import type { MonitorConfig } from '../../src/types/config.js';
 import type { SymbolRegistry } from '../../src/types/seat.js';
 import type { WarrantCandidateSearch } from '../../src/application/autoSearch/types.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
-import {
-  createMarketDataClientDouble,
-  createMonitorConfigDouble,
-  createOrderRecorderDouble,
-  createQuoteContextDouble,
-  createQuoteDouble,
-  createRiskCheckerDouble,
-  createTraderDouble,
-} from '../helpers/testDoubles.js';
+
 import {
   captureSearchSeatAuthorization,
   captureSwitchSeatAuthorization,
@@ -79,7 +81,7 @@ function createSwitch(
     monitorConfig: config,
     symbolRegistry: registry,
     marketDataClient: market,
-    trader: createTraderDouble(),
+    ...createTradeRuntimeDouble(),
     orderRecorder: createOrderRecorderDouble(),
     riskChecker: createRiskCheckerDouble({
       getWarrantDistanceInfo: (isLongSymbol) => ({

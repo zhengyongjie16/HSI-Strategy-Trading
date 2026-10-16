@@ -1,12 +1,18 @@
+import { scheduleBoundedOneShotAt } from '../../../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../../../src/infrastructure/time/index.js';
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createSymbolRegistryDouble,
+} from '../../../helpers/testDoubles.js';
+
 /** WebSocket乱序/重复：私SDK入站与实际Daily/O/H/S经济及资源owner。 */
 
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
 import type { DailyLossCumulativeExecutionResult } from '../../../../src/types/risk.js';
-import {
-  createMarketDataClientDouble,
-  createSymbolRegistryDouble,
-} from '../../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../recorder/executionFixture.js';
 
@@ -84,6 +90,10 @@ describe('chaos: websocket out-of-order and duplicate pushes', () => {
       frame('WS-CHAOS-001', 'BULL.HK', '0', 'New', economic.now),
     );
     const monitor = native.createMonitor({
+      logger: createLoggerDouble(),
+      wait: wait,
+      requestExternalApi: wrapExternalApiRequest,
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       now: () => new Date(economic.now),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {

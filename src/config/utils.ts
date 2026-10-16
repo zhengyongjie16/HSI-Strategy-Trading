@@ -1,9 +1,9 @@
+import type { Logger } from '../types/logger.js';
 import { ORDER_TYPE_CONFIG_VALUES, SYMBOL_WITH_REGION_REGEX } from '../constants/index.js';
 import type { LiquidationCooldownConfig, DecimalRange } from '../types/config.js';
 import { AMOUNT_CONFIG_TEXT_PATTERN } from '../constants/financialConfig.js';
 import { canonicalDecimal, exactCompare } from '../utils/numeric/exact.js';
 import type { OrderTypeConfig } from '../types/signal.js';
-import { logger } from '../utils/logger/index.js';
 import type { ConfigValidationError } from './types.js';
 
 /**
@@ -214,6 +214,7 @@ export function parseSmartCloseTimeoutMinutesConfig(
  * @returns 解析后的 DecimalRange 对象，格式无效或未设置时返回 null
  */
 export function parseDecimalRangeConfig(
+  logger: Logger,
   env: NodeJS.ProcessEnv,
   envKey: string,
 ): DecimalRange | null {
@@ -256,6 +257,7 @@ export function parseDecimalRangeConfig(
  * @returns 去重并排序后的缩写数组，未设置或为空时返回空数组
  */
 export function parseOrderOwnershipMapping(
+  logger: Logger,
   env: NodeJS.ProcessEnv,
   envKey: string,
 ): ReadonlyArray<string> {

@@ -1,3 +1,10 @@
+import {
+  createLoggerDouble,
+  createAccountSnapshotDouble,
+  createMarketDataClientDouble,
+  createQuoteSubscriptionRuntimeDouble,
+} from '../../helpers/testDoubles.js';
+
 /**
  * SEAT_REFRESH 分阶段追赶：真实 snapshot、订单与日损 owner 共享一次合法基线。
  * 在持仓订阅 await 中插入成对提交/新成交，仅后置准备追赶；不运行 SDK 或自然 WS 链。
@@ -9,13 +16,9 @@ import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealized
 import type { SnapshotToken } from '../../../src/types/accountPosition.js';
 import type { BrokerOrderExecutionFact } from '../../../src/types/orderRecorder.js';
 import type { OrderFact } from '../../../src/types/trade.js';
-import {
-  createAccountSnapshotDouble,
-  createMarketDataClientDouble,
-  createQuoteSubscriptionRuntimeDouble,
-} from '../../helpers/testDoubles.js';
-import { createMonitorContext } from '../../main/asyncProgram/utils.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+
+import { createMonitorContext } from '../../helpers/asyncProgram.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createSeatActivationFixture } from './fixtures.js';
 
 async function createCatchUpFixture() {
@@ -54,6 +57,7 @@ async function createCatchUpFixture() {
   const brokerCalls: string[] = [];
   const refreshNeeds: string[] = [];
   const recorder = createOrderRecorder({
+    logger: createLoggerDouble(),
     orderSnapshotReadPort: {
       fetchSnapshots: async () => {
         brokerCalls.push('unauthorized');
@@ -77,10 +81,10 @@ async function createCatchUpFixture() {
   const preparedTokens: SnapshotToken[] = [];
   const publishedTokens: SnapshotToken[] = [];
   const activatedTokens: SnapshotToken[] = [];
-  context.riskChecker.prepareUnrealizedLossData = (...args) => {
+  spyOn(context.riskChecker, 'prepareUnrealizedLossData').mockImplementation((...args) => {
     preparedTokens.push(snapshot.getView().token);
     return risk.prepare(...args);
-  };
+  });
   const updateSeatState = context.symbolRegistry.updateSeatState;
   spyOn(context.symbolRegistry, 'updateSeatState').mockImplementation((direction, seat) => {
     if (seat.status === 'ACTIVE') activatedTokens.push(snapshot.getView().token);
@@ -88,13 +92,13 @@ async function createCatchUpFixture() {
     return updateSeatState(direction, seat);
   });
 
-  context.riskChecker.publishUnrealizedLossData = (candidate) => {
+  spyOn(context.riskChecker, 'publishUnrealizedLossData').mockImplementation((candidate) => {
     publishedTokens.push(snapshot.getView().token);
     risk.publish(candidate);
-  };
+  });
   const commit = spyOn(recorder, 'commitRebuildSnapshot');
   const dailyPublish = spyOn(context.dailyLossTracker, 'publishRecalculation');
-  recorder.fetchAllOrdersFromAPI = async () => [baseline];
+  spyOn(recorder, 'fetchAllOrdersFromAPI').mockImplementation(async () => [baseline]);
   const orderReads = spyOn(recorder, 'fetchAllOrdersFromAPI');
   const requests = spyOn(snapshot, 'requestRefresh');
   const subscriptionStarted = Promise.withResolvers<null>();

@@ -1,33 +1,5 @@
-import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
-import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { loadStartupSnapshot } from '../../src/app/startup/startupSnapshot.js';
-import type { RuntimeTermination } from '../../src/types/runtime.js';
-
-/**
- * runApp 业务测试
- *
- * 覆盖：
- * - 启动快照进入 pending open rebuild 时仍启动系统级时间唤醒，但不启动稳态实时链路
- * - 启动初始重建失败时仍启动系统级时间唤醒，并保持稳态实时链路静止
- */
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
-import { AsyncLocalStorage } from 'node:async_hooks';
-
-import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
-import { createCleanup } from '../../src/app/shutdown/createCleanup.js';
-import type {
-  AppEnvironmentParams,
-  AsyncRuntime,
-  CreatePostGateRuntimeParams,
-  CreatePreGateRuntimeParams,
-  PostGateRuntime,
-  PreGateRuntime,
-  RunAppDeps,
-} from '../../src/app/types.js';
-import type { TaskQueue } from '../../src/runtime/asyncProgram/tradeTaskQueue/types.js';
-import { createWarrantListCache } from '../../src/infrastructure/longbridge/market/warrantListCache/index.js';
-import type { LastState } from '../../src/types/state.js';
 import {
+  createLoggerDouble,
   createAccountSnapshotDouble,
   createAutoSearchWakeupRuntimeDouble,
   createDailyLossTrackerDouble,
@@ -45,9 +17,40 @@ import {
   createWarrantRiskRefreshDouble,
   createSeatRuntimeCleanupDispatcherDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
   createTradingGateEventRuntimeDouble,
 } from '../helpers/testDoubles.js';
+import type { RuntimeStateFixtures } from '../helpers/types.js';
+import { createSnapshotFixture } from '../helpers/accountPositionSnapshot.js';
+import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import { loadStartupSnapshot } from '../../src/application/tradingDayRebuild/startupSnapshot.js';
+import { executeStartupRebuild } from '../../src/application/tradingDayRebuild/startupRebuild.js';
+import type { RuntimeTermination } from '../../src/types/runtime.js';
+
+/**
+ * runApp 业务测试
+ *
+ * 覆盖：
+ * - 启动快照进入 pending open rebuild 时仍启动系统级时间唤醒，但不启动稳态实时链路
+ * - 启动初始重建失败时仍启动系统级时间唤醒，并保持稳态实时链路静止
+ */
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
+import { createCleanup } from '../../src/app/shutdown/createCleanup.js';
+import type {
+  AppEnvironmentParams,
+  CreatePostGateRuntimeParams,
+  CreatePreGateRuntimeParams,
+  PostGateRuntime,
+  PreGateRuntime,
+  RunAppDeps,
+} from '../../src/app/types.js';
+import type { AsyncRuntime } from '../../src/app/runtime/types.js';
+import type { TaskQueue } from '../../src/runtime/asyncProgram/tradeTaskQueue/types.js';
+import { createWarrantListCache } from '../../src/infrastructure/longbridge/market/warrantListCache/index.js';
+
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createBrokerClientFactoryDouble } from '../helpers/brokerClientFactoryDouble.js';
 
@@ -87,6 +90,7 @@ const runAppDepsProxy: RunAppDeps = {
   createPreGateRuntime: (params) => requireActiveRunAppDeps().createPreGateRuntime(params),
   createPostGateRuntime: (params) => requireActiveRunAppDeps().createPostGateRuntime(params),
   loadStartupSnapshot: (params) => requireActiveRunAppDeps().loadStartupSnapshot(params),
+  executeStartupRebuild: (params) => requireActiveRunAppDeps().executeStartupRebuild(params),
   collectRuntimeValidationSymbols: (params) =>
     requireActiveRunAppDeps().collectRuntimeValidationSymbols(params),
   createRebuildTradingDayState: (deps) =>
@@ -120,23 +124,22 @@ const runAppDepsProxy: RunAppDeps = {
   formatError: (error) => requireActiveRunAppDeps().formatError(error),
   validateRuntimeSymbolsFromQuotesMap: (params) =>
     requireActiveRunAppDeps().validateRuntimeSymbolsFromQuotesMap(params),
-  applyStartupSnapshotFailureState: (lastState) => {
-    requireActiveRunAppDeps().applyStartupSnapshotFailureState(lastState);
+  applyStartupSnapshotFailureState: (stateFixtures) => {
+    requireActiveRunAppDeps().applyStartupSnapshotFailureState(stateFixtures);
   },
 };
 
-function createMinimalLastState(): LastState {
+function createMinimalRuntimeStates(): RuntimeStateFixtures {
   return {
-    canTrade: false,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: '2026-04-29',
-    lifecycleState: 'ACTIVE',
-    pendingOpenRebuild: false,
-    isTradingEnabled: true,
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-    allTradingSymbols: new Set(),
+    tradingTimeState: { canTrade: false, isHalfDay: false, openProtectionActive: false },
+    lifecycleState: {
+      currentDayKey: '2026-04-29',
+      lifecycleState: 'ACTIVE',
+      pendingOpenRebuild: false,
+      isTradingEnabled: true,
+    },
+    tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
   };
 }
 
@@ -226,7 +229,7 @@ function createMockPreGateRuntime(): PreGateRuntime {
 }
 
 async function createMockPostGateRuntime(
-  lastState: LastState,
+  stateFixtures: RuntimeStateFixtures,
   monitorContext: PostGateRuntime['monitorContext'],
   termination: RuntimeTermination,
 ): Promise<PostGateRuntime> {
@@ -243,9 +246,11 @@ async function createMockPostGateRuntime(
       recordSteadyRuntimeStart('quoteSubscriptionRuntime.start');
     },
   });
-  const trader = createTraderDouble({
-    startOrderMonitorRuntime: () => {
-      recordSteadyRuntimeStart('trader.startOrderMonitorRuntime');
+  const tradeRuntime = createTradeRuntimeDouble({
+    orderMonitor: {
+      startRuntime: () => {
+        recordSteadyRuntimeStart('tradeRuntime.orderMonitor.startRuntime');
+      },
     },
   });
 
@@ -253,8 +258,9 @@ async function createMockPostGateRuntime(
   const liquidationCooldownTracker = createLiquidationCooldownTrackerDouble();
   const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTrackerDouble();
   const settlement = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     termination,
-    getTrader: () => trader,
+    getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
     snapshot,
     onPositionsCommitted: () => quoteSubscriptionRuntime.reconcileFromCurrentTruth(),
     scheduler: {
@@ -330,8 +336,8 @@ async function createMockPostGateRuntime(
         return settlement.completeRebuildBaseline();
       },
     },
-    lastState,
-    trader,
+    ...stateFixtures,
+    tradeRuntime,
     loadTradingDayRuntimeSnapshot: async () => ({
       status: 'COMMITTED',
       snapshotToken: snapshot.getView().token,
@@ -380,7 +386,7 @@ function createRunAppHarnessState(
     readonly postGateMonitorContext?: PostGateRuntime['monitorContext'];
   } = {},
 ) {
-  const lastState = createMinimalLastState();
+  const stateFixtures = createMinimalRuntimeStates();
   const shutdownController = createShutdownController();
   let termination: RuntimeTermination | null = null;
   const deps = {
@@ -446,7 +452,7 @@ function createRunAppHarnessState(
       }
 
       const runtime = await createMockPostGateRuntime(
-        lastState,
+        stateFixtures,
         options.postGateMonitorContext ?? createMonitorContextDouble(),
         sharedTermination,
       );
@@ -464,6 +470,7 @@ function createRunAppHarnessState(
 
       return loadStartupSnapshot(params);
     },
+    executeStartupRebuild,
     collectRuntimeValidationSymbols: () => ({
       runtimeValidationInputs: [],
     }),
@@ -750,6 +757,29 @@ describe.serial('runApp business flow', () => {
     expect(cleanupResetCount).toBe(1);
   });
 
+  it('delegates startup rebuild once and keeps an aborted owner from starting runtimes', async () => {
+    currentScenario = 'initialRebuildSucceeds';
+    let startupRebuildCalls = 0;
+    const harness = createRunAppHarness({
+      deps: {
+        executeStartupRebuild: async ({ startupSnapshot, termination }) => {
+          startupRebuildCalls += 1;
+          expect(startupSnapshot.kind).toBe('READY');
+          expect(termination.isTerminated()).toBe(false);
+          return { status: 'ABORTED' };
+        },
+      },
+    });
+
+    await harness.runApp({ env: {} });
+
+    expect(startupRebuildCalls).toBe(1);
+    expect(rebuildCallCount).toBe(0);
+    expect(timeWakeupStartCount).toBe(0);
+    expect(steadyRuntimeStarts).toEqual([]);
+    expect(cleanupExecuteCount).toBe(1);
+  });
+
   it('starts only time wakeup runtime when startup snapshot stays pending open rebuild', async () => {
     currentScenario = 'startupRebuildPending';
     const harness = createRunAppHarness();
@@ -907,7 +937,7 @@ describe.serial('runApp business flow', () => {
     expect(timeWakeupStartCount).toBe(1);
     expect(timeWakeupEvaluatedIndex).toBeGreaterThan(-1);
     expect(businessEventStartIndex).toBeGreaterThan(timeWakeupEvaluatedIndex);
-    expect(runtimeStartSteps).toContain('trader.startOrderMonitorRuntime');
+    expect(runtimeStartSteps).toContain('tradeRuntime.orderMonitor.startRuntime');
   });
 
   it('reuses the post-gate monitorContext during runApp assembly', async () => {

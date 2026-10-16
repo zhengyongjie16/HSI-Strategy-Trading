@@ -1,4 +1,4 @@
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import type { RuntimeTermination } from '../../../src/types/runtime.js';
 
 /**
@@ -17,7 +17,7 @@ import { createTradingConfig, createMonitorConfig } from '../../../mock/factorie
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import { createWarrantListCache } from '../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
 import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
-import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
+import { buildTradeLogPath } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/tradeLogPath.js';
 import {
   createAccountSnapshotDouble,
   createMonitorContextDouble,
@@ -25,30 +25,32 @@ import {
   createMarketDataClientDouble,
   createPositionDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
 import type { CreatePostGateRuntimeParams, PostGateRuntime } from '../../../src/app/types.js';
 import { createBrokerClientFactoryDouble } from '../../helpers/brokerClientFactoryDouble.js';
-import type { TraderDeps } from '../../../src/app/runtime/types.js';
-import type { OrderStateChangedEvent } from '../../../src/types/services.js';
+import type { CreateTradeRuntimeDeps } from '../../../src/app/runtime/types.js';
+import type { OrderStateChangedEvent } from '../../../src/types/orderTracking.js';
 
 const TEST_TEMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'post-gate-runtime-'));
 const TEST_LOG_ROOT_DIR = path.join(TEST_TEMP_DIR, 'logs');
 let activeTermination: RuntimeTermination;
 let capturedOrderStateChangedListener: ((event: OrderStateChangedEvent) => void) | null = null;
 
-type CreateTraderForTest = (deps: TraderDeps) => Promise<ReturnType<typeof createTraderDouble>>;
+type CreateTraderForTest = (
+  deps: CreateTradeRuntimeDeps,
+) => Promise<ReturnType<typeof createTradeRuntimeDouble>>;
 
 const { createMonitorContext: productionCreateMonitorContext } =
   await import('../../../src/app/context/createMonitorContext.js');
 type CreateMonitorContextForTest = typeof productionCreateMonitorContext;
 
-let createTraderForTest: CreateTraderForTest = async (_deps) => createTraderDouble();
+let createTradeRuntimeForTest: CreateTraderForTest = async (_deps) => createTradeRuntimeDouble();
 let createMonitorContextForTest: CreateMonitorContextForTest = productionCreateMonitorContext;
 
 mock.module('../../../src/app/runtime/createPostGateRuntimeDeps.js', () => ({
   DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS: {
-    createTrader: (deps: TraderDeps) => createTraderForTest(deps),
+    createTradeRuntime: (deps: CreateTradeRuntimeDeps) => createTradeRuntimeForTest(deps),
     createMonitorContext: (params: Parameters<typeof productionCreateMonitorContext>[0]) =>
       createMonitorContextForTest(params),
     createMixedTradeLogRepository,
@@ -127,37 +129,43 @@ function createRuntimeParams(
 }
 
 function configurePostGateRuntimeTrader(): void {
-  createTraderForTest = async () =>
-    createTraderDouble({
-      onOrderStateChanged: (listener) => {
-        capturedOrderStateChangedListener = listener;
-        return () => {
-          if (capturedOrderStateChangedListener === listener) {
-            capturedOrderStateChangedListener = null;
-          }
-        };
+  createTradeRuntimeForTest = async () =>
+    createTradeRuntimeDouble({
+      orderMonitor: {
+        onOrderStateChanged: (listener) => {
+          capturedOrderStateChangedListener = listener;
+          return () => {
+            if (capturedOrderStateChangedListener === listener) {
+              capturedOrderStateChangedListener = null;
+            }
+          };
+        },
       },
     });
 }
 
 function configurePostGateRuntimeTraderWithPositionRefresh(): void {
-  createTraderForTest = async () =>
-    createTraderDouble({
-      getAccountSnapshot: async () => createAccountSnapshotDouble('88000'),
-      getStockPositions: async () => [
-        createPositionDouble({
-          symbol: 'POS.HK',
-          quantity: 100,
-          availableQuantity: 100,
-        }),
-      ],
-      onOrderStateChanged: (listener) => {
-        capturedOrderStateChangedListener = listener;
-        return () => {
-          if (capturedOrderStateChangedListener === listener) {
-            capturedOrderStateChangedListener = null;
-          }
-        };
+  createTradeRuntimeForTest = async () =>
+    createTradeRuntimeDouble({
+      accountService: {
+        getAccountSnapshot: async () => createAccountSnapshotDouble('88000'),
+        getStockPositions: async () => [
+          createPositionDouble({
+            symbol: 'POS.HK',
+            quantity: 100,
+            availableQuantity: 100,
+          }),
+        ],
+      },
+      orderMonitor: {
+        onOrderStateChanged: (listener) => {
+          capturedOrderStateChangedListener = listener;
+          return () => {
+            if (capturedOrderStateChangedListener === listener) {
+              capturedOrderStateChangedListener = null;
+            }
+          };
+        },
       },
     });
 }
@@ -186,8 +194,65 @@ describe('createPostGateRuntime trade log persistence', () => {
   beforeEach(() => {
     fs.rmSync(TEST_LOG_ROOT_DIR, { recursive: true, force: true });
     capturedOrderStateChangedListener = null;
-    createTraderForTest = async (_deps) => createTraderDouble();
+    createTradeRuntimeForTest = async (_deps) => createTradeRuntimeDouble();
     createMonitorContextForTest = productionCreateMonitorContext;
+  });
+
+  it('retains six real instance identities and four independent stable state objects through composition and cleanup', async () => {
+    const instances = createTradeRuntimeDouble();
+    createTradeRuntimeForTest = async () => instances;
+    const params = createRuntimeParams();
+    let calendar:
+      | Parameters<
+          typeof productionCreateMonitorContext
+        >[0]['postGateRuntime']['tradingCalendarState']
+      | undefined;
+    createMonitorContextForTest = (contextParams) => {
+      calendar = contextParams.postGateRuntime.tradingCalendarState;
+      return productionCreateMonitorContext(contextParams);
+    };
+    const runtime = await createPostGateRuntime(params);
+    const states = [
+      runtime.tradingTimeState,
+      runtime.lifecycleState,
+      runtime.tradingCalendarState,
+      runtime.quoteSubscriptionState,
+    ] as const;
+    expect(new Set(states).size).toBe(4);
+    expect(runtime.tradingTimeState).toEqual({
+      canTrade: null,
+      isHalfDay: null,
+      openProtectionActive: null,
+    });
+
+    expect(runtime.lifecycleState).toEqual({
+      currentDayKey: '2026-03-13',
+      lifecycleState: 'ACTIVE',
+      pendingOpenRebuild: false,
+      isTradingEnabled: true,
+    });
+    expect(runtime.quoteSubscriptionState.allTradingSymbols).toEqual(new Set());
+    expect(runtime.tradingCalendarState.cachedTradingDayInfo?.dateKey).toBe('2026-03-13');
+    expect(runtime.tradingCalendarState.tradingCalendarSnapshot.size).toBe(1);
+    expect(calendar).toBe(runtime.tradingCalendarState);
+    expect(params.resources.lifecycleState).toBe(runtime.lifecycleState);
+    for (const name of [
+      'accountService',
+      'cacheManager',
+      'orderRecorder',
+      'orderHoldRegistry',
+      'orderMonitor',
+      'orderExecutor',
+    ] as const)
+      expect(runtime.tradeRuntime[name]).toBe(instances[name]);
+
+    expect(runtime.monitorContext.orderRecorder).toBe(instances.orderRecorder);
+    await params.cleanup.execute();
+    expect(runtime.lifecycleState.isTradingEnabled).toBeFalse();
+    expect(runtime.tradingTimeState).toBe(states[0]);
+    expect(runtime.lifecycleState).toBe(states[1]);
+    expect(runtime.tradingCalendarState).toBe(states[2]);
+    expect(runtime.quoteSubscriptionState).toBe(states[3]);
   });
 
   it('wires positions committed hook to quote subscription runtime', async () => {
@@ -209,18 +274,18 @@ describe('createPostGateRuntime trade log persistence', () => {
     await runtime.postTradeConsistencyRuntime.stopAndDrain();
 
     expect(subscribed).toEqual([['POS.HK']]);
-    expect(runtime.lastState.allTradingSymbols).toEqual(new Set(['POS.HK']));
+    expect(runtime.quoteSubscriptionState.allTradingSymbols).toEqual(new Set(['POS.HK']));
   });
 
   it('injects a continuous-trading authorization that requires lifecycle and canTrade', async () => {
     const captured: {
-      continuousTradingAuthorization: TraderDeps['isContinuousTradingAllowed'] | null;
+      continuousTradingAuthorization: CreateTradeRuntimeDeps['isContinuousTradingAllowed'] | null;
     } = {
       continuousTradingAuthorization: null,
     };
-    createTraderForTest = async (deps) => {
+    createTradeRuntimeForTest = async (deps) => {
       captured.continuousTradingAuthorization = deps.isContinuousTradingAllowed;
-      return createTraderDouble();
+      return createTradeRuntimeDouble();
     };
     const runtime = await createPostGateRuntime(createRuntimeParams());
 
@@ -231,25 +296,25 @@ describe('createPostGateRuntime trade log persistence', () => {
 
     const continuousTradingAuthorization = captured.continuousTradingAuthorization;
 
-    runtime.lastState.isTradingEnabled = true;
-    runtime.lastState.canTrade = false;
+    runtime.lifecycleState.isTradingEnabled = true;
+    runtime.tradingTimeState.canTrade = false;
     expect(continuousTradingAuthorization()).toBe(false);
 
-    runtime.lastState.canTrade = true;
+    runtime.tradingTimeState.canTrade = true;
     expect(continuousTradingAuthorization()).toBe(true);
 
-    runtime.lastState.isTradingEnabled = false;
+    runtime.lifecycleState.isTradingEnabled = false;
     expect(continuousTradingAuthorization()).toBe(false);
 
-    runtime.lastState.canTrade = null;
+    runtime.tradingTimeState.canTrade = null;
     expect(continuousTradingAuthorization()).toBe(false);
   });
 
-  it('constructs Trader and MonitorContext with the same unrealized-loss checker instance', async () => {
+  it('constructs Trader and MonitorContextAssembly with the same unrealized-loss checker instance', async () => {
     let capturedUnrealizedLossBuyGate: unknown = null;
-    createTraderForTest = async (deps) => {
+    createTradeRuntimeForTest = async (deps) => {
       capturedUnrealizedLossBuyGate = Reflect.get(deps, 'unrealizedLossBuyGate');
-      return createTraderDouble();
+      return createTradeRuntimeDouble();
     };
 
     const runtime = await createPostGateRuntime(createRuntimeParams());
@@ -257,13 +322,15 @@ describe('createPostGateRuntime trade log persistence', () => {
     expect(capturedUnrealizedLossBuyGate).toBe(runtime.monitorContext.riskChecker);
   });
 
-  it('registers trader listener disposal before a later post-gate factory failure', async () => {
+  it('registers tradeRuntime listener disposal before a later post-gate factory failure', async () => {
     let unsubscribeCount = 0;
     const cleanup = createCleanup();
-    createTraderForTest = async () =>
-      createTraderDouble({
-        onOrderStateChanged: () => () => {
-          unsubscribeCount += 1;
+    createTradeRuntimeForTest = async () =>
+      createTradeRuntimeDouble({
+        orderMonitor: {
+          onOrderStateChanged: () => () => {
+            unsubscribeCount += 1;
+          },
         },
       });
 
@@ -342,9 +409,9 @@ describe('createPostGateRuntime trade log persistence', () => {
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     fs.writeFileSync(logFile, '{invalid json}\n', 'utf8');
     let traderCreated = false;
-    createTraderForTest = async () => {
+    createTradeRuntimeForTest = async () => {
       traderCreated = true;
-      return createTraderDouble();
+      return createTradeRuntimeDouble();
     };
 
     let startupError: unknown;
@@ -365,9 +432,9 @@ describe('createPostGateRuntime trade log persistence', () => {
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     fs.writeFileSync(legacyFile, '[{}]', 'utf8');
     let traderCreated = false;
-    createTraderForTest = async () => {
+    createTradeRuntimeForTest = async () => {
       traderCreated = true;
-      return createTraderDouble();
+      return createTradeRuntimeDouble();
     };
 
     let startupError: unknown;
@@ -421,15 +488,15 @@ describe('createPostGateRuntime trade log persistence', () => {
 
   it('passes one termination owner into Trader and blocks reopen after termination', async () => {
     const params = createRuntimeParams();
-    let captured: TraderDeps | undefined;
-    createTraderForTest = async (deps) => {
+    let captured: CreateTradeRuntimeDeps | undefined;
+    createTradeRuntimeForTest = async (deps) => {
       captured = deps;
-      return createTraderDouble();
+      return createTradeRuntimeDouble();
     };
     const runtime = await createPostGateRuntime(params);
     expect(captured?.termination).toBe(params.termination);
-    runtime.lastState.isTradingEnabled = true;
-    runtime.lastState.canTrade = true;
+    runtime.lifecycleState.isTradingEnabled = true;
+    runtime.tradingTimeState.canTrade = true;
     params.termination.requestShutdown();
     expect(captured?.isExecutionAllowed()).toBeFalse();
     expect(captured?.isContinuousTradingAllowed()).toBeFalse();
@@ -438,10 +505,12 @@ describe('createPostGateRuntime trade log persistence', () => {
 
   it('wires lifecycle refresh fatal observation into the shared termination owner', async () => {
     const internalError = new TypeError('TradeContext.accountBalance contract broken');
-    createTraderForTest = async () =>
-      createTraderDouble({
-        getAccountSnapshot: async () => {
-          throw internalError;
+    createTradeRuntimeForTest = async () =>
+      createTradeRuntimeDouble({
+        accountService: {
+          getAccountSnapshot: async () => {
+            throw internalError;
+          },
         },
       });
     const runtime = await createPostGateRuntime(createRuntimeParams());

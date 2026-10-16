@@ -4,7 +4,7 @@
  * 验证卖出抵扣买入记录时的稳定优先级与数量扣减规则。
  */
 import { describe, expect, it } from 'bun:test';
-import type { OrderRecord } from '../../../src/types/services.js';
+import type { OrderRecord } from '../../../src/types/orderRecorder.js';
 import {
   compareBuyOrdersBySellPriority,
   deductSellQuantityFromBuyOrders,

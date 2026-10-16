@@ -5,17 +5,17 @@ import {
   exactSubtract,
   formatDecimal,
 } from '../../utils/numeric/exact.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
 import type {
-  OrderRecorder,
   PreparedUnrealizedLossData,
   UnrealizedLossData,
   UnrealizedLossCheckResult,
-} from '../../types/services.js';
+} from '../../types/unrealizedLoss.js';
 import type { UnrealizedLossChecker, UnrealizedLossCheckerDeps } from './types.js';
 
 /** 读取既有成本口径并准备精确 R1/N1；不依赖缓存状态，不发布浮亏事实。 */
 function prepare(
-  orderRecorder: OrderRecorder,
+  orderRecorder: Pick<OrderRecorder, 'getCostBasis'>,
   symbol: string,
   isLongSymbol: boolean,
   dailyLossOffset: string,

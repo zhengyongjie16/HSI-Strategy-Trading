@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'bun:test';
 import { commitRebuiltSeatActivation } from '../../../src/application/seatActivation/rebuiltSeats.js';
 import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import {
   createAccountSnapshotDouble,
   createMonitorConfigDouble,

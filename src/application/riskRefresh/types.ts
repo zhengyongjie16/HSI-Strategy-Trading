@@ -1,7 +1,7 @@
 import type { MarketDataClient } from '../../types/marketPorts.js';
-import type { WarrantRefreshResult } from '../../types/services.js';
+import type { WarrantRefreshResult } from '../../types/warrantRisk.js';
 import type { WarrantRiskChecker } from '../../domain/risk/types.js';
-import type { Logger } from '../../utils/logger/types.js';
+import type { Logger } from '../../types/logger.js';
 
 /**
  * 单方向 warrant 刷新结果。

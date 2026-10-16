@@ -1,9 +1,5 @@
-/** app wiring 授权测试：订阅回调接收真实 canonical token，迟到 r10 不授权投影或 ready。 */
-import { expect, test } from 'bun:test';
-import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import type { SnapshotToken } from '../../../src/types/accountPosition.js';
 import {
+  createLoggerDouble,
   createAccountSnapshotDouble,
   createDailyLossTrackerDouble,
   createLiquidationCooldownTrackerDouble,
@@ -11,8 +7,14 @@ import {
   createProtectiveLiquidationEpisodeTrackerDouble,
   createRiskCheckerDouble,
   createTerminationDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
+
+/** app wiring 授权测试：订阅回调接收真实 canonical token，迟到 r10 不授权投影或 ready。 */
+import { expect, test } from 'bun:test';
+import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
+import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
+import type { SnapshotToken } from '../../../src/types/accountPosition.js';
 
 test('real app capability mapping follows r11 after r10 subscription returns without a second settlement need', async () => {
   let run!: () => void;
@@ -39,8 +41,9 @@ test('real app capability mapping follows r11 after r10 subscription returns wit
     }),
   });
   const runtime = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     termination: createTerminationDouble(),
-    getTrader: () => createTraderDouble(),
+    getProtectiveOrderReader: () => createTradeRuntimeDouble().orderMonitor,
     snapshot,
     scheduler: {
       scheduleTimer: (callback) => {

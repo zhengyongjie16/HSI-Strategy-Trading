@@ -20,10 +20,10 @@ import type {
   OrderFactBatchCommitResult,
   OrderFactCommitReceipt,
   OrderProjectionTarget,
+  OrderRecorder,
 } from '../../../types/orderRecorder.js';
-import type { OrderRecorder } from '../../../types/services.js';
+
 import type { OrderFact } from '../../../types/trade.js';
-import { logger } from '../../../utils/logger/index.js';
 import { exactCompare } from '../../../utils/numeric/exact.js';
 import { createOrderAPIManager } from './orderApiManager.js';
 import { createOrderStorage } from './orderStorage.js';
@@ -344,9 +344,10 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
 
 /** 创建正式订单 owner，保留既有组装入口但不保留旧事实写方法。 */
 export function createOrderRecorder(deps: OrderRecorderFactoryDeps): OrderRecorder {
+  const { logger } = deps;
   logger.debug('[订单记录] 创建唯一 broker fact owner');
   return createOrderRecorderFromParts({
-    storage: createOrderStorage(),
+    storage: createOrderStorage(logger),
     apiManager: createOrderAPIManager(deps),
     getExecutionTimeEvidence: deps.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: deps.settlementRefreshNeedRecorder,

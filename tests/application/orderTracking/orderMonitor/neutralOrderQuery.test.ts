@@ -1,3 +1,5 @@
+import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
+
 /** Actual same-context query/ledger adapters; SDK DTOs stay in the approved private producer. */
 
 import { expect, test } from 'bun:test';
@@ -60,6 +62,7 @@ async function evidence(): Promise<OrderExecutionTimeEvidence> {
 test('query terminal gets exact amount and earlier real execution T from actual mocked ledger', async () => {
   const native = await createBrokerIngressFixture({ ...input, executionTimeMs: 1000 });
   const query = native.createStateQuery({
+    requestExternalApi: wrapExternalApiRequest,
     rateLimiter: createRateLimiterDouble(),
     getExecutionTimeEvidence: () => [],
   });
@@ -79,12 +82,14 @@ test('query amount revision keeps matched durable T; no evidence leaves explicit
   const isWorkCurrent = captureQueryWork(native);
   const recovered = await native
     .createStateQuery({
+      requestExternalApi: wrapExternalApiRequest,
       rateLimiter: createRateLimiterDouble(),
       getExecutionTimeEvidence: () => [prior],
     })
     .checkOrderState('query', isWorkCurrent);
   const unknown = await native
     .createStateQuery({
+      requestExternalApi: wrapExternalApiRequest,
       rateLimiter: createRateLimiterDouble(),
       getExecutionTimeEvidence: () => [],
     })

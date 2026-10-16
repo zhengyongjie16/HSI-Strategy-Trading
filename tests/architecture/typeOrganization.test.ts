@@ -348,7 +348,7 @@ describe('type organization regressions', () => {
       readonly privateSymbols: ReadonlyArray<string>;
     }> = [
       {
-        relativePath: 'src/types/services.ts',
+        relativePath: 'src/types/orderReadMetadata.ts',
         privateSymbols: [
           'MarketWarrantListItem',
           'MarketWarrantListRequest',
@@ -365,7 +365,7 @@ describe('type organization regressions', () => {
         privateSymbols: ['QuoteStaticInfo'],
       },
       {
-        relativePath: 'src/utils/quoteRetry/types.ts',
+        relativePath: 'src/application/types.ts',
         privateSymbols: ['QuoteRetryRequirement'],
       },
       {
@@ -381,7 +381,7 @@ describe('type organization regressions', () => {
         privateSymbols: ['TradingRiskConsistencyPort'],
       },
       {
-        relativePath: 'src/main/lifecycle/cacheDomains/types.ts',
+        relativePath: 'src/runtime/lifecycle/cacheDomains/types.ts',
         privateSymbols: ['SignalRuntimePostTradeConsistencyRuntime'],
       },
       {
@@ -459,12 +459,12 @@ describe('type organization regressions', () => {
       'MarketWarrantExpiryRange',
       'MarketWarrantListRequest',
       'QuoteUpdatedEvent',
-      'TradingDayInfo',
       'TradingDaysResult',
     ])
       expect(marketExports.has(contract)).toBe(true);
 
     expect(collectProjectImports(marketPath, marketSource)).toEqual([
+      'src/types/tradingCalendar.ts',
       'src/types/data.ts',
       'src/types/quote.ts',
     ]);
@@ -540,12 +540,15 @@ describe('type organization regressions', () => {
   });
 
   it('keeps seat symbol helpers local, config-free, and typed through readonly contracts', async () => {
-    const symbolsSource = await readProjectFile('src/utils/seat/symbols.ts');
+    const symbolsSource = await readProjectFile('src/domain/seat/seatPolicy.ts');
     const seatTypesSource = await readProjectFile('src/types/seat.ts');
     const symbolHelperExports = collectNamedExports(
-      parseSourceFile('src/utils/seat/symbols.ts', symbolsSource),
+      parseSourceFile('src/domain/seat/seatPolicy.ts', symbolsSource),
     );
-    const symbolHelperImports = collectProjectImports('src/utils/seat/symbols.ts', symbolsSource);
+    const symbolHelperImports = collectProjectImports(
+      'src/domain/seat/seatPolicy.ts',
+      symbolsSource,
+    );
 
     expect([...symbolHelperExports]).toContain('resolveBoundSeatSymbol');
     expect(symbolHelperImports.some((importedPath) => importedPath.startsWith('src/config/'))).toBe(
@@ -558,10 +561,10 @@ describe('type organization regressions', () => {
   });
 
   it('keeps seat symbol helpers out of recovery-only modules', async () => {
-    expect(await exists('src/utils/seat/symbols.ts')).toBe(true);
+    expect(await exists('src/domain/seat/seatPolicy.ts')).toBe(true);
 
     const appFiles = await collectTypeScriptFiles('src/app');
-    const recoveryFiles = await collectTypeScriptFiles('src/main/recovery');
+    const recoveryFiles = await collectTypeScriptFiles('src/application/tradingDayRebuild');
     const recoveryImportViolations: string[] = [];
     const recoveryHelperViolations: string[] = [];
     const forbiddenRecoveryHelperNames = new Set(['collectSeatSymbols', 'resolveBoundSeatSymbol']);

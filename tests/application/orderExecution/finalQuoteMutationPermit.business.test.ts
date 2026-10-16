@@ -1,3 +1,15 @@
+import { wait } from '../../../src/infrastructure/time/index.js';
+import {
+  createLoggerDouble,
+  createAccountSnapshotDouble,
+  createMarketDataClientDouble,
+  createOrderMonitorDouble as createBaseOrderMonitorDouble,
+  createOrderRecorderDouble,
+  createQuoteDouble,
+  createRateLimiterDouble,
+  createSymbolRegistryDouble,
+} from '../../helpers/testDoubles.js';
+
 /**
  * 终态行情与 trade mutation permit 业务测试
  *
@@ -11,16 +23,9 @@ import type { OrderExecutionTrackingPort } from '../../../src/application/orderE
 import type { TrackOrderParams } from '../../../src/domain/order/types.js';
 import { createMonitorConfig, createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createSignal } from '../../../mock/factories/signalFactory.js';
-import {
-  createAccountSnapshotDouble,
-  createMarketDataClientDouble,
-  createOrderMonitorDouble as createBaseOrderMonitorDouble,
-  createOrderRecorderDouble,
-  createQuoteDouble,
-  createRateLimiterDouble,
-  createSymbolRegistryDouble,
-} from '../../helpers/testDoubles.js';
-import type { RateLimiter, RiskChecker } from '../../../src/types/services.js';
+
+import type { RateLimiter } from '../../../src/types/rateLimit.js';
+import type { RiskChecker } from '../../../src/types/riskCheck.js';
 import type { OrderCostBasis } from '../../../src/types/orderRecorder.js';
 import type { ExecutableSignal } from '../../../src/types/signal.js';
 import { safeQuantityNumber } from '../../../src/utils/numeric/exact.js';
@@ -128,6 +133,7 @@ async function createBuyExecutionFixture(params: {
       checkUnrealizedLoss: () => ({ shouldLiquidate: false }),
     };
   const executorDeps = {
+    logger: createLoggerDouble(),
     rateLimiter: createMutationRateLimiter(events),
     marketDataClient: createMarketDataClientDouble({
       getQuotes: async (symbols) => {
@@ -225,6 +231,8 @@ async function createSellExecutionFixture(params: {
   }
 
   const operations = native.createOperations({
+    logger: createLoggerDouble(),
+    wait: wait,
     runtime: authority.economic.runtime,
     rateLimiter: createMutationRateLimiter(events),
     orderRecorder: authority.economic.recorder,
@@ -332,6 +340,7 @@ async function createSellExecutionFixture(params: {
 
   const orderMonitor = createBaseOrderMonitorDouble(orderMonitorOverrides);
   const executor = native.createExecutor({
+    logger: createLoggerDouble(),
     rateLimiter: createMutationRateLimiter(events),
     marketDataClient: createMarketDataClientDouble({
       getQuotes: async (symbols) => {

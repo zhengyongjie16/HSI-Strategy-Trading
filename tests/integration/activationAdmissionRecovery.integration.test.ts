@@ -1,3 +1,5 @@
+import type { RuntimeStateFixtures } from '../helpers/types.js';
+
 /**
  * 激活准入恢复集成测试
  *
@@ -6,14 +8,14 @@
  * 不可交易窗口、仅一次延迟重试、内部错误 fatal、普通事件 external fatal、旧排队命令隔离与订阅接棒。
  */
 import { describe, expect, it } from 'bun:test';
-import { createSnapshotFixture } from '../main/fixtures/accountPositionSnapshot.js';
+import { createSnapshotFixture } from '../helpers/accountPositionSnapshot.js';
 import { createMonitorTaskQueue } from '../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessor } from '../runtime/asyncProgram/monitorTaskProcessor/fixtures.js';
-import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
+import { createQuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscriptionRuntime/index.js';
 import { createSeatActivationDispatcher } from '../../src/runtime/seatActivationDispatcher/index.js';
-import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
 import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
-import { isSeatActive } from '../../src/utils/seat/guards.js';
+import { isSeatActive } from '../../src/domain/seat/seatPolicy.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 import {
@@ -25,14 +27,13 @@ import {
   createOrderRecorderDouble,
   createPositionDouble,
   createQuoteDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
-import { waitUntil } from '../main/asyncProgram/utils.js';
+import { waitUntil } from '../helpers/asyncProgram.js';
 import type { Position } from '../../src/types/account.js';
 import type { Quote } from '../../src/types/quote.js';
 import type { MarketDataClient } from '../../src/types/marketPorts.js';
-import type { OrderHoldSymbolsChangedEvent } from '../../src/types/services.js';
-import type { LastState } from '../../src/types/state.js';
+import type { OrderHoldSymbolsChangedEvent } from '../../src/types/orderHold.js';
 import type { SymbolRegistry } from '../../src/types/seat.js';
 import type { MonitorTaskDataMap } from '../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 
@@ -93,17 +94,16 @@ async function createActivationHarness(params: {
   const monitorConfig = createMonitorConfigDouble({ monitorSymbol: MONITOR_SYMBOL });
   const symbolRegistry = createSymbolRegistry(monitorConfig);
   const initialPositions = params.positions ?? [];
-  const lastState: LastState = {
-    canTrade: true,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: '2026-05-06',
-    lifecycleState: 'ACTIVE',
-    pendingOpenRebuild: false,
-    isTradingEnabled: true,
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-    allTradingSymbols: new Set(),
+  const stateFixtures: RuntimeStateFixtures = {
+    tradingTimeState: { canTrade: true, isHalfDay: false, openProtectionActive: false },
+    lifecycleState: {
+      currentDayKey: '2026-05-06',
+      lifecycleState: 'ACTIVE',
+      pendingOpenRebuild: false,
+      isTradingEnabled: true,
+    },
+    tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
   };
   const orderHoldSource = createOrderHoldSource(params.orderHoldSymbols ?? []);
   const orderRecorder = createOrderRecorderDouble();
@@ -121,12 +121,16 @@ async function createActivationHarness(params: {
       getStockPositions: async () => positions,
     },
   });
-  const trader = createTraderDouble({
+  const tradeRuntime = createTradeRuntimeDouble({
     orderRecorder,
-    getOrderHoldSymbols: orderHoldSource.getOrderHoldSymbols,
-    onOrderHoldSymbolsChanged: orderHoldSource.onOrderHoldSymbolsChanged,
-    getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
-    getStockPositions: async () => positions,
+    orderHoldRegistry: {
+      getHoldSymbols: orderHoldSource.getOrderHoldSymbols,
+      onOrderHoldSymbolsChanged: orderHoldSource.onOrderHoldSymbolsChanged,
+    },
+    accountService: {
+      getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+      getStockPositions: async () => positions,
+    },
   });
   const termination = createTerminationRuntime({
     closeTradingGate: () => {},
@@ -139,13 +143,14 @@ async function createActivationHarness(params: {
     tradingConfig: createTradingConfig({ monitor: monitorConfig }),
     symbolRegistry,
     marketDataClient: params.marketDataClient,
-    trader,
-    lastState,
+    orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+    ...stateFixtures,
     snapshot,
     termination,
   });
-  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
   const seatActivationDispatcher = createSeatActivationDispatcher({
+    logger: createLoggerDouble(),
     termination,
     symbolRegistry,
     snapshot,
@@ -161,7 +166,7 @@ async function createActivationHarness(params: {
     },
     monitorTaskQueue,
     monitorContext,
-    trader,
+    tradeRuntime,
     marketDataClient: params.marketDataClient,
     quoteSubscriptionRuntime,
     switchWakeupRuntime: { handoffPendingSwitch: () => {} },
@@ -189,7 +194,7 @@ async function createActivationHarness(params: {
     snapshot,
     monitorConfig,
     symbolRegistry,
-    lastState,
+    ...stateFixtures,
     orderHoldSource,
     monitorContext,
     termination,
@@ -302,15 +307,15 @@ describe('激活准入恢复集成', () => {
       // 首次 admission 卡在外部请求中时排队一个无关 order hold 命令，验证失败回滚后它不会偷重试。
       harness.orderHoldSource.add('UNRELATED.HK');
       nextGate.resolve();
-      await waitUntil(() => harness.lastState.allTradingSymbols.has('UNRELATED.HK'));
+      await waitUntil(() => harness.quoteSubscriptionState.allTradingSymbols.has('UNRELATED.HK'));
 
       expect(subscribeCalls.filter((call) => call.includes(NEXT_SYMBOL))).toEqual([[NEXT_SYMBOL]]);
       expect(nextAttempts).toBe(1);
       expect(harness.termination.getFatalState()).toEqual({ hasFatalError: false });
       expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
       expect(isSeatActive(harness.symbolRegistry.getSeatState('LONG'))).toBe(false);
-      expect(harness.lastState.allTradingSymbols.has(NEXT_SYMBOL)).toBe(false);
-      expect(harness.lastState.allTradingSymbols.has(OLD_SYMBOL)).toBe(true);
+      expect(harness.quoteSubscriptionState.allTradingSymbols.has(NEXT_SYMBOL)).toBe(false);
+      expect(harness.quoteSubscriptionState.allTradingSymbols.has(OLD_SYMBOL)).toBe(true);
 
       await waitUntil(() => harness.symbolRegistry.getSeatState('LONG').status === 'ACTIVE');
 
@@ -320,7 +325,7 @@ describe('激活准入恢复集成', () => {
         [NEXT_SYMBOL],
       ]);
       expect(unsubscribeCalls.flat()).not.toContain(NEXT_SYMBOL);
-      expect(harness.lastState.allTradingSymbols).toEqual(
+      expect(harness.quoteSubscriptionState.allTradingSymbols).toEqual(
         new Set([
           MONITOR_SYMBOL,
           NEXT_SYMBOL,
@@ -344,14 +349,14 @@ describe('激活准入恢复集成', () => {
         receipt.snapshotToken,
       );
 
-      expect(harness.lastState.allTradingSymbols.has(OLD_SYMBOL)).toBe(false);
+      expect(harness.quoteSubscriptionState.allTradingSymbols.has(OLD_SYMBOL)).toBe(false);
       expect(unsubscribeCalls.flat()).toContain(OLD_SYMBOL);
-      expect(harness.lastState.allTradingSymbols.has(NEXT_SYMBOL)).toBe(true);
+      expect(harness.quoteSubscriptionState.allTradingSymbols.has(NEXT_SYMBOL)).toBe(true);
 
       harness.orderHoldSource.remove('UNRELATED.HK');
-      await waitUntil(() => !harness.lastState.allTradingSymbols.has('UNRELATED.HK'));
-      expect(harness.lastState.allTradingSymbols.has(ORDER_SYMBOL)).toBe(true);
-      expect(harness.lastState.allTradingSymbols.has(NEXT_SYMBOL)).toBe(true);
+      await waitUntil(() => !harness.quoteSubscriptionState.allTradingSymbols.has('UNRELATED.HK'));
+      expect(harness.quoteSubscriptionState.allTradingSymbols.has(ORDER_SYMBOL)).toBe(true);
+      expect(harness.quoteSubscriptionState.allTradingSymbols.has(NEXT_SYMBOL)).toBe(true);
     } finally {
       await stopHarness(harness);
     }
@@ -398,7 +403,7 @@ describe('激活准入恢复集成', () => {
       await Bun.sleep(20);
       gateRelease.resolve();
 
-      await waitUntil(() => harness.lastState.allTradingSymbols.has(NEXT_SYMBOL));
+      await waitUntil(() => harness.quoteSubscriptionState.allTradingSymbols.has(NEXT_SYMBOL));
 
       expect(subscribeCalls).toEqual([
         [MONITOR_SYMBOL, OLD_SYMBOL, BEAR_SYMBOL],
@@ -481,7 +486,7 @@ describe('激活准入恢复集成', () => {
         hasFatalError: true,
         error: orderError,
       });
-      expect(harness.lastState.allTradingSymbols.has('ORDER_FAIL.HK')).toBe(false);
+      expect(harness.quoteSubscriptionState.allTradingSymbols.has('ORDER_FAIL.HK')).toBe(false);
     } finally {
       await stopHarness(harness);
     }

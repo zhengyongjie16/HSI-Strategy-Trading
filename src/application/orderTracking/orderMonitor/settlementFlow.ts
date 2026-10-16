@@ -5,7 +5,7 @@ import type {
   DailyLossAuthoritativeFactSnapshot,
   DailyLossCumulativeExecutionResult,
 } from '../../../types/risk.js';
-import type { OrderRecorder } from '../../../types/services.js';
+import type { OrderRecorder } from '../../../types/orderRecorder.js';
 import { exactCompare, exactMultiply } from '../../../utils/numeric/exact.js';
 import { detachTrackedOrder } from './routingIndex.js';
 import type {

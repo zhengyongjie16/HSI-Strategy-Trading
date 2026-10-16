@@ -1,10 +1,11 @@
+import { wrapExternalApiRequest } from '../../externalApi/index.js';
+
 /** 同一原context订单快照IO边界；core只接收已验证观察，不解析SDK对象。 */
 import { OrderSide, type Order, type TradeContext } from 'longbridge';
 import { isValidatedOrderStatus, isValidatedOrderType } from './orderValidation.js';
 import { isRecord } from '../../../utils/helpers/index.js';
 import { canonicalDecimal } from '../../../utils/numeric/exact.js';
-import { wrapExternalApiRequest } from '../../../utils/apiFailure/index.js';
-import type { RateLimiter } from '../../../types/services.js';
+import type { RateLimiter } from '../../../types/rateLimit.js';
 import type { OrderExecutionLedgerPort } from '../../../types/orderExecutionLedger.js';
 import type { OrderSnapshotReadPort } from '../../../types/orderSnapshotReadPorts.js';
 import type { OrderEconomics } from '../../../types/orderEconomics.js';

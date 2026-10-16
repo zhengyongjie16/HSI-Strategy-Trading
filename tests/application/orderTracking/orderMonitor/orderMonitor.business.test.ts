@@ -1,3 +1,13 @@
+import { scheduleBoundedOneShotAt } from '../../../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../../../src/infrastructure/time/index.js';
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createQuoteDouble,
+  createSymbolRegistryDouble,
+} from '../../../helpers/testDoubles.js';
+
 /**
  * orderMonitor 业务测试
  *
@@ -7,22 +17,15 @@
 
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../../src/runtime/lifecycle/terminationRuntime.js';
 import type { OrderMonitorDeps } from '../../../../src/application/orderTracking/types.js';
 import type { QuoteUpdatedEvent } from '../../../../src/types/marketPorts.js';
 import type { Quote } from '../../../../src/types/quote.js';
 import type { DailyLossCumulativeExecutionInput } from '../../../../src/types/risk.js';
-import type {
-  OrderStateChangedEvent,
-  RateLimiter,
-  TradeMutationPermit,
-} from '../../../../src/types/services.js';
-import { isInContinuousHKSession } from '../../../../src/utils/time/index.js';
-import {
-  createMarketDataClientDouble,
-  createQuoteDouble,
-  createSymbolRegistryDouble,
-} from '../../../helpers/testDoubles.js';
+import type { OrderStateChangedEvent } from '../../../../src/types/orderTracking.js';
+import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/rateLimit.js';
+import { isInContinuousHKSession } from '../../../../src/domain/tradingSession/index.js';
+
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../recorder/executionFixture.js';
 
@@ -300,6 +303,10 @@ async function createNativeDeps(
   });
 
   const deps: Parameters<typeof native.createMonitor>[0] = {
+    logger: createLoggerDouble(),
+    wait: wait,
+    requestExternalApi: wrapExternalApiRequest,
+    scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
     now: params?.now ?? (() => new Date()),
     scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimer: (handle) => {

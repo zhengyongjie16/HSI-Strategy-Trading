@@ -2,7 +2,7 @@
  * 信号类型。
  * 类型用途：表示交易方向与动作（买多/卖多/买空/卖空/持有），作为 Signal.action、策略输出及门禁/买卖流程的入参。
  * 数据来源：策略模块根据指标条件输出。
- * 使用范围：Signal、策略、Trader、信号处理等；全项目可引用。
+ * 使用范围：Signal、策略、共享 executor、信号用例等；全项目可引用。
  */
 export type SignalType =
   | 'BUYCALL' // 买入做多
@@ -31,7 +31,7 @@ export type SellSignalAction = 'SELLCALL' | 'SELLPUT';
  * 订单类型配置。
  * 类型用途：订单类型配置枚举（限价/增强限价/市价），作为 GlobalConfig.tradingOrderType、liquidationOrderType 及 Signal.orderTypeOverride 的类型。
  * 数据来源：配置解析（环境变量）。
- * 使用范围：配置、Trader 下单、Signal 覆盖等；全项目可引用。
+ * 使用范围：配置、共享 executor 下单、Signal 覆盖等；全项目可引用。
  */
 export type OrderTypeConfig = 'LO' | 'ELO' | 'MO';
 
@@ -101,7 +101,7 @@ type ProtectiveLiquidationSellCandidate = SignalFields & {
  * 交易信号。
  * 类型用途：单次交易操作的完整信息（标的、动作、原因、订单类型等），作为策略输出与执行前候选信号。
  * 数据来源：策略模块生成，经延迟验证与风控后写入。
- * 使用范围：策略、信号处理、Trader 等；全项目可引用。
+ * 使用范围：策略、信号用例、共享 executor 等；全项目可引用。
  */
 export type Signal = OrdinarySignal | ProtectiveLiquidationSellCandidate;
 
@@ -169,7 +169,7 @@ export type ExecutableSellSignal = SellSignal | ProtectiveLiquidationSellSignal;
  * 类型用途：向末日清仓专用入口传递当前席位的卖出身份；最终数量由执行器在提交前从权威可用持仓读取，
  * 末日卖出不参与智能平仓关联买单或保护性清仓追踪。
  * 数据来源：DoomsdayClearanceWorkflow 根据当前席位、行情与持仓事实构造。
- * 使用范围：Trader.executeDoomsdayClearanceSignals 与 OrderExecutor 的末日清仓链路。
+ * 使用范围：DoomsdaySignalExecutor 与共享 executor 的末日清仓链路。
  */
 export type DoomsdayClearanceCommand = {
   /** 当前席位交易标的代码 */
@@ -192,6 +192,6 @@ export type DoomsdayClearanceCommand = {
  * 可执行信号。
  * 类型用途：订单执行入口只接受已绑定席位版本且方向明确的买卖信号。
  * 数据来源：任务队列、保护性清仓、末日清仓、静态清仓与自动换标执行链路。
- * 使用范围：Trader.executeSignals 与 OrderExecutor.executeSignals。
+ * 使用范围：SignalExecutor.executeSignals。
  */
 export type ExecutableSignal = BuySignal | ExecutableSellSignal;

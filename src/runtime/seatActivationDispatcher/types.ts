@@ -1,3 +1,4 @@
+import type { Logger } from '../../types/logger.js';
 import type { RuntimeTermination } from '../../types/runtime.js';
 import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
 import type { SymbolRegistry } from '../../types/seat.js';
@@ -30,6 +31,7 @@ export type PendingSeatActivation = Readonly<{
  * 使用范围：SeatActivationDispatcher 工厂。
  */
 export type SeatActivationDispatcherDeps = Readonly<{
+  readonly logger: Logger;
   termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   symbolRegistry: SymbolRegistry;
   snapshot: Pick<AccountPositionSnapshotReader, 'getView'>;

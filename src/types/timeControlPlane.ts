@@ -1,4 +1,14 @@
 /**
+ * 权威时间门禁的唯一可变事实，app 创建后保持对象身份不变。
+ * 时间评估写入，global 清理同一对象；普通授权和 WeakMap 状态关联均读取此稳定实例。
+ */
+export type TradingTimeState = {
+  canTrade: boolean | null;
+  isHalfDay: boolean | null;
+  openProtectionActive: boolean | null;
+};
+
+/**
  * 单次生命周期推进的中性时间事实。
  * 数据来源：时间唤醒评估器计算的 HK 日期、连续交易与交易日历结果；管理器只读不写。
  * 使用范围：生命周期 tick、缓存域上下文及系统级时间评估。
@@ -24,7 +34,7 @@ export interface DayLifecycleManager {
   readonly tick: (now: Date, runtime: LifecycleRuntimeFlags) => Promise<DayLifecycleTickResult>;
 }
 
-/** 连续交易门禁的已发布变化事实，由权威时间评估写入 LastState 后同步发出。 */
+/** 连续交易门禁的已发布变化事实，由权威时间评估写入 TradingTimeState 后同步发出。 */
 export type TradingGateStateChangedEvent = {
   readonly previousCanTrade: boolean | null;
   readonly nextCanTrade: boolean;

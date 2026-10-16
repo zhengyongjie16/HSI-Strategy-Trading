@@ -5,6 +5,7 @@
 import path from 'node:path';
 import { describe, expect, it } from 'bun:test';
 import { frozenNumeric, newNumeric, numericOccurrences } from './numericProbe.js';
+import { baseline } from './baseline.js';
 import { listTypeScript, sourceText } from './scanner.js';
 
 const probe = (source: string) =>
@@ -244,6 +245,65 @@ describe('P0.3 staged financial boundaries', () => {
     expect(relocated).toHaveLength(1);
     expect(newNumeric(relocated, frozenNumeric, 'P0')).toEqual(relocated);
   });
+
+  it('matches frozen account projections and original trader contracts before applying unchanged deadlines', () => {
+    const sites = baseline.numericSites.filter(
+      (row) =>
+        row.file === 'src/core/trader/accountService.ts' &&
+        /decimalToNumber|toNumber|parseFloat|^Number\(/.test(
+          (JSON.parse(row.key) as string[])[2] ?? '',
+        ),
+    );
+    expect(sites.length).toBeGreaterThan(0);
+    for (const site of sites) {
+      const [file, parent, expression] = JSON.parse(site.key) as string[];
+      const key = JSON.stringify([file, 'PROJECTION', parent, expression]);
+      expect(frozenNumeric).toContain(key);
+      expect(newNumeric([key], frozenNumeric, 'P0')).toEqual([]);
+      expect(newNumeric([key, key], frozenNumeric, 'P0')).toEqual([key]);
+      expect(newNumeric([key], frozenNumeric, 'P1')).toEqual([key]);
+    }
+
+    const contracts = new Set([
+      'OrderStateCheckResult',
+      'TrackOrderParams',
+      'TrackedOrder',
+      'PendingSellOrderSnapshot',
+      'TerminalSettlementInput',
+      'OrderCumulativeExecutionParams',
+      'OrderObservedFact',
+      'MonotonicOrderFact',
+      'QuantityResolver',
+    ]);
+    const fields = frozenNumeric.filter((key) => {
+      const [file, kind, parent] = JSON.parse(key) as string[];
+      return (
+        kind === 'FINANCIAL_NUMBER' &&
+        contracts.has(parent ?? '') &&
+        (file === 'src/types/trader.ts' || file?.startsWith('src/core/trader/'))
+      );
+    });
+    expect(fields.length).toBeGreaterThan(2);
+    for (const key of fields) {
+      expect(newNumeric([key], frozenNumeric, 'P0')).toEqual([]);
+      expect(newNumeric([key], frozenNumeric, 'P1')).toEqual([key]);
+    }
+  });
+
+  it.each([
+    `import type { TradeRuntime } from './types.js'; declare const tradeRuntime: TradeRuntime; async function consume() { const account = await tradeRuntime.accountService.getAccountSnapshot(); return Number(account.totalCash); }`,
+    `import type { AccountService } from '../../types/accountReadPorts.js'; declare const accountService: Pick<AccountService, 'getAccountSnapshot'>; async function consume() { const account = await accountService.getAccountSnapshot(); return Number(account.netAssets); }`,
+    `import type { OrderStateCheckResult } from '../../types/orderReadMetadata.js'; declare const state: OrderStateCheckResult; function consume() { if (state.kind === 'QUERY_FAILED') return null; return Number(state.executedPrice); }`,
+  ])(
+    'detects actual final type projections without borrowing a historical path allowance: %s',
+    (source) => {
+      const actual = numericOccurrences('src/app/runtime/numericIdentityProbe.ts', source);
+      expect(actual).toHaveLength(1);
+      expect(actual[0]).toContain('PROJECTION');
+      for (const stage of ['P0', 'P1', 'P6'] as const)
+        expect(newNumeric(actual, frozenNumeric, stage)).toEqual(actual);
+    },
+  );
 
   it('keeps a future financial projection only until its owning slice', () => {
     const actual = numericOccurrences(

@@ -6,7 +6,8 @@
  * - 为 quote 事件显示提供统一的附加信息组装入口
  */
 import type { PriceDisplayInfo } from '../../../types/display.js';
-import type { OrderRecorder, RiskChecker } from '../../../types/services.js';
+import type { OrderRecorder } from '../../../types/orderRecorder.js';
+import type { RiskChecker } from '../../../types/riskCheck.js';
 
 /**
  * 构建单方向价格展示信息。

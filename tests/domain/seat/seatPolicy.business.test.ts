@@ -2,6 +2,9 @@
 import { describe, expect, it } from 'bun:test';
 import {
   describeSignalSeatValidationFailure,
+  hasSeatSymbol,
+  isSeatActive,
+  resolveBoundSeatSymbol,
   validateSignalSeat,
 } from '../../../src/domain/seat/seatPolicy.js';
 import { createSignalDouble, createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
@@ -124,5 +127,46 @@ describe('seatPolicy signal identity', () => {
       expect(result.reason).toBe('INVALID_SIGNAL_ACTION');
       expect(describeSignalSeatValidationFailure(result)).toBe('信号动作不支持席位校验');
     }
+  });
+});
+
+describe('seat symbol helpers', () => {
+  it('returns symbol only when seat has a bound symbol', () => {
+    const registry = createSymbolRegistryDouble({
+      longSeat: {
+        symbol: 'BULL.HK',
+        status: 'ACTIVE',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      },
+      shortSeat: {
+        symbol: null,
+        status: 'EMPTY',
+        lastSwitchAt: null,
+        lastSearchAt: null,
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      },
+    });
+
+    expect(resolveBoundSeatSymbol(registry, 'LONG')).toBe('BULL.HK');
+    expect(resolveBoundSeatSymbol(registry, 'SHORT')).toBeNull();
+  });
+
+  it('绑定 symbol 不等于 ACTIVE；symbol 仅检查非空，不新增 trim 或状态兜底', () => {
+    const registry = createSymbolRegistryDouble();
+    const state = registry.getSeatState('LONG');
+    const activating = { ...state, status: 'ACTIVATING', symbol: 'BOUND.HK' } as const;
+    expect(hasSeatSymbol(activating)).toBeTrue();
+    expect(isSeatActive(activating)).toBeFalse();
+    const active = { ...state, status: 'ACTIVE', lastSeatActivatedAt: 1 } as const;
+    expect(isSeatActive({ ...active, symbol: '' })).toBeFalse();
+    expect(isSeatActive({ ...active, symbol: ' ' })).toBeTrue();
+    expect(hasSeatSymbol(null)).toBeFalse();
+    expect(isSeatActive(null)).toBeFalse();
   });
 });

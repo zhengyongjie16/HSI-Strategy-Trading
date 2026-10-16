@@ -1,9 +1,9 @@
+import type { OrderTrackingEvents } from '../../types/orderTracking.js';
+import type { MonitorConfig } from '../../types/config.js';
 import type { PeriodicSwitchTaskStatus } from '../../application/seatSwitch/types.js';
 import type { RuntimeTermination } from '../../types/runtime.js';
-import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';
-import type { MonitorContext } from '../../types/state.js';
+import type { BoundedOneShotTimerController } from '../../types/timer.js';
 import type { SymbolRegistry } from '../../types/seat.js';
-import type { Trader } from '../../types/services.js';
 import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
 import type { SettlementFreshnessReader } from '../../types/settlement.js';
 import type {
@@ -82,7 +82,7 @@ export type PeriodicSwitchWakeupRuntimeDeps = Readonly<{
   termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
 
   /** 当前唯一 monitorContext */
-  monitorContext: Pick<MonitorContext, 'config'>;
+  monitorContext: { readonly config: MonitorConfig };
 
   /** 权威席位注册表 */
   symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion' | 'onSeatTruthChanged'>;
@@ -91,7 +91,7 @@ export type PeriodicSwitchWakeupRuntimeDeps = Readonly<{
   monitorTaskQueue: Pick<MonitorTaskQueue<MonitorTaskDataMap>, 'scheduleLatest'>;
 
   /** 订单事件源 */
-  trader: Pick<Trader, 'onOrderStateChanged'>;
+  readonly orderMonitor: OrderTrackingEvents;
 
   /** 同一canonical owner的最窄事实身份/组件读取能力，不读取或缓存positions数组。 */
   snapshot: Pick<AccountPositionSnapshotReader, 'getView' | 'isCurrent'>;

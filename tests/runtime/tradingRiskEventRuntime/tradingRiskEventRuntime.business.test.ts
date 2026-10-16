@@ -1,3 +1,6 @@
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
+import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
+
 /**
  * TradingRiskEventRuntime 业务测试
  *
@@ -6,17 +9,17 @@
  * - 验证 application 调度结论、原 readiness 事件唤醒及 fatal 停止
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createSettlementRuntimeFixture } from '../../main/fixtures/settlementRuntime.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import type { PostTradeConsistencyRuntime } from '../../../src/app/types.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../../helpers/settlementRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
+import type { PostTradeConsistencyRuntime } from '../../../src/app/runtime/types.js';
 import {
   createMonitorContextDouble,
   createAccountSnapshotDouble,
   createPositionDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
   createUnrealizedLossMonitorDouble,
   createQuoteDouble,
   createLoggerDouble,
@@ -177,17 +180,13 @@ describe('tradingRiskEventRuntime runtime flow', () => {
 
   async function createRuntimeDeps(
     params: {
-      readonly lastState?: {
-        readonly canTrade: boolean | null;
-        isTradingEnabled: boolean;
-        readonly isHalfDay: boolean | null;
-      };
+      readonly stateFixtures?: RuntimeStateFixtures;
       readonly doomsdayProtectionEnabled?: boolean;
       readonly consistencyPort?: ReturnType<typeof createConsistencyPort>;
       readonly monitorContext?: ReturnType<typeof createMonitorContextDouble>;
       readonly now?: () => Date;
       readonly symbolRegistry?: SymbolRegistry;
-      readonly trader?: ReturnType<typeof createTraderDouble>;
+      readonly tradeRuntime?: ReturnType<typeof createTradeRuntimeDouble>;
       readonly unrealizedLossMonitor?: ReturnType<typeof createUnrealizedLossMonitorDouble>;
       readonly riskChecker?: ReturnType<typeof createRiskCheckerDouble>;
       readonly logger?: TradingRiskEventRuntimeDeps['logger'];
@@ -215,7 +214,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
           frozenTradingDayKey: null,
         },
       });
-    const trader = params.trader ?? createTraderDouble();
+    const tradeRuntime = params.tradeRuntime ?? createTradeRuntimeDouble();
     const unrealizedLossMonitor =
       params.unrealizedLossMonitor ??
       createUnrealizedLossMonitorDouble({
@@ -227,18 +226,21 @@ describe('tradingRiskEventRuntime runtime flow', () => {
         config: createMonitorConfig({ monitorSymbol: 'HSI.HK' }),
         symbolRegistry,
         unrealizedLossMonitor,
-        ...(params.riskChecker === undefined ? {} : { riskChecker: params.riskChecker }),
+        ...(params.riskChecker === undefined
+          ? { orderRecorder: tradeRuntime.orderRecorder }
+          : { orderRecorder: tradeRuntime.orderRecorder, riskChecker: params.riskChecker }),
       });
     const consistencyPort = params.consistencyPort ?? createConsistencyPort({ started: true });
 
-    const lastState = params.lastState ?? {
-      canTrade: true,
-      isTradingEnabled: true,
-      isHalfDay: false,
-    };
+    const stateFixtures =
+      params.stateFixtures ??
+      createRuntimeStateFixtures({
+        tradingTimeState: { canTrade: true, isHalfDay: false },
+        lifecycleState: { isTradingEnabled: true },
+      });
     const termination = createTerminationRuntime({
       closeTradingGate: () => {
-        lastState.isTradingEnabled = false;
+        stateFixtures.lifecycleState.isTradingEnabled = false;
       },
       closeProducerAdmission: () => {},
       stopProducers: [],
@@ -278,9 +280,10 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       },
     });
     const settlement = createSettlementRuntimeFixture({
+      logger: createLoggerDouble(),
       snapshot,
       termination,
-      getTrader: () => trader,
+      getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
       monitorContext,
       onPositionsCommitted: async (token) => {
         if (!snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
@@ -341,10 +344,10 @@ describe('tradingRiskEventRuntime runtime flow', () => {
         workflow: createProtectiveLiquidationWorkflow({
           logger,
           snapshot,
-          trader,
+          orderExecutor: tradeRuntime.orderExecutor,
           symbolRegistry,
           monitorContext,
-          lastState,
+          ...stateFixtures,
           postTradeConsistencyRuntime: consistencyPort.port,
           doomsdayProtectionEnabled: params.doomsdayProtectionEnabled ?? false,
           now: params.now ?? (() => new Date('2026-04-06T01:30:00.000Z')),
@@ -353,7 +356,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
         termination,
       },
       consistencyPort,
-      trader,
+      orderExecutor: tradeRuntime.orderExecutor,
       settlement,
     };
   }
@@ -410,14 +413,16 @@ describe('tradingRiskEventRuntime runtime flow', () => {
   });
 
   it('routes internal protective-liquidation execution errors to the fatal handler', async () => {
-    const internalError = new TypeError('trader execution invariant broken');
+    const internalError = new TypeError('tradeRuntime execution invariant broken');
     const fatalErrors: unknown[] = [];
     let executionAttempts = 0;
     const { deps } = await createRuntimeDeps({
-      trader: createTraderDouble({
-        executeSignals: async () => {
-          executionAttempts += 1;
-          throw internalError;
+      tradeRuntime: createTradeRuntimeDouble({
+        orderExecutor: {
+          executeSignals: async () => {
+            executionAttempts += 1;
+            throw internalError;
+          },
         },
       }),
       riskChecker: createRiskCheckerDouble({
@@ -1060,11 +1065,10 @@ describe('tradingRiskEventRuntime runtime flow', () => {
   it('skips when trading gate is closed', async () => {
     const executedPrices: string[] = [];
     const { deps } = await createRuntimeDeps({
-      lastState: {
-        canTrade: false,
-        isTradingEnabled: true,
-        isHalfDay: false,
-      },
+      stateFixtures: createRuntimeStateFixtures({
+        tradingTimeState: { canTrade: false, isHalfDay: false },
+        lifecycleState: { isTradingEnabled: true },
+      }),
       unrealizedLossMonitor: createUnrealizedLossMonitorDouble({
         monitorDirectionalUnrealizedLoss: async ({ quote }) => {
           executedPrices.push(quote.price);
@@ -1214,14 +1218,15 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     const executedPrices: string[] = [];
     const consistencyPort = createConsistencyPort({ started: true });
     consistencyPort.enablePendingFreshWait();
-    const lastState = {
-      canTrade: true,
-      isTradingEnabled: true,
-      isHalfDay: false,
-    };
+    const stateFixtures = createRuntimeStateFixtures({
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
+      tradingCalendarState: {},
+      quoteSubscriptionState: {},
+    });
     const { deps } = await createRuntimeDeps({
       consistencyPort,
-      lastState,
+      stateFixtures,
       unrealizedLossMonitor: createUnrealizedLossMonitorDouble({
         monitorDirectionalUnrealizedLoss: async ({ quote }) => {
           executedPrices.push(quote.price);
@@ -1235,7 +1240,7 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     emitQuoteUpdated('BULL.HK', '1.23');
     await waitTick();
 
-    lastState.canTrade = false;
+    stateFixtures.tradingTimeState.canTrade = false;
     consistencyPort.resolveFresh();
     await waitTick();
 

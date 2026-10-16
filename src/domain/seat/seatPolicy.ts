@@ -1,12 +1,64 @@
 /** 席位纯规则：失败冻结、信号绑定校验与启动持仓优先，不执行 I/O 或状态发布。 */
 import type { Position } from '../../types/account.js';
-import type { SeatState } from '../../types/seat.js';
-import { isSeatActive, isSeatVersionMatch } from '../../utils/seat/guards.js';
+import type { SeatState, SymbolRegistry } from '../../types/seat.js';
+import { isSeatVersionMatch } from './seatIdentity.js';
 import type {
   SeatUnavailableReason,
   SignalSeatValidationResult,
   ValidateSignalSeatParams,
 } from './types.js';
+
+/**
+ * 判断席位是否处于可交易激活态（ACTIVE 且绑定有效 symbol）。
+ *
+ * @param seatState 席位状态，可为 null 或 undefined
+ * @returns 席位已激活时返回 true，并收窄为包含非空 symbol 的 SeatState
+ */
+export function isSeatActive(
+  seatState: SeatState | null | undefined,
+): seatState is SeatState & { symbol: string } {
+  if (!seatState) {
+    return false;
+  }
+
+  if (seatState.status !== 'ACTIVE') {
+    return false;
+  }
+
+  return typeof seatState.symbol === 'string' && seatState.symbol.length > 0;
+}
+
+/**
+ * 判断席位是否已绑定有效 symbol（不要求 ACTIVE）。
+ *
+ * @param seatState 席位状态，可为 null 或 undefined
+ * @returns 只要 symbol 为非空字符串即返回 true
+ */
+export function hasSeatSymbol(
+  seatState: SeatState | null | undefined,
+): seatState is SeatState & { symbol: string } {
+  return (
+    seatState !== null &&
+    seatState !== undefined &&
+    typeof seatState.symbol === 'string' &&
+    seatState.symbol.length > 0
+  );
+}
+
+/**
+ * 获取指定方向的已绑定席位标的代码。
+ *
+ * @param symbolRegistry 具备 getSeatState 能力的席位查询口
+ * @param direction 席位方向
+ * @returns 席位已绑定 symbol 时返回标的代码，否则返回 null
+ */
+export function resolveBoundSeatSymbol(
+  symbolRegistry: Pick<SymbolRegistry, 'getSeatState'>,
+  direction: 'LONG' | 'SHORT',
+): string | null {
+  const seatState = symbolRegistry.getSeatState(direction);
+  return hasSeatSymbol(seatState) ? seatState.symbol : null;
+}
 
 /**
  * 检查席位是否当日冻结（frozenTradingDayKey 非 null 即冻结，midnight clear 重置）

@@ -1,3 +1,14 @@
+import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
+
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createQuoteDouble,
+  createOrderMonitorDouble,
+  createOrderRecorderDouble,
+  createRiskCheckerDouble,
+  createSymbolRegistryDouble,
+} from '../../../helpers/testDoubles.js';
 import { expect, test } from 'bun:test';
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
@@ -6,14 +17,6 @@ import {
   createMonitorConfig,
 } from '../../../../mock/factories/configFactory.js';
 import { createSignal } from '../../../../mock/factories/signalFactory.js';
-import {
-  createMarketDataClientDouble,
-  createQuoteDouble,
-  createOrderMonitorDouble,
-  createOrderRecorderDouble,
-  createRiskCheckerDouble,
-  createSymbolRegistryDouble,
-} from '../../../helpers/testDoubles.js';
 
 const nowMs = Date.parse('2026-07-10T02:00:00.000Z');
 test('actual BUY/ELO native entry observations precede reply failure and retain original failure identity', async () => {
@@ -40,7 +43,12 @@ test('actual BUY/ELO native entry observations precede reply failure and retain 
     throw cause;
   });
   const executor = f.createExecutor({
-    rateLimiter: createRateLimiter(),
+    logger: createLoggerDouble(),
+    rateLimiter: createRateLimiter({
+      wait: wait,
+      nowMonotonicMs: nowMonotonicMs,
+      logger: createLoggerDouble(),
+    }),
     marketDataClient: createMarketDataClientDouble({
       getQuotes: async () =>
         new Map([['BULL.HK', createQuoteDouble('BULL.HK', '9.234567891234567891', 100)]]),

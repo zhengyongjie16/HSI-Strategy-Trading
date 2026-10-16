@@ -20,13 +20,13 @@ async function lintText(relativeFilePath: string, code: string) {
 describe('architecture import boundaries', () => {
   it('rejects imports from src/types to src/services', async () => {
     const messages = await lintText(
-      'src/types/state.ts',
+      'src/types/lifecycle.ts',
       "import type { MarketMonitor } from '../services/marketMonitor/types.js';\nexport type Probe = MarketMonitor;\n",
     );
 
     expect(messages.some((message) => message.ruleId === 'no-restricted-imports')).toBe(true);
     expect(
-      messages.some((message) => message.message.includes('types 层不得依赖 services 层')),
+      messages.some((message) => message.message.includes('types 层不得依赖高层或旧 owner')),
     ).toBe(true);
   });
 
@@ -38,7 +38,9 @@ describe('architecture import boundaries', () => {
 
     expect(messages.some((message) => message.ruleId === 'no-restricted-imports')).toBe(true);
     expect(
-      messages.some((message) => message.message.includes('display adapter 不得依赖 core 层')),
+      messages.some((message) =>
+        message.message.includes('infrastructure 层不得依赖高层或旧 owner'),
+      ),
     ).toBe(true);
   });
 
@@ -61,7 +63,7 @@ describe('architecture import boundaries', () => {
 
   it.each([
     ['src/app/runApp.ts', './startup/strategyDefinitions/intradayRegression/definition.js'],
-    ['src/types/state.ts', '../domain/strategy/intradayRegression/types.js'],
+    ['src/types/lifecycle.ts', '../domain/strategy/intradayRegression/types.js'],
     ['src/utils/numeric/index.ts', '../../runtime/strategy/intradayRegression/index.js'],
     ['src/app/runApp.ts', '../config/strategy/intradayRegression/config.js'],
     ['src/domain/strategy/intradayRegression/signalRules.ts', '../otherStrategy/types.js'],

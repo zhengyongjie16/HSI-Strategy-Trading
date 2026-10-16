@@ -1,16 +1,23 @@
-/** 无网络typed SDK DTO→实际adapter→query/push完整中性事实，不把mapper作为经济expected oracle。 */
+import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
+import { scheduleBoundedOneShotAt } from '../../../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
 
-import { describe, expect, it } from 'bun:test';
-import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
-import { createOrderHoldRegistry } from '../../../../src/application/orderTracking/orderHoldRegistry.js';
 import {
+  createLoggerDouble,
   createDailyLossTrackerDouble,
   createMarketDataClientDouble,
   createOrderRecorderDouble,
   createProtectiveLiquidationEpisodeTrackerDouble,
   createSymbolRegistryDouble,
 } from '../../../helpers/testDoubles.js';
+
+/** 无网络typed SDK DTO→实际adapter→query/push完整中性事实，不把mapper作为经济expected oracle。 */
+
+import { describe, expect, it } from 'bun:test';
+import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
+import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
+import { createOrderHoldRegistry } from '../../../../src/application/orderTracking/orderHoldRegistry.js';
+
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 describe('broker ingress fixture production mapping', () => {
@@ -59,7 +66,15 @@ describe('broker ingress fixture production mapping', () => {
     expect(fixture.readCounts()).toEqual({ today: 1, history: 1 });
     const fatalErrors: unknown[] = [];
     const monitor = fixture.createMonitor({
-      rateLimiter: createRateLimiter(),
+      logger: createLoggerDouble(),
+      wait: wait,
+      requestExternalApi: wrapExternalApiRequest,
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
+      rateLimiter: createRateLimiter({
+        wait: wait,
+        nowMonotonicMs: nowMonotonicMs,
+        logger: createLoggerDouble(),
+      }),
       cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
       marketDataClient: createMarketDataClientDouble(),
       orderRecorder: createOrderRecorderDouble(),

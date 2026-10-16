@@ -1,3 +1,12 @@
+import {
+  createLoggerDouble,
+  createAccountSnapshotDouble,
+  createMonitorConfigDouble,
+  createMonitorContextDouble,
+  createSymbolRegistryDouble,
+  createTradeRuntimeDouble,
+} from '../../../helpers/testDoubles.js';
+
 /**
  * monitorTaskQueue 业务测试
  *
@@ -5,16 +14,9 @@
  * - 验证监控任务队列相关场景意图、边界条件与业务期望。
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { createIssuedPeriodicTasksFixture } from '../../../main/fixtures/issuedPeriodicTasks.js';
-import { createSnapshotFixture } from '../../../main/fixtures/accountPositionSnapshot.js';
-import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
-import {
-  createAccountSnapshotDouble,
-  createMonitorConfigDouble,
-  createMonitorContextDouble,
-  createSymbolRegistryDouble,
-  createTraderDouble,
-} from '../../../helpers/testDoubles.js';
+import { createIssuedPeriodicTasksFixture } from '../../../helpers/issuedPeriodicTasks.js';
+import { createSnapshotFixture } from '../../../helpers/accountPositionSnapshot.js';
+import { createTerminationRuntime } from '../../../../src/runtime/lifecycle/terminationRuntime.js';
 
 import { createMonitorTaskQueue } from '../../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 
@@ -74,7 +76,7 @@ async function createAutoSymbolTickTask(params: {
     snapshot,
     termination,
     monitorContext,
-    trader: createTraderDouble(),
+    tradeRuntime: createTradeRuntimeDouble(),
     getCanTradeNow: () =>
       !termination.isTerminated() &&
       symbolRegistry.getSeatVersion(params.direction) === capturedSeatVersion,
@@ -89,7 +91,7 @@ async function createAutoSymbolTickTask(params: {
 
 describe('monitorTaskQueue business behavior', () => {
   it('scheduleLatest keeps only the latest task for the same dedupeKey', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
 
     queue.scheduleLatest(
       await createAutoSymbolTickTask({
@@ -115,7 +117,7 @@ describe('monitorTaskQueue business behavior', () => {
   });
 
   it('keeps FIFO order for different dedupe keys', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
 
     queue.scheduleLatest(
       await createAutoSymbolTickTask({
@@ -148,7 +150,7 @@ describe('monitorTaskQueue business behavior', () => {
   });
 
   it('notifies onTaskAdded callbacks for replacement tasks and supports unregister', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
 
     let calls = 0;
     const unregister = queue.onTaskAdded(() => {
@@ -203,7 +205,7 @@ describe('monitorTaskQueue business behavior', () => {
   });
 
   it('removeTasks and clearAll return removed count', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
 
     queue.scheduleLatest(
       await createAutoSymbolTickTask({
@@ -231,7 +233,7 @@ describe('monitorTaskQueue business behavior', () => {
   });
 
   it('removeTasks prevents removed tasks from being popped', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
 
     queue.scheduleLatest(
       await createAutoSymbolTickTask({
@@ -258,7 +260,7 @@ describe('monitorTaskQueue business behavior', () => {
   });
 
   it('clearAll clears active tasks after earlier pops', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
 
     queue.scheduleLatest(
       await createAutoSymbolTickTask({

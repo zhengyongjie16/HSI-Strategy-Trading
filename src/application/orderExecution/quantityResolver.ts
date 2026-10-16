@@ -1,3 +1,5 @@
+import type { Logger } from '../../types/logger.js';
+
 /**
  * 订单数量解析模块
  *
@@ -6,17 +8,12 @@
  * - 校验显式数量整手约束
  * - 计算卖出可提交数量（按可用持仓裁剪）
  */
-import { logger } from '../../utils/logger/index.js';
 import type { Position } from '../../types/account.js';
-import type { SignalCallerAuthorization } from '../../types/trader.js';
+import type { SignalCallerAuthorization } from '../../types/orderExecutionPorts.js';
 import type { Signal } from '../../types/signal.js';
-import {
-  exactCompare,
-  safeQuantityNumber,
-  sumSafeQuantities,
-  wholeLotQuantity,
-} from '../../utils/numeric/exact.js';
-import type { RateLimiter } from '../../types/services.js';
+import { exactCompare, safeQuantityNumber, sumSafeQuantities } from '../../utils/numeric/exact.js';
+import { wholeLotQuantity } from '../../domain/order/orderQuantity.js';
+import type { RateLimiter } from '../../types/rateLimit.js';
 
 /**
  * 解析买入数量来源并执行显式数量校验。
@@ -88,6 +85,7 @@ function resolveBuyQuantitySource(
  * @returns 先精确计算整手数量，再证明并投影为安全整数 number
  */
 function calculateBuyQuantity(
+  logger: Logger,
   finalPrice: string,
   finalLotSize: number | undefined,
   isShortSymbol: boolean,
@@ -138,6 +136,7 @@ function calculateBuyQuantity(
  * @returns 安全整数买入数量；业务无效返回 0，内部金融文本契约错误直接上抛
  */
 function resolveBuyQuantity(
+  logger: Logger,
   signal: Signal,
   isShortSymbol: boolean,
   targetNotional: string,
@@ -160,7 +159,7 @@ function resolveBuyQuantity(
     return buyQuantitySource.quantity;
   }
 
-  return calculateBuyQuantity(finalPrice, finalLotSize, isShortSymbol, targetNotional);
+  return calculateBuyQuantity(logger, finalPrice, finalLotSize, isShortSymbol, targetNotional);
 }
 
 /**
@@ -170,6 +169,7 @@ function resolveBuyQuantity(
  * @returns 使用金融文本输入与安全整数数量输出的数量解析器实例
  */
 export function createQuantityResolver(deps: {
+  readonly logger: Logger;
   readonly rateLimiter: RateLimiter;
   readonly readSellPositions: (symbol: string) => Promise<ReadonlyArray<Position>>;
 }): {
@@ -182,8 +182,15 @@ export function createQuantityResolver(deps: {
     symbol: string,
     authorizeOrderAction: SignalCallerAuthorization,
   ) => Promise<number>;
-  readonly resolveBuyQuantity: typeof resolveBuyQuantity;
+  readonly resolveBuyQuantity: (
+    signal: Signal,
+    isShortSymbol: boolean,
+    targetNotional: string,
+    finalPrice: string,
+    finalLotSize: number | undefined,
+  ) => number;
 } {
+  const { logger } = deps;
   const { rateLimiter, readSellPositions } = deps;
 
   /**
@@ -305,6 +312,7 @@ export function createQuantityResolver(deps: {
   return {
     calculateSellQuantity,
     resolveDoomsdayClearanceQuantity,
-    resolveBuyQuantity,
+    resolveBuyQuantity: (signal, isShortSymbol, targetNotional, finalPrice, finalLotSize) =>
+      resolveBuyQuantity(logger, signal, isShortSymbol, targetNotional, finalPrice, finalLotSize),
   };
 }

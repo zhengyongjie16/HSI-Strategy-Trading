@@ -3,7 +3,7 @@
  * 先登记可清理对象的 destroy，再校验同步返回、身份和完整端口，拒绝 Promise 及错误身份。
  */
 import type { StrategyDeps, TradingSignalStrategy } from '../../types/strategy.js';
-import type { CleanupController } from '../types.js';
+import type { CleanupController } from '../shutdown/types.js';
 import type { PreparedStrategySelection } from './types.js';
 
 /** 校验可信本地模块运行时返回的完整策略端口，不接受异步实例。 */

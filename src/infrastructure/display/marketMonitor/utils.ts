@@ -7,7 +7,8 @@ import {
   formatDecimal,
   formatRatio,
 } from '../../../utils/numeric/exact.js';
-import type { UnrealizedLossMetrics, WarrantDistanceInfo } from '../../../types/services.js';
+import type { UnrealizedLossMetrics } from '../../../types/unrealizedLoss.js';
+import type { WarrantDistanceInfo } from '../../../types/warrantRisk.js';
 import type { Quote } from '../../../types/quote.js';
 import type { QuoteDisplay } from './types.js';
 

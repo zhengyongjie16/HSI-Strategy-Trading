@@ -1,3 +1,16 @@
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../src/infrastructure/time/index.js';
+import {
+  createLoggerDouble,
+  createAccountSnapshotDouble,
+  createMarketDataClientDouble,
+  createMonitorConfigDouble,
+  createMonitorContextDouble,
+  createSymbolRegistryDouble,
+  createTradeRuntimeDouble,
+} from '../helpers/testDoubles.js';
+
 /** API 覆盖不替代保护性 durable/episode/S：真实 mapper、O/Daily、repository 与 completion/cooldown 连接回归。 */
 
 import { expect, test } from 'bun:test';
@@ -11,14 +24,7 @@ import { createMixedTradeLogRepository } from '../../src/infrastructure/persiste
 import type { ProtectiveLiquidationExecutionProgressInput } from '../../src/types/risk.js';
 import type { OrderFact } from '../../src/types/trade.js';
 import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
-import {
-  createAccountSnapshotDouble,
-  createMarketDataClientDouble,
-  createMonitorConfigDouble,
-  createMonitorContextDouble,
-  createSymbolRegistryDouble,
-  createTraderDouble,
-} from '../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const T = Date.parse('2026-10-07T02:00:00.000Z');
@@ -93,7 +99,7 @@ async function harness(
     onPersist?.(p);
     repository.appendExecutionProgressIdempotent(p);
   };
-  const trader = createTraderDouble();
+  const tradeRuntime = createTradeRuntimeDouble();
   const f = createExecutionFixture({
     nowMs: T,
     createRecorder: native.createRecorder,
@@ -102,7 +108,7 @@ async function harness(
       getAccountSnapshot: async () => createAccountSnapshotDouble('10000'),
       getStockPositions: async () => [],
     },
-    getTrader: () => trader,
+    getTradeRuntime: () => tradeRuntime,
     onPositionsCommitted: async () => {},
   });
   const cooldownOwner = createLiquidationCooldownTracker();
@@ -176,6 +182,8 @@ function terminal(order: OrderFact) {
 function track(h: Awaited<ReturnType<typeof harness>>, timeout: boolean) {
   const { f, native } = h;
   const ops = native.createOperations({
+    logger: createLoggerDouble(),
+    wait: wait,
     runtime: f.runtime,
     monitorConfig,
     now: () => new Date(T),
@@ -216,6 +224,7 @@ function track(h: Awaited<ReturnType<typeof harness>>, timeout: boolean) {
 
 function eventFlow(f: ReturnType<typeof createExecutionFixture>) {
   return createEventFlow({
+    logger: createLoggerDouble(),
     runtime: f.runtime,
     monitorConfig,
     now: () => new Date(T),
@@ -265,6 +274,10 @@ for (const mode of ['direct', 'timeout'] as const)
       const closed: string[] = [];
       if (mode === 'direct') {
         monitor = native.createMonitor({
+          logger: createLoggerDouble(),
+          wait: wait,
+          requestExternalApi: wrapExternalApiRequest,
+          scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
           now: () => new Date(T),
           scheduleTimer: setTimeout,
           clearTimer: clearTimeout,

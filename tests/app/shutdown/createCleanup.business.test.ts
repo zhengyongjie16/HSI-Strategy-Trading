@@ -8,11 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:te
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { logger } from '../../../src/utils/logger/index.js';
+import { logger } from '../../../src/infrastructure/logger/index.js';
 import { formatError } from '../../../src/utils/error/index.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import { createMonitorContextDouble } from '../../helpers/testDoubles.js';
-import { createLastState, registerCleanupSteps } from './utils.js';
+import { createRuntimeStates, registerCleanupSteps } from './utils.js';
 
 describe('cleanup business flow', () => {
   it('executes each registered disposer exactly once across repeated execute calls', async () => {
@@ -131,10 +131,10 @@ describe('cleanup business flow', () => {
         },
       },
     });
-    const lastState = createLastState();
+    const stateFixtures = createRuntimeStates();
 
     const cleanup = createCleanup();
-    registerCleanupSteps(cleanup, steps, { monitorContext, lastState });
+    registerCleanupSteps(cleanup, steps, { monitorContext, stateFixtures });
 
     await cleanup.execute();
 
@@ -204,12 +204,12 @@ describe('cleanup business flow', () => {
         },
       },
     });
-    const lastState = createLastState();
+    const stateFixtures = createRuntimeStates();
 
     const cleanup = createCleanup();
     registerCleanupSteps(cleanup, steps, {
       monitorContext,
-      lastState,
+      stateFixtures,
       stopBuyProcessorAndDrain: async () => {
         steps.push('buy');
         throw new Error('buy failed');
@@ -251,12 +251,12 @@ describe('cleanup business flow', () => {
 
   it('closes trading gate before draining processors during cleanup', async () => {
     const steps: string[] = [];
-    const lastState = createLastState();
+    const stateFixtures = createRuntimeStates();
     const cleanup = createCleanup();
     registerCleanupSteps(cleanup, steps, {
-      lastState,
+      stateFixtures,
       stopBuyProcessorAndDrain: async () => {
-        steps.push(`buy:${lastState.isTradingEnabled ? 'open' : 'closed'}`);
+        steps.push(`buy:${stateFixtures.lifecycleState.isTradingEnabled ? 'open' : 'closed'}`);
       },
     });
 

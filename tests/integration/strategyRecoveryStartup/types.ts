@@ -1,11 +1,13 @@
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
+
 /** 启动装配中注入真实恢复入口，供独立 T28 集成使用。 */
 
 import type { PostGateRuntime } from '../../../src/app/types.js';
 import type { OrderMonitorRuntimeStore } from '../../../src/application/orderTracking/orderMonitor/types.js';
 import type { OrderHoldRegistry } from '../../../src/application/orderTracking/types.js';
 import type { RuntimeTermination } from '../../../src/types/runtime.js';
-import type { OrderRecorder, OrderStateChangedEvent } from '../../../src/types/services.js';
-import type { LastState } from '../../../src/types/state.js';
+import type { OrderRecorder } from '../../../src/types/orderRecorder.js';
+import type { OrderStateChangedEvent } from '../../../src/types/orderTracking.js';
 import type { createExecutionFixture } from '../../application/orderTracking/recorder/executionFixture.js';
 import type { createBrokerIngressFixture } from '../architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
@@ -20,7 +22,7 @@ export type RecoveryScenario = 'accepted' | 'zero' | 'conflict' | 'external';
 /** 实际 app 状态与外围 owner 观察端口。 */
 export type StartupRecoveryHarness = {
   readonly starts: string[];
-  readonly lastState: LastState;
+  readonly stateFixtures: RuntimeStateFixtures;
   readonly post: PostGateRuntime;
   readonly classifiedErrors: unknown[];
   readonly timeStarted: Promise<undefined>;

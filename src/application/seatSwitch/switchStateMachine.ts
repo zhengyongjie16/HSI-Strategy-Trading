@@ -12,27 +12,25 @@ import type {
 } from '../../domain/seat/types.js';
 import { ORDER_QUOTE_RETRY } from '../../constants/index.js';
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
-import { exactCompare } from '../../utils/numeric/exact.js';
+import { exactAdd, exactCompare } from '../../utils/numeric/exact.js';
 import {
   resolveSeatSwitchPolicy,
   resolveDistanceTriggerSide,
   shouldResetPeriodicPendingBySeatActivatedAt,
 } from '../../domain/seat/switchPolicy.js';
 import { initialSwitchState } from '../../domain/seat/switchState.js';
-import {
-  resolveNextQuoteRetry,
-  resolveQuoteReadinessForRequirement,
-} from '../../utils/quoteRetry/index.js';
-import type { QuoteReadinessStatus } from '../../utils/quoteRetry/types.js';
+import { resolveNextQuoteRetry } from '../quoteRetry.js';
+import { resolveQuoteReadinessForRequirement } from '../../domain/order/quoteReadiness.js';
+import type { QuoteReadinessStatus } from '../../domain/order/types.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
-import type { PendingOrder } from '../../types/services.js';
-import type { CancelOrderOutcome } from '../../types/trader.js';
-import { isSeatActive } from '../../utils/seat/guards.js';
+import type { PendingOrder } from '../../types/orderReadMetadata.js';
+import type { CancelOrderOutcome } from '../../types/orderCancellation.js';
+import { isSeatActive, resolveNextSearchFailureState } from '../../domain/seat/seatPolicy.js';
 import {
   formatCancelOutcomeTag,
   isCancelAcceptedOrTerminalNonFilledClose,
-} from '../../utils/trading/orderStatus.js';
+} from '../../domain/order/cancelOutcomePolicy.js';
 import type {
   AdvancePendingSwitchParams,
   StartSwitchFlowParams,
@@ -48,8 +46,8 @@ import type {
   StartSwitchOnDistanceResult,
   SwitchDriveResult,
   SwitchWakeupRequirement,
-} from '../../types/monitorContextPorts.js';
-import { resolveNextSearchFailureState } from '../../domain/seat/seatPolicy.js';
+} from '../../types/seatSwitch.js';
+
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 
 /**
@@ -172,12 +170,12 @@ function hasOpenBuyExposure(params: {
  */
 function resolvePeriodicSeatBlockSource(params: {
   readonly orderRecorder: SwitchStateMachineDeps['orderRecorder'];
-  readonly trader: SwitchStateMachineDeps['trader'];
+  readonly orderHoldRegistry: SwitchStateMachineDeps['orderHoldRegistry'];
   readonly symbol: string;
   readonly direction: 'LONG' | 'SHORT';
   readonly brokerPendingOrders?: ReadonlyArray<PendingOrder>;
 }): PeriodicSeatBlockSource {
-  const { orderRecorder, trader, symbol, direction, brokerPendingOrders } = params;
+  const { orderRecorder, orderHoldRegistry, symbol, direction, brokerPendingOrders } = params;
   if (brokerPendingOrders?.some((order) => order.symbol === symbol)) {
     return 'BROKER_PENDING_ORDER';
   }
@@ -187,7 +185,7 @@ function resolvePeriodicSeatBlockSource(params: {
     return 'ORDER_RECORDER';
   }
 
-  if (trader.getOrderHoldSymbols().has(symbol)) {
+  if (orderHoldRegistry.getHoldSymbols().has(symbol)) {
     return 'LOCAL_PENDING_ORDER';
   }
 
@@ -206,7 +204,10 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     autoSearchConfig,
     monitorSymbol,
     symbolRegistry,
-    trader,
+    cacheManager,
+    orderHoldRegistry,
+    orderMonitor,
+    orderExecutor,
     orderRecorder,
     riskChecker,
     marketDataClient,
@@ -241,13 +242,15 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     signal: ReturnType<SwitchStateMachineDeps['buildOrderSignal']>,
     submitFailedMessage: string,
     canContinue: () => boolean,
-  ): Promise<Awaited<ReturnType<SwitchStateMachineDeps['trader']['executeSignals']>> | null> {
+  ): Promise<Awaited<
+    ReturnType<SwitchStateMachineDeps['orderExecutor']['executeSignals']>
+  > | null> {
     if (!canContinue()) {
       return null;
     }
 
     // 原调用方票与原route身份直通executor；其内部quote/permit/position await后仍使用同一授权。
-    const executionResult = await trader.executeSignals([signal], canContinue);
+    const executionResult = await orderExecutor.executeSignals([signal], canContinue);
 
     // 真实ack是O/执行owner事实，旧业务授权失效不能把已返回ID变成未提交。
     if (executionResult.executedOrderIds.length === 0) {
@@ -547,7 +550,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return createNoopDriveResult();
     }
 
-    const brokerPendingOrders = await trader.getPendingOrders([latestSeatState.symbol]);
+    const brokerPendingOrders = await cacheManager.getPendingOrders([latestSeatState.symbol]);
     if (!canAdmit()) {
       return createNoopDriveResult();
     }
@@ -566,7 +569,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     if (switchPolicy.oldSeatHandling === 'REQUIRE_EMPTY') {
       const periodicBlockSource = resolvePeriodicSeatBlockSource({
         orderRecorder,
-        trader,
+        orderHoldRegistry,
         symbol: admittedSeatState.symbol,
         direction,
         brokerPendingOrders,
@@ -795,7 +798,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           }
 
           // 同一业务票必须穿过 FIFO/重试等待到 broker 边界，不能借订单事实授权继续旧换标。
-          const cancelOutcome = await trader.cancelOrder(cancelTarget.orderId, {
+          const cancelOutcome = await orderMonitor.cancelOrder(cancelTarget.orderId, {
             kind: 'SIGNAL_AUTHORIZED',
             authorize: () => canContinue() && isCurrentSwitchStateValid(state),
           });
@@ -1018,19 +1021,6 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         state.shouldRebuy = false;
       }
 
-      if (state.sellOrderId !== null) {
-        const sellRecord = orderRecorder.getSellRecordByOrderId(state.sellOrderId);
-        // O提供权威累计经济金额；不得用显示均价乘数量重建，也不重复累加同一累计记录。
-        const actualNotional = sellRecord?.costAmount ?? null;
-        if (actualNotional !== null && exactCompare(actualNotional, '0') > 0) {
-          if (!canContinue()) {
-            return createNoopDriveResult();
-          }
-
-          state.sellNotional = actualNotional;
-        }
-      }
-
       if (!canContinue()) {
         return createNoopDriveResult();
       }
@@ -1207,9 +1197,19 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         return createNoopDriveResult();
       }
 
-      // WAIT_QUOTE/REBUY 的报价就绪不能抹掉此前回补提交失败的预算。
-      const buyNotional = state.sellNotional;
-      if (buyNotional === null || exactCompare(buyNotional, '0') <= 0) {
+      // 在本次新标报价 await 后取样：关闭订单仍可合法修订金额，等待/重试不能消费旧预算。
+      // 只按本次原卖单与已 accepted MO 后继读取当前权威累计记录；零成交成员贡献零，不估算或按标的汇总。
+      let buyNotional = '0';
+      if (state.sellOrderId !== null) {
+        for (const orderId of orderMonitor.getSellOperationOrderIds(state.sellOrderId)) {
+          buyNotional = exactAdd(
+            buyNotional,
+            orderRecorder.getSellRecordByOrderId(orderId)?.costAmount ?? '0',
+          );
+        }
+      }
+
+      if (exactCompare(buyNotional, '0') <= 0) {
         return failAndClear('MISSING_REBUY_NOTIONAL');
       }
 
@@ -1362,7 +1362,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
       const blockSource = resolvePeriodicSeatBlockSource({
         orderRecorder,
-        trader,
+        orderHoldRegistry,
         symbol: seatState.symbol,
         direction,
       });
@@ -1428,7 +1428,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
     const blockSource = resolvePeriodicSeatBlockSource({
       orderRecorder,
-      trader,
+      orderHoldRegistry,
       symbol: seatState.symbol,
       direction,
     });
@@ -1609,7 +1609,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
     let pendingOrdersForOldSymbol: ReadonlyArray<PendingOrder>;
     try {
-      pendingOrdersForOldSymbol = await trader.getPendingOrders([pendingSwitch.oldSymbol]);
+      pendingOrdersForOldSymbol = await cacheManager.getPendingOrders([pendingSwitch.oldSymbol]);
     } catch (error) {
       // 内部事实/配置/状态损坏与授权取消独立；只有明确外部读取失败才走原重试owner。
       if (!isExternalApiRequestError(error)) throw error;

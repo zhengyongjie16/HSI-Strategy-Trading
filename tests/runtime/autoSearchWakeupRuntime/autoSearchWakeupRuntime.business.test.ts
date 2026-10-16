@@ -1,9 +1,11 @@
+import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
+
 /** 自动寻标 wakeup 调度测试：窄用例注入、route 去重、冷却移交、fatal 与分段 timer 语义。 */
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../../src/constants/index.js';
 import { createAutoSearchWakeupRuntime } from '../../../src/runtime/autoSearchWakeupRuntime/index.js';
-import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../../src/main/tradingGateEventRuntime/index.js';
+import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../../src/runtime/tradingGateEventRuntime/index.js';
 import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import type {
   SearchOnEventParams,
@@ -127,11 +129,9 @@ describe('AutoSearchWakeupRuntime', () => {
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      lastState: {
-        canTrade: true,
-        isTradingEnabled: true,
-        isHalfDay: false,
-      },
+
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
       tradingGateEventRuntime,
       doomsdayProtectionEnabled: false,
       now: () => new Date('2026-04-10T02:00:00.000Z'),
@@ -169,18 +169,19 @@ describe('AutoSearchWakeupRuntime', () => {
         await inFlightSearch;
       },
     };
-    const lastState = {
-      canTrade: true,
-      isTradingEnabled: true,
-      isHalfDay: false,
-    };
+    const stateFixtures = createRuntimeStateFixtures({
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
+      tradingCalendarState: {},
+      quoteSubscriptionState: {},
+    });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
       termination,
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      lastState,
+      ...stateFixtures,
       tradingGateEventRuntime,
       doomsdayProtectionEnabled: false,
       now: () => new Date('2026-04-10T02:00:00.000Z'),
@@ -214,18 +215,19 @@ describe('AutoSearchWakeupRuntime', () => {
         calls.push(params);
       },
     };
-    const lastState = {
-      canTrade: false,
-      isTradingEnabled: true,
-      isHalfDay: false,
-    };
+    const stateFixtures = createRuntimeStateFixtures({
+      tradingTimeState: { canTrade: false, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
+      tradingCalendarState: {},
+      quoteSubscriptionState: {},
+    });
     const tradingGateEventRuntime = createTradingGateEventRuntime();
     const runtime = createAutoSearchWakeupRuntime({
       termination,
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      lastState,
+      ...stateFixtures,
       tradingGateEventRuntime,
       doomsdayProtectionEnabled: false,
       now: () => new Date('2026-04-10T02:00:00.000Z'),
@@ -239,7 +241,7 @@ describe('AutoSearchWakeupRuntime', () => {
     await Bun.sleep(0);
     expect(calls).toHaveLength(0);
 
-    lastState.canTrade = true;
+    stateFixtures.tradingTimeState.canTrade = true;
     tradingGateEventRuntime.emitAutoSearchAuthorizationChanged({
       previousAuthorized: false,
       nextAuthorized: true,
@@ -268,11 +270,9 @@ describe('AutoSearchWakeupRuntime', () => {
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      lastState: {
-        canTrade: true,
-        isTradingEnabled: true,
-        isHalfDay: false,
-      },
+
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
       tradingGateEventRuntime,
       doomsdayProtectionEnabled: false,
       now: () => new Date('2026-04-10T02:00:00.000Z'),
@@ -339,7 +339,9 @@ describe('AutoSearchWakeupRuntime', () => {
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      lastState: { canTrade: true, isTradingEnabled: true, isHalfDay: false },
+
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
       tradingGateEventRuntime: createTradingGateEventRuntime(),
       doomsdayProtectionEnabled: false,
       now: timers.now,
@@ -395,11 +397,9 @@ describe('AutoSearchWakeupRuntime', () => {
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      lastState: {
-        canTrade: true,
-        isTradingEnabled: true,
-        isHalfDay: false,
-      },
+
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
       tradingGateEventRuntime,
       doomsdayProtectionEnabled: false,
       now: timers.now,
@@ -472,11 +472,9 @@ describe('AutoSearchWakeupRuntime', () => {
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      lastState: {
-        canTrade: true,
-        isTradingEnabled: true,
-        isHalfDay: false,
-      },
+
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
       tradingGateEventRuntime,
       doomsdayProtectionEnabled: false,
       now: timers.now,
@@ -560,7 +558,9 @@ describe('AutoSearchWakeupRuntime', () => {
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      lastState: { canTrade: true, isTradingEnabled: true, isHalfDay: false },
+
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
       tradingGateEventRuntime: createTradingGateEventRuntime(),
       doomsdayProtectionEnabled: false,
       now: timers.now,
@@ -645,7 +645,9 @@ describe('AutoSearchWakeupRuntime', () => {
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      lastState: { canTrade: true, isTradingEnabled: true, isHalfDay: false },
+
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
       tradingGateEventRuntime: createTradingGateEventRuntime(),
       doomsdayProtectionEnabled: false,
       now: timers.now,
@@ -690,11 +692,9 @@ describe('AutoSearchWakeupRuntime', () => {
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      lastState: {
-        canTrade: true,
-        isTradingEnabled: true,
-        isHalfDay: false,
-      },
+
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
       tradingGateEventRuntime,
       doomsdayProtectionEnabled: false,
       now: timers.now,
@@ -740,11 +740,9 @@ describe('AutoSearchWakeupRuntime', () => {
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
-      lastState: {
-        canTrade: true,
-        isTradingEnabled: true,
-        isHalfDay: false,
-      },
+
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
       tradingGateEventRuntime,
       doomsdayProtectionEnabled: false,
       now: () => new Date('2026-04-10T02:00:00.000Z'),

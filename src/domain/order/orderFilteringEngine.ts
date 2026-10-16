@@ -22,7 +22,7 @@
  * - 时间间隔订单必须从原始候选订单获取，而非上一轮结果
  * - 使用'低价优先整笔消除'策略,不拆分订单
  */
-import type { OrderRecord } from '../../types/services.js';
+import type { OrderRecord } from '../../types/orderRecorder.js';
 import type { FilteringState } from './types.js';
 import { deductSellQuantityFromBuyOrders } from './sellDeductionPolicy.js';
 import { calculateTotalQuantity } from './orderQuantity.js';

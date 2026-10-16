@@ -1,3 +1,5 @@
+import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
+
 /**
  * 真实 warrantList adapter 读取/缓存测试。
  * SDK query 仍仅在原 adapter 执行，验证完整过滤参数、重试共享、精确金融映射与 clear 后迟到读取失效。
@@ -16,10 +18,7 @@ import {
 import { createWarrantListReadAdapter } from '../../../../src/infrastructure/longbridge/market/warrantListReadAdapter.js';
 import { createWarrantListCache } from '../../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
 import type { MarketWarrantListRequest } from '../../../../src/types/marketPorts.js';
-import {
-  wrapExternalApiRequest,
-  isExternalApiRequestError,
-} from '../../../../src/utils/apiFailure/index.js';
+import { isExternalApiRequestError } from '../../../../src/utils/apiFailure/index.js';
 
 function createRequest(
   overrides: Partial<MarketWarrantListRequest> = {},

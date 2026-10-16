@@ -38,7 +38,7 @@ export type ValidatedOrderType =
   | OrderType.TSMAMT
   | OrderType.TSMPCT
   | OrderType.SLO;
-import type { PendingOrder } from '../../../types/services.js';
+import type { PendingOrder } from '../../../types/orderReadMetadata.js';
 
 /** 今日挂单SDK映射能力，只返回cache实际消费的保真文本及安全数量事实。 */
 export interface PendingOrdersAdapter {

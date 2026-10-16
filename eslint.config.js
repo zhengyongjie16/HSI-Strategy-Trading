@@ -554,142 +554,31 @@ export default defineConfig(
       'sonarjs/void-use': 'off',
     },
   },
-  {
-    files: ['src/main/**/*.ts'],
+  ...Object.entries({
+    application: ['app', 'runtime', 'infrastructure', 'core', 'main', 'services'],
+    runtime: ['app', 'infrastructure', 'core', 'main', 'services'],
+    domain: ['app', 'application', 'runtime', 'infrastructure', 'core', 'main', 'services'],
+    infrastructure: ['app', 'application', 'runtime', 'domain', 'core', 'main', 'services'],
+    types: ['app', 'application', 'runtime', 'infrastructure', 'core', 'main', 'services'],
+    constants: ['app', 'application', 'runtime', 'infrastructure', 'core', 'main', 'services'],
+    config: ['app', 'application', 'runtime', 'infrastructure', 'core', 'main', 'services'],
+    utils: ['app', 'application', 'runtime', 'infrastructure', 'core', 'main', 'services'],
+  }).map(([layer, targets]) => ({
+    files: [`src/${layer}/**/*.ts`],
     rules: {
       'no-restricted-imports': [
         'error',
         {
           patterns: [
             {
-              group: [
-                '../app/*',
-                '../../app/*',
-                '../../../app/*',
-                '../../../../app/*',
-                '../../../../../app/*',
-              ],
-              message: 'main 层不得反向依赖 app 层',
+              regex: String.raw`^(?:(?:../)+|@/)(?:${targets.join('|')})/.+`,
+              message: `${layer} 层不得依赖高层或旧 owner，改用最近共同父级窄契约`,
             },
           ],
         },
       ],
     },
-  },
-  {
-    files: ['src/services/**/*.ts'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: [
-                '../app/*',
-                '../../app/*',
-                '../../../app/*',
-                '../../../../app/*',
-                '../../../../../app/*',
-              ],
-              message: 'services 层不得反向依赖 app 层',
-            },
-            {
-              group: [
-                '../main/*',
-                '../../main/*',
-                '../../../main/*',
-                '../../../../main/*',
-                '../../../../../main/*',
-              ],
-              message: 'services 层不得依赖 main 层',
-            },
-            {
-              regex: String.raw`^(?:\.\./)+core/.+`,
-              message: 'services 层不得依赖 core 层',
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    files: ['src/infrastructure/display/**/*.ts'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              regex: String.raw`^(?:\.\./)+app/.+`,
-              message: 'display adapter 不得反向依赖 app 层',
-            },
-            {
-              regex: String.raw`^(?:\.\./)+main/.+`,
-              message: 'display adapter 不得依赖 main 层',
-            },
-            {
-              regex: String.raw`^(?:\.\./)+core/.+`,
-              message: 'display adapter 不得依赖 core 层',
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    files: ['src/core/**/*.ts', 'src/config/**/*.ts', 'src/utils/**/*.ts'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: [
-                '../app/*',
-                '../../app/*',
-                '../../../app/*',
-                '../../../../app/*',
-                '../../../../../app/*',
-              ],
-              message: '下层模块不得反向依赖 app 层',
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    files: ['src/types/**/*.ts'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: [
-                '../app/*',
-                '../../app/*',
-                '../../../app/*',
-                '../../../../app/*',
-                '../../../../../app/*',
-              ],
-              message: '下层模块不得反向依赖 app 层',
-            },
-            {
-              group: [
-                '../services/*',
-                '../../services/*',
-                '../../../services/*',
-                '../../../../services/*',
-                '../../../../../services/*',
-              ],
-              message: 'types 层不得依赖 services 层',
-            },
-          ],
-        },
-      ],
-    },
-  },
+  })),
   {
     files: ['src/index.ts'],
     rules: {
@@ -707,7 +596,8 @@ export default defineConfig(
             './types/*',
             './utils/*',
             '!./utils/error/index.js',
-            '!./utils/logger/index.js',
+            './infrastructure/*',
+            '!./infrastructure/logger/index.js',
           ],
         },
       ],

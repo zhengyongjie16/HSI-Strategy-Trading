@@ -3,7 +3,7 @@
  *
  * 职责：固定增量登记资源在统一 shutdown 时的业务执行顺序。
  */
-import type { CleanupPhase } from '../app/types.js';
+import type { CleanupPhase } from '../types/cleanup.js';
 
 export const CLEANUP_PHASE_ORDER: Readonly<Record<CleanupPhase, number>> = {
   CLOSE_TRADING_GATE: 0,

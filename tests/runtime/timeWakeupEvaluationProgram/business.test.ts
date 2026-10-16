@@ -1,3 +1,6 @@
+import type { TradingCalendarState, TradingDayInfo } from '../../../src/types/tradingCalendar.js';
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
+
 /**
  * timeWakeupEvaluationProgram 业务测试
  *
@@ -6,13 +9,12 @@
 import { describe, expect, it } from 'bun:test';
 import { TRADING } from '../../../src/constants/index.js';
 import { createDoomsdayClearanceWorkflow } from '../../../src/application/doomsdayClearance/index.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
 import type { Position } from '../../../src/types/account.js';
 import { timeWakeupEvaluationProgram } from '../../../src/runtime/timeWakeupEvaluationProgram/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { TimeWakeupEvaluationContext } from '../../../src/runtime/timeWakeupEvaluationProgram/types.js';
-import type { LastState } from '../../../src/types/state.js';
 import type { TradingConfig } from '../../../src/types/config.js';
 import type {
   AutoSearchAuthorizationChangedEvent,
@@ -24,7 +26,7 @@ import type {
   DoomsdayClearanceResult,
   DoomsdayClearanceWorkflow,
 } from '../../../src/application/doomsdayClearance/types.js';
-import type { TradingDayInfo } from '../../../src/types/marketPorts.js';
+
 import {
   createAccountSnapshotDouble,
   createPositionDouble,
@@ -33,7 +35,7 @@ import {
   createLoggerDouble,
   createMonitorConfigDouble,
   createMonitorContextDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
 
 type TimeWakeupEvaluationHarnessOptions = Readonly<{
@@ -50,8 +52,8 @@ type TimeWakeupEvaluationHarnessOptions = Readonly<{
   onDoomsdayEvaluate?: (context: DoomsdayEvaluationContext) => void | Promise<void>;
   positions?: ReadonlyArray<Position>;
   doomsdayClearanceWorkflow?: Pick<DoomsdayClearanceWorkflow, 'evaluate'>;
-  traderOverrides?: Parameters<typeof createTraderDouble>[0];
-  cachedTradingDayInfo?: LastState['cachedTradingDayInfo'];
+  tradeRuntimeOverrides?: Parameters<typeof createTradeRuntimeDouble>[0];
+  cachedTradingDayInfo?: TradingCalendarState['cachedTradingDayInfo'];
   isTradingDay?: (date: Date) => Promise<TradingDayInfo>;
   getQuotes?: TimeWakeupEvaluationContext['marketDataClient']['getQuotes'];
   logger?: TimeWakeupEvaluationContext['logger'];
@@ -77,26 +79,32 @@ async function expectPromiseRejectsWithMessage(
   throw new Error('[测试] 预期 Promise 拒绝，但实际成功');
 }
 
-function createLastState(
+function createRuntimeStates(
   options: Pick<TimeWakeupEvaluationHarnessOptions, 'initialCanTrade' | 'cachedTradingDayInfo'>,
-): LastState {
+): RuntimeStateFixtures {
   return {
-    canTrade: options.initialCanTrade ?? false,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: '2026-04-29',
-    lifecycleState: 'ACTIVE',
-    pendingOpenRebuild: false,
-    isTradingEnabled: true,
-    cachedTradingDayInfo: options.cachedTradingDayInfo ?? {
-      dateKey: '2026-04-29',
-      info: {
-        isTradingDay: true,
-        isHalfDay: false,
-      },
+    tradingTimeState: {
+      canTrade: options.initialCanTrade ?? false,
+      isHalfDay: false,
+      openProtectionActive: false,
     },
-    tradingCalendarSnapshot: new Map([['2026-04-29', { isTradingDay: true, isHalfDay: false }]]),
-    allTradingSymbols: new Set(),
+    lifecycleState: {
+      currentDayKey: '2026-04-29',
+      lifecycleState: 'ACTIVE',
+      pendingOpenRebuild: false,
+      isTradingEnabled: true,
+    },
+    tradingCalendarState: {
+      cachedTradingDayInfo: options.cachedTradingDayInfo ?? {
+        dateKey: '2026-04-29',
+        info: {
+          isTradingDay: true,
+          isHalfDay: false,
+        },
+      },
+      tradingCalendarSnapshot: new Map([['2026-04-29', { isTradingDay: true, isHalfDay: false }]]),
+    },
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
   };
 }
 
@@ -129,9 +137,10 @@ async function createTimeWakeupEvaluationHarness(
   options: TimeWakeupEvaluationHarnessOptions,
 ): Promise<
   TimeWakeupEvaluationContext &
+    RuntimeStateFixtures &
     Readonly<{ snapshot: AccountPositionSnapshot; stageCalls: string[] }>
 > {
-  const lastState = createLastState(options);
+  const stateFixtures = createRuntimeStates(options);
   const stageCalls: string[] = [];
   let initialized = false;
   const snapshot = await createSnapshotFixture({
@@ -142,7 +151,8 @@ async function createTimeWakeupEvaluationHarness(
         if (initialized) {
           stageCalls.push('account-read');
           return (
-            options.traderOverrides?.getAccountSnapshot?.() ?? createAccountSnapshotDouble('100000')
+            options.tradeRuntimeOverrides?.accountService?.getAccountSnapshot?.() ??
+            createAccountSnapshotDouble('100000')
           );
         }
 
@@ -151,7 +161,11 @@ async function createTimeWakeupEvaluationHarness(
       getStockPositions: async () => {
         if (initialized) {
           stageCalls.push('position-read');
-          return options.traderOverrides?.getStockPositions?.() ?? options.positions ?? [];
+          return (
+            options.tradeRuntimeOverrides?.accountService?.getStockPositions?.() ??
+            options.positions ??
+            []
+          );
         }
 
         return options.positions ?? [];
@@ -175,8 +189,11 @@ async function createTimeWakeupEvaluationHarness(
         }
       : {}),
   });
+  const { cacheManager, orderMonitor, orderExecutor } = createTradeRuntimeDouble(
+    options.tradeRuntimeOverrides,
+  );
   return {
-    logger: options.logger ?? createLoggerDouble(),
+    logger: createLoggerDouble(),
     marketDataClient: createMarketDataClientDouble({
       ...(options.getQuotes ? { getQuotes: options.getQuotes } : {}),
       isTradingDay: async (date) => {
@@ -184,8 +201,10 @@ async function createTimeWakeupEvaluationHarness(
         return options.isTradingDay?.(date) ?? { isTradingDay: true, isHalfDay: false };
       },
     }),
-    trader: createTraderDouble(options.traderOverrides),
-    lastState,
+    cacheManager,
+    orderMonitor,
+    orderExecutor,
+    ...stateFixtures,
     snapshot,
     stageCalls,
     doomsdayClearanceWorkflow: options.doomsdayClearanceWorkflow ?? {
@@ -244,12 +263,12 @@ describe('timeWakeupEvaluationProgram', () => {
           return { isTradingDay: true, isHalfDay: false };
         },
       });
-      context.lastState.cachedTradingDayInfo = null;
+      context.tradingCalendarState.cachedTradingDayInfo = null;
 
       await timeWakeupEvaluationProgram(context);
 
       expect(observedTradingDayTimes).toEqual([injectedNow.getTime()]);
-      expect(context.lastState.canTrade).toBe(true);
+      expect(context.tradingTimeState.canTrade).toBe(true);
       expect(injectedNow.getTime()).not.toBe(Date.now());
     } finally {
       Date.now = originalNow;
@@ -271,15 +290,19 @@ describe('timeWakeupEvaluationProgram', () => {
           now: () => injectedNow,
           logger: createLoggerDouble(),
         }),
-        traderOverrides: {
-          getPendingOrders: async () => {
-            await Promise.resolve();
-            injectedNow = new Date('2026-04-29T16:01:00.000+08:00');
-            return [];
+        tradeRuntimeOverrides: {
+          cacheManager: {
+            getPendingOrders: async () => {
+              await Promise.resolve();
+              injectedNow = new Date('2026-04-29T16:01:00.000+08:00');
+              return [];
+            },
           },
-          executeDoomsdayClearanceSignals: async () => {
-            observedIsLiveValues.push(true);
-            throw new Error('注入时钟已离开窗口，不得清仓');
+          orderExecutor: {
+            executeDoomsdayClearanceSignals: async () => {
+              observedIsLiveValues.push(true);
+              throw new Error('注入时钟已离开窗口，不得清仓');
+            },
           },
         },
       });
@@ -315,7 +338,7 @@ describe('timeWakeupEvaluationProgram', () => {
         gateEmitted = true;
       },
     });
-    context.lastState.cachedTradingDayInfo = null;
+    context.tradingCalendarState.cachedTradingDayInfo = null;
 
     const result = await timeWakeupEvaluationProgram(context);
 
@@ -323,8 +346,8 @@ describe('timeWakeupEvaluationProgram', () => {
     expect(result.plan.nextWakeupAtMs).toBe(
       new Date('2026-04-29T09:30:00.000+08:00').getTime() + TRADING.INTERVAL_MS,
     );
-    expect(context.lastState.cachedTradingDayInfo).toBeNull();
-    expect(context.lastState.canTrade).toBe(false);
+    expect(context.tradingCalendarState.cachedTradingDayInfo).toBeNull();
+    expect(context.tradingTimeState.canTrade).toBe(false);
     expect(gateEmitted).toBe(false);
     expect(lifecycleCalled).toBe(false);
   });
@@ -337,7 +360,7 @@ describe('timeWakeupEvaluationProgram', () => {
         throw new TypeError('calendar contract broken');
       },
     });
-    context.lastState.cachedTradingDayInfo = null;
+    context.tradingCalendarState.cachedTradingDayInfo = null;
 
     await expectPromiseRejectsWithMessage(
       timeWakeupEvaluationProgram(context),
@@ -370,7 +393,7 @@ describe('timeWakeupEvaluationProgram', () => {
     expect(result.plan.nextWakeupAtMs).toBe(
       new Date('2026-04-29T09:30:00.000+08:00').getTime() + TRADING.INTERVAL_MS,
     );
-    expect(context.lastState.canTrade).toBe(false);
+    expect(context.tradingTimeState.canTrade).toBe(false);
     expect(gateEmitted).toBe(false);
   });
 
@@ -425,7 +448,7 @@ describe('timeWakeupEvaluationProgram', () => {
   it('lifecycle 禁用与开盘重建恢复即使连续交易门禁不变也发布自动寻标授权转换', async () => {
     const authorizationEvents: AutoSearchAuthorizationChangedEvent[] = [];
     const gateCalls: string[] = [];
-    let lifecycleState: LastState | null = null;
+    let lifecycleState: RuntimeStateFixtures | null = null;
     let shouldEnableTrading = false;
     const context = await createTimeWakeupEvaluationHarness({
       now: new Date('2026-04-29T10:00:00.000+08:00'),
@@ -435,7 +458,7 @@ describe('timeWakeupEvaluationProgram', () => {
           throw new Error('lifecycle state is unavailable');
         }
 
-        lifecycleState.isTradingEnabled = shouldEnableTrading;
+        lifecycleState.lifecycleState.isTradingEnabled = shouldEnableTrading;
         return { nextRetryAtMs: null, pendingOpenRebuild: !shouldEnableTrading };
       },
       emitGateStateChanged: () => {
@@ -445,7 +468,7 @@ describe('timeWakeupEvaluationProgram', () => {
         authorizationEvents.push(event);
       },
     });
-    lifecycleState = context.lastState;
+    lifecycleState = context;
 
     await timeWakeupEvaluationProgram(context);
     shouldEnableTrading = true;
@@ -456,6 +479,53 @@ describe('timeWakeupEvaluationProgram', () => {
       { previousAuthorized: null, nextAuthorized: false },
       { previousAuthorized: false, nextAuthorized: true },
     ]);
+  });
+
+  it('keys both transition memories by the stable trading-time reference, not each evaluation envelope', async () => {
+    const events: AutoSearchAuthorizationChangedEvent[] = [];
+    let invalidations = 0;
+    const context = await createTimeWakeupEvaluationHarness({
+      now: new Date('2026-04-29T15:55:00.000+08:00'),
+      initialCanTrade: true,
+      invalidateStrategy: () => {
+        invalidations += 1;
+      },
+      emitAutoSearchAuthorizationChanged: (event) => {
+        events.push(event);
+      },
+    });
+    const states = {
+      tradingTimeState: context.tradingTimeState,
+      lifecycleState: context.lifecycleState,
+      tradingCalendarState: context.tradingCalendarState,
+      quoteSubscriptionState: context.quoteSubscriptionState,
+    };
+    await timeWakeupEvaluationProgram(context);
+    await timeWakeupEvaluationProgram({ ...context });
+    expect(invalidations).toBe(1);
+    expect(events).toEqual([{ previousAuthorized: null, nextAuthorized: false }]);
+    for (const name of [
+      'tradingTimeState',
+      'lifecycleState',
+      'tradingCalendarState',
+      'quoteSubscriptionState',
+    ] as const)
+      expect(context[name]).toBe(states[name]);
+
+    const independent = await createTimeWakeupEvaluationHarness({
+      now: new Date('2026-04-29T15:55:00.000+08:00'),
+      initialCanTrade: true,
+      invalidateStrategy: () => {
+        invalidations += 1;
+      },
+      emitAutoSearchAuthorizationChanged: (event) => {
+        events.push(event);
+      },
+    });
+    expect(independent.tradingTimeState).not.toBe(states.tradingTimeState);
+    await timeWakeupEvaluationProgram(independent);
+    expect(invalidations).toBe(2);
+    expect(events).toHaveLength(2);
   });
 
   it('自动寻标授权消费方的内部错误保持 fail-fast', async () => {
@@ -486,8 +556,8 @@ describe('timeWakeupEvaluationProgram', () => {
 
     await timeWakeupEvaluationProgram(context);
 
-    expect(context.lastState.canTrade).toBe(true);
-    expect(context.lastState.openProtectionActive).toBe(true);
+    expect(context.tradingTimeState.canTrade).toBe(true);
+    expect(context.tradingTimeState.openProtectionActive).toBe(true);
     expect(authorizationEvents).toEqual([{ previousAuthorized: null, nextAuthorized: true }]);
   });
 
@@ -507,7 +577,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     await timeWakeupEvaluationProgram(context);
 
-    expect(context.lastState.canTrade).toBe(false);
+    expect(context.tradingTimeState.canTrade).toBe(false);
     expect(cancelAllCalls).toBe(1);
     expect(authorizationEvents).toEqual([{ previousAuthorized: null, nextAuthorized: false }]);
   });
@@ -528,7 +598,7 @@ describe('timeWakeupEvaluationProgram', () => {
     currentTime = new Date('2026-04-29T13:00:00.000+08:00');
     await timeWakeupEvaluationProgram(context);
 
-    expect(context.lastState.canTrade).toBe(true);
+    expect(context.tradingTimeState.canTrade).toBe(true);
     expect(authorizationEvents).toEqual([
       { previousAuthorized: null, nextAuthorized: false },
       { previousAuthorized: false, nextAuthorized: true },
@@ -571,11 +641,11 @@ describe('timeWakeupEvaluationProgram', () => {
     await timeWakeupEvaluationProgram(context);
 
     expect(queriedDates).toHaveLength(1);
-    expect(context.lastState.cachedTradingDayInfo).toEqual({
+    expect(context.tradingCalendarState.cachedTradingDayInfo).toEqual({
       dateKey: '2026-04-29',
       info: { isTradingDay: true, isHalfDay: false },
     });
-    expect(context.lastState.canTrade).toBe(true);
+    expect(context.tradingTimeState.canTrade).toBe(true);
   });
 
   it('交易日查询失败时向上抛出且不制造系统级 recovery 候选', async () => {
@@ -601,8 +671,8 @@ describe('timeWakeupEvaluationProgram', () => {
       timeWakeupEvaluationProgram(context),
       /trading day unavailable/,
     );
-    expect(context.lastState.canTrade).toBe(true);
-    expect(context.lastState.cachedTradingDayInfo).toEqual(staleTradingDayInfo);
+    expect(context.tradingTimeState.canTrade).toBe(true);
+    expect(context.tradingCalendarState.cachedTradingDayInfo).toEqual(staleTradingDayInfo);
     expect(lifecycleRuntimeFlags).toEqual([]);
     expect(context.stageCalls).toContain('calendar');
     expect(context.stageCalls).not.toContain('doomsday-evaluate');
@@ -625,7 +695,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     await timeWakeupEvaluationProgram(context);
 
-    expect(context.lastState.canTrade).toBe(false);
+    expect(context.tradingTimeState.canTrade).toBe(false);
     expect(lifecycleRuntimeFlags).toEqual([
       {
         dayKey: '2026-04-29',
@@ -698,8 +768,8 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(context.lastState.canTrade).toBe(true);
-    expect(context.lastState.openProtectionActive).toBe(true);
+    expect(context.tradingTimeState.canTrade).toBe(true);
+    expect(context.tradingTimeState.openProtectionActive).toBe(true);
     expect(result.plan.nextWakeupAtMs).toBe(new Date('2026-04-29T13:05:00.000+08:00').getTime());
   });
 
@@ -715,7 +785,7 @@ describe('timeWakeupEvaluationProgram', () => {
 
     const result = await timeWakeupEvaluationProgram(context);
 
-    expect(context.lastState.openProtectionActive).toBe(false);
+    expect(context.tradingTimeState.openProtectionActive).toBe(false);
     expect(result.plan.nextWakeupAtMs).not.toBe(
       new Date('2026-04-29T13:05:00.000+08:00').getTime(),
     );
@@ -807,20 +877,22 @@ describe('timeWakeupEvaluationProgram', () => {
         expect(quote.price).toBe('1');
         return new Map([['BULL.HK', quote]]);
       },
-      traderOverrides: {
-        executeDoomsdayClearanceSignals: async (commands) => {
-          submitCalls += 1;
-          expect(commands).toHaveLength(1);
-          expect(commands[0]?.symbol).toBe('BULL.HK');
-          expect(commands[0]?.action).toBe('SELLCALL');
-          expect(commands[0]?.seatVersion).toBe(
-            context.monitorContext.symbolRegistry.getSeatVersion('LONG'),
-          );
-          return {
-            executedOrderIds: ['ACCEPTED-1'],
-            awaitingAuthoritativeTerminalSymbols: [],
-            unresolvedQuoteSymbols: [],
-          };
+      tradeRuntimeOverrides: {
+        orderExecutor: {
+          executeDoomsdayClearanceSignals: async (commands) => {
+            submitCalls += 1;
+            expect(commands).toHaveLength(1);
+            expect(commands[0]?.symbol).toBe('BULL.HK');
+            expect(commands[0]?.action).toBe('SELLCALL');
+            expect(commands[0]?.seatVersion).toBe(
+              context.monitorContext.symbolRegistry.getSeatVersion('LONG'),
+            );
+            return {
+              executedOrderIds: ['ACCEPTED-1'],
+              awaitingAuthoritativeTerminalSymbols: [],
+              unresolvedQuoteSymbols: [],
+            };
+          },
         },
       },
     });
@@ -867,14 +939,18 @@ describe('timeWakeupEvaluationProgram', () => {
         now: () => new Date('2026-04-29T15:56:00.000+08:00'),
         logger: createLoggerDouble(),
       }),
-      traderOverrides: {
-        getPendingOrders: async () => {
-          const nextEpoch = context.snapshot.getView().token.dayEpoch + 1;
-          await context.snapshot.requestClear({ reason: 'DAY_CUT', dayEpoch: nextEpoch });
-          return [];
+      tradeRuntimeOverrides: {
+        cacheManager: {
+          getPendingOrders: async () => {
+            const nextEpoch = context.snapshot.getView().token.dayEpoch + 1;
+            await context.snapshot.requestClear({ reason: 'DAY_CUT', dayEpoch: nextEpoch });
+            return [];
+          },
         },
-        executeDoomsdayClearanceSignals: async () => {
-          throw new Error('旧 origin epoch 不得继续提交');
+        orderExecutor: {
+          executeDoomsdayClearanceSignals: async () => {
+            throw new Error('旧 origin epoch 不得继续提交');
+          },
         },
       },
     });
@@ -901,14 +977,18 @@ describe('timeWakeupEvaluationProgram', () => {
         logger: createLoggerDouble(),
       }),
       getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1')]]),
-      traderOverrides: {
-        executeDoomsdayClearanceSignals: async () => {
-          calls.push('submit');
-          throw submissionError;
+      tradeRuntimeOverrides: {
+        orderExecutor: {
+          executeDoomsdayClearanceSignals: async () => {
+            calls.push('submit');
+            throw submissionError;
+          },
         },
-        getStockPositions: async () => {
-          calls.push('getStockPositions');
-          throw new Error('UNKNOWN 不允许启动额外持仓请求');
+        accountService: {
+          getStockPositions: async () => {
+            calls.push('getStockPositions');
+            throw new Error('UNKNOWN 不允许启动额外持仓请求');
+          },
         },
       },
     });

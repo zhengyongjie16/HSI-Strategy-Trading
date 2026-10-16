@@ -1,3 +1,21 @@
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createMonitorConfigDouble,
+  createOrderMonitorDouble,
+  createOrderRecorderDouble,
+  createQuoteDouble,
+  createRateLimiterDouble,
+  createRiskCheckerDouble,
+  createTradeRuntimeDouble,
+  createDailyLossTrackerDouble,
+  createTerminationDouble,
+  createMonitorContextDouble,
+  createLiquidationCooldownTrackerDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
+  createWarrantDistanceInfoDouble,
+} from '../helpers/testDoubles.js';
+
 /**
  * auto-symbol-switch 集成测试
  *
@@ -15,22 +33,6 @@ import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index
 import { createAutoSearch } from '../../src/application/autoSearch/index.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 
-import {
-  createMarketDataClientDouble,
-  createMonitorConfigDouble,
-  createOrderMonitorDouble,
-  createOrderRecorderDouble,
-  createQuoteDouble,
-  createRateLimiterDouble,
-  createRiskCheckerDouble,
-  createTraderDouble,
-  createDailyLossTrackerDouble,
-  createTerminationDouble,
-  createMonitorContextDouble,
-  createLiquidationCooldownTrackerDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
-  createWarrantDistanceInfoDouble,
-} from '../helpers/testDoubles.js';
 import {
   captureSearchSeatAuthorization,
   captureSwitchSeatAuthorization,
@@ -107,27 +109,31 @@ describe('auto-symbol-switch integration', () => {
       symbol: string | null | undefined;
       quantity: number | null | undefined;
     }> = [];
-    const trader = createTraderDouble({
-      executeSignals: async (signals, callerAuthorization) => {
-        expect(callerAuthorization()).toBeTrue();
-        const signal = signals[0];
-        executedActions.push({
-          action: signal?.action,
-          symbol: signal?.symbol,
-          quantity: signal?.quantity,
-        });
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(callerAuthorization()).toBeTrue();
+          const signal = signals[0];
+          executedActions.push({
+            action: signal?.action,
+            symbol: signal?.symbol,
+            quantity: signal?.quantity,
+          });
 
-        if (signal?.action === 'SELLCALL') {
-          return { executedOrderIds: ['SELL-ORDER-1'], quoteFailures: [] };
-        }
+          if (signal?.action === 'SELLCALL') {
+            return { executedOrderIds: ['SELL-ORDER-1'], quoteFailures: [] };
+          }
 
-        return { executedOrderIds: ['BUY-ORDER-1'], quoteFailures: [] };
+          return { executedOrderIds: ['BUY-ORDER-1'], quoteFailures: [] };
+        },
       },
-      getPendingOrders: async () => [],
-      cancelOrder: async () => ({
-        kind: 'CANCEL_CONFIRMED',
-        relatedBuyOrderIds: null,
-      }),
+      cacheManager: { getPendingOrders: async () => [] },
+      orderMonitor: {
+        cancelOrder: async () => ({
+          kind: 'CANCEL_CONFIRMED',
+          relatedBuyOrderIds: null,
+        }),
+      },
     });
 
     const orderRecorder = createOrderRecorderDouble({
@@ -174,7 +180,10 @@ describe('auto-symbol-switch integration', () => {
         getQuotes: async (symbols) =>
           new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1', 100)])),
       }),
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker,
       candidateSearch,
@@ -369,14 +378,16 @@ describe('auto-symbol-switch integration', () => {
         new Set(['OLD_BULL.HK', 'NEW_BULL.HK']),
       );
       dailyLossTracker.publishRecalculation(prepared);
-      let boundTrader: ReturnType<typeof createTraderDouble> | null = null;
+      let boundTrader: ReturnType<typeof createTradeRuntimeDouble> | null = null;
       const settlement = createPostTradeConsistencyRuntime({
+        logger: createLoggerDouble(),
         snapshot,
         termination: createTerminationDouble(),
-        getTrader: () => {
-          if (boundTrader === null) throw new Error('trader must bind before settlement starts');
+        getProtectiveOrderReader: () => {
+          if (boundTrader === null)
+            throw new Error('tradeRuntime must bind before settlement starts');
 
-          return boundTrader;
+          return boundTrader.orderMonitor;
         },
         onPositionsCommitted: async (token) => {
           if (!snapshot.isCurrent(token, { account: false, positions: true }))
@@ -385,6 +396,7 @@ describe('auto-symbol-switch integration', () => {
         scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
       });
       const orderRecorder = native.createRecorder({
+        logger: createLoggerDouble(),
         rateLimiter,
         getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
         settlementRefreshNeedRecorder: settlement,
@@ -418,6 +430,7 @@ describe('auto-symbol-switch integration', () => {
       const trackedOrders: Array<{ orderId: string; side: string; quantity: number }> = [];
       const executionGate = { open: true };
       const orderExecutor = native.createExecutor({
+        logger: createLoggerDouble(),
         rateLimiter: createRateLimiterDouble(),
         marketDataClient,
         cacheManager: { clearCache: () => {} },
@@ -444,67 +457,71 @@ describe('auto-symbol-switch integration', () => {
       });
 
       const generatedTriggerTimes: number[] = [];
-      const trader = createTraderDouble({
-        executeSignals: async (signals, callerAuthorization) => {
-          expect(callerAuthorization()).toBeTrue();
-          for (const signal of signals) {
-            if (!signal.triggerTime) {
-              throw new Error('自动换标信号必须包含 triggerTime');
+      const tradeRuntime = createTradeRuntimeDouble({
+        orderExecutor: {
+          executeSignals: async (signals, callerAuthorization) => {
+            expect(callerAuthorization()).toBeTrue();
+            for (const signal of signals) {
+              if (!signal.triggerTime) {
+                throw new Error('自动换标信号必须包含 triggerTime');
+              }
+
+              generatedTriggerTimes.push(signal.triggerTime.getTime());
             }
 
-            generatedTriggerTimes.push(signal.triggerTime.getTime());
-          }
+            const result = await orderExecutor.executeSignals(signals, callerAuthorization);
+            if (signals[0]?.action === 'SELLCALL' && result.executedOrderIds[0] === 'MOCK-000001') {
+              const [observation] = await native.createQueryOrdersReader('MOCK-000001')();
+              if (
+                observation?.executedAmount !== '200' ||
+                observation.executionTimeMs !== fixedNowMs - 1000 ||
+                observation.updatedAtMs !== fixedNowMs - 500
+              )
+                throw new Error('expected independent SDK execution amount/time');
 
-          const result = await orderExecutor.executeSignals(signals, callerAuthorization);
-          if (signals[0]?.action === 'SELLCALL' && result.executedOrderIds[0] === 'MOCK-000001') {
-            const [observation] = await native.createQueryOrdersReader('MOCK-000001')();
-            if (
-              observation?.executedAmount !== '200' ||
-              observation.executionTimeMs !== fixedNowMs - 1000 ||
-              observation.updatedAtMs !== fixedNowMs - 500
-            )
-              throw new Error('expected independent SDK execution amount/time');
-
-            native.setStockPositions([]);
-            orderRecorder.commitExecutionFact(
-              {
-                brokerOrderId: observation.orderId,
-                symbol: observation.symbol,
-                side: 'SELL',
-                cumulativeQuantity: observation.executedQuantity,
-                cumulativeAmount: observation.executedAmount,
-                executionTimeMs: observation.executionTimeMs,
-                updatedAtMs: observation.updatedAtMs,
-                phase: 'TERMINAL',
-              },
-              true,
-              [],
-              () =>
-                dailyLossTracker.recordCumulativeExecution({
-                  factStage: 'TERMINAL',
-                  direction: 'LONG',
+              native.setStockPositions([]);
+              orderRecorder.commitExecutionFact(
+                {
+                  brokerOrderId: observation.orderId,
                   symbol: observation.symbol,
                   side: 'SELL',
-                  executedPrice: '1',
-                  executedQuantity: 200,
-                  executedTimeMs: fixedNowMs - 1000,
-                  orderUpdatedAtMs: fixedNowMs - 500,
-                  orderId: observation.orderId,
-                }).admission,
-            );
-            expect(orderRecorder.getSellRecordByOrderId('MOCK-000001')?.costAmount).toBe('200');
-          }
+                  cumulativeQuantity: observation.executedQuantity,
+                  cumulativeAmount: observation.executedAmount,
+                  executionTimeMs: observation.executionTimeMs,
+                  updatedAtMs: observation.updatedAtMs,
+                  phase: 'TERMINAL',
+                },
+                true,
+                [],
+                () =>
+                  dailyLossTracker.recordCumulativeExecution({
+                    factStage: 'TERMINAL',
+                    direction: 'LONG',
+                    symbol: observation.symbol,
+                    side: 'SELL',
+                    executedPrice: '1',
+                    executedQuantity: 200,
+                    executedTimeMs: fixedNowMs - 1000,
+                    orderUpdatedAtMs: fixedNowMs - 500,
+                    orderId: observation.orderId,
+                  }).admission,
+              );
+              expect(orderRecorder.getSellRecordByOrderId('MOCK-000001')?.costAmount).toBe('200');
+            }
 
-          return result;
+            return result;
+          },
         },
-        getPendingOrders: async () => [],
-        cancelOrder: async () => ({
-          kind: 'CANCEL_CONFIRMED',
-          relatedBuyOrderIds: null,
-        }),
+        cacheManager: { getPendingOrders: async () => [] },
+        orderMonitor: {
+          cancelOrder: async () => ({
+            kind: 'CANCEL_CONFIRMED',
+            relatedBuyOrderIds: null,
+          }),
+        },
       });
 
-      boundTrader = trader;
+      boundTrader = tradeRuntime;
       const candidateSearch = {
         resolveDistanceRange: (direction: 'LONG' | 'SHORT') =>
           monitorConfig.autoSearchConfig[
@@ -517,7 +534,10 @@ describe('auto-symbol-switch integration', () => {
         monitorConfig,
         symbolRegistry,
         marketDataClient,
-        trader,
+        cacheManager: tradeRuntime.cacheManager,
+        orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+        orderMonitor: tradeRuntime.orderMonitor,
+        orderExecutor: tradeRuntime.orderExecutor,
         orderRecorder,
         riskChecker,
         candidateSearch,
@@ -705,9 +725,7 @@ describe('auto-symbol-switch integration', () => {
         getQuotes: async (symbols) =>
           new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1', 100)])),
       }),
-      trader: createTraderDouble({
-        getPendingOrders: async () => [],
-      }),
+      ...createTradeRuntimeDouble({ cacheManager: { getPendingOrders: async () => [] } }),
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -803,9 +821,7 @@ describe('auto-symbol-switch integration', () => {
         getQuotes: async (symbols) =>
           new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1', 100)])),
       }),
-      trader: createTraderDouble({
-        getPendingOrders: async () => [],
-      }),
+      ...createTradeRuntimeDouble({ cacheManager: { getPendingOrders: async () => [] } }),
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -903,9 +919,7 @@ describe('auto-symbol-switch integration', () => {
         getQuotes: async (symbols) =>
           new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1', 100)])),
       }),
-      trader: createTraderDouble({
-        getPendingOrders: async () => [],
-      }),
+      ...createTradeRuntimeDouble({ cacheManager: { getPendingOrders: async () => [] } }),
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>

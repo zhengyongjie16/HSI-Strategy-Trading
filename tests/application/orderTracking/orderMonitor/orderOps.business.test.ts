@@ -1,3 +1,11 @@
+import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
+
+import {
+  createLoggerDouble,
+  createOrderRecorderDouble,
+  createTradeMutationPortDouble,
+} from '../../../helpers/testDoubles.js';
+
 /**
  * orderMonitor/orderOps 业务测试
  *
@@ -8,8 +16,8 @@
 
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
-import { createRateLimiter as createTraderRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
+import { createTerminationRuntime } from '../../../../src/runtime/lifecycle/terminationRuntime.js';
+import { createRateLimiter as createTradeRuntimeRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
 import { createOrderOps as createProductionOrderOps } from '../../../../src/application/orderTracking/orderMonitor/orderOps.js';
 import type {
   OrderMonitorRuntimeStore,
@@ -22,17 +30,14 @@ import type {
 import { ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS } from '../../../../src/constants/index.js';
 import { normalizeTerminalStateSnapshot } from '../../../../src/domain/order/orderFactMerge.js';
 import type { OrderMonitorTrackedOrder } from '../../../../src/domain/order/types.js';
-import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/services.js';
+import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/rateLimit.js';
 import type {
   TradeMutationPort,
   TradeReplaceCommand,
 } from '../../../../src/types/tradeMutationPorts.js';
-import type { OrderStateCheckResult } from '../../../../src/types/trader.js';
+import type { OrderStateCheckResult } from '../../../../src/types/orderReadMetadata.js';
 import { isExternalApiRequestError } from '../../../../src/utils/apiFailure/index.js';
-import {
-  createOrderRecorderDouble,
-  createTradeMutationPortDouble,
-} from '../../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../recorder/executionFixture.js';
 
@@ -231,6 +236,8 @@ function createReplaceTempBlockedHarness(): {
   };
   let stateCheckCalls = 0;
   const orderOps = createOrderOps({
+    wait: wait,
+    logger: createLoggerDouble(),
     termination: { isTerminated: () => false, reportFatalError: () => {} },
     runtime,
     monitorConfig: TEST_MONITOR_CONFIG,
@@ -311,6 +318,8 @@ describe('orderMonitor orderOps', () => {
       },
     };
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -389,6 +398,8 @@ describe('orderMonitor orderOps', () => {
       },
     };
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -434,7 +445,10 @@ describe('orderMonitor orderOps', () => {
   it('rechecks doomsday cancellation authorization after the queued mutation permit becomes available', async () => {
     const runtime = createRuntimeStore();
     const mutationPort = createRecordingMutationPort();
-    const rateLimiter = createTraderRateLimiter({
+    const rateLimiter = createTradeRuntimeRateLimiter({
+      logger: createLoggerDouble(),
+      wait: wait,
+      nowMonotonicMs: nowMonotonicMs,
       config: { maxCalls: 30, windowMs: 30_000 },
     });
     const firstMutationEntered = createDeferred();
@@ -446,6 +460,8 @@ describe('orderMonitor orderOps', () => {
     await firstMutationEntered.promise;
 
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -489,6 +505,8 @@ describe('orderMonitor orderOps', () => {
     const injectedNowMs = Date.parse('2031-01-02T03:04:05.000Z');
     const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
     const deps = {
+      logger: createLoggerDouble(),
+      wait: wait,
       now: () => new Date(injectedNowMs),
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -544,6 +562,8 @@ describe('orderMonitor orderOps', () => {
     runtime.runtimeState = 'BOOTSTRAPPING';
     const routeWakeups: Array<{ readonly symbol: string; readonly kind: string }> = [];
     const deps = {
+      logger: createLoggerDouble(),
+      wait: wait,
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       tradeMutationPort: createTradeMutationPortDouble(),
@@ -588,6 +608,8 @@ describe('orderMonitor orderOps', () => {
   it('trackOrder 在 monitorSymbol 不匹配唯一配置时立即失败', () => {
     const runtime = createRuntimeStore();
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -638,6 +660,8 @@ describe('orderMonitor orderOps', () => {
       };
     };
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -683,6 +707,8 @@ describe('orderMonitor orderOps', () => {
       };
     };
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -730,6 +756,8 @@ describe('orderMonitor orderOps', () => {
       };
     };
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -771,6 +799,8 @@ describe('orderMonitor orderOps', () => {
       };
     };
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -822,6 +852,8 @@ describe('orderMonitor orderOps', () => {
       };
     };
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -880,6 +912,8 @@ describe('orderMonitor orderOps', () => {
       };
     };
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -942,6 +976,8 @@ describe('orderMonitor orderOps', () => {
       };
     };
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -1004,6 +1040,8 @@ describe('orderMonitor orderOps', () => {
       };
     };
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -1064,6 +1102,8 @@ describe('orderMonitor orderOps', () => {
       };
     };
     const deps = {
+      logger: createLoggerDouble(),
+      wait: wait,
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       tradeMutationPort: mutationPort,
@@ -1136,6 +1176,8 @@ describe('orderMonitor orderOps', () => {
       };
     };
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -1215,6 +1257,8 @@ describe('orderMonitor orderOps', () => {
       }>
     > = [];
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -1307,6 +1351,8 @@ describe('orderMonitor orderOps', () => {
     runtime.runtimeState = 'ACTIVE';
     runtime.running = true;
     const orderOps = native.createOperations({
+      logger: createLoggerDouble(),
+      wait: wait,
       termination: f.termination,
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -1395,6 +1441,8 @@ describe('orderMonitor orderOps', () => {
       };
       let cumulativeExecutionCount = 0;
       const orderOps = createOrderOps({
+        wait: wait,
+        logger: createLoggerDouble(),
         termination: { isTerminated: () => false, reportFatalError: () => {} },
         runtime,
         monitorConfig: TEST_MONITOR_CONFIG,
@@ -1487,6 +1535,8 @@ describe('orderMonitor orderOps', () => {
     };
     let cumulativeExecutionCount = 0;
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -1597,6 +1647,8 @@ describe('orderMonitor orderOps', () => {
       const partialFills: number[] = [];
       let durableProgressCalls = 0;
       const orderOps = createOrderOps({
+        wait: wait,
+        logger: createLoggerDouble(),
         termination: { isTerminated: () => false, reportFatalError: () => {} },
         runtime,
         monitorConfig: TEST_MONITOR_CONFIG,
@@ -1687,6 +1739,8 @@ describe('orderMonitor orderOps', () => {
     const persistenceError = new Error('protective OPEN progress persistence failed');
     const partialFills: number[] = [];
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -1774,6 +1828,8 @@ describe('orderMonitor orderOps', () => {
       Readonly<{ orderId: string; executedQuantity: number | null }>
     > = [];
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -1861,6 +1917,8 @@ describe('orderMonitor orderOps', () => {
       Readonly<{ orderId: string; executedQuantity: number | null }>
     > = [];
     const orderOps = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
@@ -2073,6 +2131,8 @@ describe('orderMonitor orderOps', () => {
       };
       let durableProgressCalls = 0;
       const orderOps = createOrderOps({
+        wait: wait,
+        logger: createLoggerDouble(),
         termination: { isTerminated: () => false, reportFatalError: () => {} },
         runtime,
         monitorConfig: TEST_MONITOR_CONFIG,
@@ -2171,6 +2231,8 @@ describe('orderMonitor orderOps', () => {
       };
 
       const orderOps = createOrderOps({
+        wait: wait,
+        logger: createLoggerDouble(),
         termination: { isTerminated: () => false, reportFatalError: () => {} },
         runtime,
         monitorConfig: TEST_MONITOR_CONFIG,
@@ -2305,6 +2367,8 @@ function createStateCheckRawFactHarness(params: {
   const cumulativeExecutionQuantities: number[] = [];
   const routeWakeups: Array<Readonly<{ symbol: string; kind: string }>> = [];
   const orderOps = createOrderOps({
+    wait: wait,
+    logger: createLoggerDouble(),
     termination: { isTerminated: () => false, reportFatalError: () => {} },
     runtime,
     monitorConfig: TEST_MONITOR_CONFIG,
@@ -2708,6 +2772,8 @@ describe('orderOps neutral mutation boundary', () => {
     let queryCalls = 0;
     let cacheClears = 0;
     const ops = createOrderOps({
+      wait: wait,
+      logger: createLoggerDouble(),
       runtime,
       monitorConfig: TEST_MONITOR_CONFIG,
       tradeMutationPort: port,

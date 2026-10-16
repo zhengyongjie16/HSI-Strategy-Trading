@@ -1,15 +1,14 @@
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+
 /**
  * 外部 API 失败测试工厂
  *
  * 通过生产的重试边界制造已登记的 ExternalApiRequestError，供测试验证
  * WeakSet 身份语义，而不暴露生产内部构造函数。
  */
-import {
-  isExternalApiRequestError,
-  wrapExternalApiRequest,
-} from '../../src/utils/apiFailure/index.js';
+import { isExternalApiRequestError } from '../../src/utils/apiFailure/index.js';
 import { formatError } from '../../src/utils/error/index.js';
-import type { ExternalApiRequestError } from '../../src/utils/apiFailure/types.js';
+import type { ExternalApiRequestError } from '../../src/types/apiFailure.js';
 
 type CreateExternalApiRequestErrorParams = Readonly<{
   operation: string;

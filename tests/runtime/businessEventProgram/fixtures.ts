@@ -1,10 +1,13 @@
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
+import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
+
 /** D-event 局部离线 fixture：真实 registry、trade queues、termination，无旧策略替身。 */
 import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import {
   createBuyTaskQueue,
   createSellTaskQueue,
 } from '../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createBusinessEventProgram } from '../../../src/runtime/businessEventProgram/index.js';
 import type { MonitorConfig } from '../../../src/types/config.js';
 import type { CandlestickUpdatedEvent } from '../../../src/types/marketPorts.js';
@@ -84,13 +87,12 @@ export function createEventHarness(options: EventHarnessOptions = {}): EventHarn
       ],
     },
   };
-  const lastState: BusinessEventProgramDeps['lastState'] = {
-    isTradingEnabled: true,
-    canTrade: true,
-    isHalfDay: false,
-    currentDayKey: '2026-07-15',
-    openProtectionActive: false,
-  };
+  const stateFixtures: RuntimeStateFixtures = createRuntimeStateFixtures({
+    tradingTimeState: { canTrade: true, isHalfDay: false, openProtectionActive: false },
+    lifecycleState: { isTradingEnabled: true, currentDayKey: '2026-07-15' },
+    tradingCalendarState: {},
+    quoteSubscriptionState: {},
+  });
   const buyTaskQueue = (options.createBuyTaskQueue ?? createBuyTaskQueue)();
   const sellTaskQueue = (options.createSellTaskQueue ?? createSellTaskQueue)();
   const symbolRegistry = (options.createSymbolRegistry ?? createSymbolRegistry)(monitorConfig());
@@ -131,7 +133,7 @@ export function createEventHarness(options: EventHarnessOptions = {}): EventHarn
   const stopProducers: Array<() => void> = [];
   const termination = (options.createTerminationRuntime ?? createTerminationRuntime)({
     closeTradingGate: () => {
-      lastState.isTradingEnabled = false;
+      stateFixtures.lifecycleState.isTradingEnabled = false;
     },
     closeProducerAdmission: () => {
       buyTaskQueue.close();
@@ -178,7 +180,7 @@ export function createEventHarness(options: EventHarnessOptions = {}): EventHarn
       longSymbolName: '牛',
       shortSymbolName: '熊',
     },
-    lastState,
+    ...stateFixtures,
     tradingConfig: { global: { doomsdayProtection: false } },
     buyTaskQueue,
     sellTaskQueue,
@@ -193,7 +195,7 @@ export function createEventHarness(options: EventHarnessOptions = {}): EventHarn
   stopProducers.push(program.stop);
   return {
     mutable,
-    lastState,
+    stateFixtures,
     buyTaskQueue,
     sellTaskQueue,
     symbolRegistry,

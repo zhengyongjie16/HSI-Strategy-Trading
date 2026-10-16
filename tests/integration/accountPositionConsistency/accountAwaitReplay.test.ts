@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../../helpers/testDoubles.js';
+
 /**
  * P1 账户等待期间同一订单 owner 的中性事实重放。
  * 真实 snapshot/recorder/risk 共享事实；这里只调用已稳定的事实入口，
@@ -16,6 +18,7 @@ import { createOfflineBrokerPort } from './offlinePorts.js';
 it('does not double a projected BUY during a real account wait and preserves total-positive available-zero truth', async () => {
   const io = createOfflineBrokerPort();
   const recorder = createOrderRecorder({
+    logger: createLoggerDouble(),
     orderSnapshotReadPort: io.broker,
     getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,

@@ -4,10 +4,8 @@
  */
 import { isStaleCrossDaySignal, isLiquidationSignal } from '../../domain/order/executionPolicy.js';
 import { ORDER_QUOTE_RETRY } from '../../constants/index.js';
-import {
-  resolveNextQuoteRetry,
-  resolveQuoteReadinessForRequirement,
-} from '../../utils/quoteRetry/index.js';
+import { resolveNextQuoteRetry } from '../quoteRetry.js';
+import { resolveQuoteReadinessForRequirement } from '../../domain/order/quoteReadiness.js';
 import {
   isExternalApiRequestError,
   isUnconfirmedOrderSubmissionError,
@@ -15,11 +13,12 @@ import {
 import { isSettlementReadinessAbortError } from '../postTradeSettlement/readinessGate.js';
 import { formatError } from '../../utils/error/index.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
-import { isSeatActive } from '../../utils/seat/guards.js';
 import {
+  isSeatActive,
   validateSignalSeat,
   describeSignalSeatValidationFailure,
 } from '../../domain/seat/seatPolicy.js';
+
 import { processSellSignals } from './quantityResolver.js';
 import type { ExecutableSellSignal } from '../../types/signal.js';
 import type { SettlementReadinessReceipt } from '../../types/settlement.js';
@@ -52,7 +51,7 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
     config,
     symbolRegistry,
     orderRecorder,
-    trader,
+    orderExecutor,
     marketDataClient,
     snapshot,
     settlement,
@@ -257,7 +256,10 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
 
         if (!isSelectionCurrent()) continue;
 
-        const executionResult = await trader.executeSignals([firstSignal], isSelectionCurrent);
+        const executionResult = await orderExecutor.executeSignals(
+          [firstSignal],
+          isSelectionCurrent,
+        );
         const quoteFailures = executionResult.quoteFailures;
         if (
           !Array.isArray(executionResult.executedOrderIds) ||

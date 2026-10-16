@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../helpers/testDoubles.js';
+
 /**
  * smartCloseTimeout 配置业务测试
  *
@@ -21,11 +23,13 @@ function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS
 describe('smart close timeout config', () => {
   it('解析空值/null/0/正整数', () => {
     const missingConfig = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv(),
     });
     expect(missingConfig.monitor.smartCloseTimeoutMinutes).toBeNull();
 
     const emptyConfig = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({
         SMART_CLOSE_TIMEOUT_MINUTES: '',
       }),
@@ -33,6 +37,7 @@ describe('smart close timeout config', () => {
     expect(emptyConfig.monitor.smartCloseTimeoutMinutes).toBeNull();
 
     const nullConfig = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({
         SMART_CLOSE_TIMEOUT_MINUTES: 'null',
       }),
@@ -40,6 +45,7 @@ describe('smart close timeout config', () => {
     expect(nullConfig.monitor.smartCloseTimeoutMinutes).toBeNull();
 
     const zeroConfig = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({
         SMART_CLOSE_TIMEOUT_MINUTES: '0',
       }),
@@ -47,6 +53,7 @@ describe('smart close timeout config', () => {
     expect(zeroConfig.monitor.smartCloseTimeoutMinutes).toBe(0);
 
     const validConfig = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({
         SMART_CLOSE_TIMEOUT_MINUTES: '30',
       }),
@@ -68,6 +75,7 @@ describe('smart close timeout config', () => {
       let caughtError: unknown = null;
       try {
         await validateAllConfig({
+          logger: createLoggerDouble(),
           env: createBaseEnv({
             SMART_CLOSE_TIMEOUT_MINUTES: invalidValue,
           }),

@@ -1,3 +1,8 @@
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../src/infrastructure/time/index.js';
+import type { TradeRuntime } from '../../src/app/runtime/types.js';
+
 /**
  * 单策略执行集成：补齐真实保护清仓、订单终态、PostTrade freshness 与延迟卖出之间的交接。
  * 仅使用离线 SDK、行情源和外围风险替身，不启动账户或应用入口。
@@ -22,7 +27,6 @@ import {
   createSellTaskQueue,
 } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import { createStrategyEmitter } from '../../src/runtime/businessEventProgram/emissionAdapter.js';
-import type { Trader } from '../../src/types/services.js';
 import type { ExecutableSignal } from '../../src/types/signal.js';
 import { marketContext } from '../domain/strategy/intradayRegression/fixtures.js';
 import { captureSwitchSeatAuthorization } from '../helpers/seatTestUtils.js';
@@ -38,9 +42,9 @@ import {
   createRateLimiterDouble,
   createRiskCheckerDouble,
   createTerminationDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
-import { createLastState, waitUntil } from '../main/asyncProgram/utils.js';
+import { createRuntimeStates, waitUntil } from '../helpers/asyncProgram.js';
 import { createHarness, prepareFixture } from '../runtime/strategy/intradayRegression/fixtures.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
@@ -95,7 +99,9 @@ async function createExecutionFixture(smartCloseEnabled = false) {
       costPrice: '2',
     },
   ]);
-  const callerAuthorizations: Array<Parameters<Trader['executeSignals']>[1]> = [];
+  const callerAuthorizations: Array<
+    Parameters<TradeRuntime['orderExecutor']['executeSignals']>[1]
+  > = [];
   let submissions = 0;
   native.setSubmitBehavior(async () => {
     const originalAuthorization = callerAuthorizations.at(-1);
@@ -137,16 +143,17 @@ async function createExecutionFixture(smartCloseEnabled = false) {
   }).result;
   if (committed.status !== 'COMMITTED') throw new Error('expected paired baseline');
 
-  const lastState = createLastState();
+  const stateFixtures = createRuntimeStates();
   const dailyLossTracker = createDailyLossTrackerDouble();
-  let boundTrader: Trader | null = null;
+  let boundTrader: TradeRuntime | null = null;
   const postTrade = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     snapshot,
     termination: createTerminationDouble(),
-    getTrader: () => {
+    getProtectiveOrderReader: () => {
       if (boundTrader === null) throw new Error('Trader 尚未装配');
 
-      return boundTrader;
+      return boundTrader.orderMonitor;
     },
     scheduler: h.deps.scheduler,
     onPositionsCommitted: async (token) => {
@@ -155,6 +162,7 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     },
   });
   const orderRecorder = native.createRecorder({
+    logger: createLoggerDouble(),
     rateLimiter,
     getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: postTrade,
@@ -210,6 +218,10 @@ async function createExecutionFixture(smartCloseEnabled = false) {
   const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTrackerDouble();
   const cacheManager = { clearCache: () => {}, getPendingOrders: async () => [] };
   const orderMonitor = native.createMonitor({
+    logger: createLoggerDouble(),
+    wait: wait,
+    requestExternalApi: wrapExternalApiRequest,
+    scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
     rateLimiter,
     cacheManager,
     marketDataClient,
@@ -221,13 +233,16 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     postTradeConsistencyRuntime: postTrade,
     tradingConfig,
     symbolRegistry: monitorContext.symbolRegistry,
-    isContinuousTradingAllowed: () => lastState.canTrade === true && lastState.isTradingEnabled,
+    isContinuousTradingAllowed: () =>
+      stateFixtures.tradingTimeState.canTrade === true &&
+      stateFixtures.lifecycleState.isTradingEnabled,
     now: h.deps.clock.now,
     scheduleTimer: h.deps.scheduler.scheduleTimer,
     clearTimer: h.deps.scheduler.clearTimer,
     termination,
   });
   const executor = native.createExecutor({
+    logger: createLoggerDouble(),
     rateLimiter,
     cacheManager,
     marketDataClient,
@@ -236,8 +251,8 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     unrealizedLossBuyGate: riskChecker,
     tradingConfig,
     symbolRegistry: monitorContext.symbolRegistry,
-    isExecutionAllowed: () => lastState.isTradingEnabled,
-    isContinuousTradingAllowed: () => lastState.canTrade === true,
+    isExecutionAllowed: () => stateFixtures.lifecycleState.isTradingEnabled,
+    isContinuousTradingAllowed: () => stateFixtures.tradingTimeState.canTrade === true,
     now: h.deps.clock.now,
     readCurrentTradingDayInfo: () => ({
       dateKey: '2026-02-16',
@@ -245,27 +260,33 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     }),
   });
   const executedSignals: ExecutableSignal[] = [];
-  const trader = createTraderDouble({
+  const tradeRuntime = createTradeRuntimeDouble({
     ...executor,
     orderRecorder,
-    executeSignals: async (signals, callerAuthorization) => {
-      executedSignals.push(...signals);
-      callerAuthorizations.push(callerAuthorization);
-      expect(callerAuthorization()).toBeTrue();
-      return executor.executeSignals(signals, callerAuthorization);
+    orderExecutor: {
+      executeSignals: async (signals, callerAuthorization) => {
+        executedSignals.push(...signals);
+        callerAuthorizations.push(callerAuthorization);
+        expect(callerAuthorization()).toBeTrue();
+        return executor.executeSignals(signals, callerAuthorization);
+      },
+      executeDoomsdayClearanceSignals: async (signals, callerAuthorization) => {
+        callerAuthorizations.push(callerAuthorization);
+        return executor.executeDoomsdayClearanceSignals(signals, callerAuthorization);
+      },
     },
-    executeDoomsdayClearanceSignals: async (signals, callerAuthorization) => {
-      callerAuthorizations.push(callerAuthorization);
-      return executor.executeDoomsdayClearanceSignals(signals, callerAuthorization);
+    accountService: {
+      getStockPositions: async () => {
+        positionsRequested = true;
+        await positionsRelease.promise;
+        return accountService.getStockPositions();
+      },
     },
-    getStockPositions: async () => {
-      positionsRequested = true;
-      await positionsRelease.promise;
-      return accountService.getStockPositions();
+    orderMonitor: {
+      hasPendingProtectiveLiquidationOrders: orderMonitor.hasPendingProtectiveLiquidationOrders,
     },
-    hasPendingProtectiveLiquidationOrders: orderMonitor.hasPendingProtectiveLiquidationOrders,
   });
-  boundTrader = trader;
+  boundTrader = tradeRuntime;
   postTrade.bindBusinessDeps({
     monitorContext,
     dailyLossTracker,
@@ -280,24 +301,26 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     clock: h.deps.clock,
     config,
     symbolRegistry,
-    orderRecorder,
-    trader,
+
+    orderRecorder: tradeRuntime.orderRecorder,
+    orderExecutor: tradeRuntime.orderExecutor,
     marketDataClient,
     snapshot,
     settlement: postTrade,
     getTradingCalendar: () => ({
-      isHalfDay: lastState.isHalfDay ?? false,
-      tradingCalendarSnapshot: lastState.tradingCalendarSnapshot,
+      isHalfDay: stateFixtures.tradingTimeState.isHalfDay ?? false,
+      tradingCalendarSnapshot: stateFixtures.tradingCalendarState.tradingCalendarSnapshot,
     }),
-    getCanProcessTask: () => lastState.isTradingEnabled,
+    getCanProcessTask: () => stateFixtures.lifecycleState.isTradingEnabled,
     termination,
   });
   const sellProcessor = createSellProcessor({
+    logger: createLoggerDouble(),
     scheduler: h.deps.scheduler,
     termination,
     taskQueue: sellTaskQueue,
     workflow: sellWorkflow,
-    getCanProcessTask: () => lastState.isTradingEnabled,
+    getCanProcessTask: () => stateFixtures.lifecycleState.isTradingEnabled,
   });
   await orderMonitor.initialize();
   await orderMonitor.recoverOrderTrackingFromSnapshot([native.queryObservation]);
@@ -335,9 +358,9 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     orderMonitor,
     orderRecorder,
     monitorContext,
-    lastState,
+    ...stateFixtures,
     postTrade,
-    trader,
+    tradeRuntime,
     sellProcessor,
     buyTaskQueue,
     sellTaskQueue,
@@ -365,9 +388,8 @@ describe('single active strategy execution integration', () => {
       const emitter = createStrategyEmitter(
         {
           clock: f.h.deps.clock,
-          marketDataClient: f.marketDataClient,
-          monitorContext: f.monitorContext,
-          lastState: f.lastState,
+
+          ...f,
           tradingConfig: f.tradingConfig,
           buyTaskQueue: f.buyTaskQueue,
           sellTaskQueue: f.sellTaskQueue,
@@ -400,8 +422,8 @@ describe('single active strategy execution integration', () => {
         'LONG',
       );
       const protectionOrigin = () =>
-        f.lastState.isTradingEnabled &&
-        f.lastState.canTrade === true &&
+        f.lifecycleState.isTradingEnabled &&
+        f.tradingTimeState.canTrade === true &&
         f.postTrade.isCurrent(f.baselineReceipt) &&
         f.snapshot.isCurrent(f.baselineReceipt.snapshotToken, {
           account: false,
@@ -418,7 +440,7 @@ describe('single active strategy execution integration', () => {
         seatVersion: f.monitorContext.symbolRegistry.getSeatVersion('LONG'),
         quote: createQuoteDouble('BULL.HK', '1', 100),
         riskChecker: f.riskChecker,
-        trader: f.trader,
+        orderExecutor: f.tradeRuntime.orderExecutor,
         orderRecorder: f.orderRecorder,
         dailyLossTracker: f.dailyLossTracker,
         isCurrent: protectionOrigin,
@@ -567,9 +589,8 @@ describe('execution authority at buy and clearance boundaries', () => {
       const emitter = createStrategyEmitter(
         {
           clock: f.h.deps.clock,
-          marketDataClient: f.marketDataClient,
-          monitorContext: f.monitorContext,
-          lastState: f.lastState,
+
+          ...f,
           tradingConfig: f.tradingConfig,
           buyTaskQueue: f.buyTaskQueue,
           sellTaskQueue: f.sellTaskQueue,
@@ -615,7 +636,7 @@ describe('execution authority at buy and clearance boundaries', () => {
       ]);
       const clearanceReceipt = await f.postTrade.waitForFresh();
       const originalSeat = f.monitorContext.symbolRegistry.getSeatState('LONG');
-      const result = await f.trader.executeDoomsdayClearanceSignals(
+      const result = await f.tradeRuntime.orderExecutor.executeDoomsdayClearanceSignals(
         [
           {
             symbol: 'BULL.HK',
@@ -626,7 +647,7 @@ describe('execution authority at buy and clearance boundaries', () => {
           },
         ],
         () =>
-          f.lastState.isTradingEnabled &&
+          f.lifecycleState.isTradingEnabled &&
           f.postTrade.isCurrent(clearanceReceipt) &&
           f.snapshot.isCurrent(clearanceReceipt.snapshotToken, {
             account: false,
@@ -661,15 +682,19 @@ describe('execution authority at buy and clearance boundaries', () => {
       const f = await createExecutionFixture();
       let quoteRequested = false;
       const processor = createBuyProcessor({
+        logger: createLoggerDouble(),
         taskQueue: f.buyTaskQueue,
         workflow: createOrdinaryBuyWorkflow({
+          accountService: f.tradeRuntime.accountService,
+          orderExecutor: f.tradeRuntime.orderExecutor,
+          tradeFrequencyReader: f.tradeRuntime.orderExecutor,
           logger: createLoggerDouble(),
           config: f.monitorContext.config,
           doomsdayProtection: f.tradingConfig.global.doomsdayProtection,
           symbolRegistry: f.monitorContext.symbolRegistry,
-          orderRecorder: f.orderRecorder,
+
           riskChecker: f.riskChecker,
-          trader: f.trader,
+          orderRecorder: f.tradeRuntime.orderRecorder,
           marketDataClient: createMarketDataClientDouble({
             getQuotes: async () => {
               quoteRequested = true;
@@ -695,10 +720,12 @@ describe('execution authority at buy and clearance boundaries', () => {
           getIsHalfDay: () => false,
           now: f.h.deps.clock.now,
           snapshot: f.snapshot,
-          getCanProcessTask: () => f.lastState.isTradingEnabled && f.lastState.canTrade === true,
+          getCanProcessTask: () =>
+            f.lifecycleState.isTradingEnabled && f.tradingTimeState.canTrade === true,
           termination: f.termination,
         }),
-        getCanProcessTask: () => f.lastState.isTradingEnabled && f.lastState.canTrade === true,
+        getCanProcessTask: () =>
+          f.lifecycleState.isTradingEnabled && f.tradingTimeState.canTrade === true,
         termination: f.termination,
       });
       try {
@@ -742,7 +769,9 @@ describe('execution authority at buy and clearance boundaries', () => {
     const f = await createExecutionFixture();
     try {
       const invalidContext = {
-        trader: f.trader,
+        accountService: f.tradeRuntime.accountService,
+        tradeFrequencyReader: f.tradeRuntime.orderExecutor,
+
         riskChecker: f.riskChecker,
         orderRecorder: f.orderRecorder,
         longQuote: createQuoteDouble('BULL.HK', '1', 100),

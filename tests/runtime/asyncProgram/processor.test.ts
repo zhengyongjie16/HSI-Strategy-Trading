@@ -1,9 +1,10 @@
+import { createLoggerDouble, createSignalDouble } from '../../helpers/testDoubles.js';
+
 /** FIFO processor 终态与可恢复 stop/restart；不会重新打开最终 admission。 */
 import { describe, expect, test } from 'bun:test';
 import { createBaseProcessor } from '../../../src/runtime/asyncProgram/processor.js';
 import { createBuyTaskQueue } from '../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { createSignalDouble } from '../../helpers/testDoubles.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 
 /** 异步处理器最终终态与可恢复 stop 的离线回归。 */
 
@@ -29,6 +30,7 @@ describe('processor termination', () => {
       onSecondaryError: () => {},
     });
     const processor = createBaseProcessor({
+      logger: createLoggerDouble(),
       loggerPrefix: 'test',
       taskQueue: {
         ...queue,

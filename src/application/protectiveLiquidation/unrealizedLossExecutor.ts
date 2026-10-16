@@ -15,7 +15,7 @@ import {
 import type {
   DirectionalUnrealizedLossMonitorContext,
   UnrealizedLossMonitor,
-} from '../../types/risk.js';
+} from '../../types/unrealizedLoss.js';
 import type { ProtectiveLiquidationSellSignal } from '../../types/signal.js';
 import type { UnrealizedLossMonitorDeps } from './types.js';
 
@@ -43,7 +43,7 @@ export const createUnrealizedLossMonitor = (
       isLong,
       seatVersion,
       riskChecker,
-      trader,
+      orderExecutor,
       orderRecorder,
       dailyLossTracker,
       quote,
@@ -78,7 +78,10 @@ export const createUnrealizedLossMonitor = (
     let executedOrderCount: number;
     try {
       // 将同一captured epoch/receipt/seat/position授权直通executor最终broker边界。
-      const executionResult = await trader.executeSignals([liquidationSignal], context.isCurrent);
+      const executionResult = await orderExecutor.executeSignals(
+        [liquidationSignal],
+        context.isCurrent,
+      );
       executedOrderCount = executionResult.executedOrderIds.length;
     } catch (error) {
       // UNKNOWN submit 与内部错误即使旧授权已失效也必须穿透，不假定远端未发生。

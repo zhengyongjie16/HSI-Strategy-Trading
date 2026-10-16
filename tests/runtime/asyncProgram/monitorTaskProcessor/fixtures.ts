@@ -1,8 +1,10 @@
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
+
 /** 监控 worker 测试装配：真实 application 激活 owner 与既有周期换标 owner，共享原快照和席位身份。 */
 import { createMonitorTaskProcessor } from '../../../../src/runtime/asyncProgram/monitorTaskProcessor/index.js';
 import { createSeatActivationFixture } from '../../../application/seatActivation/fixtures.js';
 import { createPeriodicSwitchTaskHandler } from '../../../../src/application/seatSwitch/periodicSwitchTask.js';
-import { logger } from '../../../../src/utils/logger/index.js';
+import { logger } from '../../../../src/infrastructure/logger/index.js';
 import type { MonitorTaskProcessor } from '../../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type { MonitorTaskRuntimeFixtureDeps } from './types.js';
 
@@ -25,8 +27,10 @@ export function createMonitorTaskRuntimeFixture(
     seatActivation: createSeatActivationFixture(deps),
     handlePeriodicSwitchTask: periodicSwitchTaskHandler.handlePeriodicSwitchTask,
     onPeriodicSwitchTaskResult: periodicSwitchTaskHandler.onPeriodicSwitchTaskResult,
-    logger,
-    ...(deps.getCanProcessTask === undefined ? {} : { getCanProcessTask: deps.getCanProcessTask }),
+
+    ...(deps.getCanProcessTask === undefined
+      ? { logger: createLoggerDouble() }
+      : { logger: createLoggerDouble(), getCanProcessTask: deps.getCanProcessTask }),
     termination: deps.termination,
   });
 }

@@ -1,3 +1,8 @@
+import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
+import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
+
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
+
 /** 实际private同ctx pending adapter→生产cache，原TTL/刷新/过滤及primitive校验不替换。 */
 
 import { expect, test } from 'bun:test';
@@ -47,8 +52,14 @@ test('actual native pending BUY/SELL status/type map once; original symbol filte
   let now = 1000;
   let throttles = 0;
   const reader = native.ports.createPendingOrdersReader();
-  const originalLimiter = createRateLimiter();
+  const originalLimiter = createRateLimiter({
+    wait: wait,
+    nowMonotonicMs: nowMonotonicMs,
+    logger: createLoggerDouble(),
+  });
   const cache = createOrderCacheManager({
+    requestExternalApi: wrapExternalApiRequest,
+    logger: createLoggerDouble(),
     ctx: reader,
     rateLimiter: {
       ...originalLimiter,
@@ -92,7 +103,14 @@ test('actual native pending BUY/SELL status/type map once; original symbol filte
 });
 
 test('neutral cache rejects numeric SDK-shaped direction/status/type without accepting a compatibility bridge', async () => {
-  const deps = { rateLimiter: createRateLimiter(), now: () => new Date(1000) };
+  const deps = {
+    rateLimiter: createRateLimiter({
+      wait: wait,
+      nowMonotonicMs: nowMonotonicMs,
+      logger: createLoggerDouble(),
+    }),
+    now: () => new Date(1000),
+  };
   const valid = {
     orderId: 'BAD',
     symbol: 'BULL.HK',
@@ -110,6 +128,8 @@ test('neutral cache rejects numeric SDK-shaped direction/status/type without acc
     { ...valid, side: 'UNKNOWN' },
   ]) {
     const malformed = createOrderCacheManager({
+      requestExternalApi: wrapExternalApiRequest,
+      logger: createLoggerDouble(),
       ...deps,
       ctx: { todayOrders: async () => [invalid] },
     });

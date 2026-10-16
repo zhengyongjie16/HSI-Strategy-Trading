@@ -1,3 +1,16 @@
+import {
+  createLoggerDouble,
+  createRiskCheckerDouble,
+  createDailyLossTrackerDouble,
+  createWarrantCandidateSearchDouble,
+  createMonitorContextDouble,
+  createMarketDataClientDouble,
+  createMonitorConfigDouble,
+  createQuoteDouble,
+  createSymbolRegistryDouble,
+  createTradeRuntimeDouble,
+} from '../../helpers/testDoubles.js';
+
 /**
  * createMonitorContext 业务测试
  *
@@ -6,23 +19,13 @@
  * - 名称从席位与行情派生，不复制策略或席位状态
  */
 import { describe, expect, it } from 'bun:test';
-import type { CreateMonitorContextParams, PreGateRuntime } from '../../../src/app/types.js';
+import type { PreGateRuntime } from '../../../src/app/types.js';
+import type { CreateMonitorContextParams } from '../../../src/app/context/types.js';
 import { createMonitorContext as createMonitorContextImpl } from '../../../src/app/context/createMonitorContext.js';
 import { createWarrantListCache } from '../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
 import type { MonitorConfig, TradingConfig } from '../../../src/types/config.js';
 import type { Quote } from '../../../src/types/quote.js';
 import { createBrokerClientFactoryDouble } from '../../helpers/brokerClientFactoryDouble.js';
-import {
-  createDailyLossTrackerDouble,
-  createWarrantCandidateSearchDouble,
-  createMonitorContextDouble,
-  createMarketDataClientDouble,
-  createMonitorConfigDouble,
-  createQuoteDouble,
-  createRiskCheckerDouble,
-  createSymbolRegistryDouble,
-  createTraderDouble,
-} from '../../helpers/testDoubles.js';
 
 function createMonitorContext(
   params: Omit<CreateMonitorContextParams, 'clock' | 'strategy'> &
@@ -74,7 +77,7 @@ function createRuntime(
   postGateRuntime: CreateMonitorContextParams['postGateRuntime'];
   quotesMap: ReadonlyMap<string, Quote | null>;
 } {
-  const trader = createTraderDouble();
+  const tradeRuntime = createTradeRuntimeDouble();
   const marketDataClient = createMarketDataClientDouble();
 
   const preGateRuntime: PreGateRuntime = {
@@ -95,14 +98,8 @@ function createRuntime(
   const postGateRuntime: CreateMonitorContextParams['postGateRuntime'] = {
     dailyLossTracker: createDailyLossTrackerDouble(),
     candidateSearch: createWarrantCandidateSearchDouble(),
-    lastState: {
-      canTrade: true,
-      isHalfDay: false,
-      openProtectionActive: false,
-      currentDayKey: '2026-03-23',
-      lifecycleState: 'ACTIVE',
-      pendingOpenRebuild: false,
-      isTradingEnabled: true,
+
+    tradingCalendarState: {
       cachedTradingDayInfo: {
         dateKey: '2026-03-23',
         info: {
@@ -111,9 +108,8 @@ function createRuntime(
         },
       },
       tradingCalendarSnapshot: new Map([['2026-03-23', { isTradingDay: true, isHalfDay: false }]]),
-      allTradingSymbols: new Set<string>(),
     },
-    trader,
+    tradeRuntime,
     riskChecker: createRiskCheckerDouble(),
   };
 
@@ -128,14 +124,14 @@ describe('createMonitorContext host assembly', () => {
   it('holds the injected strategy identity and does not expose private strategy state', () => {
     const runtime = createRuntime(createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' }));
     const strategy = createMonitorContextDouble().strategy;
-    const context = createMonitorContext({ ...runtime, strategy });
+    const context = createMonitorContext({ logger: createLoggerDouble(), ...runtime, strategy });
     expect(context.strategy).toBe(strategy);
     expect(context.riskChecker).toBe(runtime.postGateRuntime.riskChecker);
     for (const field of ['state', 'indicatorProfile', 'delayedSignalVerifier', 'indicatorCache']) {
       expect(field in context).toBeFalse();
     }
 
-    expect('monitorState' in runtime.postGateRuntime.lastState).toBeFalse();
+    expect('monitorState' in runtime.postGateRuntime.tradingCalendarState).toBeFalse();
   });
 
   it('hydrates active seat names from registry and quotes without copying seat truth', () => {
@@ -164,6 +160,7 @@ describe('createMonitorContext host assembly', () => {
       symbolRegistry,
     );
     const context = createMonitorContext({
+      logger: createLoggerDouble(),
       ...runtime,
       quotesMap: new Map([
         ['LONG.HK', { ...createQuoteDouble('LONG.HK', '1'), name: 'LongName' }],

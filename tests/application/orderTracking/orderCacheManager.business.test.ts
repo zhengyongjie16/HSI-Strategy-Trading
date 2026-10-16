@@ -1,9 +1,12 @@
+import { wrapExternalApiRequest } from '../../../src/infrastructure/externalApi/index.js';
+import { createLoggerDouble, createRateLimiterDouble } from '../../helpers/testDoubles.js';
+
 /**
  * orderCacheManager 业务测试：同ctx真实pending adapter/cache；保精确文本与注入时钟TTL。
  */
 
 import { describe, expect, it } from 'bun:test';
-import { createRateLimiterDouble } from '../../helpers/testDoubles.js';
+
 import type { BrokerIngressInput } from '../../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
@@ -34,6 +37,8 @@ async function createActors(orders: ReadonlyArray<BrokerIngressInput>, now = TES
   fixture.setOrderSnapshotReplies([], orders);
   let throttles = 0;
   const cache = fixture.createCacheManager({
+    logger: createLoggerDouble(),
+    requestExternalApi: wrapExternalApiRequest,
     rateLimiter: createRateLimiterDouble({
       onThrottle: () => {
         throttles++;

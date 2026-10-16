@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../../helpers/testDoubles.js';
+
 /**
  * P1 订单事实来源与真实 settlement 刷新水位。
  * 真实 O/snapshot/settlement sink 检查基线不造 stale、在线事实同步登记；
@@ -6,7 +8,7 @@
 
 import { expect, it } from 'bun:test';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
 import { createOrderRecorder } from '../../../src/application/orderTracking/recorder/index.js';
 import type { BrokerOrderExecutionFact } from '../../../src/types/orderRecorder.js';
@@ -39,9 +41,10 @@ it('distinguishes initial controlled coverage from online changed facts at the r
     },
   });
   const settlement = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     snapshot,
     termination,
-    getTrader: () => {
+    getProtectiveOrderReader: () => {
       throw new Error('registration-only case must not consume business refresh');
     },
     onPositionsCommitted: async () => {
@@ -50,6 +53,7 @@ it('distinguishes initial controlled coverage from online changed facts at the r
     scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
   });
   const owner = createOrderRecorder({
+    logger: createLoggerDouble(),
     orderSnapshotReadPort: io.broker,
     getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: settlement,

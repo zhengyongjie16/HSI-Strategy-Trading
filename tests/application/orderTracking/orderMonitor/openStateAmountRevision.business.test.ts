@@ -1,9 +1,12 @@
+import { wait } from '../../../../src/infrastructure/time/index.js';
+import { createLoggerDouble, createMonitorConfigDouble } from '../../../helpers/testDoubles.js';
+
 /** OPEN state-check 金额修订：同 O/Daily/H/S 自然结算登记，原 durable/partial-count oracle 不变。 */
 
 import { describe, expect, it } from 'bun:test';
 import { createEventFlow } from '../../../../src/application/orderTracking/orderMonitor/eventFlow.js';
 import type { ProtectiveLiquidationExecutionProgressInput } from '../../../../src/types/risk.js';
-import { createMonitorConfigDouble } from '../../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../recorder/executionFixture.js';
 
@@ -73,6 +76,8 @@ describe('orderMonitor OPEN state-check amount revision', () => {
         f.runtime.runtimeState !== 'STOPPED';
     };
     const orderOps = native.createOperations({
+      logger: createLoggerDouble(),
+      wait: wait,
       captureWorkGuard: workGuard,
       runtime: f.runtime,
       monitorConfig: createMonitorConfigDouble(),
@@ -110,6 +115,7 @@ describe('orderMonitor OPEN state-check amount revision', () => {
       orderType: native.queryObservation.orderType,
     });
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       monitorConfig: createMonitorConfigDouble({
         monitorSymbol: 'HSI.HK',
         orderOwnershipMapping: ['HSI'],

@@ -1,3 +1,19 @@
+import { scheduleBoundedOneShotAt } from '../../../../src/runtime/timer/index.js';
+import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
+import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
+
+import {
+  createLoggerDouble,
+  createDailyLossTrackerDouble,
+  createMarketDataClientDouble,
+  createOrderRecorderDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
+  createRateLimiterDouble,
+  createRiskCheckerDouble,
+  createSymbolRegistryDouble,
+  createTerminationDouble,
+} from '../../../helpers/testDoubles.js';
+
 /** 新增 broker controller 控制的实际 native entry 证明；不替代 Main/Business 完整 actor body。 */
 
 import { describe, expect, it } from 'bun:test';
@@ -9,16 +25,7 @@ import type { OrderMonitorRuntimeStore } from '../../../../src/application/order
 import { createSettlementReadinessGate } from '../../../../src/application/postTradeSettlement/readinessGate.js';
 import type { OrderFact } from '../../../../src/types/trade.js';
 import { isExternalApiRequestError } from '../../../../src/utils/apiFailure/index.js';
-import {
-  createDailyLossTrackerDouble,
-  createMarketDataClientDouble,
-  createOrderRecorderDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
-  createRateLimiterDouble,
-  createRiskCheckerDouble,
-  createSymbolRegistryDouble,
-  createTerminationDouble,
-} from '../../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 function originalFrame() {
@@ -66,6 +73,8 @@ describe('additional private broker controls', () => {
     };
     const origin = { live: true };
     const operations = f.createOperations({
+      logger: createLoggerDouble(),
+      wait: wait,
       runtime,
       rateLimiter: createRateLimiterDouble(),
       orderRecorder: createOrderRecorderDouble(),
@@ -149,7 +158,12 @@ describe('additional private broker controls', () => {
 
   it('composes actual Trader on one private native context and preserves constructor/retry/symbol observations', async () => {
     const fixture = await createBrokerIngressFixture(originalFrame());
-    const deps: Parameters<typeof fixture.createTrader>[0] = {
+    const deps: Parameters<typeof fixture.createTradeRuntime>[0] = {
+      logger: createLoggerDouble(),
+      wait: wait,
+      nowMonotonicMs: nowMonotonicMs,
+      requestExternalApi: wrapExternalApiRequest,
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       tradingConfig: createTradingConfig(),
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () => {
@@ -179,7 +193,7 @@ describe('additional private broker controls', () => {
       }),
       termination: createTerminationDouble(),
     };
-    const trader = await fixture.createTrader(deps);
+    const tradeRuntime = await fixture.createTradeRuntime(deps);
     expect(fixture.contextCreationCount()).toBe(1);
     fixture.setAccountBalance({
       currency: 'HKD',
@@ -199,9 +213,9 @@ describe('additional private broker controls', () => {
         costPrice: '1.23',
       },
     ]);
-    const accountSnapshot = await trader.getAccountSnapshot();
+    const accountSnapshot = await tradeRuntime.accountService.getAccountSnapshot();
     expect(accountSnapshot.totalCash).toBe('10000');
-    const positions = await trader.getStockPositions({ symbols: ['700.HK'] });
+    const positions = await tradeRuntime.accountService.getStockPositions({ symbols: ['700.HK'] });
     expect(positions).toHaveLength(1);
     expect(positions[0]).toMatchObject({
       symbol: '700.HK',
@@ -213,7 +227,7 @@ describe('additional private broker controls', () => {
     const originalError = new Error('HTTP 503 Service Unavailable');
     fixture.setAccountBalanceFailure(originalError);
     const before = fixture.accountReadCounts().balance;
-    const failed = await trader
+    const failed = await tradeRuntime.accountService
       .getAccountSnapshot({ retryConfig: { retries: 0, delayMs: 0 } })
       .catch((error: unknown) => error);
     expect(isExternalApiRequestError(failed)).toBeTrue();
@@ -226,7 +240,9 @@ describe('additional private broker controls', () => {
       throw subscribeError;
     });
     expect(fixture.subscribeReadCount()).toBe(0);
-    const subscribeFailure = await trader.initializeOrderMonitor().catch((error: unknown) => error);
+    const subscribeFailure = await tradeRuntime.orderMonitor
+      .initialize()
+      .catch((error: unknown) => error);
     expect(subscribeFailure).toBe(subscribeError);
     expect(fixture.subscribeReadCount()).toBe(1);
     let failuresRemaining = 1;
@@ -242,7 +258,7 @@ describe('additional private broker controls', () => {
       await release.promise;
     });
     let subscriptionReplied = false;
-    const initializing = trader.initializeOrderMonitor().then(() => {
+    const initializing = tradeRuntime.orderMonitor.initialize().then(() => {
       subscriptionReplied = true;
     });
     await issued.promise;
@@ -252,18 +268,18 @@ describe('additional private broker controls', () => {
     release.resolve();
     await initializing;
     expect(subscriptionReplied).toBeTrue();
-    await trader.initializeOrderMonitor();
+    await tradeRuntime.orderMonitor.initialize();
     expect(fixture.subscribeReadCount()).toBe(3);
     const constructorError = new Error('original context constructor failure');
     fixture.setContextCreationFailure(constructorError);
     expect(fixture.contextCreationCount()).toBe(1);
-    const rejected = fixture.createTrader(deps);
+    const rejected = fixture.createTradeRuntime(deps);
     expect(rejected).toBeInstanceOf(Promise);
     expect(await rejected.catch((error: unknown) => error)).toBe(constructorError);
     expect(fixture.contextCreationCount()).toBe(2);
     fixture.setContextCreationFailure(null);
     expect(fixture.nativeMutations()).toEqual([]);
-    await trader.stopOrderMonitorRuntimeAndDrain();
+    await tradeRuntime.orderMonitor.stopRuntimeAndDrain();
     const unsubscribeIssued = Promise.withResolvers<undefined>();
     const unsubscribeRelease = Promise.withResolvers<undefined>();
     fixture.setUnsubscribeBehavior(async () => {
@@ -271,7 +287,7 @@ describe('additional private broker controls', () => {
       await unsubscribeRelease.promise;
     });
     expect(fixture.subscriptionMembership()).toEqual(['PRIVATE']);
-    const tearingDown = trader.teardown();
+    const tearingDown = tradeRuntime.orderMonitor.teardown();
     await unsubscribeIssued.promise;
     expect(fixture.unsubscribeReadCount()).toBe(1);
     expect(fixture.subscriptionMembership()).toEqual(['PRIVATE']);
@@ -280,23 +296,25 @@ describe('additional private broker controls', () => {
     expect(fixture.subscriptionMembership()).toEqual([]);
     expect(fixture.unsubscribeObservations()).toEqual([['PRIVATE']]);
     const failedFixture = await createBrokerIngressFixture(originalFrame());
-    const failedTrader = await failedFixture.createTrader({
+    const failedTrader = await failedFixture.createTradeRuntime({
       ...deps,
       dailyLossTracker: createDailyLossTrackerDouble(),
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
     });
     failedFixture.setSubscribeBehavior(async () => {});
-    await failedTrader.initializeOrderMonitor();
+    await failedTrader.orderMonitor.initialize();
     const originalUnsubscribeError = new TypeError('original native unsubscribe failure');
     failedFixture.setUnsubscribeBehavior(async () => {
       throw originalUnsubscribeError;
     });
-    const unsubscribeFailure = await failedTrader.teardown().catch((error: unknown) => error);
+    const unsubscribeFailure = await failedTrader.orderMonitor
+      .teardown()
+      .catch((error: unknown) => error);
     expect(unsubscribeFailure).toBe(originalUnsubscribeError);
     expect(failedFixture.unsubscribeReadCount()).toBe(1);
     expect(failedFixture.subscriptionMembership()).toEqual(['PRIVATE']);
     expect(failedFixture.unsubscribeObservations()).toEqual([['PRIVATE']]);
-    await failedTrader.stopOrderMonitorRuntimeAndDrain();
+    await failedTrader.orderMonitor.stopRuntimeAndDrain();
   });
 
   it('maps the four exact unreported statuses and nullable native snapshot price without altering SDK push contracts', async () => {
@@ -515,6 +533,7 @@ describe('additional private broker controls', () => {
     let throttles = 0;
     let refreshNeeds = 0;
     const recorder = fixture.createRecorder({
+      logger: createLoggerDouble(),
       rateLimiter: {
         throttle: async () => {
           throttles += 1;
@@ -687,6 +706,7 @@ describe('additional private broker controls', () => {
 
     fixture.setOrderDetailReplies([{ ...frame, orderType: 'MO' }]);
     const state = fixture.createStateQuery({
+      requestExternalApi: wrapExternalApiRequest,
       rateLimiter: createRateLimiterDouble(),
       getExecutionTimeEvidence: () => [],
     });

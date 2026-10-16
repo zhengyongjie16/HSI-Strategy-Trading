@@ -20,7 +20,6 @@ export function initialSwitchState(
     stage: 'CANCEL_PENDING',
     sellSubmitted: false,
     sellOrderId: null,
-    sellNotional: null,
     quoteRetryAttempts: 0,
     quoteRetryNextAt: null,
     quoteRetryExhausted: false,

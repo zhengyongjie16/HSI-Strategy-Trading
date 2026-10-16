@@ -1,3 +1,9 @@
+import { wait, nowMonotonicMs } from '../../infrastructure/time/index.js';
+import { scheduleBoundedOneShotAt } from '../../runtime/timer/index.js';
+import { createOrderTradeAudit } from '../../application/orderTracking/tradeAudit/index.js';
+import { createOrderTradeAuditListener } from '../../runtime/orderTradeAuditListener/index.js';
+import { wrapExternalApiRequest } from '../../infrastructure/externalApi/index.js';
+
 /**
  * app post-gate runtime 工厂模块
  *
@@ -33,12 +39,12 @@ import { createWarrantRiskChecker } from '../../domain/risk/warrantRiskChecker.j
 import { ordinarySignalGuard } from '../../domain/strategy/ordinarySignalGuard.js';
 import { createMarketMonitor } from '../../infrastructure/display/marketMonitor/index.js';
 import { buildPriceDisplayInfo } from '../../infrastructure/display/marketMonitor/priceDisplayInfo.js';
-import { createLoadTradingDayRuntimeSnapshot } from '../../main/lifecycle/loadTradingDayRuntimeSnapshot.js';
-import { createMonitorDisplayRuntime } from '../../main/monitorDisplayRuntime/index.js';
-import { createQuoteSubscriptionRuntime } from '../../main/quoteSubscriptionRuntime/index.js';
-import type { QuoteSubscriptionRuntime } from '../../main/quoteSubscriptionRuntime/types.js';
-import { createTradingGateEventRuntime } from '../../main/tradingGateEventRuntime/index.js';
-import { createTradingQuoteDisplayRuntime } from '../../main/tradingQuoteDisplayRuntime/index.js';
+import { createLoadTradingDayRuntimeSnapshot } from '../../application/tradingDayRebuild/loadTradingDayRuntimeSnapshot.js';
+import { createMonitorDisplayRuntime } from '../../runtime/monitorDisplayRuntime/index.js';
+import { createQuoteSubscriptionRuntime } from '../../runtime/quoteSubscriptionRuntime/index.js';
+import type { QuoteSubscriptionRuntime } from '../../runtime/quoteSubscriptionRuntime/types.js';
+import { createTradingGateEventRuntime } from '../../runtime/tradingGateEventRuntime/index.js';
+import { createTradingQuoteDisplayRuntime } from '../../runtime/tradingQuoteDisplayRuntime/index.js';
 import type { MonitorTaskDataMap } from '../../runtime/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../runtime/asyncProgram/monitorTaskQueue/index.js';
 import {
@@ -52,18 +58,18 @@ import { createPeriodicSwitchWakeupRuntime } from '../../runtime/periodicSwitchW
 import { createSeatActivationDispatcher } from '../../runtime/seatActivationDispatcher/index.js';
 import { createSeatRuntimeCleanupDispatcher } from '../../runtime/seatRuntimeCleanupDispatcher/index.js';
 import { createTradingRiskEventRuntime } from '../../runtime/tradingRiskEventRuntime/tradingRiskEventRuntime.js';
-import type { OrderStateChangedEvent } from '../../types/services.js';
-import type { LastState } from '../../types/state.js';
-import type { PersistableTradeRecord } from '../../types/trader.js';
+import type { TradingTimeState } from '../../types/timeControlPlane.js';
+import type { LifecycleMutableState } from '../../types/lifecycle.js';
+import type { TradingCalendarState } from '../../types/tradingCalendar.js';
+import type { QuoteSubscriptionState } from '../../types/quoteSubscription.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
-import { exactCompare, formatDecimal } from '../../utils/numeric/exact.js';
-import { resolveLogRootDir } from '../../utils/runtime/index.js';
+import { formatDecimal } from '../../utils/numeric/exact.js';
+import { resolveLogRootDir } from '../../config/runtime/index.js';
 import {
   calculateTradingDurationDueAtMs,
-  getRequiredHKDateKey,
   getTradingMinutesSinceOpen,
-  toHongKongTimeIso,
-} from '../../utils/time/index.js';
+} from '../../domain/tradingSession/index.js';
+import { getRequiredHKDateKey, toHongKongTimeIso } from '../../utils/time/index.js';
 import type { CreatePostGateRuntimeParams, PostGateRuntime } from '../types.js';
 import { DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS } from './createPostGateRuntimeDeps.js';
 import { createPostTradeConsistencyRuntime } from './createPostTradeConsistencyRuntime.js';
@@ -98,118 +104,6 @@ function createSingleAssignmentBinding<T>(name: string): Readonly<{
   };
 }
 
-function hasPersistableTradeExecutionContext(
-  event: OrderStateChangedEvent,
-): event is OrderStateChangedEvent & {
-  readonly symbol: string;
-  readonly side: 'BUY' | 'SELL';
-  readonly isLongSymbol: boolean;
-  readonly executedPrice: string;
-  readonly executedQuantity: number;
-  readonly executedTimeMs: number;
-} {
-  return (
-    event.symbol !== null &&
-    event.side !== null &&
-    event.isLongSymbol !== null &&
-    event.executedPrice !== null &&
-    exactCompare(event.executedPrice, '0') > 0 &&
-    event.executedQuantity !== null &&
-    Number.isSafeInteger(event.executedQuantity) &&
-    event.executedQuantity > 0 &&
-    event.executedTimeMs !== null &&
-    Number.isSafeInteger(event.executedTimeMs) &&
-    event.executedTimeMs > 0
-  );
-}
-
-function resolveTradeAction(params: {
-  readonly side: 'BUY' | 'SELL';
-  readonly isLongSymbol: boolean;
-}): 'BUYCALL' | 'BUYPUT' | 'SELLCALL' | 'SELLPUT' {
-  const { side, isLongSymbol } = params;
-  if (side === 'BUY') {
-    return isLongSymbol ? 'BUYCALL' : 'BUYPUT';
-  }
-
-  return isLongSymbol ? 'SELLCALL' : 'SELLPUT';
-}
-
-function resolveTradeReason(
-  event: OrderStateChangedEvent & { readonly side: 'BUY' | 'SELL' },
-): string | null {
-  if (event.status === 'FILLED') {
-    return null;
-  }
-
-  return event.status;
-}
-
-/**
- * 根据订单状态变化事件构造可持久化的 TradeRecord。
- *
- * @param event 订单状态变化事件
- * @returns 可写入 trade log 的记录；事件上下文不足时返回 null
- */
-function resolveTradeRecordFromOrderStateChangedEvent(
-  event: OrderStateChangedEvent,
-  expectedMonitorSymbol: string,
-): PersistableTradeRecord | null {
-  if (!hasPersistableTradeExecutionContext(event)) {
-    return null;
-  }
-
-  if (event.monitorSymbol !== expectedMonitorSymbol) {
-    throw new Error(
-      `[createPostGateRuntime] order event monitorSymbol mismatch: expected=${expectedMonitorSymbol} actual=${event.monitorSymbol}`,
-    );
-  }
-
-  return {
-    orderId: event.orderId,
-    symbol: event.symbol,
-    symbolName: null,
-    monitorSymbol: event.monitorSymbol,
-    action: resolveTradeAction({
-      side: event.side,
-      isLongSymbol: event.isLongSymbol,
-    }),
-    side: event.side,
-    quantity: String(event.executedQuantity),
-    price: event.executedPrice,
-    orderType: null,
-    status: 'FILLED',
-    error: null,
-    reason: resolveTradeReason(event),
-    signalTriggerTime: null,
-    executedAt: toHongKongTimeIso(new Date(event.executedTimeMs)),
-    executedAtMs: event.executedTimeMs,
-    timestamp: toHongKongTimeIso(),
-    isProtectiveClearance: event.isProtectiveLiquidation,
-  };
-}
-
-/**
- * 处理订单状态事件并持久化 trade log；旧日志损坏或根节点结构错误时直接抛错。
- *
- * @param params 运行时环境与订单状态事件
- */
-function persistTradeRecordFromOrderStateChangedEvent(params: {
-  readonly event: OrderStateChangedEvent;
-  readonly expectedMonitorSymbol: string;
-  readonly appendTradeRecord: (record: PersistableTradeRecord) => void;
-}): void {
-  const tradeRecord = resolveTradeRecordFromOrderStateChangedEvent(
-    params.event,
-    params.expectedMonitorSymbol,
-  );
-  if (tradeRecord === null) {
-    return;
-  }
-
-  params.appendTradeRecord(tradeRecord);
-}
-
 /**
  * 创建 post-gate runtime 工厂。
  *
@@ -220,7 +114,7 @@ function createPostGateRuntimeFactory(
   deps: typeof DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS,
 ): (params: CreatePostGateRuntimeParams) => Promise<PostGateRuntime | null> {
   const {
-    createTrader: buildTrader,
+    createTradeRuntime: buildTradeRuntime,
     createMonitorContext: buildMonitorContext,
     createMixedTradeLogRepository: buildMixedTradeLogRepository,
   } = deps;
@@ -289,14 +183,18 @@ function createPostGateRuntimeFactory(
       startupTradingDayInfo !== null && startupTradingDayInfo.dateKey === initialDayKey
         ? startupTradingDayInfo.info
         : null;
-    const lastState: LastState = {
+    const tradingTimeState: TradingTimeState = {
       canTrade: null,
       isHalfDay: null,
       openProtectionActive: null,
+    };
+    const lifecycleState: LifecycleMutableState = {
       currentDayKey: initialDayKey,
       lifecycleState: 'ACTIVE',
       pendingOpenRebuild: false,
       isTradingEnabled: true,
+    };
+    const tradingCalendarState: TradingCalendarState = {
       cachedTradingDayInfo:
         initialTradingDayInfo === null
           ? null
@@ -308,23 +206,23 @@ function createPostGateRuntimeFactory(
         initialTradingDayInfo === null
           ? new Map()
           : new Map([[initialDayKey, initialTradingDayInfo]]),
-      allTradingSymbols: new Set(),
     };
-    resources.lastState = lastState;
+    const quoteSubscriptionState: QuoteSubscriptionState = { allTradingSymbols: new Set() };
+    resources.lifecycleState = lifecycleState;
     cleanup.register({
       phase: 'CLOSE_TRADING_GATE',
       step: '关闭交易门禁',
       handler: () => {
-        lastState.isTradingEnabled = false;
+        lifecycleState.isTradingEnabled = false;
       },
     });
 
     if (termination.isTerminated()) return null;
 
-    const traderBinding =
+    const tradeRuntimeBinding =
       createSingleAssignmentBinding<
-        Awaited<ReturnType<(typeof DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS)['createTrader']>>
-      >('Trader');
+        Awaited<ReturnType<(typeof DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS)['createTradeRuntime']>>
+      >('TradeRuntime');
     const quoteSubscriptionRuntimeBinding = createSingleAssignmentBinding<QuoteSubscriptionRuntime>(
       'QuoteSubscriptionRuntime',
     );
@@ -336,8 +234,8 @@ function createPostGateRuntimeFactory(
         },
       },
       readPort: {
-        getAccountSnapshot: () => traderBinding.get().getAccountSnapshot(),
-        getStockPositions: () => traderBinding.get().getStockPositions(),
+        getAccountSnapshot: () => tradeRuntimeBinding.get().accountService.getAccountSnapshot(),
+        getStockPositions: () => tradeRuntimeBinding.get().accountService.getStockPositions(),
       },
       reportFatalError: termination.reportFatalError,
     });
@@ -368,7 +266,8 @@ function createPostGateRuntimeFactory(
     });
     const postTradeConsistencyRuntime = createPostTradeConsistencyRuntime({
       termination,
-      getTrader: traderBinding.get,
+      logger,
+      getProtectiveOrderReader: () => tradeRuntimeBinding.get().orderMonitor,
       snapshot,
       onPositionsCommitted: async (token) => {
         await quoteSubscriptionRuntimeBinding.get().reconcilePositionHoldFromCurrentTruth(token);
@@ -395,7 +294,12 @@ function createPostGateRuntimeFactory(
 
     if (termination.isTerminated()) return null;
 
-    const trader = await buildTrader({
+    const tradeRuntime = await buildTradeRuntime({
+      wait,
+      nowMonotonicMs,
+      scheduleBoundedOneShotAt,
+      logger,
+      requestExternalApi: wrapExternalApiRequest,
       brokerAccess: () => brokerClientFactory.createBrokerAccess(orderEconomics),
       tradingConfig,
       marketDataClient,
@@ -406,26 +310,28 @@ function createPostGateRuntimeFactory(
       persistProtectiveLiquidationExecutionProgress:
         mixedTradeLogRepository.appendExecutionProgressIdempotent,
       postTradeConsistencyRuntime,
-      isExecutionAllowed: () => !termination.isTerminated() && lastState.isTradingEnabled,
+      isExecutionAllowed: () => !termination.isTerminated() && lifecycleState.isTradingEnabled,
       isContinuousTradingAllowed: () =>
-        !termination.isTerminated() && lastState.isTradingEnabled && lastState.canTrade === true,
+        !termination.isTerminated() &&
+        lifecycleState.isTradingEnabled &&
+        tradingTimeState.canTrade === true,
       now: clock.now,
       scheduleTimer: scheduler.scheduleTimer,
       clearTimer: scheduler.clearTimer,
-      readCurrentTradingDayInfo: () => lastState.cachedTradingDayInfo,
+      readCurrentTradingDayInfo: () => tradingCalendarState.cachedTradingDayInfo,
       termination,
     });
-    traderBinding.bind(trader);
+    tradeRuntimeBinding.bind(tradeRuntime);
     cleanup.register({
       phase: 'STOP_ORDER_MONITOR_RUNTIME',
       step: '停止订单监控 runtime',
-      handler: () => trader.stopOrderMonitorRuntimeAndDrain(),
+      handler: () => tradeRuntime.orderMonitor.stopRuntimeAndDrain(),
     });
 
     cleanup.register({
       phase: 'TEARDOWN_TRADER',
       step: '退订 Trader Private 主题',
-      handler: () => trader.teardown(),
+      handler: () => tradeRuntime.orderMonitor.teardown(),
     });
 
     if (termination.isTerminated()) return null;
@@ -439,11 +345,12 @@ function createPostGateRuntimeFactory(
     });
     const buyTaskQueue = createBuyTaskQueue();
     const sellTaskQueue = createSellTaskQueue();
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(logger);
     resources.buyTaskQueue = buyTaskQueue;
     resources.sellTaskQueue = sellTaskQueue;
     resources.monitorTaskQueue = monitorTaskQueue;
     const seatActivationDispatcher = createSeatActivationDispatcher({
+      logger,
       termination,
       symbolRegistry,
       snapshot,
@@ -474,9 +381,14 @@ function createPostGateRuntimeFactory(
       logger,
     });
     const loadTradingDayRuntimeSnapshot = createLoadTradingDayRuntimeSnapshot({
+      logger: logger,
       marketDataClient,
-      trader,
-      lastState,
+      orderRecorder: tradeRuntime.orderRecorder,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      tradingTimeState,
+      tradingCalendarState,
+      quoteSubscriptionState,
       snapshot,
       tradingConfig,
       symbolRegistry,
@@ -502,8 +414,8 @@ function createPostGateRuntimeFactory(
       tradingConfig,
       symbolRegistry,
       marketDataClient,
-      trader,
-      lastState,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      quoteSubscriptionState,
       snapshot,
       termination,
     });
@@ -516,22 +428,20 @@ function createPostGateRuntimeFactory(
 
     if (termination.isTerminated()) return null;
 
-    const unsubscribeOrderStateChanged = trader.onOrderStateChanged((event) => {
-      try {
-        persistTradeRecordFromOrderStateChangedEvent({
-          event,
-          expectedMonitorSymbol: tradingConfig.monitor.monitorSymbol,
-          appendTradeRecord: mixedTradeLogRepository.appendTradeRecord,
-        });
-      } catch (error) {
-        termination.reportFatalError(error);
-        throw error;
-      }
+    const unsubscribeOrderTradeAudit = createOrderTradeAuditListener({
+      onOrderStateChanged: tradeRuntime.orderMonitor.onOrderStateChanged,
+      audit: createOrderTradeAudit({
+        expectedMonitorSymbol: tradingConfig.monitor.monitorSymbol,
+        appendTradeRecord: mixedTradeLogRepository.appendTradeRecord,
+        toHongKongTimeIso,
+      }),
+      now: clock.now,
+      reportFatalError: termination.reportFatalError,
     });
     cleanup.register({
       phase: 'UNSUBSCRIBE_TRADER_LISTENER',
       step: '取消 Trader 订单状态监听',
-      handler: unsubscribeOrderStateChanged,
+      handler: unsubscribeOrderTradeAudit,
     });
 
     if (termination.isTerminated()) return null;
@@ -539,12 +449,13 @@ function createPostGateRuntimeFactory(
     const monitorContext = buildMonitorContext({
       preGateRuntime,
       postGateRuntime: {
-        trader,
+        tradeRuntime,
         dailyLossTracker,
         riskChecker,
         candidateSearch,
-        lastState,
+        tradingCalendarState,
       },
+      logger,
       quotesMap: null,
       clock,
       strategy,
@@ -585,10 +496,11 @@ function createPostGateRuntimeFactory(
 
     const protectiveLiquidationWorkflow = createProtectiveLiquidationWorkflow({
       logger,
-      trader,
+      orderExecutor: tradeRuntime.orderExecutor,
       symbolRegistry,
       monitorContext,
-      lastState,
+      tradingTimeState,
+      lifecycleState,
       snapshot,
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled,
@@ -615,10 +527,11 @@ function createPostGateRuntimeFactory(
     const switchWakeupRuntime = createSwitchWakeupRuntime({
       logger,
       marketDataClient,
-      trader,
+      orderMonitor: tradeRuntime.orderMonitor,
       symbolRegistry,
       monitorContext,
-      lastState,
+      tradingTimeState,
+      lifecycleState,
       snapshot,
       postTradeConsistencyRuntime,
       tradingGateEventRuntime,
@@ -639,7 +552,7 @@ function createPostGateRuntimeFactory(
     if (termination.isTerminated()) return null;
 
     const executeStaticLiquidation = createStaticLiquidationExecutor({
-      trader,
+      orderExecutor: tradeRuntime.orderExecutor,
       marketDataClient,
       snapshot,
       postTradeConsistencyRuntime,
@@ -650,7 +563,8 @@ function createPostGateRuntimeFactory(
       marketDataClient,
       monitorContext,
       executeStaticLiquidation,
-      lastState,
+      tradingTimeState,
+      lifecycleState,
       snapshot,
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled,
@@ -671,9 +585,11 @@ function createPostGateRuntimeFactory(
     if (termination.isTerminated()) return null;
 
     const monitorDisplayRuntime = createMonitorDisplayRuntime({
+      logger: logger,
       marketDataClient,
       monitorContext,
-      lastState,
+      tradingTimeState,
+      lifecycleState,
       marketMonitor,
     });
     cleanup.register({
@@ -689,7 +605,8 @@ function createPostGateRuntimeFactory(
       marketDataClient,
       symbolRegistry,
       monitorContext,
-      lastState,
+      tradingTimeState,
+      lifecycleState,
       renderTradingQuote: (renderParams) => {
         const displayInfo = buildPriceDisplayInfo({
           seatActive: true,
@@ -721,7 +638,8 @@ function createPostGateRuntimeFactory(
     const canProcessOrdinaryTradeTask = (): boolean =>
       !termination.isTerminated() &&
       ordinarySignalGuard({
-        lastState,
+        tradingTimeState,
+        lifecycleState,
         now: clock.now(),
         doomsdayProtectionEnabled,
       });
@@ -732,11 +650,13 @@ function createPostGateRuntimeFactory(
       symbolRegistry,
       orderRecorder: monitorContext.orderRecorder,
       riskChecker,
-      trader,
+      accountService: tradeRuntime.accountService,
+      tradeFrequencyReader: tradeRuntime.orderExecutor,
+      orderExecutor: tradeRuntime.orderExecutor,
       marketDataClient,
       liquidationCooldownTracker,
       snapshot,
-      getIsHalfDay: () => lastState.isHalfDay ?? false,
+      getIsHalfDay: () => tradingTimeState.isHalfDay ?? false,
       now: clock.now,
       getCanProcessTask: canProcessOrdinaryTradeTask,
       termination,
@@ -746,13 +666,13 @@ function createPostGateRuntimeFactory(
       config: monitorContext.config,
       symbolRegistry,
       orderRecorder: monitorContext.orderRecorder,
-      trader,
+      orderExecutor: tradeRuntime.orderExecutor,
       marketDataClient,
       snapshot,
       settlement: postTradeConsistencyRuntime,
       getTradingCalendar: () => ({
-        isHalfDay: lastState.isHalfDay ?? false,
-        tradingCalendarSnapshot: lastState.tradingCalendarSnapshot,
+        isHalfDay: tradingTimeState.isHalfDay ?? false,
+        tradingCalendarSnapshot: tradingCalendarState.tradingCalendarSnapshot,
       }),
       clock,
       getCanProcessTask: canProcessOrdinaryTradeTask,
@@ -766,6 +686,7 @@ function createPostGateRuntimeFactory(
       logger,
     });
     const seatRuntimeCleanupDispatcher = createSeatRuntimeCleanupDispatcher({
+      logger,
       symbolRegistry,
       monitorContext,
       buyTaskQueue,
@@ -788,7 +709,8 @@ function createPostGateRuntimeFactory(
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorContext.config.autoSearchConfig,
-      lastState,
+      tradingTimeState,
+      lifecycleState,
       tradingGateEventRuntime,
       doomsdayProtectionEnabled,
       now: clock.now,
@@ -808,18 +730,20 @@ function createPostGateRuntimeFactory(
       termination,
       snapshot,
       getCanTradeNow: () =>
-        !termination.isTerminated() && lastState.isTradingEnabled && lastState.canTrade === true,
+        !termination.isTerminated() &&
+        lifecycleState.isTradingEnabled &&
+        tradingTimeState.canTrade === true,
       monitorContext,
       symbolRegistry,
       monitorTaskQueue,
-      trader,
+      orderMonitor: tradeRuntime.orderMonitor,
       postTradeConsistencyRuntime,
       tradingGateEventRuntime,
       calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
         calculateTradingDurationDueAtMs({
           startMs,
           targetDurationMs: switchIntervalMinutes * TIME.MILLISECONDS_PER_MINUTE,
-          calendarSnapshot: lastState.tradingCalendarSnapshot,
+          calendarSnapshot: tradingCalendarState.tradingCalendarSnapshot,
         }),
       now: clock.now,
       scheduleTimer: scheduler.scheduleTimer,
@@ -854,8 +778,11 @@ function createPostGateRuntimeFactory(
       switchWakeupRuntime,
       postTradeConsistencyRuntime,
       snapshot,
-      lastState,
-      trader,
+      tradingTimeState,
+      lifecycleState,
+      tradingCalendarState,
+      quoteSubscriptionState,
+      tradeRuntime,
       loadTradingDayRuntimeSnapshot,
       doomsdayClearanceWorkflow,
       ordinaryBuy,

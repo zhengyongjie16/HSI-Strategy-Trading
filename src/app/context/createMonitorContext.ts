@@ -2,17 +2,20 @@
  * app 监控上下文装配模块
  *
  * 职责：
- * - 创建单 monitor 的 MonitorContext
+ * - 创建单 monitor 的 MonitorContextAssembly
  * - 消费 post-gate 已创建的唯一 RiskChecker，不在上下文内重复创建浮亏缓存
  * - 以 SymbolRegistry 作为席位真相，仅根据启动 quotesMap 派生标的名称缓存
  * - 将唯一 monitor 配置装配为纯返回值，由调用方持有唯一上下文
  */
 import { createUnrealizedLossMonitor } from '../../application/protectiveLiquidation/unrealizedLossExecutor.js';
-import { logger } from '../../utils/logger/index.js';
 import { createSeatSwitchWorkflow } from '../../application/seatSwitch/index.js';
-import type { LastState, MonitorContext } from '../../types/state.js';
-import { resolveMonitorContextSymbolNames } from '../../utils/seat/snapshots.js';
-import type { CreateMonitorContextParams, MonitorContextFactoryDeps } from '../types.js';
+import type { TradingCalendarState } from '../../types/tradingCalendar.js';
+import { resolveMonitorContextSymbolNames } from '../../domain/seat/seatSnapshot.js';
+import type {
+  CreateMonitorContextParams,
+  MonitorContextFactoryDeps,
+  MonitorContextAssembly,
+} from './types.js';
 
 /**
  * 校验跨越运行时装配边界的交易日历事实，拒绝被强制注入的非法 undefined。
@@ -21,8 +24,8 @@ import type { CreateMonitorContextParams, MonitorContextFactoryDeps } from '../t
  * @returns 已确认存在的交易日历快照
  */
 function requireTradingCalendarSnapshot(
-  snapshot: LastState['tradingCalendarSnapshot'] | undefined,
-): LastState['tradingCalendarSnapshot'] {
+  snapshot: TradingCalendarState['tradingCalendarSnapshot'] | undefined,
+): TradingCalendarState['tradingCalendarSnapshot'] {
   if (snapshot === undefined) {
     throw new Error('监控上下文装配失败: 缺少交易日历快照');
   }
@@ -31,7 +34,7 @@ function requireTradingCalendarSnapshot(
 }
 
 function applySymbolNamesToMonitorContext(
-  monitorContext: MonitorContext,
+  monitorContext: MonitorContextAssembly,
   symbolNames: ReturnType<typeof resolveMonitorContextSymbolNames>,
 ): void {
   monitorContext.longSymbolName = symbolNames.longSymbolName;
@@ -44,9 +47,9 @@ function applySymbolNamesToMonitorContext(
  * 并持有 composition root 创建的唯一策略实例。
  *
  * @param deps 工厂依赖（config、symbolRegistry、quotesMap、strategy、orderRecorder 等）
- * @returns 该监控标的的 MonitorContext 实例
+ * @returns 该监控标的的 MonitorContextAssembly 实例
  */
-function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
+function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContextAssembly {
   const {
     config,
     symbolRegistry,
@@ -87,7 +90,7 @@ function buildMonitorContext(deps: MonitorContextFactoryDeps): MonitorContext {
  * @returns 无返回值
  */
 export function syncMonitorContextSymbolNames(params: {
-  readonly monitorContext: MonitorContext;
+  readonly monitorContext: MonitorContextAssembly;
   readonly quotesMap: MonitorContextFactoryDeps['quotesMap'];
 }): void {
   const symbolNames = resolveMonitorContextSymbolNames({
@@ -103,25 +106,28 @@ export function syncMonitorContextSymbolNames(params: {
  * 默认行为：仅装配宿主能力，策略状态由已注入实例独占。
  *
  * @param params 监控上下文装配所需的 pre/post gate 运行时对象与 quotesMap
- * @returns 唯一 MonitorContext
+ * @returns 唯一 MonitorContextAssembly
  */
-export function createMonitorContext(params: CreateMonitorContextParams): MonitorContext {
-  const { preGateRuntime, postGateRuntime, quotesMap, clock, strategy } = params;
+export function createMonitorContext(params: CreateMonitorContextParams): MonitorContextAssembly {
+  const { preGateRuntime, postGateRuntime, quotesMap, clock, strategy, logger } = params;
 
   const monitorConfig = preGateRuntime.tradingConfig.monitor;
   const { riskChecker } = postGateRuntime;
-  requireTradingCalendarSnapshot(postGateRuntime.lastState.tradingCalendarSnapshot);
+  requireTradingCalendarSnapshot(postGateRuntime.tradingCalendarState.tradingCalendarSnapshot);
 
   const seatSwitch = createSeatSwitchWorkflow({
     monitorConfig,
     symbolRegistry: preGateRuntime.symbolRegistry,
     marketDataClient: preGateRuntime.marketDataClient,
-    trader: postGateRuntime.trader,
-    orderRecorder: postGateRuntime.trader.orderRecorder,
+    cacheManager: postGateRuntime.tradeRuntime.cacheManager,
+    orderHoldRegistry: postGateRuntime.tradeRuntime.orderHoldRegistry,
+    orderMonitor: postGateRuntime.tradeRuntime.orderMonitor,
+    orderExecutor: postGateRuntime.tradeRuntime.orderExecutor,
+    orderRecorder: postGateRuntime.tradeRuntime.orderRecorder,
     riskChecker,
     candidateSearch: postGateRuntime.candidateSearch,
     logger,
-    getTradingCalendarSnapshot: () => postGateRuntime.lastState.tradingCalendarSnapshot,
+    getTradingCalendarSnapshot: () => postGateRuntime.tradingCalendarState.tradingCalendarSnapshot,
     clock,
   });
   return buildMonitorContext({
@@ -129,7 +135,7 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
     symbolRegistry: preGateRuntime.symbolRegistry,
     quotesMap,
     strategy,
-    orderRecorder: postGateRuntime.trader.orderRecorder,
+    orderRecorder: postGateRuntime.tradeRuntime.orderRecorder,
     dailyLossTracker: postGateRuntime.dailyLossTracker,
     riskChecker,
     unrealizedLossMonitor: createUnrealizedLossMonitor({

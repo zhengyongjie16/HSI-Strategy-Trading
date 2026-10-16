@@ -10,11 +10,8 @@ import { ordinarySignalGuard } from '../../../src/domain/strategy/ordinarySignal
 describe('ordinarySignalGuard minimal gate', () => {
   it('allows ordinary signal admission when lifecycle and continuous trading gates are open', () => {
     const allowed = ordinarySignalGuard({
-      lastState: {
-        isTradingEnabled: true,
-        canTrade: true,
-        isHalfDay: false,
-      },
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
       now: new Date('2026-02-16T01:31:00.000Z'),
       doomsdayProtectionEnabled: false,
     });
@@ -29,7 +26,10 @@ describe('ordinarySignalGuard minimal gate', () => {
     '只复用正常/半日清仓接管起点，不把开盘保护并入共享 gate %j',
     ({ isHalfDay, before, takeover }) => {
       const params = {
-        lastState: { isTradingEnabled: true, canTrade: true, isHalfDay },
+        tradingTimeState: { canTrade: true, isHalfDay },
+        lifecycleState: { isTradingEnabled: true },
+        tradingCalendarState: {},
+        quoteSubscriptionState: {},
         doomsdayProtectionEnabled: true,
       };
       expect(ordinarySignalGuard({ ...params, now: new Date(before) })).toBe(true);
@@ -47,11 +47,8 @@ describe('ordinarySignalGuard minimal gate', () => {
   it('still rejects when lifecycle or continuous trading gate is closed', () => {
     expect(
       ordinarySignalGuard({
-        lastState: {
-          isTradingEnabled: false,
-          canTrade: true,
-          isHalfDay: false,
-        },
+        tradingTimeState: { canTrade: true, isHalfDay: false },
+        lifecycleState: { isTradingEnabled: false },
         now: new Date('2026-02-16T01:31:00.000Z'),
         doomsdayProtectionEnabled: false,
       }),
@@ -59,11 +56,8 @@ describe('ordinarySignalGuard minimal gate', () => {
 
     expect(
       ordinarySignalGuard({
-        lastState: {
-          isTradingEnabled: true,
-          canTrade: false,
-          isHalfDay: false,
-        },
+        tradingTimeState: { canTrade: false, isHalfDay: false },
+        lifecycleState: { isTradingEnabled: true },
         now: new Date('2026-02-16T01:31:00.000Z'),
         doomsdayProtectionEnabled: false,
       }),

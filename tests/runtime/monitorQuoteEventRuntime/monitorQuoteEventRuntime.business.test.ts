@@ -1,9 +1,6 @@
-import { createDistanceSwitchPublicationFixture } from '../../main/fixtures/distanceSwitchPublication.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
-import { createSettlementRuntimeFixture } from '../../main/fixtures/settlementRuntime.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
-import { describe, expect, it } from 'bun:test';
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
 import {
+  createLoggerDouble,
   createSeatSwitchWorkflowDouble,
   createMonitorContextDouble,
   createOrderRecorderDouble,
@@ -12,10 +9,17 @@ import {
   createQuoteDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
   createMarketDataClientDouble,
   createWarrantDistanceInfoDouble,
 } from '../../helpers/testDoubles.js';
+import type { TradeRuntime } from '../../../src/app/runtime/types.js';
+import { createDistanceSwitchPublicationFixture } from './distanceSwitchPublication.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createSettlementRuntimeFixture } from '../../helpers/settlementRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
+import { describe, expect, it } from 'bun:test';
+
 import { createMonitorConfig } from '../../../mock/factories/configFactory.js';
 import { createSeatSwitchWorkflow } from '../../../src/application/seatSwitch/index.js';
 import {
@@ -25,15 +29,14 @@ import {
 } from '../../helpers/seatTestUtils.js';
 import { ORDER_QUOTE_RETRY, TRADING } from '../../../src/constants/index.js';
 import { createStaticLiquidationExecutor } from '../../../src/application/staticLiquidation/index.js';
-import type { Trader } from '../../../src/types/services.js';
 import { createDefaultMonitorQuoteEventRuntime as createDefaultMonitorQuoteEventRuntimeImpl } from '../../../src/runtime/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type {
   CreateDefaultMonitorQuoteEventRuntimeDeps,
   MonitorQuoteEventRuntime,
 } from '../../../src/runtime/monitorQuoteEventRuntime/types.js';
-import type { MonitorContext } from '../../../src/types/state.js';
-import type { StartSwitchOnDistanceResult } from '../../../src/types/monitorContextPorts.js';
+import type { MonitorContextAssembly } from '../../../src/app/context/types.js';
+import type { StartSwitchOnDistanceResult } from '../../../src/types/seatSwitch.js';
 import type { QuoteUpdatedEvent } from '../../../src/types/marketPorts.js';
 import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
 
@@ -47,6 +50,8 @@ import type { AccountPositionSnapshot } from '../../../src/types/accountPosition
 type TestMonitorQuoteRuntimeDeps = Omit<
   CreateDefaultMonitorQuoteEventRuntimeDeps,
   | 'logger'
+  | 'monitorContext'
+  | 'lifecycleState'
   | 'scheduleTimer'
   | 'clearTimer'
   | 'termination'
@@ -55,7 +60,9 @@ type TestMonitorQuoteRuntimeDeps = Omit<
   | 'executeStaticLiquidation'
 > & {
   readonly snapshot: AccountPositionSnapshot;
-  readonly trader: Pick<Trader, 'executeSignals'>;
+  readonly monitorContext: MonitorContextAssembly;
+  readonly lifecycleState: Pick<RuntimeStateFixtures['lifecycleState'], 'isTradingEnabled'>;
+  readonly tradeRuntime: TradeRuntime;
 } & Partial<
     Pick<CreateDefaultMonitorQuoteEventRuntimeDeps, 'scheduleTimer' | 'clearTimer' | 'termination'>
   >;
@@ -69,12 +76,12 @@ async function createDefaultMonitorQuoteEventRuntime(
       clearTimeout(handle);
     },
     termination: externalTermination,
-    trader,
+    tradeRuntime,
     ...requiredDeps
   } = deps;
   const ownerTermination = createTerminationRuntime({
     closeTradingGate: () => {
-      deps.lastState.isTradingEnabled = false;
+      deps.lifecycleState.isTradingEnabled = false;
     },
     closeProducerAdmission: () => {},
     stopProducers: [],
@@ -94,10 +101,11 @@ async function createDefaultMonitorQuoteEventRuntime(
     },
   };
   const settlement = createSettlementRuntimeFixture({
+    logger: createLoggerDouble(),
     snapshot: deps.snapshot,
     termination,
     monitorContext: deps.monitorContext,
-    getTrader: () => createTraderDouble(),
+    getProtectiveOrderReader: () => createTradeRuntimeDouble().orderMonitor,
     onPositionsCommitted: async (token) => {
       if (!deps.snapshot.isCurrent(token, { account: true, positions: true, paired: true }))
         throw new Error('Stale settlement positions callback');
@@ -126,7 +134,7 @@ async function createDefaultMonitorQuoteEventRuntime(
 
   return createDefaultMonitorQuoteEventRuntimeImpl({
     executeStaticLiquidation: createStaticLiquidationExecutor({
-      trader,
+      orderExecutor: tradeRuntime.orderExecutor,
       marketDataClient: deps.marketDataClient,
       snapshot: deps.snapshot,
       postTradeConsistencyRuntime: settlement,
@@ -327,23 +335,23 @@ async function createDefaultStaticLiquidationHarness(): Promise<
         ]),
     },
     monitorContext,
-    trader: createTraderDouble({
-      executeSignals: async (signals) => {
-        for (const signal of signals) {
-          submittedActions.push(signal.action);
-        }
+    tradeRuntime: createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals) => {
+          for (const signal of signals) {
+            submittedActions.push(signal.action);
+          }
 
-        return {
-          executedOrderIds: signals.map(() => `EXECUTED-ORDER`),
-          quoteFailures: [],
-        };
+          return {
+            executedOrderIds: signals.map(() => `EXECUTED-ORDER`),
+            quoteFailures: [],
+          };
+        },
       },
     }),
-    lastState: {
-      isTradingEnabled: true,
-      canTrade: true,
-      isHalfDay: false,
-    },
+
+    tradingTimeState: { canTrade: true, isHalfDay: false },
+    lifecycleState: { isTradingEnabled: true },
 
     doomsdayProtectionEnabled: false,
     now: () => new Date('2026-04-08T10:00:00+08:00'),
@@ -513,9 +521,11 @@ async function createDefaultDistanceSwitchHarness(
     monitorConfig: distanceMonitorConfig,
     symbolRegistry,
     marketDataClient,
-    trader: createTraderDouble({
-      executeSignals: async () => {
-        throw new Error('Initial distance admission must not execute signals');
+    ...createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async () => {
+          throw new Error('Initial distance admission must not execute signals');
+        },
       },
     }),
     riskChecker: distanceMonitorContext.riskChecker,
@@ -531,7 +541,7 @@ async function createDefaultDistanceSwitchHarness(
         createWarrantCandidate(input.direction === 'LONG' ? 'NEXT_BULL.HK' : 'NEXT_BEAR.HK'),
     },
   });
-  const monitorContext: MonitorContext = {
+  const monitorContext: MonitorContextAssembly = {
     ...distanceMonitorContext,
     get config() {
       return autoSearchEnabled ? distanceMonitorConfig : staticMonitorConfig;
@@ -554,12 +564,10 @@ async function createDefaultDistanceSwitchHarness(
       getQuotes: async () => new Map(),
     },
     monitorContext,
-    trader: createTraderDouble(),
-    lastState: {
-      isTradingEnabled: true,
-      canTrade: params.canTrade ?? true,
-      isHalfDay: false,
-    },
+    tradeRuntime: createTradeRuntimeDouble(),
+
+    tradingTimeState: { canTrade: params.canTrade ?? true, isHalfDay: false },
+    lifecycleState: { isTradingEnabled: true },
 
     doomsdayProtectionEnabled: params.doomsdayProtectionEnabled ?? false,
     now: params.timerHarness?.now ?? (() => new Date('2026-04-08T10:00:00+08:00')),
@@ -718,7 +726,7 @@ async function createDefaultStaticWaitHarness(
       }),
     }),
   });
-  const monitorContext: MonitorContext = {
+  const monitorContext: MonitorContextAssembly = {
     ...staticMonitorContext,
     get config() {
       return routeMode === 'STATIC_LIQUIDATION'
@@ -772,28 +780,30 @@ async function createDefaultStaticWaitHarness(
       },
     },
     monitorContext,
-    trader: createTraderDouble({
-      executeSignals: async (signals) => {
-        if (
-          signals.some((signal) => signal.action === 'SELLPUT') &&
-          remainingShortSubmissionFailures > 0
-        ) {
-          remainingShortSubmissionFailures -= 1;
-          throw new Error('short submission failed');
-        }
+    tradeRuntime: createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals) => {
+          if (
+            signals.some((signal) => signal.action === 'SELLPUT') &&
+            remainingShortSubmissionFailures > 0
+          ) {
+            remainingShortSubmissionFailures -= 1;
+            throw new Error('short submission failed');
+          }
 
-        submittedActions.push(...signals.map((signal) => signal.action));
-        return {
-          executedOrderIds: signals.map((_, index) => `ORDER-${submittedActions.length}-${index}`),
-          quoteFailures: [],
-        };
+          submittedActions.push(...signals.map((signal) => signal.action));
+          return {
+            executedOrderIds: signals.map(
+              (_, index) => `ORDER-${submittedActions.length}-${index}`,
+            ),
+            quoteFailures: [],
+          };
+        },
       },
     }),
-    lastState: {
-      isTradingEnabled: true,
-      canTrade: true,
-      isHalfDay: false,
-    },
+
+    tradingTimeState: { canTrade: true, isHalfDay: false },
+    lifecycleState: { isTradingEnabled: true },
 
     doomsdayProtectionEnabled: false,
     now: () => new Date('2026-04-08T10:00:00+08:00'),
@@ -893,12 +903,10 @@ describe('monitorQuoteEventRuntime contract', () => {
         getQuotes: async () => new Map(),
       },
       monitorContext: createMonitorContextDouble(),
-      trader: createTraderDouble(),
-      lastState: {
-        isTradingEnabled: true,
-        canTrade: true,
-        isHalfDay: false,
-      },
+      tradeRuntime: createTradeRuntimeDouble(),
+
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
 
       doomsdayProtectionEnabled: false,
       now: () => new Date('2026-04-08T10:00:00+08:00'),

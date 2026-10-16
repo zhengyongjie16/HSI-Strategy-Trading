@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../../helpers/testDoubles.js';
+
 /**
  * 已封存 execution T 的修订必须沿真实共享 settlementFlow → O beforeCommit → Daily 准入 → S sink 被抑制。
  * 保留原 V1 字节与 9.2/T/revision+1 输入；真实 recorder、Daily、repository、snapshot、S 和 hold 各自验真。
@@ -9,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
 import { createOrderHoldRegistry } from '../../../src/application/orderTracking/orderHoldRegistry.js';
 import { createSettlementFlow } from '../../../src/application/orderTracking/orderMonitor/settlementFlow.js';
@@ -23,9 +25,9 @@ import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/l
 import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
-import type { OrderStateChangedEvent } from '../../../src/types/services.js';
+import type { OrderStateChangedEvent } from '../../../src/types/orderTracking.js';
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
-import { buildTradeLogPath } from '../../../src/utils/trading/tradeLogPath.js';
+import { buildTradeLogPath } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/tradeLogPath.js';
 import { createOfflineBrokerPort } from './offlinePorts.js';
 
 it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real O/Daily/S while terminal resources close independently', () => {
@@ -74,9 +76,10 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
       reportFatalError: termination.reportFatalError,
     });
     const sink = createPostTradeConsistencyRuntime({
+      logger: createLoggerDouble(),
       snapshot,
       termination,
-      getTrader: () => {
+      getProtectiveOrderReader: () => {
         throw new Error('shared-rule case must not substitute a business refresh consumer');
       },
       onPositionsCommitted: async () => {
@@ -91,6 +94,7 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
     });
     daily.resetAll(new Date(executionT));
     const owner = createOrderRecorder({
+      logger: createLoggerDouble(),
       orderSnapshotReadPort: io.broker,
       getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
       settlementRefreshNeedRecorder: sink,

@@ -4,7 +4,7 @@
  * 数据来源：生命周期阶段预热的交易日历快照。
  * 使用范围：交易时段累计、智能平仓、自动换标等依赖交易日历的模块。
  */
-export type TradingCalendarDayInfo = {
+export type TradingDayInfo = {
   readonly isTradingDay: boolean;
   readonly isHalfDay: boolean;
 };
@@ -13,9 +13,9 @@ export type TradingCalendarDayInfo = {
  * 交易日历快照。
  * 类型用途：按港股日期键（YYYY-MM-DD）索引交易日信息，作为交易时段计算的唯一输入。
  * 数据来源：生命周期启动/重建时维护。
- * 使用范围：signalProcessor、orderRecorder、autoSymbolManager、tests 等跨模块共享。
+ * 使用范围：普通卖出、订单记录、席位换标及其测试 等跨模块共享。
  */
-export type TradingCalendarSnapshot = ReadonlyMap<string, TradingCalendarDayInfo>;
+export type TradingCalendarSnapshot = ReadonlyMap<string, TradingDayInfo>;
 
 /**
  * 交易时段累计时长计算参数。
@@ -40,4 +40,19 @@ export type OrderTimeoutCheckParams = {
   readonly nowMs: number;
   readonly timeoutMinutes: number;
   readonly calendarSnapshot: TradingCalendarSnapshot;
+};
+
+/** 日期绑定的交易日缓存事实；启动、时间评估与重建写入同一 calendar state。 */
+export type CachedTradingDayInfo = Readonly<{
+  dateKey: string;
+  info: TradingDayInfo;
+}>;
+
+/**
+ * 交易日缓存和预热日历的唯一可变状态，不能从读方默认补空或建立第二份缓存。
+ * app 创建一次；时间评估、rebuild/prewarmer 和 global clear 保留既有写入时序。
+ */
+export type TradingCalendarState = {
+  cachedTradingDayInfo: CachedTradingDayInfo | null;
+  tradingCalendarSnapshot: TradingCalendarSnapshot;
 };

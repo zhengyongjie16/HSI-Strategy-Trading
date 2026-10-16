@@ -1,7 +1,8 @@
 import type { AccountPositionSnapshotReader } from './accountPosition.js';
 import type { QuoteUpdatedEvent } from './marketPorts.js';
 import type { Quote } from './quote.js';
-import type { UnrealizedLossMetrics, WarrantDistanceInfo } from './services.js';
+import type { UnrealizedLossMetrics } from './unrealizedLoss.js';
+import type { WarrantDistanceInfo } from './warrantRisk.js';
 import type { StrategyDisplayItem } from './strategy.js';
 
 /**

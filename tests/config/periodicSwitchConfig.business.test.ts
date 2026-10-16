@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../helpers/testDoubles.js';
+
 /**
  * periodicSwitch 配置业务测试
  *
@@ -22,11 +24,13 @@ function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS
 describe('periodic switch config business flow', () => {
   it('parses SWITCH_INTERVAL_MINUTES with feature-gated fail-fast rules', () => {
     const missingConfig = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv(),
     });
     expect(missingConfig.monitor.autoSearchConfig.switchIntervalMinutes).toBe(0);
 
     const disabledConfig = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({
         AUTO_SEARCH_ENABLED: 'false',
         SWITCH_INTERVAL_MINUTES: '999',
@@ -35,6 +39,7 @@ describe('periodic switch config business flow', () => {
     expect(disabledConfig.monitor.autoSearchConfig.switchIntervalMinutes).toBe(0);
 
     const validConfig = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({
         AUTO_SEARCH_ENABLED: 'true',
         SWITCH_INTERVAL_MINUTES: '15',
@@ -44,6 +49,7 @@ describe('periodic switch config business flow', () => {
 
     expect(() =>
       parseTradingConfig({
+        logger: createLoggerDouble(),
         env: createBaseEnv({
           AUTO_SEARCH_ENABLED: 'true',
           SWITCH_INTERVAL_MINUTES: '-5',
@@ -53,6 +59,7 @@ describe('periodic switch config business flow', () => {
 
     expect(() =>
       parseTradingConfig({
+        logger: createLoggerDouble(),
         env: createBaseEnv({
           AUTO_SEARCH_ENABLED: 'true',
           SWITCH_INTERVAL_MINUTES: '999',
@@ -62,6 +69,7 @@ describe('periodic switch config business flow', () => {
 
     expect(() =>
       parseTradingConfig({
+        logger: createLoggerDouble(),
         env: createBaseEnv({
           AUTO_SEARCH_ENABLED: 'true',
           SWITCH_INTERVAL_MINUTES: 'invalid-number',
@@ -96,6 +104,7 @@ describe('periodic switch config business flow', () => {
       let caughtError: unknown = null;
       try {
         await validateAllConfig({
+          logger: createLoggerDouble(),
           env: {
             LONGBRIDGE_AUTH_MODE: 'oauth',
             LONGBRIDGE_CLIENT_ID: 'client-id',

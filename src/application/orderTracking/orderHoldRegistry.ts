@@ -17,7 +17,7 @@
  */
 
 import { isOpenOrderReadStatus } from '../../domain/order/orderReadLifecycle.js';
-import type { OrderHoldSymbolsChangedEvent } from '../../types/services.js';
+import type { OrderHoldSymbolsChangedEvent } from '../../types/orderHold.js';
 import type { OrderFact } from '../../types/trade.js';
 import type { OrderHoldRegistry } from './types.js';
 

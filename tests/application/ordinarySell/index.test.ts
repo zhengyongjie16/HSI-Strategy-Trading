@@ -1,16 +1,18 @@
-/** 普通 SELL 用例镜像：真实 readiness/reselect、授权失效、报价重试和 accepted ID 不重提。 */
-import { afterEach, describe, expect, it } from 'bun:test';
-import { rejects } from 'node:assert/strict';
-import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
-import { createSellHarness } from './fixture.js';
 import {
-  createMarketDataClientDouble,
   createOrderRecorderDouble,
+  createMarketDataClientDouble,
   createPositionDouble,
   createQuoteDouble,
   createSignalDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
+
+/** 普通 SELL 用例镜像：真实 readiness/reselect、授权失效、报价重试和 accepted ID 不重提。 */
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { rejects } from 'node:assert/strict';
+import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
+import { createSellHarness } from './fixture.js';
+
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type {
   SellExecutionAttempt,
@@ -51,6 +53,16 @@ describe('ordinarySell owner', () => {
     const waiting = new Promise<SettlementReadinessReceipt>((resolve) => {
       deferred.release = resolve;
     });
+    const tradeInstances6 = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals, authorization) => {
+          expect(authorization()).toBeTrue();
+          expect(signals[0]?.quantity).toBe(500);
+          submits += 1;
+          return { executedOrderIds: ['SELL'], quoteFailures: [] };
+        },
+      },
+    });
     const h = await harness({
       settlement: {
         waitForFresh: () => waiting,
@@ -62,14 +74,8 @@ describe('ordinarySell owner', () => {
           return new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1')]]);
         },
       }),
-      trader: createTraderDouble({
-        executeSignals: async (signals, authorization) => {
-          expect(authorization()).toBeTrue();
-          expect(signals[0]?.quantity).toBe(500);
-          submits += 1;
-          return { executedOrderIds: ['SELL'], quoteFailures: [] };
-        },
-      }),
+      orderRecorder: tradeInstances6.orderRecorder,
+      orderExecutor: tradeInstances6.orderExecutor,
     });
     const pending = h.workflow.execute(sellSignal(), currentAttempt);
     await Bun.sleep(1);
@@ -84,6 +90,8 @@ describe('ordinarySell owner', () => {
   it('reselects positions after quote-await and final execution invalidation without requesting timer retry', async () => {
     let quoteCalls = 0;
     const submitted: number[] = [];
+
+    const tradeInstances7 = createTradeRuntimeDouble();
     const h = await harness({
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () => {
@@ -98,26 +106,28 @@ describe('ordinarySell owner', () => {
           return new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1')]]);
         },
       }),
-      trader: createTraderDouble({
-        executeSignals: async (signals, authorize) => {
-          const quantity = signals[0]?.quantity;
-          if (quantity === undefined || quantity === null) throw new Error('quantity missing');
-
-          expect(authorize()).toBeTrue();
-          submitted.push(quantity);
-          if (submitted.length === 1) {
-            h.setPositions([
-              createPositionDouble({ symbol: 'BULL.HK', quantity: 100, availableQuantity: 100 }),
-            ]);
-            await h.publishPositions();
-            expect(authorize()).toBeFalse();
-            return { executedOrderIds: [], quoteFailures: [] };
-          }
-
-          return { executedOrderIds: ['CURRENT-100'], quoteFailures: [] };
-        },
-      }),
+      orderRecorder: tradeInstances7.orderRecorder,
+      orderExecutor: tradeInstances7.orderExecutor,
     });
+    spyOn(tradeInstances7.orderExecutor, 'executeSignals').mockImplementation(
+      async (signals, authorize) => {
+        const quantity = signals[0]?.quantity;
+        if (quantity === undefined || quantity === null) throw new Error('quantity missing');
+
+        expect(authorize()).toBeTrue();
+        submitted.push(quantity);
+        if (submitted.length === 1) {
+          h.setPositions([
+            createPositionDouble({ symbol: 'BULL.HK', quantity: 100, availableQuantity: 100 }),
+          ]);
+          await h.publishPositions();
+          expect(authorize()).toBeFalse();
+          return { executedOrderIds: [], quoteFailures: [] };
+        }
+
+        return { executedOrderIds: ['CURRENT-100'], quoteFailures: [] };
+      },
+    );
     expect(await h.workflow.execute(sellSignal(), currentAttempt)).toEqual({ status: 'COMPLETED' });
     expect(quoteCalls).toBe(3);
     expect(submitted).toEqual([200, 100]);
@@ -125,34 +135,30 @@ describe('ordinarySell owner', () => {
 
   it('never resubmits an accepted ID when the receipt becomes obsolete during execution', async () => {
     let submits = 0;
+
+    const tradeInstances8 = createTradeRuntimeDouble();
     const h = await harness({
-      trader: createTraderDouble({
-        executeSignals: async (_signals, authorize) => {
-          submits += 1;
-          expect(authorize()).toBeTrue();
-          h.setPositions([]);
-          await h.publishPositions();
-          expect(authorize()).toBeFalse();
-          return { executedOrderIds: ['ACCEPTED'], quoteFailures: [] };
-        },
-      }),
+      orderRecorder: tradeInstances8.orderRecorder,
+      orderExecutor: tradeInstances8.orderExecutor,
     });
+    spyOn(tradeInstances8.orderExecutor, 'executeSignals').mockImplementation(
+      async (_signals, authorize) => {
+        submits += 1;
+        expect(authorize()).toBeTrue();
+        h.setPositions([]);
+        await h.publishPositions();
+        expect(authorize()).toBeFalse();
+        return { executedOrderIds: ['ACCEPTED'], quoteFailures: [] };
+      },
+    );
     expect(await h.workflow.execute(sellSignal(), currentAttempt)).toEqual({ status: 'COMPLETED' });
     expect(submits).toBe(1);
   });
 
   it('uses the same bounded retry budget for initial missing quote and explicit final missing quote, reselecting from the original signal', async () => {
     let reads = 0;
-    const h = await harness({
-      marketDataClient: createMarketDataClientDouble({
-        getQuotes: async () => {
-          reads += 1;
-          return reads === 1
-            ? new Map()
-            : new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1')]]);
-        },
-      }),
-      trader: createTraderDouble({
+    const tradeInstances9 = createTradeRuntimeDouble({
+      orderExecutor: {
         executeSignals: async (signals, authorize) => {
           expect(authorize()).toBeTrue();
           const selected = signals[0];
@@ -164,7 +170,19 @@ describe('ordinarySell owner', () => {
             quoteFailures: [{ signal: selected, kind: 'QUOTE_MISSING' }],
           };
         },
+      },
+    });
+    const h = await harness({
+      marketDataClient: createMarketDataClientDouble({
+        getQuotes: async () => {
+          reads += 1;
+          return reads === 1
+            ? new Map()
+            : new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1')]]);
+        },
       }),
+      orderRecorder: tradeInstances9.orderRecorder,
+      orderExecutor: tradeInstances9.orderExecutor,
     });
     const first = requireRetry(await h.workflow.execute(sellSignal(), currentAttempt));
     const second = requireRetry(
@@ -183,33 +201,37 @@ describe('ordinarySell owner', () => {
   it.each(['INVALID', 'OTHER_SKIP', 'ACCEPTED', 'STALE_EPOCH'] as const)(
     '%s never turns the result into a quote retry',
     async (scenario) => {
+      const tradeInstances10 = createTradeRuntimeDouble();
       const h = await harness({
-        trader: createTraderDouble({
-          executeSignals: async (signals) => {
-            const selected = signals[0];
-            if (selected === undefined) throw new Error('expected selected input');
-
-            if (scenario === 'STALE_EPOCH')
-              await h.snapshot.requestClear({
-                reason: 'DAY_CUT',
-                dayEpoch: h.snapshot.getView().token.dayEpoch + 1,
-              });
-
-            return {
-              executedOrderIds: scenario === 'ACCEPTED' ? ['ACCEPTED'] : [],
-              quoteFailures:
-                scenario === 'OTHER_SKIP'
-                  ? []
-                  : [
-                      {
-                        signal: selected,
-                        kind: scenario === 'INVALID' ? 'QUOTE_INVALID' : 'QUOTE_MISSING',
-                      },
-                    ],
-            };
-          },
-        }),
+        orderRecorder: tradeInstances10.orderRecorder,
+        orderExecutor: tradeInstances10.orderExecutor,
       });
+      spyOn(tradeInstances10.orderExecutor, 'executeSignals').mockImplementation(
+        async (signals) => {
+          const selected = signals[0];
+          if (selected === undefined) throw new Error('expected selected input');
+
+          if (scenario === 'STALE_EPOCH')
+            await h.snapshot.requestClear({
+              reason: 'DAY_CUT',
+              dayEpoch: h.snapshot.getView().token.dayEpoch + 1,
+            });
+
+          return {
+            executedOrderIds: scenario === 'ACCEPTED' ? ['ACCEPTED'] : [],
+            quoteFailures:
+              scenario === 'OTHER_SKIP'
+                ? []
+                : [
+                    {
+                      signal: selected,
+                      kind: scenario === 'INVALID' ? 'QUOTE_INVALID' : 'QUOTE_MISSING',
+                    },
+                  ],
+          };
+        },
+      );
+
       expect(await h.workflow.execute(sellSignal(), currentAttempt)).toEqual({
         status: 'COMPLETED',
       });
@@ -218,13 +240,17 @@ describe('ordinarySell owner', () => {
 
   it('keeps unavailable-but-held facts intact and turns quantity zero into HOLD', async () => {
     let submits = 0;
-    const h = await harness({
-      trader: createTraderDouble({
+    const tradeInstances11 = createTradeRuntimeDouble({
+      orderExecutor: {
         executeSignals: async () => {
           submits += 1;
           return { executedOrderIds: ['INVALID'], quoteFailures: [] };
         },
-      }),
+      },
+    });
+    const h = await harness({
+      orderRecorder: tradeInstances11.orderRecorder,
+      orderExecutor: tradeInstances11.orderExecutor,
     });
     h.setPositions([
       createPositionDouble({ symbol: 'BULL.HK', quantity: 500, availableQuantity: 0 }),
@@ -239,6 +265,14 @@ describe('ordinarySell owner', () => {
 
   it('blocks the original day epoch after day cut while a quote read is pending', async () => {
     let submits = 0;
+    const tradeInstances12 = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async () => {
+          submits += 1;
+          return { executedOrderIds: ['INVALID'], quoteFailures: [] };
+        },
+      },
+    });
     const h = await harness({
       marketDataClient: createMarketDataClientDouble({
         getQuotes: async () => {
@@ -249,12 +283,8 @@ describe('ordinarySell owner', () => {
           return new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1')]]);
         },
       }),
-      trader: createTraderDouble({
-        executeSignals: async () => {
-          submits += 1;
-          return { executedOrderIds: ['INVALID'], quoteFailures: [] };
-        },
-      }),
+      orderRecorder: tradeInstances12.orderRecorder,
+      orderExecutor: tradeInstances12.orderExecutor,
     });
     expect(await h.workflow.execute(sellSignal(), currentAttempt)).toEqual({ status: 'COMPLETED' });
     expect(submits).toBe(0);
@@ -263,9 +293,20 @@ describe('ordinarySell owner', () => {
   it('passes original trading calendar and remaining cap into timeout selection, without BUY risk calls', async () => {
     const calendar = new Map([['2026-02-16', { isTradingDay: true, isHalfDay: false }]]);
     let selections = 0;
+    const tradeInstances13 = createTradeRuntimeDouble({
+      orderExecutor: {
+        canTradeNow: () => {
+          throw new Error('SELL must not enter BUY checks');
+        },
+        executeSignals: async () => {
+          throw new Error('HOLD must not execute');
+        },
+      },
+    });
     const h = await harness({
       config: { smartCloseEnabled: true, smartCloseTimeoutMinutes: 30 },
       getTradingCalendar: () => ({ isHalfDay: false, tradingCalendarSnapshot: calendar }),
+
       orderRecorder: createOrderRecorderDouble({
         getCostBasis: () => ({ costAmount: '1000', quantity: 500 }),
         selectSellableOrders: (params) => {
@@ -279,14 +320,7 @@ describe('ordinarySell owner', () => {
           return { orders: [], totalQuantity: 0 };
         },
       }),
-      trader: createTraderDouble({
-        canTradeNow: () => {
-          throw new Error('SELL must not enter BUY checks');
-        },
-        executeSignals: async () => {
-          throw new Error('HOLD must not execute');
-        },
-      }),
+      orderExecutor: tradeInstances13.orderExecutor,
     });
     expect(await h.workflow.execute(sellSignal(), currentAttempt)).toEqual({ status: 'COMPLETED' });
     expect(selections).toBe(2);
@@ -343,13 +377,17 @@ describe('ordinarySell owner', () => {
       cause: new Error('network'),
     });
     let calls = 0;
-    const h = await harness({
-      trader: createTraderDouble({
+    const tradeInstances14 = createTradeRuntimeDouble({
+      orderExecutor: {
         executeSignals: async () => {
           calls += 1;
           throw unknown;
         },
-      }),
+      },
+    });
+    const h = await harness({
+      orderRecorder: tradeInstances14.orderRecorder,
+      orderExecutor: tradeInstances14.orderExecutor,
     });
     await rejects(h.workflow.execute(sellSignal(), currentAttempt), (error) => error === unknown);
     expect(calls).toBe(1);

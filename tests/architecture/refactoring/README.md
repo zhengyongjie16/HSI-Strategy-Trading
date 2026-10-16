@@ -1,4 +1,10 @@
-# P4.5 分阶段静态保护网
+# P6 分阶段静态保护网
+
+## 当前门禁
+
+`baseline.stage` 为 **P6**；`src` 与 `tests` 同范围扫描，原 occurrence、计数、cutoff 与 sourcePhysical 截止不变，所有到期债务必须归零。宽契约与旧根目录不得通过重命名、转发或测试目录豁免保活。`numericProbe` 保留历史 `core/trader`、`types/trader` 的真实审计身份；新增测试同时校验原多重集合额度、原截止与当前 `TradeRuntime`/窄能力的金融投影。离线 fixture 的动态加载只允许固定模块 query 隔离，或先经 realpath、source/dist 布局与具名入口校验的测试 loader；不授权任意动态路径。
+
+## P4.5 离线验收记录（历史，不作为 P6 完成证明）
 
 `baseline.stage` 为 **P4.5**。截至 P4.5 的能力与物理到期 occurrence 按原冻结记录评估；扫描失败表示源/测试仍有债，定向绿灯不替代最终全量验收。此次仅将 `baseline.json` 顶层 stage 从 P3F 推进为 P4.5，历史 rows/count/cutoff/sourcePhysical* 与全部 allowance 保持原样，不重采 `baseline.json`、`unresolved.json` 或 P0 原始审计数据。单一验证执行者已完成 P4/P4.5 最终离线验收：完整测试 **2881 pass / 0 fail**，九类债务全为 **0**，详见下文与实施计划 §20。P5/P6 未执行且不在本轮范围；本轮不发布、不开门、不连接实盘。
 

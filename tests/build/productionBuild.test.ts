@@ -1,3 +1,5 @@
+import { importFixtureModule } from '../helpers/importFixtureModule.js';
+
 /** 正式 clean + tsc 离线集成：真实 src 与静态 JSON，不创建 SDK context 或运行应用。 */
 import assert from 'node:assert/strict';
 import { afterEach, expect, test } from 'bun:test';
@@ -24,7 +26,7 @@ import type {
   createBuyTaskQueue,
   createSellTaskQueue,
 } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
-import type { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import type { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
 import type { createSelectedStrategy } from '../../src/app/startup/createSelectedStrategy.js';
 import type { prepareStrategy } from '../../src/app/startup/prepareStrategy.js';
 import type { PrepareStrategyDeps } from '../../src/app/startup/types.js';
@@ -288,8 +290,10 @@ export const strategyDefinition: StrategyDefinition = Object.freeze({
     `
     import { prepareStrategy } from './dist/src/app/startup/prepareStrategy.js';
     import { lstat, readdir, realpath } from 'node:fs/promises';
+    import { importFixtureModule } from ${JSON.stringify(pathToFileURL(nodePath.join(project, 'tests/helpers/importFixtureModule.ts')).href)};
+    const root = ${JSON.stringify(root)};
     const selection = await prepareStrategy({ env: { ACTIVE_STRATEGY_ID: process.argv[2] } }, {
-      lstat, realpath, readDirectory: readdir, importModule: href => import(href)
+      lstat, realpath, readDirectory: readdir, importModule: href => importFixtureModule(root, href)
     });
     console.log(selection.strategyId);
   `,
@@ -344,7 +348,7 @@ async function loadReplaceabilityRuntime(
   const extension = mode === 'source' ? '.ts' : '.js';
   const load = async <TModule extends object>(relativePath: string): Promise<TModule> => {
     const href = pathToFileURL(nodePath.join(sourceRoot, relativePath + extension)).href;
-    const module: unknown = await import(href);
+    const module: unknown = await importFixtureModule(root, href);
     return module as TModule;
   };
   const [startup, selected, cleanup, business, queue, termination, registry] = await Promise.all([
@@ -360,7 +364,7 @@ async function loadReplaceabilityRuntime(
       'runtime/asyncProgram/tradeTaskQueue/index',
     ),
     load<Pick<ReplaceabilityRuntime, 'createTerminationRuntime'>>(
-      'app/runtime/createTerminationRuntime',
+      'runtime/lifecycle/terminationRuntime',
     ),
     load<Pick<ReplaceabilityRuntime, 'createSymbolRegistry'>>('domain/seat/symbolRegistry'),
   ]);
@@ -397,7 +401,7 @@ async function runReplaceabilitySmoke(
     readDirectory: (path: string) => readdir(path),
     importModule: async (href: string): Promise<unknown> => {
       imported.push(fileURLToPath(href));
-      const module: unknown = await import(href);
+      const module: unknown = await importFixtureModule(root, href);
       return module;
     },
   };

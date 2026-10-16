@@ -1,3 +1,8 @@
+import { createRuntimeStateFixtures } from '../helpers/runtimeStateFixtures.js';
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { nowMonotonicMs, wait } from '../../src/infrastructure/time/index.js';
+
 /**
  * 单实例成交后业务闭环：native tracking → O/Daily → H commit → 实际 Quote 订阅 ack → completion → R1/N1 → ready。
  * 复用既有离线 broker/execution fixture，只在真实订阅 mutation 返回前设屏障，不手工推进 readiness 或完成 episode。
@@ -15,7 +20,7 @@ import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitC
 import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
 import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
 import { createMixedTradeLogRepository } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
-import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
+import { createQuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscriptionRuntime/index.js';
 import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
 import {
   createLoggerDouble,
@@ -23,7 +28,7 @@ import {
   createMonitorConfigDouble,
   createMonitorContextDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
@@ -67,7 +72,11 @@ test('same native tracking owners wait for real position subscription ack before
   const tradingConfig = createTradingConfig({ monitor: config });
   const symbolRegistry = createSymbolRegistryDouble();
   const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => root });
-  const rateLimiter = createRateLimiter();
+  const rateLimiter = createRateLimiter({
+    wait: wait,
+    nowMonotonicMs: nowMonotonicMs,
+    logger: createLoggerDouble(),
+  });
   const account = native.createAccountService({ rateLimiter });
   native.setAccountBalance({
     currency: 'HKD',
@@ -98,11 +107,13 @@ test('same native tracking owners wait for real position subscription ack before
   ]);
   let monitor: ReturnType<typeof native.createMonitor> | null = null;
   let quotes: ReturnType<typeof createQuoteSubscriptionRuntime> | null = null;
-  const trader = createTraderDouble({
-    hasPendingProtectiveLiquidationOrders: (direction) => {
-      if (monitor === null) throw new Error('native tracking owner not assembled');
+  const tradeRuntime = createTradeRuntimeDouble({
+    orderMonitor: {
+      hasPendingProtectiveLiquidationOrders: (direction) => {
+        if (monitor === null) throw new Error('native tracking owner not assembled');
 
-      return monitor.hasPendingProtectiveLiquidationOrders(direction);
+        return monitor.hasPendingProtectiveLiquidationOrders(direction);
+      },
     },
   });
   const f = createExecutionFixture({
@@ -111,7 +122,7 @@ test('same native tracking owners wait for real position subscription ack before
     createRecorder: native.createRecorder,
     readPort: account,
     persistProgress: repository.appendExecutionProgressIdempotent,
-    getTrader: () => trader,
+    getTradeRuntime: () => tradeRuntime,
     onPositionsCommitted: async (token) => {
       if (quotes === null) throw new Error('subscription owner not assembled');
 
@@ -138,7 +149,12 @@ test('same native tracking owners wait for real position subscription ack before
     },
   });
   const cooldown = createLiquidationCooldownTracker();
-  const lastState = { allTradingSymbols: new Set<string>() };
+  const stateFixtures = createRuntimeStateFixtures({
+    tradingTimeState: {},
+    lifecycleState: {},
+    tradingCalendarState: {},
+    quoteSubscriptionState: { allTradingSymbols: new Set<string>() },
+  });
   const market = createMarketDataClientDouble({
     subscribeSymbols: async (symbols) => {
       if (symbols.includes('POSITION-ONLY.HK')) {
@@ -154,11 +170,11 @@ test('same native tracking owners wait for real position subscription ack before
     tradingConfig,
     symbolRegistry,
     marketDataClient: market,
-    trader: {
-      getOrderHoldSymbols: f.holds.getHoldSymbols,
+    orderHoldRegistry: {
+      getHoldSymbols: f.holds.getHoldSymbols,
       onOrderHoldSymbolsChanged: f.holds.onOrderHoldSymbolsChanged,
     },
-    lastState,
+    ...stateFixtures,
     snapshot: f.snapshot,
     termination: f.termination,
   });
@@ -183,6 +199,10 @@ test('same native tracking owners wait for real position subscription ack before
   });
 
   monitor = native.createMonitor({
+    logger: createLoggerDouble(),
+    wait: wait,
+    requestExternalApi: wrapExternalApiRequest,
+    scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
     now: () => new Date(sellTime),
     scheduleTimer: setTimeout,
     clearTimer: clearTimeout,
@@ -301,7 +321,9 @@ test('same native tracking owners wait for real position subscription ack before
     expect(f.sink.isCurrent(baseline)).toBeFalse();
     expect(issuedReady).toBeFalse();
     expect(f.sink.getStatus().currentVersion).toBeLessThan(f.sink.getStatus().staleVersion);
-    expect(lastState.allTradingSymbols.has('POSITION-ONLY.HK')).toBeFalse();
+    expect(
+      stateFixtures.quoteSubscriptionState.allTradingSymbols.has('POSITION-ONLY.HK'),
+    ).toBeFalse();
     expect(repository.loadExecutionProgressRecords(dayKey)).toHaveLength(1);
     expect(repository.loadCompletionRecords(dayKey)).toEqual([]);
     expect(f.episode.getInProgressEpisodes()).toEqual([
@@ -324,7 +346,10 @@ test('same native tracking owners wait for real position subscription ack before
     subscriptionAck.resolve(null);
     const ready = await pendingReady;
     expect(f.sink.isCurrent(ready)).toBeTrue();
-    expect(lastState.allTradingSymbols.has('POSITION-ONLY.HK')).toBeTrue();
+    expect(
+      stateFixtures.quoteSubscriptionState.allTradingSymbols.has('POSITION-ONLY.HK'),
+    ).toBeTrue();
+
     expect(trace).toEqual([
       'subscription-issued',
       'subscription-ack',

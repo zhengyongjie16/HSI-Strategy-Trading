@@ -1,3 +1,4 @@
+import type { TradingDayInfo } from './tradingCalendar.js';
 import type { NormalizedCandle } from './data.js';
 import type { Quote } from './quote.js';
 
@@ -43,16 +44,6 @@ export type CandlestickPeriod =
 export type TradingDaysResult = {
   readonly tradingDays: ReadonlyArray<string>;
   readonly halfTradingDays: ReadonlyArray<string>;
-};
-
-/**
- * 单日交易门禁事实。
- * 数据来源：market adapter 查询交易日历后得到的交易日与半日市标记。
- * 使用范围：启动、生命周期、时间唤醒与业务门禁。
- */
-export type TradingDayInfo = {
-  readonly isTradingDay: boolean;
-  readonly isHalfDay: boolean;
 };
 
 /**

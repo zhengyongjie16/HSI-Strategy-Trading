@@ -1,3 +1,18 @@
+import type { TradeRuntimeOverrides } from '../../helpers/types.js';
+
+import {
+  createLoggerDouble,
+  createWarrantDistanceInfoDouble,
+  createMarketDataClientDouble,
+  createMonitorConfigDouble,
+  createMonitorContextDouble,
+  createOrderRecorderDouble,
+  createPositionDouble,
+  createRiskCheckerDouble,
+  createSymbolRegistryDouble,
+  createTradeRuntimeDouble,
+} from '../../helpers/testDoubles.js';
+
 /**
  * switchStateMachine 业务测试
  *
@@ -25,7 +40,8 @@ import {
   createSignalBuilder,
   resolveDirectionSymbols,
 } from '../../../src/application/seatSwitch/signalBuilder.js';
-import { calculateTradingDurationMsBetween, getHKDateKey } from '../../../src/utils/time/index.js';
+import { calculateTradingDurationMsBetween } from '../../../src/domain/tradingSession/index.js';
+import { getHKDateKey } from '../../../src/utils/time/index.js';
 import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
@@ -36,21 +52,12 @@ import type {
 } from '../../../src/domain/seat/types.js';
 import type { SwitchStateMachineDeps } from '../../../src/application/seatSwitch/types.js';
 
-import type { OrderRecorder, Trader, PendingOrder } from '../../../src/types/services.js';
+import type { OrderRecorder } from '../../../src/types/orderRecorder.js';
+import type { PendingOrder } from '../../../src/types/orderReadMetadata.js';
 import type { Quote } from '../../../src/types/quote.js';
-import type { SignalCallerAuthorization } from '../../../src/types/trader.js';
+import type { SignalCallerAuthorization } from '../../../src/types/orderExecutionPorts.js';
 import { exactCompare } from '../../../src/utils/numeric/exact.js';
-import {
-  createWarrantDistanceInfoDouble,
-  createMarketDataClientDouble,
-  createMonitorConfigDouble,
-  createMonitorContextDouble,
-  createOrderRecorderDouble,
-  createPositionDouble,
-  createRiskCheckerDouble,
-  createSymbolRegistryDouble,
-  createTraderDouble,
-} from '../../helpers/testDoubles.js';
+
 import {
   captureSwitchSeatAuthorization,
   createDirectionalAutoSearchPolicy,
@@ -113,7 +120,7 @@ function createDeferred<T = void>(): {
 function createLongSwitchAdmissionHarness(params: {
   readonly nowMs: number;
   readonly now?: () => Date;
-  readonly traderOverrides?: Partial<Trader>;
+  readonly tradeRuntimeOverrides?: TradeRuntimeOverrides;
   readonly orderRecorder?: OrderRecorder;
   readonly findBestWarrant?: SwitchStateMachineDeps['candidateSearch']['findCandidate'];
   readonly marketDataClient?: SwitchStateMachineDeps['marketDataClient'];
@@ -147,12 +154,15 @@ function createLongSwitchAdmissionHarness(params: {
     getHKDateKey,
   });
   const signalBuilder = createSignalBuilder({ now });
-  const trader = createTraderDouble(params.traderOverrides);
+  const tradeRuntime = createTradeRuntimeDouble(params.tradeRuntimeOverrides);
   const machine = createSwitchStateMachine({
     autoSearchConfig: monitorConfig.autoSearchConfig,
     monitorSymbol: 'HSI.HK',
     symbolRegistry,
-    trader,
+    cacheManager: tradeRuntime.cacheManager,
+    orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+    orderMonitor: tradeRuntime.orderMonitor,
+    orderExecutor: tradeRuntime.orderExecutor,
     orderRecorder: params.orderRecorder ?? createOrderRecorderDouble(),
     riskChecker: createRiskCheckerDouble({
       getWarrantDistanceInfo: () =>
@@ -234,14 +244,16 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       const harness = createLongSwitchAdmissionHarness({
         nowMs,
         now: () => new Date(nowMs),
-        traderOverrides: {
-          getPendingOrders: async () => [],
-          executeSignals: async (signals) => {
-            if (stage === 'REBUY' && signals[0]?.action === 'SELLCALL')
-              return { quoteFailures: [], executedOrderIds: ['SELL-FILLED'] };
+        tradeRuntimeOverrides: {
+          cacheManager: { getPendingOrders: async () => [] },
+          orderExecutor: {
+            executeSignals: async (signals) => {
+              if (stage === 'REBUY' && signals[0]?.action === 'SELLCALL')
+                return { quoteFailures: [], executedOrderIds: ['SELL-FILLED'] };
 
-            rejectedSubmissions += 1;
-            return { quoteFailures: [], executedOrderIds: [] };
+              rejectedSubmissions += 1;
+              return { quoteFailures: [], executedOrderIds: [] };
+            },
           },
         },
         orderRecorder: createOrderRecorderDouble({
@@ -360,7 +372,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       monitorConfig,
       symbolRegistry,
       marketDataClient: createMarketDataClientDouble(),
-      trader: createTraderDouble(),
+      ...createTradeRuntimeDouble(),
       orderRecorder: createOrderRecorderDouble(),
       riskChecker,
       candidateSearch: {
@@ -374,6 +386,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       clock: { now: () => new Date(nowMs) },
     });
     const dispatcher = createSeatRuntimeCleanupDispatcher({
+      logger: createLoggerDouble(),
       symbolRegistry,
       monitorContext: createMonitorContextDouble({
         config: monitorConfig,
@@ -383,7 +396,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       }),
       buyTaskQueue: createBuyTaskQueue(),
       sellTaskQueue: createSellTaskQueue(),
-      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(),
+      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
     });
     const observedListeners: string[] = [];
 
@@ -484,9 +497,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const harness = createLongSwitchAdmissionHarness({
       nowMs,
-      traderOverrides: {
-        getPendingOrders: async () => {
-          throw pendingOrderError;
+      tradeRuntimeOverrides: {
+        cacheManager: {
+          getPendingOrders: async () => {
+            throw pendingOrderError;
+          },
         },
       },
     });
@@ -517,9 +532,11 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
     const harness = createLongSwitchAdmissionHarness({
       nowMs,
-      traderOverrides: {
-        getPendingOrders: async () => {
-          throw new Error('pending orders unavailable');
+      tradeRuntimeOverrides: {
+        cacheManager: {
+          getPendingOrders: async () => {
+            throw new Error('pending orders unavailable');
+          },
         },
       },
     });
@@ -557,8 +574,8 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const harness = createLongSwitchAdmissionHarness({
       nowMs,
-      traderOverrides: {
-        getPendingOrders: async () => await pendingOrders,
+      tradeRuntimeOverrides: {
+        cacheManager: { getPendingOrders: async () => await pendingOrders },
       },
     });
 
@@ -603,21 +620,25 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     let quoteCalls = 0;
     const harness = createLongSwitchAdmissionHarness({
       nowMs,
-      traderOverrides: {
-        getPendingOrders: async () => [],
-        cancelOrder: async () => {
-          cancelCalls += 1;
-          return {
-            kind: 'CANCEL_CONFIRMED',
-            relatedBuyOrderIds: null,
-          };
+      tradeRuntimeOverrides: {
+        cacheManager: { getPendingOrders: async () => [] },
+        orderMonitor: {
+          cancelOrder: async () => {
+            cancelCalls += 1;
+            return {
+              kind: 'CANCEL_CONFIRMED',
+              relatedBuyOrderIds: null,
+            };
+          },
         },
-        executeSignals: async (_signals, callerAuthorization) => {
-          expect(typeof callerAuthorization).toBe('function');
-          expect(callerAuthorization()).toBe(true);
+        orderExecutor: {
+          executeSignals: async (_signals, callerAuthorization) => {
+            expect(typeof callerAuthorization).toBe('function');
+            expect(callerAuthorization()).toBe(true);
 
-          executeCalls += 1;
-          return { quoteFailures: [], executedOrderIds: ['ORDER-1'] };
+            executeCalls += 1;
+            return { quoteFailures: [], executedOrderIds: ['ORDER-1'] };
+          },
         },
       },
       marketDataClient: createMarketDataClientDouble({
@@ -679,18 +700,20 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     let pendingOrderCalls = 0;
     const harness = createLongSwitchAdmissionHarness({
       nowMs,
-      traderOverrides: {
-        getPendingOrders: async () => {
-          pendingOrderCalls += 1;
-          if (pendingOrderCalls === 2) {
-            throw await createExternalApiRequestError({
-              operation: 'test.pendingOrders',
-              attempts: 1,
-              cause: new Error('pending orders unavailable'),
-            });
-          }
+      tradeRuntimeOverrides: {
+        cacheManager: {
+          getPendingOrders: async () => {
+            pendingOrderCalls += 1;
+            if (pendingOrderCalls === 2) {
+              throw await createExternalApiRequestError({
+                operation: 'test.pendingOrders',
+                attempts: 1,
+                cause: new Error('pending orders unavailable'),
+              });
+            }
 
-          return [];
+            return [];
+          },
         },
       },
     });
@@ -744,14 +767,16 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const harness = createLongSwitchAdmissionHarness({
       nowMs: clock.nowMs,
       now: () => new Date(clock.nowMs),
-      traderOverrides: {
-        getPendingOrders: async () => [],
-        executeSignals: async (_signals, callerAuthorization) => {
-          expect(typeof callerAuthorization).toBe('function');
-          expect(callerAuthorization()).toBe(true);
+      tradeRuntimeOverrides: {
+        cacheManager: { getPendingOrders: async () => [] },
+        orderExecutor: {
+          executeSignals: async (_signals, callerAuthorization) => {
+            expect(typeof callerAuthorization).toBe('function');
+            expect(callerAuthorization()).toBe(true);
 
-          executeCalls += 1;
-          return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-1'] };
+            executeCalls += 1;
+            return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-1'] };
+          },
         },
       },
       marketDataClient: createMarketDataClientDouble({
@@ -829,19 +854,21 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const harness = createLongSwitchAdmissionHarness({
       nowMs: clock.nowMs,
       now: () => new Date(clock.nowMs),
-      traderOverrides: {
-        getPendingOrders: async () => [],
-        executeSignals: async (signals, callerAuthorization) => {
-          expect(typeof callerAuthorization).toBe('function');
-          expect(callerAuthorization()).toBe(true);
+      tradeRuntimeOverrides: {
+        cacheManager: { getPendingOrders: async () => [] },
+        orderExecutor: {
+          executeSignals: async (signals, callerAuthorization) => {
+            expect(typeof callerAuthorization).toBe('function');
+            expect(callerAuthorization()).toBe(true);
 
-          const action = signals[0]?.action;
-          if (action === undefined) {
-            throw new Error('expected switch signal');
-          }
+            const action = signals[0]?.action;
+            if (action === undefined) {
+              throw new Error('expected switch signal');
+            }
 
-          executedActions.push(action);
-          return { quoteFailures: [], executedOrderIds: [`${action}-ORDER-1`] };
+            executedActions.push(action);
+            return { quoteFailures: [], executedOrderIds: [`${action}-ORDER-1`] };
+          },
         },
       },
       orderRecorder: createOrderRecorderDouble({
@@ -954,13 +981,15 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const harness = createLongSwitchAdmissionHarness({
       nowMs,
-      traderOverrides: {
-        getPendingOrders: async () => [],
-        executeSignals: async (_signals, callerAuthorization) => {
-          expect(typeof callerAuthorization).toBe('function');
-          expect(callerAuthorization()).toBe(true);
+      tradeRuntimeOverrides: {
+        cacheManager: { getPendingOrders: async () => [] },
+        orderExecutor: {
+          executeSignals: async (_signals, callerAuthorization) => {
+            expect(typeof callerAuthorization).toBe('function');
+            expect(callerAuthorization()).toBe(true);
 
-          throw submitError;
+            throw submitError;
+          },
         },
       },
       marketDataClient: createMarketDataClientDouble({
@@ -1042,7 +1071,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader: createTraderDouble(),
+      ...createTradeRuntimeDouble(),
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -1130,7 +1159,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader: createTraderDouble(),
+      ...createTradeRuntimeDouble(),
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -1221,7 +1250,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader: createTraderDouble(),
+      ...createTradeRuntimeDouble(),
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -1312,7 +1341,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader: createTraderDouble(),
+      ...createTradeRuntimeDouble(),
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -1410,7 +1439,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader: createTraderDouble(),
+      ...createTradeRuntimeDouble(),
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -1506,21 +1535,26 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     let executeCalls = 0;
-    const trader = createTraderDouble({
-      executeSignals: async (_signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        executeCalls += 1;
-        return { quoteFailures: [], executedOrderIds: ['EXECUTED-ORDER-1'] };
+          executeCalls += 1;
+          return { quoteFailures: [], executedOrderIds: ['EXECUTED-ORDER-1'] };
+        },
       },
-      getPendingOrders: async () => [],
+      cacheManager: { getPendingOrders: async () => [] },
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -1608,29 +1642,31 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       symbol: string | null;
       quantity: number | null;
     }> = [];
-    const trader = createTraderDouble({
-      executeSignals: async (signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        const signal = signals[0];
-        expect(signal?.executionOrigin).toBe(
-          signal?.action === 'SELLCALL' ? 'SWITCH_MOVE' : 'SWITCH_REBUY',
-        );
+          const signal = signals[0];
+          expect(signal?.executionOrigin).toBe(
+            signal?.action === 'SELLCALL' ? 'SWITCH_MOVE' : 'SWITCH_REBUY',
+          );
 
-        executedActions.push({
-          action: signal?.action ?? null,
-          symbol: signal?.symbol ?? null,
-          quantity: signal?.quantity ?? null,
-        });
+          executedActions.push({
+            action: signal?.action ?? null,
+            symbol: signal?.symbol ?? null,
+            quantity: signal?.quantity ?? null,
+          });
 
-        if (signal?.action === 'SELLCALL') {
-          return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-1'] };
-        }
+          if (signal?.action === 'SELLCALL') {
+            return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-1'] };
+          }
 
-        return { quoteFailures: [], executedOrderIds: ['BUY-ORDER-1'] };
+          return { quoteFailures: [], executedOrderIds: ['BUY-ORDER-1'] };
+        },
       },
-      getPendingOrders: async () => [],
+      cacheManager: { getPendingOrders: async () => [] },
     });
     const orderRecorder = createOrderRecorderDouble({
       getSellRecordByOrderId: (orderId) =>
@@ -1650,7 +1686,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -1811,19 +1850,21 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const executedActions: string[] = [];
     const quoteRequests: string[][] = [];
-    const trader = createTraderDouble({
-      executeSignals: async (signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        const signal = signals[0];
-        if (signal?.action) {
-          executedActions.push(signal.action);
-        }
+          const signal = signals[0];
+          if (signal?.action) {
+            executedActions.push(signal.action);
+          }
 
-        return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-1'] };
+          return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-1'] };
+        },
       },
-      getPendingOrders: async () => [],
+      cacheManager: { getPendingOrders: async () => [] },
     });
     const orderRecorder = createOrderRecorderDouble({
       getSellRecordByOrderId: (orderId) =>
@@ -1861,7 +1902,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -1949,19 +1993,21 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const quoteRequests: string[][] = [];
-    const trader = createTraderDouble({
-      executeSignals: async (signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        const signal = signals[0];
-        if (signal?.action === 'SELLCALL') {
-          return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-1'] };
-        }
+          const signal = signals[0];
+          if (signal?.action === 'SELLCALL') {
+            return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-1'] };
+          }
 
-        return { quoteFailures: [], executedOrderIds: [] };
+          return { quoteFailures: [], executedOrderIds: [] };
+        },
       },
-      getPendingOrders: async () => [],
+      cacheManager: { getPendingOrders: async () => [] },
     });
     const orderRecorder = createOrderRecorderDouble({
       getSellRecordByOrderId: (orderId) =>
@@ -2005,7 +2051,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -2113,36 +2162,45 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     }
 
     let executeCalls = 0;
-    const trader = createTraderDouble({
-      getPendingOrders: async () => [
-        {
-          orderId: 'BUY-PENDING-1',
-          symbol: 'OLD_BULL.HK',
-          side: 'BUY',
-          submittedPrice: '1',
-          quantity: 100,
-          executedQuantity: 0,
-          status: pendingStatus,
-          orderType: 'ELO',
-        },
-      ],
-      cancelOrder: async () => ({
-        kind: 'UNKNOWN_FAILURE',
-        errorCode: null,
-      }),
-      executeSignals: async (_signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+    const tradeRuntime = createTradeRuntimeDouble({
+      cacheManager: {
+        getPendingOrders: async () => [
+          {
+            orderId: 'BUY-PENDING-1',
+            symbol: 'OLD_BULL.HK',
+            side: 'BUY',
+            submittedPrice: '1',
+            quantity: 100,
+            executedQuantity: 0,
+            status: pendingStatus,
+            orderType: 'ELO',
+          },
+        ],
+      },
+      orderMonitor: {
+        cancelOrder: async () => ({
+          kind: 'UNKNOWN_FAILURE',
+          errorCode: null,
+        }),
+      },
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        executeCalls += 1;
-        return { quoteFailures: [], executedOrderIds: ['EXECUTED-ORDER-1'] };
+          executeCalls += 1;
+          return { quoteFailures: [], executedOrderIds: ['EXECUTED-ORDER-1'] };
+        },
       },
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -2263,44 +2321,53 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const canceledOrderIds: string[] = [];
     let pendingOrdersCall = 0;
     let executeCalls = 0;
-    const trader = createTraderDouble({
-      getPendingOrders: async () => {
-        pendingOrdersCall += 1;
-        if (pendingOrdersCall <= 2) {
-          return [
-            ...ignoredOrders,
-            {
-              orderId: 'BUY-PENDING-ACCEPTED',
-              symbol: 'OLD_BULL.HK',
-              side: 'BUY',
-              submittedPrice: '1',
-              quantity: 100,
-              executedQuantity: 0,
-              status: pendingStatus,
-              orderType: 'ELO',
-            },
-          ];
-        }
+    const tradeRuntime = createTradeRuntimeDouble({
+      cacheManager: {
+        getPendingOrders: async () => {
+          pendingOrdersCall += 1;
+          if (pendingOrdersCall <= 2) {
+            return [
+              ...ignoredOrders,
+              {
+                orderId: 'BUY-PENDING-ACCEPTED',
+                symbol: 'OLD_BULL.HK',
+                side: 'BUY',
+                submittedPrice: '1',
+                quantity: 100,
+                executedQuantity: 0,
+                status: pendingStatus,
+                orderType: 'ELO',
+              },
+            ];
+          }
 
-        return ignoredOrders;
+          return ignoredOrders;
+        },
       },
-      cancelOrder: async (orderId) => {
-        canceledOrderIds.push(orderId);
-        return { kind: 'CANCEL_CONFIRMED', relatedBuyOrderIds: null };
+      orderMonitor: {
+        cancelOrder: async (orderId) => {
+          canceledOrderIds.push(orderId);
+          return { kind: 'CANCEL_CONFIRMED', relatedBuyOrderIds: null };
+        },
       },
-      executeSignals: async (_signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        executeCalls += 1;
-        return { quoteFailures: [], executedOrderIds: ['EXECUTED-ORDER-1'] };
+          executeCalls += 1;
+          return { quoteFailures: [], executedOrderIds: ['EXECUTED-ORDER-1'] };
+        },
       },
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -2421,41 +2488,48 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     }
 
     let pendingOrdersCall = 0;
-    const trader = createTraderDouble({
-      getPendingOrders: async () => {
-        pendingOrdersCall += 1;
-        if (pendingOrdersCall <= 2) {
-          return [
-            {
-              orderId: 'BUY-PENDING-FILLED',
-              symbol: 'OLD_BULL.HK',
-              side: 'BUY',
-              submittedPrice: '1',
-              quantity: 100,
-              executedQuantity: 0,
-              status: pendingStatus,
-              orderType: 'ELO',
-            },
-          ];
-        }
+    const tradeRuntime = createTradeRuntimeDouble({
+      cacheManager: {
+        getPendingOrders: async () => {
+          pendingOrdersCall += 1;
+          if (pendingOrdersCall <= 2) {
+            return [
+              {
+                orderId: 'BUY-PENDING-FILLED',
+                symbol: 'OLD_BULL.HK',
+                side: 'BUY',
+                submittedPrice: '1',
+                quantity: 100,
+                executedQuantity: 0,
+                status: pendingStatus,
+                orderType: 'ELO',
+              },
+            ];
+          }
 
-        return [];
-      },
-      cancelOrder: async () => ({
-        kind: 'ALREADY_CLOSED',
-        closedReason: 'FILLED',
-        relatedBuyOrderIds: null,
-        terminalExecution: {
-          submittedQuantity: 100,
-          executedQuantity: 100,
+          return [];
         },
-      }),
+      },
+      orderMonitor: {
+        cancelOrder: async () => ({
+          kind: 'ALREADY_CLOSED',
+          closedReason: 'FILLED',
+          relatedBuyOrderIds: null,
+          terminalExecution: {
+            submittedQuantity: 100,
+            executedQuantity: 100,
+          },
+        }),
+      },
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder: createOrderRecorderDouble({
         getBuyOrdersForSymbol: () => [
           {
@@ -2563,48 +2637,57 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
 
     let pendingOrdersCall = 0;
     let executeCalls = 0;
-    const trader = createTraderDouble({
-      getPendingOrders: async () => {
-        pendingOrdersCall += 1;
-        if (pendingOrdersCall <= 2) {
-          return [
-            {
-              orderId: 'BUY-PENDING-FILLED-NO-EXPOSURE',
-              symbol: 'OLD_BULL.HK',
-              side: 'BUY',
-              submittedPrice: '1',
-              quantity: 100,
-              executedQuantity: 0,
-              status: pendingStatus,
-              orderType: 'ELO',
-            },
-          ];
-        }
+    const tradeRuntime = createTradeRuntimeDouble({
+      cacheManager: {
+        getPendingOrders: async () => {
+          pendingOrdersCall += 1;
+          if (pendingOrdersCall <= 2) {
+            return [
+              {
+                orderId: 'BUY-PENDING-FILLED-NO-EXPOSURE',
+                symbol: 'OLD_BULL.HK',
+                side: 'BUY',
+                submittedPrice: '1',
+                quantity: 100,
+                executedQuantity: 0,
+                status: pendingStatus,
+                orderType: 'ELO',
+              },
+            ];
+          }
 
-        return [];
-      },
-      cancelOrder: async () => ({
-        kind: 'ALREADY_CLOSED',
-        closedReason: 'FILLED',
-        relatedBuyOrderIds: null,
-        terminalExecution: {
-          submittedQuantity: 100,
-          executedQuantity: 100,
+          return [];
         },
-      }),
-      executeSignals: async (_signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+      },
+      orderMonitor: {
+        cancelOrder: async () => ({
+          kind: 'ALREADY_CLOSED',
+          closedReason: 'FILLED',
+          relatedBuyOrderIds: null,
+          terminalExecution: {
+            submittedQuantity: 100,
+            executedQuantity: 100,
+          },
+        }),
+      },
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        executeCalls += 1;
-        return { quoteFailures: [], executedOrderIds: ['EXECUTED-ORDER-1'] };
+          executeCalls += 1;
+          return { quoteFailures: [], executedOrderIds: ['EXECUTED-ORDER-1'] };
+        },
       },
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -2705,45 +2788,51 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
 
     let pendingOrdersCall = 0;
     const executedActions: Array<string | null> = [];
-    const trader = createTraderDouble({
-      getPendingOrders: async () => {
-        pendingOrdersCall += 1;
-        if (pendingOrdersCall <= 2) {
-          return [
-            {
-              orderId: 'BUY-PENDING-FILLED-DISTANCE',
-              symbol: 'OLD_BULL.HK',
-              side: 'BUY',
-              submittedPrice: '1',
-              quantity: 100,
-              executedQuantity: 0,
-              status: pendingStatus,
-              orderType: 'ELO',
-            },
-          ];
-        }
+    const tradeRuntime = createTradeRuntimeDouble({
+      cacheManager: {
+        getPendingOrders: async () => {
+          pendingOrdersCall += 1;
+          if (pendingOrdersCall <= 2) {
+            return [
+              {
+                orderId: 'BUY-PENDING-FILLED-DISTANCE',
+                symbol: 'OLD_BULL.HK',
+                side: 'BUY',
+                submittedPrice: '1',
+                quantity: 100,
+                executedQuantity: 0,
+                status: pendingStatus,
+                orderType: 'ELO',
+              },
+            ];
+          }
 
-        return [];
-      },
-      cancelOrder: async () => ({
-        kind: 'ALREADY_CLOSED',
-        closedReason: 'FILLED',
-        relatedBuyOrderIds: null,
-        terminalExecution: {
-          submittedQuantity: 100,
-          executedQuantity: 100,
+          return [];
         },
-      }),
-      executeSignals: async (signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+      },
+      orderMonitor: {
+        cancelOrder: async () => ({
+          kind: 'ALREADY_CLOSED',
+          closedReason: 'FILLED',
+          relatedBuyOrderIds: null,
+          terminalExecution: {
+            submittedQuantity: 100,
+            executedQuantity: 100,
+          },
+        }),
+      },
+      orderExecutor: {
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        executedActions.push(signals[0]?.action ?? null);
-        if (signals[0]?.action === 'SELLCALL') {
-          return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-FILLED-PENDING'] };
-        }
+          executedActions.push(signals[0]?.action ?? null);
+          if (signals[0]?.action === 'SELLCALL') {
+            return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-FILLED-PENDING'] };
+          }
 
-        return { quoteFailures: [], executedOrderIds: ['BUY-ORDER-FILLED-PENDING'] };
+          return { quoteFailures: [], executedOrderIds: ['BUY-ORDER-FILLED-PENDING'] };
+        },
       },
     });
     const orderRecorder = createOrderRecorderDouble({
@@ -2764,7 +2853,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -2889,14 +2981,16 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     let executeCalls = 0;
-    const trader = createTraderDouble({
-      getPendingOrders: async () => [],
-      executeSignals: async (_signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+    const tradeRuntime = createTradeRuntimeDouble({
+      cacheManager: { getPendingOrders: async () => [] },
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        executeCalls += 1;
-        return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-SHOULD-NOT-HAPPEN'] };
+          executeCalls += 1;
+          return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-SHOULD-NOT-HAPPEN'] };
+        },
       },
     });
     const marketDataClient = createMarketDataClientDouble({
@@ -2922,7 +3016,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -3032,40 +3129,47 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     let pendingOrderFetchCount = 0;
     let executeCalls = 0;
-    const trader = createTraderDouble({
-      getPendingOrders: async () => {
-        pendingOrderFetchCount += 1;
-        if (pendingOrderFetchCount === 1) {
+    const tradeRuntime = createTradeRuntimeDouble({
+      cacheManager: {
+        getPendingOrders: async () => {
+          pendingOrderFetchCount += 1;
+          if (pendingOrderFetchCount === 1) {
+            return [];
+          }
+
+          const currentSeat = symbolRegistry.getSeatState('LONG');
+          symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+            symbol: 'MANUAL_BULL.HK',
+            status: 'ACTIVE',
+            lastSearchAt: currentSeat.lastSearchAt,
+            lastSwitchAt: nowMs + 1_000,
+            lastSeatActivatedAt: currentSeat.lastSeatActivatedAt ?? nowMs + 1_000,
+            callPrice: currentSeat.callPrice ?? null,
+            searchFailCountToday: currentSeat.searchFailCountToday,
+            frozenTradingDayKey: currentSeat.frozenTradingDayKey,
+          });
+
           return [];
-        }
-
-        const currentSeat = symbolRegistry.getSeatState('LONG');
-        symbolRegistry.updateSeatStateWithVersionBump('LONG', {
-          symbol: 'MANUAL_BULL.HK',
-          status: 'ACTIVE',
-          lastSearchAt: currentSeat.lastSearchAt,
-          lastSwitchAt: nowMs + 1_000,
-          lastSeatActivatedAt: currentSeat.lastSeatActivatedAt ?? nowMs + 1_000,
-          callPrice: currentSeat.callPrice ?? null,
-          searchFailCountToday: currentSeat.searchFailCountToday,
-          frozenTradingDayKey: currentSeat.frozenTradingDayKey,
-        });
-
-        return [];
+        },
       },
-      executeSignals: async (_signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+      orderExecutor: {
+        executeSignals: async (_signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        executeCalls += 1;
-        return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-SHOULD-NOT-HAPPEN'] };
+          executeCalls += 1;
+          return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-SHOULD-NOT-HAPPEN'] };
+        },
       },
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -3178,19 +3282,21 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       getHKDateKey,
     });
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
-    const trader = createTraderDouble({
-      executeSignals: async (signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        const action = signals[0]?.action ?? null;
-        if (action === 'SELLCALL') {
-          return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-BARRIER'] };
-        }
+          const action = signals[0]?.action ?? null;
+          if (action === 'SELLCALL') {
+            return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-BARRIER'] };
+          }
 
-        return { quoteFailures: [], executedOrderIds: [] };
+          return { quoteFailures: [], executedOrderIds: [] };
+        },
       },
-      getPendingOrders: async () => [],
+      cacheManager: { getPendingOrders: async () => [] },
     });
     const orderRecorder = createOrderRecorderDouble({
       getSellRecordByOrderId: (orderId) =>
@@ -3222,7 +3328,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -3327,15 +3436,17 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const executedActions: string[] = [];
-    const trader = createTraderDouble({
-      executeSignals: async (signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        executedActions.push(signals[0]?.action ?? 'UNKNOWN');
-        return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-1'] };
+          executedActions.push(signals[0]?.action ?? 'UNKNOWN');
+          return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-1'] };
+        },
       },
-      getPendingOrders: async () => [],
+      cacheManager: { getPendingOrders: async () => [] },
     });
     const orderRecorder = createOrderRecorderDouble({
       getSellRecordByOrderId: (orderId) =>
@@ -3355,7 +3466,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -3498,20 +3612,22 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const executedActions: Array<string | null> = [];
-    const trader = createTraderDouble({
-      executeSignals: async (signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        const action = signals[0]?.action ?? null;
-        executedActions.push(action);
-        if (action === 'SELLCALL') {
-          return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-1'] };
-        }
+          const action = signals[0]?.action ?? null;
+          executedActions.push(action);
+          if (action === 'SELLCALL') {
+            return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-1'] };
+          }
 
-        return { quoteFailures: [], executedOrderIds: [] };
+          return { quoteFailures: [], executedOrderIds: [] };
+        },
       },
-      getPendingOrders: async () => [],
+      cacheManager: { getPendingOrders: async () => [] },
     });
     const orderRecorder = createOrderRecorderDouble({
       getSellRecordByOrderId: (orderId) =>
@@ -3531,7 +3647,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -3651,20 +3770,22 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const executedActions: Array<string | null> = [];
 
-    const trader = createTraderDouble({
-      executeSignals: async (signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        const action = signals[0]?.action ?? null;
-        executedActions.push(action);
-        if (action === 'SELLCALL') {
-          return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-REBUY-THROW'] };
-        }
+          const action = signals[0]?.action ?? null;
+          executedActions.push(action);
+          if (action === 'SELLCALL') {
+            return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-REBUY-THROW'] };
+          }
 
-        throw new Error('rebuy submit failed');
+          throw new Error('rebuy submit failed');
+        },
       },
-      getPendingOrders: async () => [],
+      cacheManager: { getPendingOrders: async () => [] },
     });
     const orderRecorder = createOrderRecorderDouble({
       getSellRecordByOrderId: (orderId) =>
@@ -3684,7 +3805,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -3800,15 +3924,17 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const executedActions: string[] = [];
-    const trader = createTraderDouble({
-      executeSignals: async (signals, callerAuthorization) => {
-        expect(typeof callerAuthorization).toBe('function');
-        expect(callerAuthorization()).toBe(true);
+    const tradeRuntime = createTradeRuntimeDouble({
+      orderExecutor: {
+        executeSignals: async (signals, callerAuthorization) => {
+          expect(typeof callerAuthorization).toBe('function');
+          expect(callerAuthorization()).toBe(true);
 
-        executedActions.push(signals[0]?.action ?? 'UNKNOWN');
-        return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-NOTIONAL-MISS'] };
+          executedActions.push(signals[0]?.action ?? 'UNKNOWN');
+          return { quoteFailures: [], executedOrderIds: ['SELL-ORDER-NOTIONAL-MISS'] };
+        },
       },
-      getPendingOrders: async () => [],
+      cacheManager: { getPendingOrders: async () => [] },
     });
     const orderRecorder = createOrderRecorderDouble({
       getSellRecordByOrderId: () => null,
@@ -3817,7 +3943,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -3933,7 +4062,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader: createTraderDouble(),
+      ...createTradeRuntimeDouble(),
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () => ({
@@ -4021,13 +4150,15 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader: createTraderDouble({
-        executeSignals: async (_signals, callerAuthorization) => {
-          expect(typeof callerAuthorization).toBe('function');
-          expect(callerAuthorization()).toBe(true);
+      ...createTradeRuntimeDouble({
+        orderExecutor: {
+          executeSignals: async (_signals, callerAuthorization) => {
+            expect(typeof callerAuthorization).toBe('function');
+            expect(callerAuthorization()).toBe(true);
 
-          executeCalls += 1;
-          return { quoteFailures: [], executedOrderIds: ['EXECUTED-ORDER-1'] };
+            executeCalls += 1;
+            return { quoteFailures: [], executedOrderIds: ['EXECUTED-ORDER-1'] };
+          },
         },
       }),
       orderRecorder: createOrderRecorderDouble(),
@@ -4121,7 +4252,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader: createTraderDouble(),
+      ...createTradeRuntimeDouble(),
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -4211,7 +4342,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader: createTraderDouble(),
+      ...createTradeRuntimeDouble(),
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
@@ -4323,22 +4454,26 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const harness = createLongSwitchAdmissionHarness({
       nowMs: beforeTakeoverMs,
       now: () => new Date(currentNowMs),
-      traderOverrides: {
-        getPendingOrders: async () => {
-          pendingOrderReads += 1;
-          if (pendingOrderReads === 1) {
-            return [];
-          }
+      tradeRuntimeOverrides: {
+        cacheManager: {
+          getPendingOrders: async () => {
+            pendingOrderReads += 1;
+            if (pendingOrderReads === 1) {
+              return [];
+            }
 
-          pendingOrderReadStarted.resolve();
-          return await pendingOrderRead.promise;
+            pendingOrderReadStarted.resolve();
+            return await pendingOrderRead.promise;
+          },
         },
-        executeSignals: async (_signals, callerAuthorization) => {
-          expect(typeof callerAuthorization).toBe('function');
-          expect(callerAuthorization()).toBe(true);
+        orderExecutor: {
+          executeSignals: async (_signals, callerAuthorization) => {
+            expect(typeof callerAuthorization).toBe('function');
+            expect(callerAuthorization()).toBe(true);
 
-          executeSignalsCalls += 1;
-          return { quoteFailures: [], executedOrderIds: [] };
+            executeSignalsCalls += 1;
+            return { quoteFailures: [], executedOrderIds: [] };
+          },
         },
       },
     });
@@ -4387,20 +4522,22 @@ describe('P1 switch 原授权与真实ack交错', () => {
     let originalError: unknown;
     const harness = createLongSwitchAdmissionHarness({
       nowMs: 1000,
-      traderOverrides: {
-        getPendingOrders: async () => {
-          reads += 1;
-          if (reads === 1) return [];
+      tradeRuntimeOverrides: {
+        cacheManager: {
+          getPendingOrders: async () => {
+            reads += 1;
+            if (reads === 1) return [];
 
-          await pendingRead.promise;
-          try {
-            exactCompare('NaN', '0');
-          } catch (error) {
-            originalError = error;
-            throw error;
-          }
+            await pendingRead.promise;
+            try {
+              exactCompare('NaN', '0');
+            } catch (error) {
+              originalError = error;
+              throw error;
+            }
 
-          throw new Error('malformed金融输入不应通过');
+            throw new Error('malformed金融输入不应通过');
+          },
         },
       },
     });
@@ -4443,14 +4580,16 @@ describe('P1 switch 原授权与真实ack交错', () => {
     const issuedAuthorizations: SignalCallerAuthorization[] = [];
     const harness = createLongSwitchAdmissionHarness({
       nowMs: 1000,
-      traderOverrides: {
-        getPendingOrders: async () => [],
-        executeSignals: async (_signals, authorization) => {
-          expect(authorization()).toBe(true);
-          issuedAuthorizations.push(authorization);
-          submissions += 1;
-          await ack.promise;
-          return { quoteFailures: [], executedOrderIds: ['BROKER-P1-SELL'] };
+      tradeRuntimeOverrides: {
+        cacheManager: { getPendingOrders: async () => [] },
+        orderExecutor: {
+          executeSignals: async (_signals, authorization) => {
+            expect(authorization()).toBe(true);
+            issuedAuthorizations.push(authorization);
+            submissions += 1;
+            await ack.promise;
+            return { quoteFailures: [], executedOrderIds: ['BROKER-P1-SELL'] };
+          },
         },
       },
       marketDataClient: createMarketDataClientDouble({
@@ -4523,13 +4662,15 @@ describe('P1 switch 原授权与真实ack交错', () => {
     });
     const harness = createLongSwitchAdmissionHarness({
       nowMs: 1000,
-      traderOverrides: {
-        getPendingOrders: async () => [],
-        executeSignals: async (_signals, authorization) => {
-          expect(authorization()).toBe(true);
-          submissions += 1;
-          await release.promise;
-          throw original;
+      tradeRuntimeOverrides: {
+        cacheManager: { getPendingOrders: async () => [] },
+        orderExecutor: {
+          executeSignals: async (_signals, authorization) => {
+            expect(authorization()).toBe(true);
+            submissions += 1;
+            await release.promise;
+            throw original;
+          },
         },
       },
       marketDataClient: createMarketDataClientDouble({
@@ -4585,18 +4726,20 @@ describe('P1 switch 原授权与真实ack交错', () => {
     });
     const harness = createLongSwitchAdmissionHarness({
       nowMs: 1000,
-      traderOverrides: {
-        getPendingOrders: async () => [],
-        executeSignals: async (signals, authorization) => {
-          expect(authorization()).toBe(true);
-          submits += 1;
-          if (signals[0]?.action === 'SELLCALL')
-            return { quoteFailures: [], executedOrderIds: ['SELL-CUMULATIVE'] };
+      tradeRuntimeOverrides: {
+        cacheManager: { getPendingOrders: async () => [] },
+        orderExecutor: {
+          executeSignals: async (signals, authorization) => {
+            expect(authorization()).toBe(true);
+            submits += 1;
+            if (signals[0]?.action === 'SELLCALL')
+              return { quoteFailures: [], executedOrderIds: ['SELL-CUMULATIVE'] };
 
-          expect(signals[0]?.quantity).toBe(100000);
-          await buyAck.promise;
-          expect(authorization()).toBe(false);
-          return { quoteFailures: [], executedOrderIds: ['BROKER-P1-REBUY'] };
+            expect(signals[0]?.quantity).toBe(100000);
+            await buyAck.promise;
+            expect(authorization()).toBe(false);
+            return { quoteFailures: [], executedOrderIds: ['BROKER-P1-REBUY'] };
+          },
         },
       },
       orderRecorder: createOrderRecorderDouble({
@@ -4657,7 +4800,6 @@ describe('P1 switch 原授权与真实ack交错', () => {
 
     expect(harness.switchStates.get('LONG')).toMatchObject({
       stage: 'WAIT_QUOTE',
-      sellNotional: '7000.000000000000000001',
     });
     const capturedRevision = positionRevision;
     const seatAuthorization = captureSwitchSeatAuthorization(harness.symbolRegistry, 'LONG');

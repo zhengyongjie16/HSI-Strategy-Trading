@@ -7,15 +7,15 @@
  * - 远端确认不冒充空仓；仅授权仍有效时沿原清理与风险发布语义推进
  */
 import { WARRANT_LIQUIDATION_ORDER_TYPE } from '../../constants/index.js';
-import { validateSignalSeat } from '../../domain/seat/seatPolicy.js';
+import { validateSignalSeat, isSeatActive } from '../../domain/seat/seatPolicy.js';
 import type { SellSignal } from '../../types/signal.js';
 import type { Quote } from '../../types/quote.js';
-import { isSeatActive } from '../../utils/seat/guards.js';
+
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { exactCompare, sumSafeQuantities } from '../../utils/numeric/exact.js';
 import { isSettlementReadinessAbortError } from '../postTradeSettlement/readinessGate.js';
 import type { SettlementReadinessReceipt } from '../../types/settlement.js';
-import { resolveNextQuoteRetry } from '../../utils/quoteRetry/index.js';
+import { resolveNextQuoteRetry } from '../quoteRetry.js';
 import type {
   CreateStaticLiquidationExecutorDeps,
   StaticLiquidationCandidate,
@@ -140,7 +140,7 @@ function createStaticLiquidationCandidate(params: {
 export function createStaticLiquidationExecutor(
   deps: CreateStaticLiquidationExecutorDeps,
 ): (params: StaticLiquidationExecutionParams) => Promise<StaticLiquidationExecutionResult> {
-  const { trader, marketDataClient, snapshot, postTradeConsistencyRuntime, now } = deps;
+  const { orderExecutor, marketDataClient, snapshot, postTradeConsistencyRuntime, now } = deps;
 
   return async function executeStaticLiquidation(
     params: StaticLiquidationExecutionParams,
@@ -339,7 +339,7 @@ export function createStaticLiquidationExecutor(
       if (!isSeatCurrent(direction)) continue;
 
       // executor内部每个await与最终broker调用复用原receipt/组件/席位票，不在其内换票。
-      const executionResult = await trader.executeSignals(
+      const executionResult = await orderExecutor.executeSignals(
         [candidate.signal],
         () => isCurrent() && isSeatCurrent(direction),
       );

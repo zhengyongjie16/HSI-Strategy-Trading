@@ -7,7 +7,7 @@ import type {
 import { createAccountPositionSnapshotReaderDouble } from '../../../helpers/testDoubles.js';
 
 const infoLogs: string[] = [];
-mock.module('../../../../src/utils/logger/index.js', () => ({
+mock.module('../../../../src/infrastructure/logger/index.js', () => ({
   logger: {
     debug: () => {},
     info: (message: string) => infoLogs.push(message),

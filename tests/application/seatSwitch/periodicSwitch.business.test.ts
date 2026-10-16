@@ -18,9 +18,10 @@ import {
   createSignalBuilder,
   resolveDirectionSymbols,
 } from '../../../src/application/seatSwitch/signalBuilder.js';
-import { calculateTradingDurationMsBetween, getHKDateKey } from '../../../src/utils/time/index.js';
-import type { PendingOrder } from '../../../src/types/services.js';
-import type { Logger } from '../../../src/utils/logger/types.js';
+import { calculateTradingDurationMsBetween } from '../../../src/domain/tradingSession/index.js';
+import { getHKDateKey } from '../../../src/utils/time/index.js';
+import type { PendingOrder } from '../../../src/types/orderReadMetadata.js';
+import type { Logger } from '../../../src/types/logger.js';
 import type {
   PeriodicSwitchInternalPendingState,
   SwitchState,
@@ -35,7 +36,7 @@ import {
   createQuoteDouble,
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
 import {
   captureSwitchSeatAuthorization,
@@ -106,16 +107,20 @@ function createPeriodicHarness(params: HarnessParams): {
     getHKDateKey,
   });
   const signalBuilder = createSignalBuilder({ now: () => new Date(currentNowMs) });
-  const trader = createTraderDouble({
-    executeSignals: async (_signals, callerAuthorization) => {
-      expect(typeof callerAuthorization).toBe('function');
-      expect(callerAuthorization()).toBe(true);
+  const tradeRuntime = createTradeRuntimeDouble({
+    orderExecutor: {
+      executeSignals: async (_signals, callerAuthorization) => {
+        expect(typeof callerAuthorization).toBe('function');
+        expect(callerAuthorization()).toBe(true);
 
-      params.executeSignalsHook?.();
-      return { quoteFailures: [], executedOrderIds: ['EXECUTED-ORDER-1'] };
+        params.executeSignalsHook?.();
+        return { quoteFailures: [], executedOrderIds: ['EXECUTED-ORDER-1'] };
+      },
     },
-    getPendingOrders: async () => [],
-    getOrderHoldSymbols: () => params.getOrderHoldSymbols?.() ?? new Set<string>(),
+    cacheManager: { getPendingOrders: async () => [] },
+    orderHoldRegistry: {
+      getHoldSymbols: () => params.getOrderHoldSymbols?.() ?? new Set<string>(),
+    },
   });
   const orderRecorder = createOrderRecorderDouble({
     getBuyOrdersForSymbol: () => {
@@ -139,7 +144,10 @@ function createPeriodicHarness(params: HarnessParams): {
     autoSearchConfig: monitorConfig.autoSearchConfig,
     monitorSymbol: 'HSI.HK',
     symbolRegistry,
-    trader,
+    cacheManager: tradeRuntime.cacheManager,
+    orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+    orderMonitor: tradeRuntime.orderMonitor,
+    orderExecutor: tradeRuntime.orderExecutor,
     orderRecorder,
     riskChecker: createRiskCheckerDouble({
       getWarrantDistanceInfo: () =>
@@ -1001,21 +1009,26 @@ describe('periodic auto-switch regression', () => {
         orderType: 'ELO',
       },
     ];
-    const trader = createTraderDouble({
-      getPendingOrders: async () => brokerPendingOrders,
-      cancelOrder: async (orderId: string) => {
-        canceledOrderIds.push(orderId);
-        return {
-          kind: 'CANCEL_CONFIRMED' as const,
-          relatedBuyOrderIds: null,
-        };
+    const tradeRuntime = createTradeRuntimeDouble({
+      cacheManager: { getPendingOrders: async () => brokerPendingOrders },
+      orderMonitor: {
+        cancelOrder: async (orderId: string) => {
+          canceledOrderIds.push(orderId);
+          return {
+            kind: 'CANCEL_CONFIRMED' as const,
+            relatedBuyOrderIds: null,
+          };
+        },
       },
     });
     const machine = createSwitchStateMachine({
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder: createOrderRecorderDouble({
         getBuyOrdersForSymbol: () => [],
       }),

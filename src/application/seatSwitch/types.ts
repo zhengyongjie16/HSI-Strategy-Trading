@@ -1,8 +1,17 @@
+import type { OrderCancellation } from '../../types/orderCancellation.js';
+import type { OrderHoldReader } from '../../types/orderHold.js';
+import type { OrderCacheManager, OrderMonitor } from '../orderTracking/types.js';
+import type { SignalExecutor } from '../../types/orderExecutionPorts.js';
+import type {
+  SeatSwitchWorkflow,
+  AdvancePendingSwitchResult,
+  StartSwitchOnDistanceResult,
+  SwitchDriveResult,
+} from '../../types/seatSwitch.js';
 import type {
   PeriodicSwitchTaskData,
   PeriodicSwitchTaskAuthorization,
 } from '../../types/periodicSwitch.js';
-import type { MonitorContext } from '../../types/state.js';
 import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
 import type { AutoSearchConfig, MonitorConfig } from '../../types/config.js';
 import type { Position } from '../../types/account.js';
@@ -10,15 +19,13 @@ import type { Quote } from '../../types/quote.js';
 import type { BuySignal, SellSignal, Signal } from '../../types/signal.js';
 import type { RuntimeWritableSeatState, SeatStatus, SymbolRegistry } from '../../types/seat.js';
 import type { MarketDataClient, QuoteUpdatedEvent } from '../../types/marketPorts.js';
-import type { OrderRecorder, PendingOrder, RiskChecker, Trader } from '../../types/services.js';
-import type { Logger } from '../../utils/logger/types.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
+import type { PendingOrder } from '../../types/orderReadMetadata.js';
+import type { RiskChecker } from '../../types/riskCheck.js';
+import type { Logger } from '../../types/logger.js';
 import type { TradingCalendarSnapshot } from '../../types/tradingCalendar.js';
 import type { RuntimeClock } from '../../types/runtime.js';
-import type {
-  AdvancePendingSwitchResult,
-  StartSwitchOnDistanceResult,
-  SwitchDriveResult,
-} from '../../types/monitorContextPorts.js';
+
 import type {
   PeriodicSwitchPendingMap,
   SwitchStateMap,
@@ -37,7 +44,10 @@ export interface SeatSwitchWorkflowDeps {
   readonly monitorConfig: MonitorConfig;
   readonly symbolRegistry: SymbolRegistry;
   readonly marketDataClient: MarketDataClient;
-  readonly trader: Trader;
+  readonly orderExecutor: SignalExecutor;
+  readonly cacheManager: Pick<OrderCacheManager, 'getPendingOrders'>;
+  readonly orderHoldRegistry: OrderHoldReader;
+  readonly orderMonitor: OrderCancellation & Pick<OrderMonitor, 'getSellOperationOrderIds'>;
   readonly orderRecorder: OrderRecorder;
   readonly riskChecker: RiskChecker;
   readonly candidateSearch: SeatSwitchCandidateSearch;
@@ -236,7 +246,10 @@ export interface SwitchStateMachineDeps {
   readonly autoSearchConfig: AutoSearchConfig;
   readonly monitorSymbol: string;
   readonly symbolRegistry: SymbolRegistry;
-  readonly trader: Trader;
+  readonly orderExecutor: SignalExecutor;
+  readonly cacheManager: Pick<OrderCacheManager, 'getPendingOrders'>;
+  readonly orderHoldRegistry: OrderHoldReader;
+  readonly orderMonitor: OrderCancellation & Pick<OrderMonitor, 'getSellOperationOrderIds'>;
   readonly orderRecorder: OrderRecorder;
   readonly riskChecker: RiskChecker;
   readonly marketDataClient: MarketDataClient;
@@ -293,7 +306,10 @@ export interface SwitchStateMachine {
 
 /** 周期任务 use case 的注入边界；不创建队列、timer、订单或账户 owner。 */
 export interface PeriodicSwitchTaskHandlerDeps {
-  readonly monitorContext: MonitorContext;
+  readonly monitorContext: {
+    readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+    readonly seatSwitch: SeatSwitchWorkflow;
+  };
   readonly switchWakeupRuntime: SeatSwitchWakeupPort;
   readonly periodicSwitchWakeupRuntime: PeriodicSwitchPlanPort;
   readonly snapshot: Pick<AccountPositionSnapshotReader, 'getView'>;
@@ -322,7 +338,10 @@ export interface PeriodicSwitchTaskHandler {
  * 使用范围：仅 monitorQuoteEventRuntime 模块内部使用。
  */
 export type StartDistanceSwitchExecutor = (params: {
-  readonly monitorContext: MonitorContext;
+  readonly monitorContext: {
+    readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+    readonly seatSwitch: SeatSwitchWorkflow;
+  };
   readonly event: QuoteUpdatedEvent;
   readonly canContinue: () => boolean;
   readonly retryConsumed: boolean;
@@ -395,7 +414,10 @@ export interface SeatSwitchWakeupPort {
   readonly handoffPendingSwitch: (
     params: Readonly<{
       direction: 'LONG' | 'SHORT';
-      monitorContext: MonitorContext;
+      monitorContext: {
+        readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+        readonly seatSwitch: SeatSwitchWorkflow;
+      };
       driveResult: Extract<SwitchDriveResult, { kind: 'WAIT' }>;
       originalDayEpoch: number;
     }>,

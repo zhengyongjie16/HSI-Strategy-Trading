@@ -1,3 +1,10 @@
+import {
+  createLoggerDouble,
+  createOrderRecorderDouble,
+  createRateLimiterDouble,
+  createSymbolRegistryDouble,
+} from '../../../helpers/testDoubles.js';
+
 /**
  * orderMonitor/recoveryFlow 业务测试
  *
@@ -8,7 +15,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createEventFlow as createProductionEventFlow } from '../../../../src/application/orderTracking/orderMonitor/eventFlow.js';
 import { createRecoveryFlow } from '../../../../src/application/orderTracking/orderMonitor/recoveryFlow.js';
 import { attachTrackedOrder } from '../../../../src/application/orderTracking/orderMonitor/routingIndex.js';
@@ -23,15 +30,11 @@ import type {
 } from '../../../../src/domain/order/types.js';
 import type { MonitorConfig } from '../../../../src/types/config.js';
 import type { OrderReadStatus } from '../../../../src/types/orderReadMetadata.js';
-import type { OrderRecorder } from '../../../../src/types/services.js';
+import type { OrderRecorder } from '../../../../src/types/orderRecorder.js';
 import type { OrderFact } from '../../../../src/types/trade.js';
 import { exactMultiply } from '../../../../src/utils/numeric/exact.js';
 import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
-import {
-  createOrderRecorderDouble,
-  createRateLimiterDouble,
-  createSymbolRegistryDouble,
-} from '../../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 type TestEventFlowDeps = Omit<EventFlowDeps, 'now' | 'monitorConfig'> &
@@ -211,6 +214,7 @@ async function createPendingOrder(params: {
   }));
   const settlementRefreshNeeds: unknown[] = [];
   const reader = native.createRecorder({
+    logger: createLoggerDouble(),
     rateLimiter: createRateLimiterDouble(),
     getExecutionTimeEvidence: () => evidence,
     settlementRefreshNeedRecorder: {
@@ -296,6 +300,7 @@ async function createRecoveryRecorder(): Promise<OrderRecorder> {
   });
   const settlementRefreshNeeds: unknown[] = [];
   const recorder = native.createRecorder({
+    logger: createLoggerDouble(),
     rateLimiter: createRateLimiterDouble(),
     getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: {
@@ -351,6 +356,7 @@ async function assertInvalidSdkTimestampStopsRecovery(params: {
   );
   const settlementRefreshNeeds: unknown[] = [];
   const orderRecorder = native.createRecorder({
+    logger: createLoggerDouble(),
     rateLimiter: createRateLimiterDouble(),
     getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: {
@@ -369,6 +375,7 @@ async function assertInvalidSdkTimestampStopsRecovery(params: {
     },
   };
   const recoveryFlow = createRecoveryFlow({
+    logger: createLoggerDouble(),
     termination: { isTerminated: () => false, reportFatalError: () => {} },
     runtime,
     orderHoldRegistry: createOrderHoldRegistry(),
@@ -438,6 +445,7 @@ describe('orderMonitor recoveryFlow', () => {
     const runtime = createRuntimeStore();
     const snapshotUpdatedAtMs = Date.parse('2026-04-08T09:00:00.200Z');
     const recoveryFlow = createRecoveryFlow({
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -473,6 +481,7 @@ describe('orderMonitor recoveryFlow', () => {
     }
 
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: await createRecoveryRecorder(),
       recordCumulativeExecution: () => {},
@@ -501,6 +510,7 @@ describe('orderMonitor recoveryFlow', () => {
     const trackCalls: Array<Readonly<{ orderId: string; status: OrderReadStatus | undefined }>> =
       [];
     const recoveryFlow = createRecoveryFlow({
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -549,6 +559,7 @@ describe('orderMonitor recoveryFlow', () => {
     const runtime = createRuntimeStore();
     const trackCalls: TrackOrderParams[] = [];
     const recoveryFlow = createRecoveryFlow({
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -597,6 +608,7 @@ describe('orderMonitor recoveryFlow', () => {
     let pendingSellSubmitCalls = 0;
     let routeCalls = 0;
     const recoveryFlow = createRecoveryFlow({
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -676,6 +688,7 @@ describe('orderMonitor recoveryFlow', () => {
       timerHandles: new Map(),
     });
     const recoveryFlow = createRecoveryFlow({
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -709,6 +722,7 @@ describe('orderMonitor recoveryFlow', () => {
     const runtime = createRuntimeStore();
     const trackCalls: string[] = [];
     const recoveryFlow = createRecoveryFlow({
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -752,6 +766,7 @@ describe('orderMonitor recoveryFlow', () => {
       },
     });
     const recoveryFlow = createRecoveryFlow({
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -827,6 +842,7 @@ describe('orderMonitor recoveryFlow', () => {
   it('blocks recovery when mismatched pending buy terminal state contains executed quantity', async () => {
     const runtime = createRuntimeStore();
     const recoveryFlow = createRecoveryFlow({
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -894,6 +910,7 @@ describe('orderMonitor recoveryFlow', () => {
   it('不匹配买单的启动快照已知部分成交时不得被陈旧零成交终态安全收口', async () => {
     const runtime = createRuntimeStore();
     const recoveryFlow = createRecoveryFlow({
+      logger: createLoggerDouble(),
       termination: { isTerminated: () => false, reportFatalError: () => {} },
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
@@ -975,6 +992,7 @@ describe('recovery termination and unmatched BUY', () => {
       });
       let settlements = 0;
       const flow = createRecoveryFlow({
+        logger: createLoggerDouble(),
         termination,
         runtime,
         orderHoldRegistry: createOrderHoldRegistry(),

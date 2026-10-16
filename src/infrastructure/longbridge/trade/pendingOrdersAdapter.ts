@@ -5,7 +5,7 @@
 import type { TradeContext } from 'longbridge';
 import { mapBrokerOrderSide, mapBrokerOrderStatus, mapBrokerOrderType } from './orderMapper.js';
 import { isRecord } from '../../../utils/helpers/index.js';
-import type { PendingOrder } from '../../../types/services.js';
+import type { PendingOrder } from '../../../types/orderReadMetadata.js';
 import type { PendingOrdersAdapter } from './types.js';
 import {
   isValidatedOrderSide,

@@ -1,6 +1,24 @@
 import type { SeatState, SeatStateChangedEvent, SymbolRegistry } from '../../types/seat.js';
 import type { Signal } from '../../types/signal.js';
 
+/**
+ * 监控上下文席位快照。
+ * 数据来源：resolveMonitorContextSeatSnapshot 从注册表读取多空状态和版本，派生 ACTIVE 标的。
+ * 使用范围：席位快照规则与运行时消费方；不承担 MonitorContext 的装配与状态写入。
+ */
+export type MonitorContextSeatSnapshot = Readonly<{
+  seatState: {
+    readonly long: SeatState;
+    readonly short: SeatState;
+  };
+  seatVersion: {
+    readonly long: number;
+    readonly short: number;
+  };
+  longSymbol: string | null;
+  shortSymbol: string | null;
+}>;
+
 /** 构造 registry 所需的静态席位配置，不向 domain 传播策略/SDK 或完整交易配置。 */
 export type SeatRegistryConfig = Readonly<{
   longSymbol: string;
@@ -137,7 +155,6 @@ export type SwitchState = {
   readonly nextCallPrice: string | null;
   sellSubmitted: boolean;
   sellOrderId: string | null;
-  sellNotional: string | null;
   shouldRebuy: boolean;
   quoteRetryAttempts: number;
   quoteRetryNextAt: number | null;

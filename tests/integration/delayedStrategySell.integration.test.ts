@@ -1,9 +1,14 @@
+import type { RuntimeStateFixtures } from '../helpers/types.js';
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../src/infrastructure/time/index.js';
+
 /** 延迟 SELL 回流：原策略验证与 caller route 保留；真实同 ctx H/O/Daily/S 及 native executor 读取最新可卖事实。 */
 
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import type { PostTradeConsistencyRuntime } from '../../src/app/types.js';
+import type { PostTradeConsistencyRuntime } from '../../src/app/runtime/types.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createOrderHoldRegistry } from '../../src/application/orderTracking/orderHoldRegistry.js';
 import { createOrdinarySellWorkflow } from '../../src/application/ordinarySell/index.js';
@@ -17,7 +22,6 @@ import {
 } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import { createStrategyEmitter } from '../../src/runtime/businessEventProgram/emissionAdapter.js';
 import type { Signal } from '../../src/types/signal.js';
-import type { LastState } from '../../src/types/state.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import { marketContext } from '../domain/strategy/intradayRegression/fixtures.js';
 import {
@@ -29,9 +33,9 @@ import {
   createQuoteDouble,
   createRateLimiterDouble,
   createTerminationDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
-import { waitUntil } from '../main/asyncProgram/utils.js';
+import { waitUntil } from '../helpers/asyncProgram.js';
 import { createHarness, prepareFixture } from '../runtime/strategy/intradayRegression/fixtures.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
@@ -95,6 +99,7 @@ describe('delayed strategy sell integration', () => {
         },
       };
       const recorder = native.createRecorder({
+        logger: createLoggerDouble(),
         rateLimiter: createRateLimiterDouble(),
         getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
         settlementRefreshNeedRecorder: settlementNeedRecorder,
@@ -106,17 +111,16 @@ describe('delayed strategy sell integration', () => {
         orderRecorder: recorder,
         dailyLossTracker: daily,
       });
-      const lastState: LastState = {
-        canTrade: true,
-        isHalfDay: false,
-        openProtectionActive: false,
-        currentDayKey: '2026-02-16',
-        lifecycleState: 'ACTIVE',
-        pendingOpenRebuild: false,
-        isTradingEnabled: true,
-        cachedTradingDayInfo: null,
-        tradingCalendarSnapshot: new Map(),
-        allTradingSymbols: new Set(['BULL.HK']),
+      const stateFixtures: RuntimeStateFixtures = {
+        tradingTimeState: { canTrade: true, isHalfDay: false, openProtectionActive: false },
+        lifecycleState: {
+          currentDayKey: '2026-02-16',
+          lifecycleState: 'ACTIVE',
+          pendingOpenRebuild: false,
+          isTradingEnabled: true,
+        },
+        tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+        quoteSubscriptionState: { allTradingSymbols: new Set(['BULL.HK']) },
       };
       const termination = createTerminationDouble();
       const account = native.createAccountService({ rateLimiter: createRateLimiterDouble() });
@@ -176,7 +180,7 @@ describe('delayed strategy sell integration', () => {
           clock: h.deps.clock,
           marketDataClient: createMarketDataClientDouble(),
           monitorContext,
-          lastState,
+          ...stateFixtures,
           tradingConfig,
           buyTaskQueue,
           sellTaskQueue,
@@ -208,7 +212,7 @@ describe('delayed strategy sell integration', () => {
         throw new Error('protected sample must not emit');
       });
       h.setNow(now + 70_000);
-      if (scenario === 'gate-closed') lastState.isTradingEnabled = false;
+      if (scenario === 'gate-closed') stateFixtures.lifecycleState.isTradingEnabled = false;
 
       if (scenario === 'route-changed')
         monitorContext.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
@@ -236,6 +240,10 @@ describe('delayed strategy sell integration', () => {
       });
       const episode = createProtectiveLiquidationEpisodeTracker();
       const monitor = native.createMonitor({
+        logger: createLoggerDouble(),
+        wait: wait,
+        requestExternalApi: wrapExternalApiRequest,
+        scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
         now: h.deps.clock.now,
         scheduleTimer: h.deps.scheduler.scheduleTimer,
         clearTimer: h.deps.scheduler.clearTimer,
@@ -250,13 +258,14 @@ describe('delayed strategy sell integration', () => {
         postTradeConsistencyRuntime: settlementNeedRecorder,
         tradingConfig,
         symbolRegistry: monitorContext.symbolRegistry,
-        isContinuousTradingAllowed: () => lastState.canTrade === true,
+        isContinuousTradingAllowed: () => stateFixtures.tradingTimeState.canTrade === true,
         termination,
       });
       await monitor.initialize();
       await monitor.recoverOrderTrackingFromSnapshot([]);
       let coordinationReads = 0;
       const executor = native.createExecutor({
+        logger: createLoggerDouble(),
         now: h.deps.clock.now,
         readCurrentTradingDayInfo: () => ({
           dateKey: '2026-02-16',
@@ -276,22 +285,25 @@ describe('delayed strategy sell integration', () => {
         unrealizedLossBuyGate: monitorContext.riskChecker,
         tradingConfig,
         symbolRegistry: monitorContext.symbolRegistry,
-        isExecutionAllowed: () => lastState.isTradingEnabled,
-        isContinuousTradingAllowed: () => lastState.canTrade === true,
+        isExecutionAllowed: () => stateFixtures.lifecycleState.isTradingEnabled,
+        isContinuousTradingAllowed: () => stateFixtures.tradingTimeState.canTrade === true,
       });
-      const trader = createTraderDouble({
+      const tradeRuntime = createTradeRuntimeDouble({
         ...account,
         orderRecorder: recorder,
-        executeSignals: async (signals, authorization) => {
-          submitted.push(...signals);
-          const result = await executor.executeSignals(signals, authorization);
-          acceptedOrderIds.push(...result.executedOrderIds);
-          return result;
+        orderExecutor: {
+          executeSignals: async (signals, authorization) => {
+            submitted.push(...signals);
+            const result = await executor.executeSignals(signals, authorization);
+            acceptedOrderIds.push(...result.executedOrderIds);
+            return result;
+          },
         },
       });
       const postTrade = createPostTradeConsistencyRuntime({
+        logger: createLoggerDouble(),
         termination,
-        getTrader: () => trader,
+        getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
         snapshot,
         onPositionsCommitted: async () => {},
         scheduler: h.deps.scheduler,
@@ -313,6 +325,7 @@ describe('delayed strategy sell integration', () => {
       for (const timer of h.timers) timer.callback();
 
       const processor = createSellProcessor({
+        logger: createLoggerDouble(),
         scheduler: h.deps.scheduler,
         termination,
         taskQueue: sellTaskQueue,
@@ -321,19 +334,20 @@ describe('delayed strategy sell integration', () => {
           clock: h.deps.clock,
           config,
           symbolRegistry: monitorContext.symbolRegistry,
-          orderRecorder: recorder,
-          trader,
+
+          orderRecorder: tradeRuntime.orderRecorder,
+          orderExecutor: tradeRuntime.orderExecutor,
           marketDataClient: market,
           getTradingCalendar: () => ({
-            isHalfDay: lastState.isHalfDay ?? false,
-            tradingCalendarSnapshot: lastState.tradingCalendarSnapshot,
+            isHalfDay: stateFixtures.tradingTimeState.isHalfDay ?? false,
+            tradingCalendarSnapshot: stateFixtures.tradingCalendarState.tradingCalendarSnapshot,
           }),
-          getCanProcessTask: () => lastState.isTradingEnabled,
+          getCanProcessTask: () => stateFixtures.lifecycleState.isTradingEnabled,
           termination,
           snapshot,
           settlement: postTrade,
         }),
-        getCanProcessTask: () => lastState.isTradingEnabled,
+        getCanProcessTask: () => stateFixtures.lifecycleState.isTradingEnabled,
       });
       processor.start();
       try {

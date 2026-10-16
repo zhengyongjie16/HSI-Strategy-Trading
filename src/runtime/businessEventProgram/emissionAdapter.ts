@@ -39,9 +39,10 @@ export function createStrategyEmitter(
       }
 
       if (
-        deps.lastState.currentDayKey !== origin.dayKey ||
+        deps.lifecycleState.currentDayKey !== origin.dayKey ||
         !ordinarySignalGuard({
-          lastState: deps.lastState,
+          tradingTimeState: deps.tradingTimeState,
+          lifecycleState: deps.lifecycleState,
           now,
           doomsdayProtectionEnabled: deps.tradingConfig.global.doomsdayProtection,
         })

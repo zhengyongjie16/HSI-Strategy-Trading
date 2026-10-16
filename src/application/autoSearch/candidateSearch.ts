@@ -17,7 +17,7 @@ import type {
   DirectionalAutoSearchPolicy,
   WarrantCandidate,
 } from '../../domain/seat/warrantSelection/types.js';
-import type { Logger } from '../../utils/logger/types.js';
+import type { Logger } from '../../types/logger.js';
 import type {
   AutoSearchCandidate,
   FindWarrantCandidateParams,

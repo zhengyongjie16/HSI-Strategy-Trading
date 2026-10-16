@@ -15,14 +15,12 @@
  * - DOOMSDAY_PROTECTION 环境变量（默认 true）
  */
 import { ORDER_QUOTE_RETRY, TRADING } from '../../constants/index.js';
-import {
-  resolveNextQuoteRetry,
-  resolveQuoteReadinessForRequirement,
-} from '../../utils/quoteRetry/index.js';
+import { resolveNextQuoteRetry } from '../quoteRetry.js';
+import { resolveQuoteReadinessForRequirement } from '../../domain/order/quoteReadiness.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { DoomsdayClearanceCommand, SellSignalAction } from '../../types/signal.js';
-import type { PendingOrder } from '../../types/services.js';
+import type { PendingOrder } from '../../types/orderReadMetadata.js';
 import type {
   DoomsdayClearanceWorkflow,
   DoomsdayClearanceWorkflowDeps,
@@ -47,9 +45,10 @@ import {
   isExternalApiRequestError,
   isUnconfirmedOrderSubmissionError,
 } from '../../utils/apiFailure/index.js';
-import { getHKDateKey, isInContinuousHKSession } from '../../utils/time/index.js';
+import { getHKDateKey } from '../../utils/time/index.js';
+import { isInContinuousHKSession } from '../../domain/tradingSession/index.js';
 import { formatDecimal } from '../../utils/numeric/exact.js';
-import { isCancelAcceptedOrTerminalNonFilledClose } from '../../utils/trading/orderStatus.js';
+import { isCancelAcceptedOrTerminalNonFilledClose } from '../../domain/order/cancelOutcomePolicy.js';
 
 function formatPendingOrderPrice(order: PendingOrder): string {
   if (order.submittedPrice !== null) {
@@ -287,9 +286,9 @@ export function createDoomsdayClearanceWorkflow(
       isHalfDay,
       positions,
       monitorContext,
-      trader,
+      orderExecutor,
       marketDataClient,
-      lastState,
+      lifecycleState,
       snapshot,
       isLive,
     } = context;
@@ -300,7 +299,7 @@ export function createDoomsdayClearanceWorkflow(
       return abortClearanceForClosedLiveGate();
     }
 
-    if (!lastState.isTradingEnabled) {
+    if (!lifecycleState.isTradingEnabled) {
       clearClearanceRetry();
       state.clearanceAwaitingTerminalSymbols = null;
       state.clearanceRetryExhaustedSymbols.clear();
@@ -451,7 +450,7 @@ export function createDoomsdayClearanceWorkflow(
         return abortClearanceForClosedLiveGate();
       }
 
-      const executionResult = await trader.executeDoomsdayClearanceSignals(
+      const executionResult = await orderExecutor.executeDoomsdayClearanceSignals(
         uniqueClearanceSignals,
         isLive,
       );
@@ -491,7 +490,10 @@ export function createDoomsdayClearanceWorkflow(
           return abortClearanceForClosedLiveGate(executedOrderCount);
         }
 
-        if (!context.lastState.isTradingEnabled || snapshot.getView().token.dayEpoch !== dayEpoch) {
+        if (
+          !context.lifecycleState.isTradingEnabled ||
+          snapshot.getView().token.dayEpoch !== dayEpoch
+        ) {
           return abortClearanceForClosedLiveGate(executedOrderCount);
         }
 
@@ -611,7 +613,7 @@ export function createDoomsdayClearanceWorkflow(
   async function cancelPendingBuyOrders(
     context: CancelPendingBuyOrdersContext,
   ): Promise<CancelPendingBuyOrdersResult> {
-    const { currentTime, isHalfDay, isLive, monitorContext, trader } = context;
+    const { currentTime, isHalfDay, isLive, monitorContext, cacheManager, orderMonitor } = context;
 
     if (!isLive()) {
       return { executed: false, cancelRequestAcceptedCount: 0, nextRetryAtMs: null };
@@ -655,7 +657,7 @@ export function createDoomsdayClearanceWorkflow(
     // 若仍有撤单未确认成功，后续会继续调用 Trade API 复查。
     const closeTimeRange = getDoomsdayBuyCutoffWindowRangeLabel(isHalfDay);
     logger.info(`[末日保护程序] 买入截止窗口（${closeTimeRange}）内检查未成交买入订单`);
-    const pendingOrders = await trader.getPendingOrders(symbolsArray, true);
+    const pendingOrders = await cacheManager.getPendingOrders(symbolsArray, true);
     if (!isLive()) {
       return { executed: false, cancelRequestAcceptedCount: 0, nextRetryAtMs: null };
     }
@@ -686,7 +688,7 @@ export function createDoomsdayClearanceWorkflow(
         };
       }
 
-      const cancelOutcome = await trader.cancelDoomsdayOrder(order.orderId, {
+      const cancelOutcome = await orderMonitor.cancelDoomsdayOrder(order.orderId, {
         kind: 'DOOMSDAY_WINDOW',
         beforeBrokerCancel: isLive,
       });
@@ -785,13 +787,21 @@ export function createDoomsdayClearanceWorkflow(
    * UNKNOWN 必须原错上抛到顶层 fatal/正常 cleanup；其余明确外部失败保留原系统级重评估。
    */
   async function evaluate(context: DoomsdayEvaluationContext): Promise<DoomsdayClearanceResult> {
-    const { currentTime, isHalfDay, dayEpoch, monitorContext, trader, snapshot, lastState } =
-      context;
+    const {
+      currentTime,
+      isHalfDay,
+      dayEpoch,
+      monitorContext,
+      cacheManager,
+      orderMonitor,
+      snapshot,
+      lifecycleState,
+    } = context;
     const isLive = (): boolean => {
       const liveTime = now();
       return (
         snapshot.getView().token.dayEpoch === dayEpoch &&
-        lastState.isTradingEnabled &&
+        lifecycleState.isTradingEnabled &&
         isInContinuousHKSession(liveTime, isHalfDay) &&
         (isWithinDoomsdayBuyCutoffWindow(liveTime, isHalfDay) ||
           isWithinDoomsdayClearanceTakeoverWindow(liveTime, isHalfDay))
@@ -804,7 +814,8 @@ export function createDoomsdayClearanceWorkflow(
         isHalfDay,
         isLive,
         monitorContext,
-        trader,
+        cacheManager,
+        orderMonitor,
       });
       nextRetryAtMs = cancelResult.nextRetryAtMs;
       if (cancelResult.executed && cancelResult.cancelRequestAcceptedCount > 0) {

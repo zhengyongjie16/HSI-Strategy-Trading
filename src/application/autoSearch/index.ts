@@ -15,7 +15,8 @@ import type {
 } from './types.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { isSeatFrozenToday, resolveNextSearchFailureState } from '../../domain/seat/seatPolicy.js';
-import { getHKDateKey, isWithinMorningOpenWindow } from '../../utils/time/index.js';
+import { getHKDateKey } from '../../utils/time/index.js';
+import { isWithinMorningOpenWindow } from '../../domain/tradingSession/index.js';
 import {
   AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY,
   AUTO_SYMBOL_SEARCH_COOLDOWN_MS,

@@ -6,7 +6,7 @@
  */
 
 import { createMonitorConfig } from '../../mock/factories/configFactory.js';
-import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
 import type {
   AutoSearchWorkflow,
   WarrantCandidateSearch,
@@ -39,8 +39,8 @@ import type {
 import type { ProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/types.js';
 import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
-import type { QuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/types.js';
-import type { TradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/types.js';
+import type { QuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscriptionRuntime/types.js';
+import type { TradingGateEventRuntime } from '../../src/runtime/tradingGateEventRuntime/types.js';
 import type { AutoSearchWakeupRuntime } from '../../src/runtime/autoSearchWakeupRuntime/types.js';
 import type { PeriodicSwitchWakeupRuntime } from '../../src/runtime/periodicSwitchWakeupRuntime/types.js';
 import type { SeatActivationDispatcher } from '../../src/runtime/seatActivationDispatcher/types.js';
@@ -55,28 +55,28 @@ import type {
   MarketDataClient,
   MarketQuoteContext,
 } from '../../src/types/marketPorts.js';
-import type { SeatSwitchWorkflow } from '../../src/types/monitorContextPorts.js';
+import type { SeatSwitchWorkflow } from '../../src/types/seatSwitch.js';
 import type { Quote } from '../../src/types/quote.js';
-import type { DailyLossTracker, UnrealizedLossMonitor } from '../../src/types/risk.js';
+import type { DailyLossTracker } from '../../src/types/risk.js';
+import type { UnrealizedLossMonitor } from '../../src/types/unrealizedLoss.js';
 import type { RuntimeTermination } from '../../src/types/runtime.js';
 import type { SeatState, SeatStateChangedEvent, SymbolRegistry } from '../../src/types/seat.js';
+import type { TradeRuntime } from '../../src/app/runtime/types.js';
+import type { TradeRuntimeOverrides } from './types.js';
+import type { OrderRecorder } from '../../src/types/orderRecorder.js';
+
+import type { RateLimiter, TradeMutationPermit } from '../../src/types/rateLimit.js';
+import type { RiskChecker, RiskCheckResult } from '../../src/types/riskCheck.js';
 import type {
-  OrderRecorder,
-  PendingOrder,
-  RateLimiter,
-  RiskChecker,
-  RiskCheckResult,
-  TradeMutationPermit,
-  Trader,
   WarrantDistanceInfo,
   WarrantDistanceLiquidationResult,
   WarrantRefreshResult,
-} from '../../src/types/services.js';
+} from '../../src/types/warrantRisk.js';
 import type { Signal, SignalType } from '../../src/types/signal.js';
-import type { MonitorContext } from '../../src/types/state.js';
+import type { MonitorContextAssembly } from '../../src/app/context/types.js';
 import type { TradingSignalStrategy } from '../../src/types/strategy.js';
 import type { TradeMutationPort } from '../../src/types/tradeMutationPorts.js';
-import type { Logger } from '../../src/utils/logger/types.js';
+import type { Logger } from '../../src/types/logger.js';
 import {
   getHKDateKey,
   resolveHKDayStartUtcMs,
@@ -327,47 +327,40 @@ export function createOrderRecorderDouble(overrides: Partial<OrderRecorder> = {}
  *
  * 用于隔离下单与查询副作用，聚焦流程编排断言。
  */
-export function createTraderDouble(overrides: Partial<Trader> = {}): Trader {
-  const baseOrderRecorder = createOrderRecorderDouble();
-
-  const base: Trader = {
-    orderRecorder: baseOrderRecorder,
-    getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
-    getStockPositions: async () => [],
-    getPendingOrders: async (): Promise<PendingOrder[]> => [],
-    seedOrderHoldSymbols: () => {},
-    getOrderHoldSymbols: () => new Set<string>(),
-    onOrderHoldSymbolsChanged: () => () => {},
-    cancelOrder: async () => ({
-      kind: 'CANCEL_CONFIRMED',
-      relatedBuyOrderIds: null,
-    }),
-    cancelDoomsdayOrder: async () => ({
-      kind: 'CANCEL_CONFIRMED',
-      relatedBuyOrderIds: null,
-    }),
-    startOrderMonitorRuntime: () => {},
-    stopOrderMonitorRuntimeAndDrain: async () => {},
-    teardown: async () => {},
-    hasPendingProtectiveLiquidationOrders: () => false,
-    initializeOrderMonitor: async () => {},
-    onOrderStateChanged: () => () => {},
-    canTradeNow: (): { readonly canTrade: boolean } => ({ canTrade: true }),
-    fetchAllOrdersFromAPI: async () => [],
-    resetRuntimeState: () => {},
-    recoverOrderTrackingFromSnapshot: async () => {},
-    executeSignals: async () => ({ executedOrderIds: [], quoteFailures: [] }),
-    executeDoomsdayClearanceSignals: async () => ({
-      executedOrderIds: [],
-      awaitingAuthoritativeTerminalSymbols: [],
-      unresolvedQuoteSymbols: [],
-    }),
-  };
-
+export function createTradeRuntimeDouble(overrides: TradeRuntimeOverrides = {}): TradeRuntime {
   return {
-    ...base,
-    ...overrides,
-    orderRecorder: overrides.orderRecorder ?? base.orderRecorder,
+    accountService: {
+      getAccountSnapshot: async () => createAccountSnapshotDouble('100000'),
+      getStockPositions: async () => [],
+      ...overrides.accountService,
+    },
+    cacheManager: {
+      getPendingOrders: async () => [],
+      clearCache: () => {},
+      ...overrides.cacheManager,
+    },
+    orderRecorder: createOrderRecorderDouble(overrides.orderRecorder),
+    orderHoldRegistry: {
+      trackOrder: () => {},
+      markOrderClosed: () => {},
+      seedFromOrders: () => {},
+      getHoldSymbols: () => new Set<string>(),
+      onOrderHoldSymbolsChanged: () => () => {},
+      clear: () => {},
+      ...overrides.orderHoldRegistry,
+    },
+    orderMonitor: createOrderMonitorDouble(overrides.orderMonitor),
+    orderExecutor: {
+      canTradeNow: () => ({ canTrade: true }),
+      executeSignals: async () => ({ executedOrderIds: [], quoteFailures: [] }),
+      executeDoomsdayClearanceSignals: async () => ({
+        executedOrderIds: [],
+        awaitingAuthoritativeTerminalSymbols: [],
+        unresolvedQuoteSymbols: [],
+      }),
+      resetBuyThrottle: () => {},
+      ...overrides.orderExecutor,
+    },
   };
 }
 
@@ -473,6 +466,7 @@ export function createOrderMonitorDouble(overrides: Partial<OrderMonitor> = {}):
     stopRuntimeAndDrain: async () => {},
     recoverOrderTrackingFromSnapshot: async () => {},
     getPendingSellOrders: () => [],
+    getSellOperationOrderIds: (originalOrderId) => [originalOrderId],
     hasPendingProtectiveLiquidationOrders: () => false,
     clearTrackedOrders: () => {},
   };
@@ -1395,13 +1389,13 @@ export function createMonitorConfigDouble(overrides: Partial<MonitorConfig> = {}
 }
 
 /**
- * 创建 MonitorContext 测试替身。
+ * 创建 MonitorContextAssembly 测试替身。
  *
  * 默认填充最小完整结构，允许调用方覆盖任意字段以聚焦特定断言。
  */
 export function createMonitorContextDouble(
-  overrides: Partial<MonitorContext> = {},
-): MonitorContext {
+  overrides: Partial<MonitorContextAssembly> = {},
+): MonitorContextAssembly {
   const config = overrides.config ?? createMonitorConfigDouble();
   const symbolRegistry = overrides.symbolRegistry ?? createSymbolRegistryDouble();
 
@@ -1422,7 +1416,7 @@ export function createMonitorContextDouble(
 
 /** 将旧业务 fixture 的真实协作者投影为 workflow 窄能力；测试直接调用 application owner。 */
 export function createSettlementBusinessDeps(params: {
-  readonly monitorContext: MonitorContext;
+  readonly monitorContext: MonitorContextAssembly;
   readonly dailyLossTracker: DailyLossTracker;
   readonly liquidationCooldownTracker: LiquidationCooldownTracker;
   readonly protectiveLiquidationEpisodeTracker: ProtectiveLiquidationEpisodeTracker;

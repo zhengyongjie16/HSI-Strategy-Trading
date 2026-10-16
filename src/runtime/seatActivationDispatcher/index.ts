@@ -6,7 +6,6 @@
  * - 立即调度 SEAT_REFRESH，保留现有激活屏障语义
  * - 仅缓存 SWITCHING -> ACTIVATING 之间所需的旧标的，不持有 seat 真相
  */
-import { logger } from '../../utils/logger/index.js';
 import type { SeatState, SeatStateChangedEvent } from '../../types/seat.js';
 import type {
   PendingSeatActivation,
@@ -65,6 +64,7 @@ function scheduleSeatRefresh(params: {
   readonly previousSymbol: string | null;
   readonly nextState: SeatState;
 }): void {
+  const { logger } = params.deps;
   try {
     if (params.deps.termination.isTerminated()) return;
 

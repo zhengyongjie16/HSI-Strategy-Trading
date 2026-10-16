@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../helpers/testDoubles.js';
+
 /**
  * tradingConfig fail-fast 业务测试
  *
@@ -34,10 +36,7 @@ async function validateWithEnv(
   tradingConfig = createValidTradingConfigForValidation(),
 ): Promise<Error | null> {
   try {
-    await validateAllConfig({
-      env,
-      tradingConfig,
-    });
+    await validateAllConfig({ logger: createLoggerDouble(), env, tradingConfig });
     return null;
   } catch (error) {
     if (error instanceof Error) {
@@ -175,15 +174,14 @@ function createAutoSearchEnabledTradingConfig() {
 describe('trading config fail-fast parsing', () => {
   it('keeps mock default trading config inside the production validation contract', async () => {
     await validateAllConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv(),
       tradingConfig: createTradingConfig(),
     });
   });
 
   it('uses business defaults only when critical keys are missing', () => {
-    const config = parseTradingConfig({
-      env: createBaseEnv(),
-    });
+    const config = parseTradingConfig({ logger: createLoggerDouble(), env: createBaseEnv() });
 
     expect(config.monitor.targetNotional).toBe('10000');
     expect(config.monitor.maxPositionNotional).toBe('100000');
@@ -196,18 +194,23 @@ describe('trading config fail-fast parsing', () => {
 
   it('preserves the amount 10+3 text boundary and rejects non-plain financial configuration', () => {
     const config = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({ TARGET_NOTIONAL: '9999999999.999' }),
     });
     expect(config.monitor.targetNotional).toBe('9999999999.999');
     for (const value of ['10000000000', '1.0001', '1e3', 'NaN', 'Infinity']) {
-      expect(() => parseTradingConfig({ env: createBaseEnv({ TARGET_NOTIONAL: value }) })).toThrow(
-        /TARGET_NOTIONAL/,
-      );
+      expect(() =>
+        parseTradingConfig({
+          logger: createLoggerDouble(),
+          env: createBaseEnv({ TARGET_NOTIONAL: value }),
+        }),
+      ).toThrow(/TARGET_NOTIONAL/);
     }
   });
 
   it('accepts switchIntervalMinutes=0 as a valid business value', () => {
     const config = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({
         AUTO_SEARCH_ENABLED: 'true',
         SWITCH_INTERVAL_MINUTES: '0',
@@ -219,6 +222,7 @@ describe('trading config fail-fast parsing', () => {
 
   it('ignores invalid switchIntervalMinutes when auto-search is disabled', async () => {
     const config = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({
         AUTO_SEARCH_ENABLED: 'false',
         SWITCH_INTERVAL_MINUTES: '121',
@@ -257,6 +261,7 @@ describe('trading config fail-fast parsing', () => {
 
   it('ignores invalid timeout seconds when the corresponding timeout is disabled', async () => {
     const config = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({
         BUY_ORDER_TIMEOUT_ENABLED: 'false',
         BUY_ORDER_TIMEOUT_SECONDS: '601',
@@ -300,6 +305,7 @@ describe('trading config fail-fast parsing', () => {
     for (const testCase of invalidMonitorEnvCases) {
       expect(() =>
         parseTradingConfig({
+          logger: createLoggerDouble(),
           env: createBaseEnv({
             ...('extraEnv' in testCase ? testCase.extraEnv : {}),
             [testCase.envKey]: testCase.value,
@@ -315,6 +321,7 @@ describe('trading config fail-fast parsing', () => {
     for (const value of invalidValues) {
       expect(() =>
         parseTradingConfig({
+          logger: createLoggerDouble(),
           env: createBaseEnv({
             LIQUIDATION_TRIGGER_LIMIT: value,
           }),
@@ -327,6 +334,7 @@ describe('trading config fail-fast parsing', () => {
     for (const testCase of [...invalidGlobalNumberEnvCases, ...invalidOrderTypeEnvCases]) {
       expect(() =>
         parseTradingConfig({
+          logger: createLoggerDouble(),
           env: createBaseEnv({
             ...('extraEnv' in testCase ? testCase.extraEnv : {}),
             [testCase.envKey]: testCase.value,
@@ -344,6 +352,7 @@ describe('trading config fail-fast parsing', () => {
     ]) {
       expect(() =>
         parseTradingConfig({
+          logger: createLoggerDouble(),
           env: createBaseEnv({
             [testCase.envKey]: testCase.value,
           }),

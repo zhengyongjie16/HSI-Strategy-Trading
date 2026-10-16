@@ -1,3 +1,5 @@
+import type { Logger } from '../../../types/logger.js';
+
 /**
  * orderMonitor routeProcessor 模块
  *
@@ -42,16 +44,13 @@ import type {
   TrackedOrder,
 } from '../../../domain/order/types.js';
 import type { Quote } from '../../../types/quote.js';
-import { logger } from '../../../utils/logger/index.js';
 import { exactCompare } from '../../../utils/numeric/exact.js';
-import {
-  resolveNextQuoteRetry,
-  resolveQuoteReadinessForRequirement,
-} from '../../../utils/quoteRetry/index.js';
+import { resolveNextQuoteRetry } from '../../quoteRetry.js';
+import { resolveQuoteReadinessForRequirement } from '../../../domain/order/quoteReadiness.js';
 import {
   createAcceptedOrderLocalSyncError,
   createTradeMutationUnknownError,
-} from '../../../utils/trading/tradeMutation.js';
+} from '../../orderExecution/tradeMutationErrors.js';
 import {
   acknowledgeLatestReplaceTerminal,
   acknowledgeQueriedTerminalState,
@@ -230,6 +229,7 @@ function settlePendingReplaceTerminal(
   deps: RouteProcessorDeps,
   order: OrderMonitorTrackedOrder,
 ): boolean {
+  const { logger } = deps;
   const replaceTerminal = peekLatestReplaceTerminal(deps.runtime, order.orderId);
   if (replaceTerminal === null) {
     return false;
@@ -271,6 +271,7 @@ function settleBuyOrderTimeoutTerminal(
   orderId: string,
   order: OrderMonitorTrackedOrder,
 ): boolean {
+  const { logger } = deps;
   let resolvedTerminal: ReturnType<typeof resolveTerminalSettlementInput>;
   try {
     resolvedTerminal = resolveTerminalSettlementInput(deps, orderId, order);
@@ -293,6 +294,7 @@ function settleBuyOrderTimeoutTerminal(
 }
 
 async function handleBuyOrderTimeout(
+  logger: Logger,
   params: RouteRuntimeProcessParams,
   deps: RouteProcessorDeps,
   orderId: string,
@@ -353,6 +355,7 @@ async function handleBuyOrderTimeout(
  * @returns 无返回值
  */
 async function submitTimeoutMarketOrder(
+  logger: Logger,
   params: Pick<RouteRuntimeProcessParams, 'symbol' | 'generation'>,
   deps: RouteProcessorDeps,
   order: OrderMonitorTrackedOrder,
@@ -469,6 +472,8 @@ async function submitTimeoutMarketOrder(
   const newOrderId = submitOutcome.brokerResponse.orderId;
   try {
     const direction: 'LONG' | 'SHORT' = order.isLongSymbol ? 'LONG' : 'SHORT';
+    // ACK 已是远端事实；先保存操作关联，再触发 tracking/route 与 pending 占用同步。
+    deps.recordAcceptedSellContinuation(order.orderId, newOrderId);
     deps.trackOrder({
       orderId: newOrderId,
       symbol: order.symbol,
@@ -517,6 +522,7 @@ async function submitTimeoutMarketOrder(
  * @returns 本轮是否已消费该 timeout owner
  */
 async function handleSellOrderTimeout(
+  logger: Logger,
   params: RouteRuntimeProcessParams,
   deps: RouteProcessorDeps,
   orderId: string,
@@ -643,6 +649,7 @@ async function handleSellOrderTimeout(
   }
 
   await submitTimeoutMarketOrder(
+    logger,
     params,
     deps,
     order,
@@ -836,6 +843,8 @@ function shouldAdvanceQuoteRetryFromTimer(
  * @returns 提供单次 route 推进能力的处理器
  */
 export function createRouteProcessor(deps: RouteProcessorDeps): RouteProcessor {
+  const { logger } = deps;
+
   /**
    * 执行一次 symbol route 的动作选择。
    *
@@ -863,7 +872,7 @@ export function createRouteProcessor(deps: RouteProcessorDeps): RouteProcessor {
       }
 
       if (order.side === 'BUY') {
-        const handled = await handleBuyOrderTimeout(params, deps, order.orderId, order);
+        const handled = await handleBuyOrderTimeout(logger, params, deps, order.orderId, order);
         if (handled) {
           return;
         }
@@ -871,7 +880,7 @@ export function createRouteProcessor(deps: RouteProcessorDeps): RouteProcessor {
         continue;
       }
 
-      const handled = await handleSellOrderTimeout(params, deps, order.orderId, order);
+      const handled = await handleSellOrderTimeout(logger, params, deps, order.orderId, order);
       if (handled) {
         return;
       }

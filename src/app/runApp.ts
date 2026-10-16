@@ -7,9 +7,9 @@
  * - 在唯一装配入口中复用 monitorContext，并组装 async runtime、lifecycle 与 cleanup
  */
 import { timeWakeupEvaluationProgram } from '../runtime/timeWakeupEvaluationProgram/index.js';
-import { createTerminationRuntime } from './runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../runtime/lifecycle/terminationRuntime.js';
+import { startRuntimeAfterStartupRebuild } from '../runtime/lifecycle/startupRuntime.js';
 import { createSelectedStrategy } from './startup/createSelectedStrategy.js';
-import { isExternalApiRequestError } from '../utils/apiFailure/index.js';
 import { syncMonitorContextSymbolNames } from './context/createMonitorContext.js';
 import { DEFAULT_RUN_APP_DEPS } from './runAppDeps.js';
 import type { AppEnvironmentParams, RunAppDeps, RuntimeAssemblyResources } from './types.js';
@@ -51,6 +51,7 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
     createPreGateRuntime: buildPreGateRuntime,
     createPostGateRuntime: buildPostGateRuntime,
     loadStartupSnapshot: loadStartupRuntimeSnapshot,
+    executeStartupRebuild: runStartupRebuild,
     collectRuntimeValidationSymbols: buildRuntimeValidationCollector,
     createRebuildTradingDayState: buildRebuildTradingDayState,
     displayAccountAndPositions: renderAccountAndPositions,
@@ -73,7 +74,8 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
     const resources: RuntimeAssemblyResources = {};
     const termination = createTerminationRuntime({
       closeTradingGate: () => {
-        if (resources.lastState !== undefined) resources.lastState.isTradingEnabled = false;
+        if (resources.lifecycleState !== undefined)
+          resources.lifecycleState.isTradingEnabled = false;
       },
       closeProducerAdmission: () => {
         resources.closeSnapshotAdmission?.();
@@ -148,13 +150,13 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
       });
       if (postGateRuntime === null || termination.isTerminated()) return;
 
-      const startupTradingEnabled = postGateRuntime.lastState.isTradingEnabled;
-      postGateRuntime.lastState.isTradingEnabled = false;
-      let startupSnapshot = await loadStartupRuntimeSnapshot({
+      const startupTradingEnabled = postGateRuntime.lifecycleState.isTradingEnabled;
+      postGateRuntime.lifecycleState.isTradingEnabled = false;
+      const startupSnapshot = await loadStartupRuntimeSnapshot({
         now: startupNow,
         termination,
         snapshot: postGateRuntime.snapshot,
-        lastState: postGateRuntime.lastState,
+        lifecycleState: postGateRuntime.lifecycleState,
         loadTradingDayRuntimeSnapshot: postGateRuntime.loadTradingDayRuntimeSnapshot,
         applyStartupSnapshotFailureState: applyStartupSnapshotFailure,
         logger: appLogger,
@@ -208,8 +210,9 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
         termination,
         marketDataClient: preGateRuntime.marketDataClient,
         warrantRiskRefresh: postGateRuntime.warrantRiskRefresh,
-        trader: postGateRuntime.trader,
-        lastState: postGateRuntime.lastState,
+        orderMonitor: postGateRuntime.tradeRuntime.orderMonitor,
+        lifecycleState: postGateRuntime.lifecycleState,
+        tradingCalendarState: postGateRuntime.tradingCalendarState,
         snapshot: postGateRuntime.snapshot,
         symbolRegistry: preGateRuntime.symbolRegistry,
         monitorContext,
@@ -233,7 +236,8 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
         clock: SYSTEM_RUNTIME_CLOCK,
         marketDataClient: preGateRuntime.marketDataClient,
         monitorContext,
-        lastState: postGateRuntime.lastState,
+        tradingTimeState: postGateRuntime.tradingTimeState,
+        lifecycleState: postGateRuntime.lifecycleState,
         tradingConfig: preGateRuntime.tradingConfig,
         buyTaskQueue: postGateRuntime.buyTaskQueue,
         sellTaskQueue: postGateRuntime.sellTaskQueue,
@@ -265,8 +269,12 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
           timeWakeupEvaluationProgram({
             logger: appLogger,
             marketDataClient: preGateRuntime.marketDataClient,
-            trader: postGateRuntime.trader,
-            lastState: postGateRuntime.lastState,
+            cacheManager: postGateRuntime.tradeRuntime.cacheManager,
+            orderMonitor: postGateRuntime.tradeRuntime.orderMonitor,
+            orderExecutor: postGateRuntime.tradeRuntime.orderExecutor,
+            tradingTimeState: postGateRuntime.tradingTimeState,
+            lifecycleState: postGateRuntime.lifecycleState,
+            tradingCalendarState: postGateRuntime.tradingCalendarState,
             snapshot: postGateRuntime.snapshot,
             doomsdayClearanceWorkflow: postGateRuntime.doomsdayClearanceWorkflow,
             tradingConfig: preGateRuntime.tradingConfig,
@@ -289,139 +297,59 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
 
       if (termination.isTerminated()) return;
 
-      let initialRebuildSucceeded = false;
-      if (startupSnapshot.kind === 'API_RETRY_PENDING') {
-        appLogger.warn('启动阶段跳过初次重建，保持静止并等待生命周期重建任务自动恢复');
-      } else {
-        try {
-          while (startupSnapshot.kind === 'READY' && !termination.isTerminated()) {
-            const capturedToken = startupSnapshot.snapshotToken;
-            const rebuilt = await rebuildTradingDayState({
-              snapshotToken: capturedToken,
-              allOrders: startupSnapshot.allOrders,
-              quotesMap: startupSnapshot.quotesMap,
-              now: startupSnapshot.now,
-            });
-            if (rebuilt.status === 'ABORTED' || termination.isTerminated()) return;
+      const startupRebuild = await runStartupRebuild({
+        now: startupNow,
+        startupSnapshot,
+        termination,
+        snapshot: postGateRuntime.snapshot,
+        lifecycleState: postGateRuntime.lifecycleState,
+        loadStartupSnapshot: loadStartupRuntimeSnapshot,
+        loadTradingDayRuntimeSnapshot: postGateRuntime.loadTradingDayRuntimeSnapshot,
+        rebuildTradingDayState,
+        postTradeConsistencyRuntime: postGateRuntime.postTradeConsistencyRuntime,
+        quoteSubscriptionRuntime: postGateRuntime.quoteSubscriptionRuntime,
+        applyStartupSnapshotFailureState: applyStartupSnapshotFailure,
+        validateRuntimeSymbols: ({ positions, quotesMap }) =>
+          validateRuntimeSymbols({
+            inputs: buildRuntimeValidationCollector({
+              tradingConfig: preGateRuntime.tradingConfig,
+              symbolRegistry: preGateRuntime.symbolRegistry,
+              positions,
+            }).runtimeValidationInputs,
+            quotesMap,
+          }),
+        syncMonitorContextSymbolNames: ({ quotesMap }) => {
+          syncMonitorContextSymbolNames({ monitorContext, quotesMap });
+        },
+        logger: appLogger,
+        formatError: formatAppError,
+      });
+      if (termination.isTerminated() || startupRebuild.status === 'ABORTED') return;
 
-            if (rebuilt.status === 'COMMITTED') {
-              if (
-                Object.keys(capturedToken).some(
-                  (key) =>
-                    capturedToken[key as keyof typeof capturedToken] !==
-                    rebuilt.snapshotToken[key as keyof typeof capturedToken],
-                )
-              ) {
-                throw new TypeError('[runApp] rebuild changed the captured input token');
-              }
-
-              await postGateRuntime.quoteSubscriptionRuntime.reconcileFromCurrentTruth();
-              if (termination.isTerminated()) return;
-
-              postGateRuntime.postTradeConsistencyRuntime.resetAbort();
-              postGateRuntime.postTradeConsistencyRuntime.start();
-              const baselineReady =
-                postGateRuntime.snapshot.isCurrent(capturedToken, {
-                  account: true,
-                  positions: true,
-                  paired: true,
-                }) && (await postGateRuntime.postTradeConsistencyRuntime.completeRebuildBaseline());
-              if (termination.isTerminated()) return;
-
-              const fresh = baselineReady
-                ? await postGateRuntime.postTradeConsistencyRuntime.waitForFresh()
-                : null;
-              if (termination.isTerminated()) return;
-
-              if (
-                fresh !== null &&
-                postGateRuntime.snapshot.isCurrent(capturedToken, {
-                  account: true,
-                  positions: true,
-                  paired: true,
-                }) &&
-                postGateRuntime.postTradeConsistencyRuntime.isCurrent(fresh) &&
-                Object.keys(capturedToken).every(
-                  (key) =>
-                    capturedToken[key as keyof typeof capturedToken] ===
-                    fresh.snapshotToken[key as keyof typeof capturedToken],
-                )
-              ) {
-                initialRebuildSucceeded = true;
-                break;
-              }
-            }
-
-            // supersession/false 的本地重载仍由 startup owner 独占；保留 S need/dirty，撤销普通 timer。
-            postGateRuntime.postTradeConsistencyRuntime.stopScheduling();
-            startupSnapshot = await loadStartupRuntimeSnapshot({
-              now: startupNow,
-              termination,
-              snapshot: postGateRuntime.snapshot,
-              lastState: postGateRuntime.lastState,
-              loadTradingDayRuntimeSnapshot: postGateRuntime.loadTradingDayRuntimeSnapshot,
-              applyStartupSnapshotFailureState: applyStartupSnapshotFailure,
-              logger: appLogger,
-              formatError: formatAppError,
-            });
-
-            if (startupSnapshot.kind === 'ABORTED') return;
-
-            if (startupSnapshot.kind === 'READY') {
-              const validation = validateRuntimeSymbols({
-                inputs: buildRuntimeValidationCollector({
-                  tradingConfig: preGateRuntime.tradingConfig,
-                  symbolRegistry: preGateRuntime.symbolRegistry,
-                  positions: postGateRuntime.snapshot.getView().positions,
-                }).runtimeValidationInputs,
-                quotesMap: startupSnapshot.quotesMap,
-              });
-              if (!validation.valid) throw new Error('运行时标的验证失败，启动已中止');
-
-              syncMonitorContextSymbolNames({
-                monitorContext,
-                quotesMap: startupSnapshot.quotesMap,
-              });
-            }
-          }
-        } catch (err) {
-          if (!isExternalApiRequestError(err)) {
-            throw err;
-          }
-
-          postGateRuntime.postTradeConsistencyRuntime.stopScheduling();
-          applyStartupSnapshotFailure(postGateRuntime.lastState);
-          appLogger.error(
-            '启动初始重建 API 请求失败：已阻断交易并切换为开盘重建重试模式',
-            formatAppError(err),
-          );
-        }
-      }
+      await startRuntimeAfterStartupRebuild({
+        termination,
+        initialRebuildSucceeded: startupRebuild.status === 'COMMITTED',
+        startupTradingEnabled,
+        lifecycleState: postGateRuntime.lifecycleState,
+        tradingQuoteDisplayRuntime: postGateRuntime.tradingQuoteDisplayRuntime,
+        quoteSubscriptionRuntime: postGateRuntime.quoteSubscriptionRuntime,
+        seatRuntimeCleanupDispatcher: postGateRuntime.seatRuntimeCleanupDispatcher,
+        seatActivationDispatcher: postGateRuntime.seatActivationDispatcher,
+        autoSearchWakeupRuntime: postGateRuntime.autoSearchWakeupRuntime,
+        periodicSwitchWakeupRuntime: postGateRuntime.periodicSwitchWakeupRuntime,
+        monitorDisplayRuntime: postGateRuntime.monitorDisplayRuntime,
+        tradingRiskEventRuntime: postGateRuntime.tradingRiskEventRuntime,
+        monitorQuoteEventRuntime: postGateRuntime.monitorQuoteEventRuntime,
+        switchWakeupRuntime: postGateRuntime.switchWakeupRuntime,
+        monitorTaskProcessor: asyncRuntime.monitorTaskProcessor,
+        buyProcessor: asyncRuntime.buyProcessor,
+        sellProcessor: asyncRuntime.sellProcessor,
+        orderMonitor: postGateRuntime.tradeRuntime.orderMonitor,
+        timeWakeupRuntime,
+        businessEventProgram,
+      });
 
       if (termination.isTerminated()) return;
-
-      if (initialRebuildSucceeded) {
-        postGateRuntime.lastState.isTradingEnabled = startupTradingEnabled;
-        postGateRuntime.tradingQuoteDisplayRuntime.start();
-        postGateRuntime.quoteSubscriptionRuntime.start();
-        postGateRuntime.seatRuntimeCleanupDispatcher.start();
-        postGateRuntime.seatActivationDispatcher.start();
-        postGateRuntime.autoSearchWakeupRuntime.start();
-        postGateRuntime.periodicSwitchWakeupRuntime.start();
-        postGateRuntime.monitorDisplayRuntime.start();
-        postGateRuntime.tradingRiskEventRuntime.start();
-        postGateRuntime.monitorQuoteEventRuntime.start();
-        postGateRuntime.switchWakeupRuntime.start();
-        asyncRuntime.monitorTaskProcessor.start();
-        asyncRuntime.buyProcessor.start();
-        asyncRuntime.sellProcessor.start();
-        postGateRuntime.trader.startOrderMonitorRuntime();
-      }
-
-      await timeWakeupRuntime.start();
-      if (termination.isTerminated()) return;
-
-      if (initialRebuildSucceeded) businessEventProgram.start();
 
       appLogger.info('程序开始运行，在交易时段将进行实时监控和交易（按 Ctrl+C 退出）');
       await termination.waitForTermination();

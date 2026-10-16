@@ -5,7 +5,7 @@ import type {
 } from '../../../application/seatActivation/types.js';
 import type { PeriodicSwitchTaskData } from '../../../types/periodicSwitch.js';
 import type { RuntimeScheduler, RuntimeTermination } from '../../../types/runtime.js';
-import type { Logger } from '../../../utils/logger/types.js';
+import type { Logger } from '../../../types/logger.js';
 import type { MonitorTask, MonitorTaskQueue } from '../monitorTaskQueue/types.js';
 
 /** 监控队列的判别联合；席位业务输入直接由 application 定义，runtime 不复制失败计数。 */

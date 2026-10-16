@@ -1,11 +1,15 @@
+import type { TradeRuntime } from '../../src/app/runtime/types.js';
+
 /**
  * Trader 执行结果类型约束测试
  *
  * 验证执行结果只有订单 ID 单一真相，不允许重新构造 count + ids 双字段。
  */
 import { describe, expect, it } from 'bun:test';
-import type { Trader } from '../../src/types/services.js';
-import type { ExecuteSignalsResult, SignalCallerAuthorization } from '../../src/types/trader.js';
+import type {
+  ExecuteSignalsResult,
+  SignalCallerAuthorization,
+} from '../../src/types/orderExecutionPorts.js';
 import type { BuySignal } from '../../src/types/signal.js';
 import type { ExecutableOrderCommand } from '../../src/application/orderExecution/types.js';
 
@@ -67,17 +71,17 @@ void duplicatedSymbolIdentity;
 
 /** 仅编译期验证实际Trader入口，未调用，不伪造SDK或默认授权。 */
 function assertTraderAuthorizationContract(
-  trader: Trader,
+  tradeRuntime: TradeRuntime,
   originalAuthorization: SignalCallerAuthorization,
 ): void {
-  const result: Promise<ExecuteSignalsResult> = trader.executeSignals(
+  const result: Promise<ExecuteSignalsResult> = tradeRuntime.orderExecutor.executeSignals(
     [longBuySignal],
     originalAuthorization,
   );
   void result;
   // @ts-expect-error 实际Trader入口必须携带原始工作授权，不能省略。
-  void trader.executeSignals([longBuySignal]);
+  void tradeRuntime.orderExecutor.executeSignals([longBuySignal]);
   // @ts-expect-error 布尔值不能代替可在await后重新核验的原始授权闭包。
-  void trader.executeSignals([longBuySignal], true);
+  void tradeRuntime.orderExecutor.executeSignals([longBuySignal], true);
 }
 void assertTraderAuthorizationContract;

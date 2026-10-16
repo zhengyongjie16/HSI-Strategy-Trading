@@ -14,7 +14,6 @@ import type {
   TrackedOrder,
 } from '../../../domain/order/types.js';
 import type { QuoteUpdatedEvent } from '../../../types/marketPorts.js';
-import { scheduleBoundedOneShotAt } from '../../../utils/timer/index.js';
 import { clearRouteTimers } from './routingIndex.js';
 import type {
   OrderMonitorSymbolRouteState,
@@ -126,6 +125,7 @@ function resolveRouteTimerSchedules(
  */
 export function createRouteRuntime(deps: RouteRuntimeDeps): RouteRuntime {
   const {
+    scheduleBoundedOneShotAt,
     runtime,
     config,
     marketDataClient,

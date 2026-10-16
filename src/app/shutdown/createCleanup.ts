@@ -5,7 +5,7 @@
  * - 创建程序退出时的资源清理函数
  * - 确保程序退出时正确释放所有资源
  */
-import { logger } from '../../utils/logger/index.js';
+import { logger } from '../../infrastructure/logger/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { CLEANUP_PHASE_ORDER } from '../../constants/cleanup.js';
 import type {
@@ -13,7 +13,7 @@ import type {
   CleanupFailure,
   CleanupStep,
   RegisteredCleanupStep,
-} from '../types.js';
+} from './types.js';
 
 /**
  * 创建可增量登记清理步骤、并按阶段单次执行的程序退出清理控制器。

@@ -1,8 +1,9 @@
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { TRADING } from '../../../src/constants/index.js';
-import { createIssuedPeriodicTasksFixture } from '../../main/fixtures/issuedPeriodicTasks.js';
+import { createIssuedPeriodicTasksFixture } from '../../helpers/issuedPeriodicTasks.js';
 import { getDefaultAutoSearchConfig } from '../../helpers/seatTestUtils.js';
-import { createTerminationRuntime } from '../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import type { RuntimeTermination } from '../../../src/types/runtime.js';
 
@@ -22,10 +23,10 @@ import {
   createSellTaskQueue,
 } from '../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import { createWarrantListCache } from '../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
-import type { AsyncRuntimeFactoryDeps } from '../../../src/app/types.js';
+import type { AsyncRuntimeFactoryDeps } from '../../../src/app/runtime/types.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type { PeriodicSwitchWakeupRuntime } from '../../../src/runtime/periodicSwitchWakeupRuntime/types.js';
-import type { LastState, MonitorContext } from '../../../src/types/state.js';
+import type { MonitorContextAssembly } from '../../../src/app/context/types.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createBrokerClientFactoryDouble } from '../../helpers/brokerClientFactoryDouble.js';
 import {
@@ -43,13 +44,13 @@ import {
   createQuoteSubscriptionRuntimeDouble,
   createSeatRuntimeCleanupDispatcherDouble,
   createSymbolRegistryDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../../helpers/testDoubles.js';
 import {
-  createLastState,
+  createRuntimeStates,
   createMonitorContext,
   runProcessorFlow,
-} from '../../main/asyncProgram/utils.js';
+} from '../../helpers/asyncProgram.js';
 
 let activeTermination: RuntimeTermination;
 let issued: Awaited<ReturnType<typeof createIssuedPeriodicTasksFixture>>;
@@ -89,14 +90,14 @@ function createPeriodicSwitchWakeupRuntimeRecorder(
 
 async function createDeps(
   options: Readonly<{
-    lastState: LastState;
+    stateFixtures: RuntimeStateFixtures;
     monitorTaskQueue: ReturnType<typeof createMonitorTaskQueue<MonitorTaskDataMap>>;
     periodicSwitchWakeupRuntime: PeriodicSwitchWakeupRuntime;
-    monitorContext?: MonitorContext;
+    monitorContext?: MonitorContextAssembly;
     clockNow?: () => Date;
   }>,
 ): Promise<AsyncRuntimeFactoryDeps> {
-  const { lastState, monitorTaskQueue, periodicSwitchWakeupRuntime, monitorContext, clockNow } =
+  const { stateFixtures, monitorTaskQueue, periodicSwitchWakeupRuntime, monitorContext, clockNow } =
     options;
   const warrantListCache = createWarrantListCache();
   const runtimeMonitorContext = {
@@ -109,7 +110,7 @@ async function createDeps(
     account: createAccountSnapshotDouble('100000'),
     positions: [],
   });
-  const trader = createTraderDouble();
+  const tradeRuntime = createTradeRuntimeDouble();
   for (const direction of ['LONG', 'SHORT'] as const)
     runtimeMonitorContext.symbolRegistry.updateSeatState(direction, {
       ...runtimeMonitorContext.symbolRegistry.getSeatState(direction),
@@ -126,9 +127,9 @@ async function createDeps(
   issued = await createIssuedPeriodicTasksFixture({
     snapshot,
     monitorContext: runtimeMonitorContext,
-    trader,
+    tradeRuntime,
     termination: activeTermination,
-    getCanTradeNow: () => lastState.canTrade === true,
+    getCanTradeNow: () => stateFixtures.tradingTimeState.canTrade === true,
     nowMs: 70000,
   });
   fixtureCleanups.push(issued.stopAndDrain);
@@ -214,8 +215,8 @@ async function createDeps(
         handoffPendingSwitch: () => {},
       },
       postTradeConsistencyRuntime: issued.settlement,
-      lastState,
-      trader,
+      ...stateFixtures,
+      tradeRuntime,
       loadTradingDayRuntimeSnapshot: async () => {
         const capture = snapshot.getView();
         if (!snapshot.isCurrent(capture.token, { account: true, positions: true, paired: true }))
@@ -240,11 +241,11 @@ async function createDeps(
 
 describe('app createAsyncRuntime wiring', () => {
   it('reports skipped outcome to periodic route when lifecycle gate skips AUTO_SYMBOL_TICK', async () => {
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     const runtime = createAsyncRuntime(
       await createDeps({
-        lastState: createLastState({ isTradingEnabled: false }),
+        stateFixtures: createRuntimeStates({ lifecycleState: { isTradingEnabled: false } }),
         monitorTaskQueue,
         periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeRecorder(replanCalls),
       }),
@@ -276,7 +277,7 @@ describe('app createAsyncRuntime wiring', () => {
     const injectedNow = new Date(Date.UTC(2026, 1, 16, 7, 56));
     Date.now = () => Date.UTC(2026, 1, 16, 2, 0);
     try {
-      const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+      const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
       const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
       let periodicDueCalls = 0;
       const context = createMonitorContext({
@@ -309,7 +310,9 @@ describe('app createAsyncRuntime wiring', () => {
       });
       const runtime = createAsyncRuntime(
         await createDeps({
-          lastState: createLastState({ canTrade: true, isHalfDay: false }),
+          stateFixtures: createRuntimeStates({
+            tradingTimeState: { canTrade: true, isHalfDay: false },
+          }),
           monitorContext: context,
           monitorTaskQueue,
           periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeRecorder(replanCalls),
@@ -345,7 +348,7 @@ describe('app createAsyncRuntime wiring', () => {
   it('marks AUTO_SYMBOL_TICK API failures as failed without entering async fatal channel', async () => {
     const originalNow = Date.now;
     Date.now = () => Date.UTC(2026, 1, 16, 2, 0);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     try {
       const context = createMonitorContext({
@@ -381,7 +384,7 @@ describe('app createAsyncRuntime wiring', () => {
       });
       const runtime = createAsyncRuntime(
         await createDeps({
-          lastState: createLastState(),
+          stateFixtures: createRuntimeStates(),
           monitorContext: context,
           monitorTaskQueue,
           periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeRecorder(replanCalls),
@@ -416,7 +419,7 @@ describe('app createAsyncRuntime wiring', () => {
   it('sends non API AUTO_SYMBOL_TICK processing errors to async fatal channel', async () => {
     const originalNow = Date.now;
     Date.now = () => Date.UTC(2026, 1, 16, 2, 0);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>();
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     try {
       const context = createMonitorContext({
@@ -448,7 +451,7 @@ describe('app createAsyncRuntime wiring', () => {
       });
       const runtime = createAsyncRuntime(
         await createDeps({
-          lastState: createLastState(),
+          stateFixtures: createRuntimeStates(),
           monitorContext: context,
           monitorTaskQueue,
           periodicSwitchWakeupRuntime: createPeriodicSwitchWakeupRuntimeRecorder(replanCalls),

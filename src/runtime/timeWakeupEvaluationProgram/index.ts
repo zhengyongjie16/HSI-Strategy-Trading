@@ -13,19 +13,24 @@ import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import {
   getHKDateKey,
   getRequiredHKDateKey,
+  resolveHKDayStartUtcMs,
+} from '../../utils/time/index.js';
+import {
   isInContinuousHKSession,
   isWithinAfternoonOpenProtection,
   isWithinMorningOpenWindow,
-  resolveHKDayStartUtcMs,
-} from '../../utils/time/index.js';
+} from '../../domain/tradingSession/index.js';
 import { ordinarySignalGuard } from '../../domain/strategy/ordinarySignalGuard.js';
 import { planNextTimeWakeup } from '../timeWakeupPlanner/index.js';
 import type { TimeWakeupCandidate } from '../timeWakeupPlanner/types.js';
 import type { TimeWakeupEvaluationContext, TimeWakeupEvaluationResult } from './types.js';
 
-const takeoverStateByLastState = new WeakMap<TimeWakeupEvaluationContext['lastState'], boolean>();
-const autoSearchAuthorizationByLastState = new WeakMap<
-  TimeWakeupEvaluationContext['lastState'],
+const takeoverStateByTradingTimeState = new WeakMap<
+  TimeWakeupEvaluationContext['tradingTimeState'],
+  boolean
+>();
+const autoSearchAuthorizationByTradingTimeState = new WeakMap<
+  TimeWakeupEvaluationContext['tradingTimeState'],
   boolean
 >();
 
@@ -42,13 +47,15 @@ const autoSearchAuthorizationByLastState = new WeakMap<
 function publishAutoSearchAuthorizationChange(
   context: Pick<
     TimeWakeupEvaluationContext,
-    'lastState' | 'tradingConfig' | 'tradingGateEventRuntime'
+    'tradingTimeState' | 'lifecycleState' | 'tradingConfig' | 'tradingGateEventRuntime'
   >,
   currentTime: Date,
 ): void {
-  const previousAuthorized = autoSearchAuthorizationByLastState.get(context.lastState) ?? null;
+  const previousAuthorized =
+    autoSearchAuthorizationByTradingTimeState.get(context.tradingTimeState) ?? null;
   const nextAuthorized = ordinarySignalGuard({
-    lastState: context.lastState,
+    tradingTimeState: context.tradingTimeState,
+    lifecycleState: context.lifecycleState,
     now: currentTime,
     doomsdayProtectionEnabled: context.tradingConfig.global.doomsdayProtection,
   });
@@ -56,7 +63,7 @@ function publishAutoSearchAuthorizationChange(
     return;
   }
 
-  autoSearchAuthorizationByLastState.set(context.lastState, nextAuthorized);
+  autoSearchAuthorizationByTradingTimeState.set(context.tradingTimeState, nextAuthorized);
   context.tradingGateEventRuntime.emitAutoSearchAuthorizationChanged({
     previousAuthorized,
     nextAuthorized,
@@ -191,8 +198,12 @@ function resolveOpenProtectionEdgeMs(
 export async function timeWakeupEvaluationProgram({
   logger,
   marketDataClient,
-  trader,
-  lastState,
+  cacheManager,
+  orderMonitor,
+  orderExecutor,
+  tradingTimeState,
+  lifecycleState,
+  tradingCalendarState,
   snapshot,
   doomsdayClearanceWorkflow,
   tradingConfig,
@@ -205,15 +216,15 @@ export async function timeWakeupEvaluationProgram({
   const currentMs = currentTime.getTime();
   // 首个 await 前固定 origin epoch，不能让日切后的新 view 洗白旧时间评估。
   const dayEpoch = snapshot.getView().token.dayEpoch;
-  const previousCanTrade = lastState.canTrade;
-  const previousTakeoverActive = takeoverStateByLastState.get(lastState) ?? false;
+  const previousCanTrade = tradingTimeState.canTrade;
+  const previousTakeoverActive = takeoverStateByTradingTimeState.get(tradingTimeState) ?? false;
   const candidates: Array<TimeWakeupCandidate> = [];
   appendFutureCandidate(candidates, resolveNextHKDayBoundaryMs(currentTime), currentMs);
 
   const currentDayKey = getHKDateKey(currentTime) ?? '';
   const cachedTradingDayInfo =
-    lastState.cachedTradingDayInfo?.dateKey === currentDayKey
-      ? lastState.cachedTradingDayInfo.info
+    tradingCalendarState.cachedTradingDayInfo?.dateKey === currentDayKey
+      ? tradingCalendarState.cachedTradingDayInfo.info
       : null;
   let isTradingDayToday: boolean | null = cachedTradingDayInfo?.isTradingDay ?? true;
   let isHalfDayToday = cachedTradingDayInfo?.isHalfDay ?? false;
@@ -238,7 +249,7 @@ export async function timeWakeupEvaluationProgram({
 
     isTradingDayToday = tradingDayInfo.isTradingDay;
     isHalfDayToday = tradingDayInfo.isHalfDay;
-    lastState.cachedTradingDayInfo = {
+    tradingCalendarState.cachedTradingDayInfo = {
       dateKey: currentDayKey,
       info: tradingDayInfo,
     };
@@ -297,11 +308,11 @@ export async function timeWakeupEvaluationProgram({
 
   appendFutureCandidate(candidates, lifecycleResult.nextRetryAtMs, currentMs);
 
-  if (lastState.canTrade !== false && !isTradingDayToday) {
+  if (tradingTimeState.canTrade !== false && !isTradingDayToday) {
     logger.info('今天不是交易日，暂停实时监控。');
   }
 
-  if (lastState.canTrade !== canTradeNow) {
+  if (tradingTimeState.canTrade !== canTradeNow) {
     if (canTradeNow) {
       logger.info(`进入连续交易时段${isHalfDayToday ? '（半日交易）' : ''}，开始正常交易。`);
     } else if (isTradingDayToday) {
@@ -311,8 +322,8 @@ export async function timeWakeupEvaluationProgram({
     }
   }
 
-  lastState.canTrade = canTradeNow;
-  lastState.isHalfDay = isHalfDayToday;
+  tradingTimeState.canTrade = canTradeNow;
+  tradingTimeState.isHalfDay = isHalfDayToday;
   if (canTradeNow) {
     const { morning, afternoon } = tradingConfig.global.openProtection;
     const morningActive =
@@ -328,24 +339,24 @@ export async function timeWakeupEvaluationProgram({
     const anyProtectionEnabled =
       (morning.enabled && morning.minutes !== null) ||
       (!isHalfDayToday && afternoon.enabled && afternoon.minutes !== null);
-    if (anyProtectionEnabled && lastState.openProtectionActive !== openProtectionActive) {
+    if (anyProtectionEnabled && tradingTimeState.openProtectionActive !== openProtectionActive) {
       if (openProtectionActive) {
         logger.info(
           morningActive
             ? `[开盘保护] 早盘开盘后 ${String(morning.minutes)} 分钟内暂停信号生成`
             : `[开盘保护] 午盘开盘后 ${String(afternoon.minutes)} 分钟内暂停信号生成`,
         );
-      } else if (lastState.openProtectionActive !== null) {
+      } else if (tradingTimeState.openProtectionActive !== null) {
         logger.info('[开盘保护] 保护期结束，恢复信号生成');
       }
     }
 
-    lastState.openProtectionActive = openProtectionActive;
+    tradingTimeState.openProtectionActive = openProtectionActive;
   } else {
-    lastState.openProtectionActive = false;
+    tradingTimeState.openProtectionActive = false;
   }
 
-  const nextCanTrade = lastState.canTrade;
+  const nextCanTrade = tradingTimeState.canTrade;
   if (previousCanTrade !== nextCanTrade) {
     tradingGateEventRuntime.emitGateStateChanged({
       previousCanTrade,
@@ -361,17 +372,18 @@ export async function timeWakeupEvaluationProgram({
     logger.info('[清仓接管] 已清理普通待验证意图');
   }
 
-  takeoverStateByLastState.set(lastState, doomsdayTakeoverActive);
+  takeoverStateByTradingTimeState.set(tradingTimeState, doomsdayTakeoverActive);
   publishAutoSearchAuthorizationChange(
     {
-      lastState,
+      tradingTimeState,
+      lifecycleState,
       tradingConfig,
       tradingGateEventRuntime,
     },
     currentTime,
   );
 
-  if (!lastState.isTradingEnabled) {
+  if (!lifecycleState.isTradingEnabled) {
     return createEvaluationResult(currentTime, candidates);
   }
 
@@ -385,9 +397,11 @@ export async function timeWakeupEvaluationProgram({
       isHalfDay: isHalfDayToday,
       dayEpoch,
       monitorContext,
-      trader,
+      cacheManager,
+      orderMonitor,
+      orderExecutor,
       marketDataClient,
-      lastState,
+      lifecycleState,
       snapshot,
     });
     appendFutureCandidate(candidates, result.nextRetryAtMs, currentMs);

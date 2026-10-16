@@ -8,7 +8,7 @@ import type {
   AdvancePendingSwitchResult,
   StartSwitchOnDistanceResult,
   SwitchDriveResult,
-} from '../../src/types/monitorContextPorts.js';
+} from '../../src/types/seatSwitch.js';
 
 describe('monitorContextPorts type contracts', () => {
   it('keeps valid switch result variants constructible', () => {

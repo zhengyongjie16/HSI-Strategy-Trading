@@ -12,7 +12,7 @@
  * - 整笔语义,不拆分订单
  * - 价格解耦,卖出成交价不参与判定
  */
-import type { OrderRecord } from '../../types/services.js';
+import type { OrderRecord } from '../../types/orderRecorder.js';
 import { compareRatios } from '../../utils/numeric/exact.js';
 
 /**

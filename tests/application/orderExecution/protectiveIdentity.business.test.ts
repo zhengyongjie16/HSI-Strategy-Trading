@@ -1,16 +1,5 @@
-/** 共享执行隔离检查：初次/最终身份复核、可信终态后新鲜卖量重规划及非 protective 新提交。 */
-import { describe, expect, it } from 'bun:test';
-import { createOrderExecutor } from '../../../src/application/orderExecution/index.js';
-import type { OrderExecutionTrackingPort } from '../../../src/application/orderExecution/types.js';
-import type {
-  PendingSellOrderSnapshot,
-  TrackOrderParams,
-} from '../../../src/domain/order/types.js';
-import type { CancelOrderOutcome } from '../../../src/types/trader.js';
-import type { TradeSubmitCommand } from '../../../src/types/tradeMutationPorts.js';
-import { createTradingConfig } from '../../../mock/factories/configFactory.js';
-import { createSignal } from '../../../mock/factories/signalFactory.js';
 import {
+  createLoggerDouble,
   createMarketDataClientDouble,
   createOrderRecorderDouble,
   createPositionDouble,
@@ -19,6 +8,19 @@ import {
   createRiskCheckerDouble,
   createSymbolRegistryDouble,
 } from '../../helpers/testDoubles.js';
+
+/** 共享执行隔离检查：初次/最终身份复核、可信终态后新鲜卖量重规划及非 protective 新提交。 */
+import { describe, expect, it } from 'bun:test';
+import { createOrderExecutor } from '../../../src/application/orderExecution/index.js';
+import type { OrderExecutionTrackingPort } from '../../../src/application/orderExecution/types.js';
+import type {
+  PendingSellOrderSnapshot,
+  TrackOrderParams,
+} from '../../../src/domain/order/types.js';
+import type { CancelOrderOutcome } from '../../../src/types/orderCancellation.js';
+import type { TradeSubmitCommand } from '../../../src/types/tradeMutationPorts.js';
+import { createTradingConfig } from '../../../mock/factories/configFactory.js';
+import { createSignal } from '../../../mock/factories/signalFactory.js';
 
 const nowMs = Date.parse('2026-10-07T02:00:00Z');
 const oldOrder: PendingSellOrderSnapshot = {
@@ -77,6 +79,7 @@ function createHarness(params: {
     },
   };
   const executor = createOrderExecutor({
+    logger: createLoggerDouble(),
     readSellPositions: async () => {
       reads++;
       calls.push(`positions:${reads}`);

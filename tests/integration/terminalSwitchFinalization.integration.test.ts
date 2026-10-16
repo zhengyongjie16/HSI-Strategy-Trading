@@ -1,3 +1,5 @@
+import { createRuntimeStateFixtures } from '../helpers/runtimeStateFixtures.js';
+
 /**
  * terminal-switch-finalization 集成测试
  *
@@ -13,12 +15,9 @@ import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index
 import { createStaticLiquidationExecutor } from '../../src/application/staticLiquidation/index.js';
 import { createDefaultMonitorQuoteEventRuntime } from '../../src/runtime/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
 import { createSwitchWakeupRuntime } from '../../src/runtime/monitorQuoteEventRuntime/switchWakeupRuntime.js';
-import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../src/main/tradingGateEventRuntime/index.js';
+import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../src/runtime/tradingGateEventRuntime/index.js';
 
-import type {
-  AdvancePendingSwitchResult,
-  SeatSwitchWorkflow,
-} from '../../src/types/monitorContextPorts.js';
+import type { AdvancePendingSwitchResult, SeatSwitchWorkflow } from '../../src/types/seatSwitch.js';
 import type { QuoteUpdatedEvent } from '../../src/types/marketPorts.js';
 
 import {
@@ -33,7 +32,7 @@ import {
   createMonitorContextDouble,
   createQuoteDouble,
   createRiskCheckerDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
   createWarrantDistanceInfoDouble,
 } from '../helpers/testDoubles.js';
 import { createWarrantCandidateWithOverrides, createLoggerStub } from '../helpers/seatTestUtils.js';
@@ -150,13 +149,15 @@ describe('terminal switch finalization integration', () => {
       },
     });
     let mutationCalls = 0;
-    const trader = createTraderDouble({
+    const tradeRuntime = createTradeRuntimeDouble({
       ...account,
-      executeSignals: async () => {
-        mutationCalls += 1;
-        throw new Error('invalid quote must prevent submission');
+      orderExecutor: {
+        executeSignals: async () => {
+          mutationCalls += 1;
+          throw new Error('invalid quote must prevent submission');
+        },
       },
-      getPendingOrders: async () => [],
+      cacheManager: { getPendingOrders: async () => [] },
     });
     const dailyLossTracker = createDailyLossTrackerDouble();
     const prepared = dailyLossTracker.prepareRecalculationFromAllOrders(
@@ -168,9 +169,10 @@ describe('terminal switch finalization integration', () => {
     );
     dailyLossTracker.publishRecalculation(prepared);
     const postTradeConsistencyRuntime = createPostTradeConsistencyRuntime({
+      logger: createLoggerDouble(),
       snapshot,
       termination: createTerminationDouble(),
-      getTrader: () => trader,
+      getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
       onPositionsCommitted: async (token) => {
         if (!snapshot.isCurrent(token, { account: false, positions: true }))
           throw new Error('stale committed token');
@@ -178,6 +180,7 @@ describe('terminal switch finalization integration', () => {
       scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
     });
     const orderRecorder = native.createRecorder({
+      logger: createLoggerDouble(),
       rateLimiter: createRateLimiterDouble(),
       getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
       settlementRefreshNeedRecorder: postTradeConsistencyRuntime,
@@ -200,7 +203,10 @@ describe('terminal switch finalization integration', () => {
       monitorConfig,
       symbolRegistry,
       marketDataClient,
-      trader,
+      cacheManager: tradeRuntime.cacheManager,
+      orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+      orderMonitor: tradeRuntime.orderMonitor,
+      orderExecutor: tradeRuntime.orderExecutor,
       orderRecorder,
       riskChecker,
       candidateSearch: {
@@ -241,7 +247,12 @@ describe('terminal switch finalization integration', () => {
       }),
       seatSwitch: seatSwitch,
     };
-    const lastState = { isTradingEnabled: true, canTrade: true, isHalfDay: false };
+    const stateFixtures = createRuntimeStateFixtures({
+      tradingTimeState: { canTrade: true, isHalfDay: false },
+      lifecycleState: { isTradingEnabled: true },
+      tradingCalendarState: {},
+      quoteSubscriptionState: {},
+    });
     postTradeConsistencyRuntime.bindBusinessDeps({
       monitorContext,
       dailyLossTracker,
@@ -261,10 +272,10 @@ describe('terminal switch finalization integration', () => {
     const switchWakeupRuntime = createSwitchWakeupRuntime({
       logger: { error: () => {} },
       marketDataClient,
-      trader,
+      orderMonitor: tradeRuntime.orderMonitor,
       symbolRegistry,
       monitorContext,
-      lastState,
+      ...stateFixtures,
       snapshot,
       postTradeConsistencyRuntime,
       tradingGateEventRuntime: createTradingGateEventRuntime(),
@@ -289,13 +300,13 @@ describe('terminal switch finalization integration', () => {
       marketDataClient,
       monitorContext,
       executeStaticLiquidation: createStaticLiquidationExecutor({
-        trader,
+        orderExecutor: tradeRuntime.orderExecutor,
         marketDataClient,
         snapshot,
         postTradeConsistencyRuntime,
         now: () => new Date(nowMs),
       }),
-      lastState,
+      ...stateFixtures,
       snapshot,
       postTradeConsistencyRuntime,
       doomsdayProtectionEnabled: false,

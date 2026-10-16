@@ -1,12 +1,18 @@
+import { scheduleBoundedOneShotAt } from '../../../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../../../src/infrastructure/time/index.js';
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createSymbolRegistryDouble,
+} from '../../../helpers/testDoubles.js';
+
 /** 已注册SDK WS→同context native ledger→真实Monitor→O/Daily/durable→同H/S；不声明NAPI Order/network能力。 */
 
 import { expect, test } from 'bun:test';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import type { OrderStateChangedEvent } from '../../../../src/types/services.js';
-import {
-  createMarketDataClientDouble,
-  createSymbolRegistryDouble,
-} from '../../../helpers/testDoubles.js';
+import type { OrderStateChangedEvent } from '../../../../src/types/orderTracking.js';
+
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../recorder/executionFixture.js';
 
@@ -37,6 +43,10 @@ async function setup(protective: boolean, persistProgress: () => void) {
   const f = createExecutionFixture({ nowMs: executionTimeMs, persistProgress });
   const closed: OrderStateChangedEvent[] = [];
   const monitor = ingress.createMonitor({
+    logger: createLoggerDouble(),
+    wait: wait,
+    requestExternalApi: wrapExternalApiRequest,
+    scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
     rateLimiter: f.rateLimiter,
     cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
     marketDataClient: createMarketDataClientDouble(),

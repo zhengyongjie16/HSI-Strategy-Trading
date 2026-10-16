@@ -1,7 +1,12 @@
+import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
+
+import type { TradeRuntime } from '../../../../src/app/runtime/types.js';
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
+
 /** 订单经济回归 fixture：真实 O/Daily 同步准入和同实例 H/S stale 登记，不提供伪 readiness。 */
 
 import { createPostTradeConsistencyRuntime } from '../../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createTerminationRuntime } from '../../../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createAccountPositionSnapshot } from '../../../../src/application/accountPositionSnapshot/index.js';
 import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
 import { createOrderHoldRegistry } from '../../../../src/application/orderTracking/orderHoldRegistry.js';
@@ -17,7 +22,7 @@ import { createProtectiveLiquidationEpisodeTracker } from '../../../../src/domai
 import { orderAnalysis } from '../../../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
 import type { SnapshotReadPort, SnapshotToken } from '../../../../src/types/accountPosition.js';
-import type { OrderStateChangedEvent, Trader } from '../../../../src/types/services.js';
+import type { OrderStateChangedEvent } from '../../../../src/types/orderTracking.js';
 import { toHongKongTimeIso } from '../../../../src/utils/time/index.js';
 import { createOfflineBrokerPort } from '../../../integration/accountPositionConsistency/offlinePorts.js';
 
@@ -28,7 +33,7 @@ export function createExecutionFixture(
     readonly rateLimiter?: ReturnType<typeof createRateLimiter>;
     readonly termination?: ReturnType<typeof createTerminationRuntime>;
     readonly readPort?: SnapshotReadPort;
-    readonly getTrader?: () => Trader;
+    readonly getTradeRuntime?: () => TradeRuntime;
     readonly onPositionsCommitted?: (token: SnapshotToken) => Promise<void>;
     readonly persistProgress?: SettlementFlowDeps['persistProtectiveLiquidationExecutionProgress'];
     readonly createRecorder?: (
@@ -72,7 +77,9 @@ export function createExecutionFixture(
 } {
   const now = params.nowMs ?? Date.parse('2026-03-13T02:00:00.000Z');
   const io = createOfflineBrokerPort();
-  const rateLimiter = params.rateLimiter ?? createRateLimiter();
+  const rateLimiter =
+    params.rateLimiter ??
+    createRateLimiter({ wait: wait, nowMonotonicMs: nowMonotonicMs, logger: createLoggerDouble() });
   const rejectUnexpected = (): never => {
     throw new Error('economic fixture does not authorize IO or protective persistence');
   };
@@ -94,9 +101,14 @@ export function createExecutionFixture(
     reportFatalError: termination.reportFatalError,
   });
   const sinkOwner = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     snapshot,
     termination,
-    getTrader: params.getTrader ?? rejectUnexpected,
+    getProtectiveOrderReader: () => {
+      if (params.getTradeRuntime === undefined) return rejectUnexpected();
+
+      return params.getTradeRuntime().orderMonitor;
+    },
     onPositionsCommitted: params.onPositionsCommitted ?? (async () => rejectUnexpected()),
     scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
   });
@@ -120,6 +132,7 @@ export function createExecutionFixture(
   dailyOwner.resetAll(new Date(now));
   const daily = params.observeDaily === undefined ? dailyOwner : params.observeDaily(dailyOwner);
   const recorderDeps = {
+    logger: createLoggerDouble(),
     rateLimiter,
     getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: sink,

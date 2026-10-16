@@ -1,7 +1,7 @@
 /** 订单经济投影纯规则：同 broker ID 的消费覆盖、成本和整笔抵扣候选；不提交账本或 stale。 */
 import { exactAdd, exactCompare } from '../../utils/numeric/exact.js';
-import type { BrokerOrderExecutionFact } from '../../types/orderRecorder.js';
-import type { OrderRecord } from '../../types/services.js';
+import type { BrokerOrderExecutionFact, OrderRecord } from '../../types/orderRecorder.js';
+
 import type { OrderFact } from '../../types/trade.js';
 import type { OwnedExecutionFact, PreparedExecutionCommit, ProjectionSliceInput } from './types.js';
 import { applyFilteringAlgorithm } from './orderFilteringEngine.js';

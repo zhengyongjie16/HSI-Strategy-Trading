@@ -45,7 +45,7 @@ describe('strategy emission adapter', () => {
       h.emitter()(malformed(value));
     }).toThrow();
     expect(h.termination.isTerminated()).toBeTrue();
-    expect(h.lastState.isTradingEnabled).toBeFalse();
+    expect(h.stateFixtures.lifecycleState.isTradingEnabled).toBeFalse();
     expect(h.buyTaskQueue.isEmpty()).toBeTrue();
     expect(h.sellTaskQueue.isEmpty()).toBeTrue();
     expect(
@@ -94,9 +94,9 @@ describe('strategy emission adapter', () => {
 
   it('首次因当前 gate 丢弃仍占用 action，不能在重开后第二次输出', async () => {
     const h = await originHarness();
-    h.lastState.canTrade = false;
+    h.stateFixtures.tradingTimeState.canTrade = false;
     h.emitter()({ action: 'BUYCALL', triggerTimeMs: 0 });
-    h.lastState.canTrade = true;
+    h.stateFixtures.tradingTimeState.canTrade = true;
     expect(() => {
       h.emitter()({ action: 'BUYCALL', triggerTimeMs: 1 });
     }).toThrow('重复');
@@ -109,11 +109,11 @@ describe('strategy emission adapter', () => {
     async (kind) => {
       const h = createEventHarness();
       if (kind === 'disabled') {
-        h.lastState.openProtectionActive = true;
+        h.stateFixtures.tradingTimeState.openProtectionActive = true;
       }
 
       if (kind === 'day') {
-        h.lastState.currentDayKey = '2026-02-30';
+        h.stateFixtures.lifecycleState.currentDayKey = '2026-02-30';
       }
 
       if (kind === 'sellPermission') {
@@ -151,11 +151,11 @@ describe('strategy emission adapter', () => {
     async (kind) => {
       const h = await originHarness();
       if (kind === 'day') {
-        h.lastState.currentDayKey = '2026-07-16';
+        h.stateFixtures.lifecycleState.currentDayKey = '2026-07-16';
       }
 
       if (kind === 'gate') {
-        h.lastState.canTrade = false;
+        h.stateFixtures.tradingTimeState.canTrade = false;
       }
 
       if (kind === 'takeover') {
@@ -191,7 +191,7 @@ describe('strategy emission adapter', () => {
     const h = await originHarness();
     const reads = h.mutable.recordReads;
     h.mutable.filled = false;
-    h.lastState.openProtectionActive = true;
+    h.stateFixtures.tradingTimeState.openProtectionActive = true;
     h.mutable.nowMs += 10_000;
     h.emitter()({ action: 'SELLCALL', triggerTimeMs: 123, reason: '末日保护程序' });
     expect(h.mutable.recordReads).toBe(reads);
@@ -254,7 +254,7 @@ describe('strategy emission adapter', () => {
       expect(() => {
         emit(malformed({ action: 'HOLD', triggerTimeMs: 0 }));
       }).toThrow();
-      expect(h.lastState.isTradingEnabled).toBeFalse();
+      expect(h.stateFixtures.lifecycleState.isTradingEnabled).toBeFalse();
       expect(h.termination.isTerminated()).toBeTrue();
       return [{ label: 'late', valueText: 'forbidden' }];
     };

@@ -12,7 +12,7 @@ import type {
   SettlementRefreshNeedRecorder,
 } from '../../types/settlement.js';
 import type { RuntimeScheduler, RuntimeTermination } from '../../types/runtime.js';
-import type { Logger } from '../../utils/logger/types.js';
+import type { Logger } from '../../types/logger.js';
 
 /** settlement owner 私有等待者；只在当前 snapshot 与水位共同有效时签发凭据。 */
 export type ReadinessWaiter = {

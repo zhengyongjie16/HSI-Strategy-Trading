@@ -1,10 +1,10 @@
-import type { Unsubscribe } from './services.js';
+import type { Unsubscribe } from './events.js';
 
 /**
  * 席位状态枚举。
  * 类型用途：表示做多/做空席位的生命周期（EMPTY 空席、SEARCHING 寻标中、SWITCHING 换标中、ACTIVATING 激活中、ACTIVE 可消费），用于 getSeatState/updateSeatState 等返回值及换标流程判断。
  * 数据来源：由 SymbolRegistry 内部状态维护。
- * 使用范围：SymbolRegistry、autoSymbolManager、启动/换标流程等；全项目可引用。
+ * 使用范围：SymbolRegistry、席位换标、启动恢复等；全项目可引用。
  */
 export type SeatStatus = 'EMPTY' | 'SEARCHING' | 'SWITCHING' | 'ACTIVATING' | 'ACTIVE';
 
@@ -175,49 +175,47 @@ type SeatTruthChangedEvent = Readonly<{
  */
 export type SeatTruthChangedListener = (event: SeatTruthChangedEvent) => void;
 
-/**
- * 标的注册表接口。
- * 类型用途：依赖注入用接口，统一维护唯一 monitor 的做多/做空席位状态与版本号，供 resolveSeatBySymbol、换标流程等调用。
- * 数据来源：内部实现（如 recovery/seatPreparation）维护；状态数据来自运行时更新。
- * 使用范围：主程序、MonitorContext、autoSymbolManager、orderRecorder 等；全项目可引用。
- */
-export interface SymbolRegistry {
+/** 同一席位 truth 的只读能力；普通授权、display 与 runtime 只读取原 state/version/归属。 */
+export interface SeatReader {
   /** 获取席位状态 */
-  getSeatState: (direction: 'LONG' | 'SHORT') => SeatState;
+  readonly getSeatState: (direction: 'LONG' | 'SHORT') => SeatState;
 
   /** 获取席位版本号 */
-  getSeatVersion: (direction: 'LONG' | 'SHORT') => number;
+  readonly getSeatVersion: (direction: 'LONG' | 'SHORT') => number;
 
   /** 根据标的代码解析所属席位 */
-  resolveSeatBySymbol: (symbol: string) => Readonly<{
+  readonly resolveSeatBySymbol: (symbol: string) => Readonly<{
     direction: 'LONG' | 'SHORT';
     seatVersion: number;
   }> | null;
+}
 
+/** 既有席位状态机的同步 mutation 能力；寻标、换标、激活与日切共享同一 SymbolRegistry。 */
+export interface SeatWriter {
   /** 更新席位状态 */
-  updateSeatState: (direction: 'LONG' | 'SHORT', nextState: RuntimeWritableSeatState) => SeatState;
+  readonly updateSeatState: (
+    direction: 'LONG' | 'SHORT',
+    nextState: RuntimeWritableSeatState,
+  ) => SeatState;
 
   /** 原子更新席位状态并递增席位版本号 */
-  updateSeatStateWithVersionBump: (
+  readonly updateSeatStateWithVersionBump: (
     direction: 'LONG' | 'SHORT',
     nextState: RuntimeWritableSeatState,
   ) => {
     readonly seatState: SeatState;
     readonly seatVersion: number;
   };
-
-  /** 订阅席位状态变化事件 */
-  onSeatStateChanged: (listener: (event: SeatStateChangedEvent) => void) => Unsubscribe;
-
-  /** 订阅席位 truth 变化事件 */
-  onSeatTruthChanged: (listener: SeatTruthChangedListener) => Unsubscribe;
 }
 
-/**
- * 生命周期状态。
- * 类型用途：表示 7x24 跨日缓存治理的阶段性状态（ACTIVE / MIDNIGHT_CLEANING / MIDNIGHT_CLEANED / OPEN_REBUILDING / OPEN_REBUILD_FAILED），用于 LastState 与门禁判断。
- * 数据来源：lifecycle 模块内部状态机更新。
- * 使用范围：运行期状态、LastState、门禁、跨日流程等；全项目可引用。
- */
-export type LifecycleState =
-  'ACTIVE' | 'MIDNIGHT_CLEANING' | 'MIDNIGHT_CLEANED' | 'OPEN_REBUILDING' | 'OPEN_REBUILD_FAILED';
+/** 权威席位 mutation 完成后的事件订阅；不向 runtime 暴露 state 集合或更新入口。 */
+export interface SeatEvents {
+  /** 订阅席位状态变化事件 */
+  readonly onSeatStateChanged: (listener: (event: SeatStateChangedEvent) => void) => Unsubscribe;
+
+  /** 订阅席位 truth 变化事件 */
+  readonly onSeatTruthChanged: (listener: SeatTruthChangedListener) => Unsubscribe;
+}
+
+/** 唯一席位 owner 的工厂产物；业务按读、写或事件能力注入，不另建席位缓存。 */
+export interface SymbolRegistry extends SeatReader, SeatWriter, SeatEvents {}

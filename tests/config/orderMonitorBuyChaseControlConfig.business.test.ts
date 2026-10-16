@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../helpers/testDoubles.js';
+
 /**
  * order monitor 买单追高控制配置测试
  *
@@ -17,11 +19,13 @@ function createBaseEnv(overrides: Readonly<Record<string, string>> = {}): NodeJS
 describe('order monitor buy chase control config', () => {
   it('parses ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE with expected defaults', () => {
     const defaultConfig = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv(),
     });
     expect(defaultConfig.global.allowBuyOrderTrackingAboveInitialPrice).toBe(true);
 
     const enabledConfig = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({
         ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE: 'true',
       }),
@@ -29,6 +33,7 @@ describe('order monitor buy chase control config', () => {
     expect(enabledConfig.global.allowBuyOrderTrackingAboveInitialPrice).toBe(true);
 
     const disabledConfig = parseTradingConfig({
+      logger: createLoggerDouble(),
       env: createBaseEnv({
         ALLOW_BUY_ORDER_TRACKING_ABOVE_INITIAL_PRICE: 'false',
       }),

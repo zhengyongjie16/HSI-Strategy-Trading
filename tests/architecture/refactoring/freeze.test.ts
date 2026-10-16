@@ -1,5 +1,5 @@
 /**
- * P4.5 多重集合收缩：截至 P4.5 到期 occurrence 必须删除，P5/P6 精确旧例外不可增殖或提前闭合。
+ * P6 多重集合收缩：全部到期 occurrence 与旧 owner 必须删除，不重采样原审计额度或期限。
  * 临时 fixtures 只用于静态编译器检查，不写入生产树、不连接 SDK。
  */
 import path from 'node:path';
@@ -71,7 +71,7 @@ const files = [
 const program = createAuditProgram(root, files);
 const actual = scanProgram(root, program, files);
 
-describe('P4.5 frozen occurrence architecture', () => {
+describe('P6 frozen occurrence architecture', () => {
   it.each([
     "import { readFileSync } from 'node:fs'; void readFileSync;",
     "import type { Stats } from 'node:fs'; export type Stat = Stats;",
@@ -551,14 +551,71 @@ describe('P4.5 frozen occurrence architecture', () => {
     expect(scan.imports).toHaveLength(1);
   });
 
-  it('requires the P4.5 stage without granting P5/P6 or final-directory exceptions', () => {
-    expect(baseline.stage).toBe('P4.5');
-    const later = baseline.imports.find((row) => row.cutoff === 'P4.5');
-    expect(later).toBeDefined();
-    if (later !== undefined) {
-      expect(excess([later.key], [later], 'P3F')).toEqual([]);
-      expect(excess([later.key], [later], 'P4.5')).toEqual([later.key]);
-    }
+  it('resolves only fixed query-isolated test paths and rejects interpolated path injection', () => {
+    const scan = fixture({
+      'src/app/runApp.ts': 'export const runApp = () => undefined;',
+      'src/core/old.ts': 'export const old = 1;',
+      'tests/app/safe.test.ts':
+        'export const load = (key: string) => import(`../../src/app/runApp.js?case=${key}`);',
+      'tests/app/old.test.ts':
+        'export const load = (key: string) => import(`../../src/core/old.js?case=${key}`);',
+      'tests/app/injected.test.ts':
+        'export const load = (name: string) => import(`../../src/${name}.js?case=probe`);',
+    });
+    expect(scan.violations.filter((key) => key.includes('safe.test.ts'))).toEqual([]);
+    expect(
+      scan.violations.some((key) => key.includes('old.test.ts') && key.includes('DYNAMIC_EDGE')),
+    ).toBeTrue();
+
+    expect(
+      scan.violations.some((key) => key.includes('injected.test.ts') && key.includes('NONLITERAL')),
+    ).toBeTrue();
+  });
+
+  it('does not grant a fixture-loader file exemption or approve a missing URL/root validation gate', () => {
+    const real = readFileSync('tests/helpers/importFixtureModule.ts', 'utf8');
+    const approved = fixture({ 'tests/helpers/importFixtureModule.ts': real });
+    expect(approved.violations.filter((key) => key.includes('NONLITERAL'))).toEqual([]);
+    const injected = fixture({
+      'tests/helpers/importFixtureModule.ts':
+        real + '\nexport const bypass = (href: string) => import(href);',
+    });
+    expect(injected.violations.filter((key) => key.includes('NONLITERAL'))).toHaveLength(1);
+    const unguarded = fixture({
+      'tests/helpers/importFixtureModule.ts': real.replace(
+        "url.protocol !== 'file:'",
+        "url.protocol === 'file:'",
+      ),
+    });
+    expect(unguarded.violations.some((key) => key.includes('NONLITERAL'))).toBeTrue();
+  });
+
+  it.each([
+    ['src/application/probe.ts', 'TradeRuntime'],
+    ['src/runtime/probe.ts', 'MonitorContextAssembly'],
+    ['tests/helpers/probe.ts', 'LastState'],
+    ['tests/application/probe.ts', 'Trader'],
+  ])(
+    'rejects broad business/service-locator contracts even in renamed or test files: %s',
+    (file, name) => {
+      const scan = fixture({ [file]: `export type ${name} = { readonly value: string };` });
+      expect(scan.violations.some((key) => /WIDE_CONTRACT|ASSEMBLY_LOCATOR/.test(key))).toBeTrue();
+    },
+  );
+
+  it('requires the P6 stage without granting final-directory exceptions', () => {
+    expect(baseline.stage).toBe('P6');
+    expect(
+      files
+        .map((file) => path.relative(root, file).replaceAll('\\', '/'))
+        .filter((file) => /^(?:src|tests)\/(?:core|main|services)\//.test(file)),
+    ).toEqual([]);
+    const expiring = baseline.legacy.filter((row) => row.cutoff === 'P5');
+    const keys = expiring.map((row) => row.key);
+    expect(keys.length).toBeGreaterThan(0);
+    expect(excess(keys, expiring, 'P4.5')).toEqual([]);
+    expect(excess([...keys, ...keys], expiring, 'P4.5')).toEqual(keys);
+    expect(excess(keys, expiring, 'P5')).toEqual(keys);
   });
 
   it('expires each original P2 SDK, legacy and helper occurrence without resampling', () => {

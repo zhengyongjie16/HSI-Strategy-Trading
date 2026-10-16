@@ -1,3 +1,13 @@
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createOrderMonitorDouble as createSharedOrderMonitorDouble,
+  createOrderRecorderDouble,
+  createQuoteDouble,
+  createRiskCheckerDouble,
+  createSymbolRegistryDouble,
+} from '../../helpers/testDoubles.js';
+
 /**
  * orderExecutor 清仓执行契约测试
  *
@@ -11,11 +21,11 @@ import { TRADING } from '../../../src/constants/index.js';
 import { createOrderExecutor as createOrderExecutorCore } from '../../../src/application/orderExecution/index.js';
 import type { OrderExecutorDeps } from '../../../src/application/orderExecution/types.js';
 import type { TrackOrderParams } from '../../../src/domain/order/types.js';
-import type { RateLimiter, TradeMutationPermit } from '../../../src/types/services.js';
+import type { RateLimiter, TradeMutationPermit } from '../../../src/types/rateLimit.js';
 import type {
   DoomsdayClearanceExecutionResult,
   ExecuteSignalsResult,
-} from '../../../src/types/trader.js';
+} from '../../../src/types/orderExecutionPorts.js';
 import type {
   DoomsdayClearanceCommand,
   ExecutableSignal,
@@ -24,14 +34,6 @@ import type {
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createSignal } from '../../../mock/factories/signalFactory.js';
 import { getRequiredHKDateKey } from '../../../src/utils/time/index.js';
-import {
-  createMarketDataClientDouble,
-  createOrderMonitorDouble as createSharedOrderMonitorDouble,
-  createOrderRecorderDouble,
-  createQuoteDouble,
-  createRiskCheckerDouble,
-  createSymbolRegistryDouble,
-} from '../../helpers/testDoubles.js';
 
 type OrderExecutorTestDeps = Omit<OrderExecutorDeps, 'unrealizedLossBuyGate'> &
   Partial<Pick<OrderExecutorDeps, 'unrealizedLossBuyGate'>>;
@@ -134,6 +136,7 @@ async function createDoomsdayAuthorizationHarness(params: {
   const native = await createNativeIngress();
 
   const orderExecutor = createOrderExecutor({
+    logger: createLoggerDouble(),
     tradeMutationPort: native.ports.createTradeMutationPort(),
     readSellPositions: native.ports.createSellPositionReader(),
     rateLimiter: createRateLimiterDouble(
@@ -379,6 +382,7 @@ describe('orderExecutor protective-liquidation contract', () => {
     let trackedOrderCount = 0;
     let localRecordCount = 0;
     const orderExecutorDeps = {
+      logger: createLoggerDouble(),
       tradeMutationPort: native.ports.createTradeMutationPort(),
       readSellPositions: native.ports.createSellPositionReader(),
       rateLimiter: createRateLimiterDouble(() => {
@@ -459,6 +463,7 @@ describe('orderExecutor protective-liquidation contract', () => {
     let cacheClearCalls = 0;
     let trackedOrderCount = 0;
     const orderExecutorDeps = {
+      logger: createLoggerDouble(),
       tradeMutationPort: native.ports.createTradeMutationPort(),
       readSellPositions: native.ports.createSellPositionReader(),
       rateLimiter: createRateLimiterDouble(() => {
@@ -538,6 +543,7 @@ describe('orderExecutor protective-liquidation contract', () => {
     let cacheClearCalls = 0;
     let trackedOrderCount = 0;
     const orderExecutorDeps = {
+      logger: createLoggerDouble(),
       tradeMutationPort: native.ports.createTradeMutationPort(),
       readSellPositions: native.ports.createSellPositionReader(),
       rateLimiter: createRateLimiterDouble(() => {
@@ -626,6 +632,7 @@ describe('orderExecutor protective-liquidation contract', () => {
     const executionTime = new Date('2026-07-10T07:56:00.000Z');
     const native = await createNativeIngress();
     const orderExecutorDeps = {
+      logger: createLoggerDouble(),
       tradeMutationPort: native.ports.createTradeMutationPort(),
       readSellPositions: native.ports.createSellPositionReader(),
       rateLimiter: createRateLimiterDouble(() => {}),
@@ -707,6 +714,7 @@ describe('orderExecutor protective-liquidation contract', () => {
     let rateLimiterCalls = 0;
     const trackedOrders: TrackOrderParams[] = [];
     const orderExecutorDeps = {
+      logger: createLoggerDouble(),
       tradeMutationPort: native.ports.createTradeMutationPort(),
       readSellPositions: native.ports.createSellPositionReader(),
       rateLimiter: createRateLimiterDouble(() => {

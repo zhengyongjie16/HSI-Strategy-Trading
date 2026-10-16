@@ -1,3 +1,16 @@
+import { wrapExternalApiRequest } from '../../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../../src/infrastructure/time/index.js';
+import { scheduleBoundedOneShotAt } from '../../../src/runtime/timer/index.js';
+import {
+  createLoggerDouble,
+  createDailyLossTrackerDouble,
+  createMarketDataClientDouble,
+  createOrderRecorderDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
+  createQuoteDouble,
+  createSymbolRegistryDouble,
+} from '../../helpers/testDoubles.js';
+
 /**
  * orderMonitorRouteHooks 集成测试
  *
@@ -21,16 +34,9 @@ import type {
 } from '../../../src/application/orderTracking/types.js';
 import type { TrackOrderParams } from '../../../src/domain/order/types.js';
 import type { QuoteUpdatedEvent } from '../../../src/types/marketPorts.js';
-import type { TradeMutationPermit } from '../../../src/types/services.js';
+import type { TradeMutationPermit } from '../../../src/types/rateLimit.js';
 import type { OrderFact } from '../../../src/types/trade.js';
-import {
-  createDailyLossTrackerDouble,
-  createMarketDataClientDouble,
-  createOrderRecorderDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
-  createQuoteDouble,
-  createSymbolRegistryDouble,
-} from '../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const ownedMonitors = new Set<OrderMonitor>();
@@ -194,6 +200,10 @@ async function createDeps(): Promise<{
   const baseMonitor = baseConfig.monitor;
 
   const deps: NativeMonitorDeps = {
+    logger: createLoggerDouble(),
+    wait: wait,
+    requestExternalApi: wrapExternalApiRequest,
+    scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
     now: () => new Date(),
     scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimer: (handle) => {

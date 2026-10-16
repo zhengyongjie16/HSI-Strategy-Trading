@@ -1,17 +1,27 @@
+import type { OrderTrackingEvents } from '../../types/orderTracking.js';
+import type { DailyLossTracker } from '../../types/risk.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
+import type { RiskChecker } from '../../types/riskCheck.js';
+import type { SeatSwitchWorkflow, SwitchDriveResult } from '../../types/seatSwitch.js';
+import type { MonitorConfig } from '../../types/config.js';
+import type { MonitorSymbolNames } from '../../types/monitor.js';
+import type { LifecycleMutableState } from '../../types/lifecycle.js';
+import type {
+  TradingTimeState,
+  TradingGateStateChangedEvent,
+} from '../../types/timeControlPlane.js';
 import type { StartDistanceSwitchExecutor } from '../../application/seatSwitch/types.js';
 import type { RuntimeTermination } from '../../types/runtime.js';
-import type { MonitorContext, LastState } from '../../types/state.js';
 import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
 import type { SettlementFreshnessReader } from '../../types/settlement.js';
 import type { StaticLiquidationExecutionResult } from '../../application/staticLiquidation/types.js';
-import type { TradingGateStateChangedEvent } from '../../types/timeControlPlane.js';
+
 import type { MarketDataClient, QuoteUpdatedEvent } from '../../types/marketPorts.js';
-import type { Trader } from '../../types/services.js';
-import type { SwitchDriveResult } from '../../types/monitorContextPorts.js';
+
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { QuoteRetainPort } from '../../types/quoteSubscription.js';
-import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';
-import type { Logger } from '../../utils/logger/types.js';
+import type { BoundedOneShotTimerController } from '../../types/timer.js';
+import type { Logger } from '../../types/logger.js';
 
 /**
  * Monitor quote freshness 状态快照。
@@ -48,7 +58,14 @@ interface MonitorQuoteFreshnessDeps extends SettlementFreshnessReader {
  * 使用范围：仅 monitorQuoteEventRuntime 模块内部使用。
  */
 export type MonitorQuoteEventExecutor = (params: {
-  readonly monitorContext: MonitorContext;
+  readonly monitorContext: Pick<MonitorSymbolNames, 'longSymbolName' | 'shortSymbolName'> & {
+    readonly config: MonitorConfig;
+    readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+    readonly seatSwitch: SeatSwitchWorkflow;
+    readonly riskChecker: RiskChecker;
+    readonly orderRecorder: OrderRecorder;
+    readonly dailyLossTracker: DailyLossTracker;
+  };
   readonly event: QuoteUpdatedEvent;
   readonly retryAttempts: number;
   readonly excludedDirections: ReadonlySet<'LONG' | 'SHORT'>;
@@ -65,14 +82,22 @@ export type MonitorQuoteEventExecutor = (params: {
 export type CreateMonitorQuoteEventRuntimeDeps = Readonly<{
   readonly logger: Pick<Logger, 'error'>;
   readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated'>;
-  readonly monitorContext: MonitorContext;
+  readonly monitorContext: Pick<MonitorSymbolNames, 'longSymbolName' | 'shortSymbolName'> & {
+    readonly config: MonitorConfig;
+    readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+    readonly seatSwitch: SeatSwitchWorkflow;
+    readonly riskChecker: RiskChecker;
+    readonly orderRecorder: OrderRecorder;
+    readonly dailyLossTracker: DailyLossTracker;
+  };
   readonly executeStaticLiquidation?: MonitorQuoteEventExecutor;
   readonly startDistanceSwitch?: StartDistanceSwitchExecutor;
   readonly handoffPendingSwitch?: Pick<
     SwitchWakeupRuntime,
     'handoffPendingSwitch'
   >['handoffPendingSwitch'];
-  readonly lastState?: Pick<LastState, 'isTradingEnabled' | 'canTrade' | 'isHalfDay'>;
+  readonly tradingTimeState: Readonly<Pick<TradingTimeState, 'canTrade' | 'isHalfDay'>>;
+  readonly lifecycleState: Readonly<Pick<LifecycleMutableState, 'isTradingEnabled'>>;
   readonly snapshot: Pick<AccountPositionSnapshotReader, 'getView' | 'isCurrent'>;
   readonly postTradeConsistencyRuntime: MonitorQuoteFreshnessDeps;
   readonly doomsdayProtectionEnabled?: boolean;
@@ -94,9 +119,17 @@ export type CreateMonitorQuoteEventRuntimeDeps = Readonly<{
 export type CreateDefaultMonitorQuoteEventRuntimeDeps = Readonly<{
   readonly logger: Pick<Logger, 'error'>;
   readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated' | 'getQuotes'>;
-  readonly monitorContext: MonitorContext;
+  readonly monitorContext: Pick<MonitorSymbolNames, 'longSymbolName' | 'shortSymbolName'> & {
+    readonly config: MonitorConfig;
+    readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+    readonly seatSwitch: SeatSwitchWorkflow;
+    readonly riskChecker: RiskChecker;
+    readonly orderRecorder: OrderRecorder;
+    readonly dailyLossTracker: DailyLossTracker;
+  };
   readonly executeStaticLiquidation: MonitorQuoteEventExecutor;
-  readonly lastState: Pick<LastState, 'isTradingEnabled' | 'canTrade' | 'isHalfDay'>;
+  readonly tradingTimeState: Readonly<Pick<TradingTimeState, 'canTrade' | 'isHalfDay'>>;
+  readonly lifecycleState: Readonly<Pick<LifecycleMutableState, 'isTradingEnabled'>>;
   readonly snapshot: Pick<
     AccountPositionSnapshotReader,
     'getView' | 'getAvailablePosition' | 'isCurrent'
@@ -240,7 +273,10 @@ export type SwitchWakeupHandoffParams = Readonly<{
   direction: 'LONG' | 'SHORT';
 
   /** 发起 handoff 时的权威 monitor context */
-  monitorContext: MonitorContext;
+  monitorContext: {
+    readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+    readonly seatSwitch: SeatSwitchWorkflow;
+  };
 
   /** 本轮单步推进结果 */
   driveResult: Extract<SwitchDriveResult, { kind: 'WAIT' }>;
@@ -263,16 +299,20 @@ export type SwitchWakeupRuntimeDeps = Readonly<{
   marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated'>;
 
   /** 订单事件源 */
-  trader: Pick<Trader, 'onOrderStateChanged'>;
+  readonly orderMonitor: OrderTrackingEvents;
 
   /** 权威席位注册表 */
   symbolRegistry: SymbolRegistry;
 
   /** 单一监控上下文 */
-  monitorContext: MonitorContext;
+  monitorContext: {
+    readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
+    readonly seatSwitch: SeatSwitchWorkflow;
+  };
 
   /** 全局运行时状态 */
-  lastState: Pick<LastState, 'canTrade' | 'isTradingEnabled' | 'isHalfDay'>;
+  readonly tradingTimeState: Readonly<Pick<TradingTimeState, 'canTrade' | 'isHalfDay'>>;
+  readonly lifecycleState: Readonly<Pick<LifecycleMutableState, 'isTradingEnabled'>>;
   snapshot: Pick<AccountPositionSnapshotReader, 'getView' | 'isCurrent'>;
 
   /** 成交后一致性 freshness 端口 */

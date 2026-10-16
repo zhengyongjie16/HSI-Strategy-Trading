@@ -5,7 +5,7 @@
  * - 验证纯渲染器输出格式相关场景意图、边界条件与业务期望。
  */
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { logger } from '../../../../src/utils/logger/index.js';
+import { logger } from '../../../../src/infrastructure/logger/index.js';
 
 const infoLogs: string[] = [];
 const warnLogs: string[] = [];

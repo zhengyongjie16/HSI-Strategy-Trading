@@ -24,18 +24,15 @@ import type {
 import type { OrderExecutionLedgerFact } from '../../../types/orderExecutionLedger.js';
 import type { OrderPushDecoder } from '../../../types/orderPushPorts.js';
 import type { OrderExecutionTimeEvidence } from '../../../types/orderRecorder.js';
-import type { OrderStateChangedEvent, TradeMutationPermit } from '../../../types/services.js';
+import type { OrderStateChangedEvent } from '../../../types/orderTracking.js';
+import type { TradeMutationPermit } from '../../../types/rateLimit.js';
 import type { OrderFact } from '../../../types/trade.js';
 import type {
   CancelOrderOutcome,
   DoomsdayCancelOrderOutcome,
   DoomsdayCancelOrderRequest,
-} from '../../../types/trader.js';
-import {
-  isExternalApiRequestError,
-  wrapExternalApiRequest,
-} from '../../../utils/apiFailure/index.js';
-import { logger } from '../../../utils/logger/index.js';
+} from '../../../types/orderCancellation.js';
+import { isExternalApiRequestError } from '../../../utils/apiFailure/index.js';
 import type { CancelOrderMutationRequest, OrderMonitor, OrderMonitorDeps } from '../types.js';
 import { createEventFlow } from './eventFlow.js';
 import {
@@ -74,6 +71,7 @@ function requirePublicCancelOrderOutcome(outcome: CancelOrderPreflightOutcome): 
  * @returns 实现 OrderMonitor 接口的实例
  */
 export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
+  const { logger } = deps;
   const {
     rateLimiter,
     cacheManager,
@@ -110,6 +108,8 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     running: false,
     unsubscribeQuoteUpdated: null,
   };
+  // 仅保存 ELO/LO 原卖单到已 accepted MO 后继的身份；金额始终由 recorder 持有。
+  const acceptedSellContinuations = new Map<string, string>();
   let initialized = false;
   let initializationPromise: Promise<void> | null = null;
   let teardownPromise: Promise<void> | null = null;
@@ -188,6 +188,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   });
 
   const orderStatusQuery = createOrderStatusQuery({
+    requestExternalApi: deps.requestExternalApi,
     orderDetailReadPort: deps.orderDetailReadPort,
     executionLedgerPort: deps.executionLedgerPort,
     rateLimiter,
@@ -195,6 +196,8 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   });
 
   const orderOps = createOrderOps({
+    wait: deps.wait,
+    logger: logger,
     captureWorkGuard,
     tradeMutationPort: deps.tradeMutationPort,
     termination,
@@ -214,6 +217,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
   let activeHandler: ((event: OrderFact) => void) | null = null;
   const recoveryFlow = createRecoveryFlow({
+    logger: logger,
     termination,
     runtime,
     orderHoldRegistry,
@@ -234,6 +238,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   });
 
   const eventFlow = createEventFlow({
+    logger: logger,
     now,
     monitorConfig: tradingConfig.monitor,
     runtime,
@@ -255,7 +260,31 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     return orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' }, beforeBrokerCancel);
   }
 
+  /** 超时转换只有一层；重复同一 ACK 幂等，冲突 ACK 属于内部交易一致性错误。 */
+  function recordAcceptedSellContinuation(originalOrderId: string, marketOrderId: string): void {
+    if (
+      originalOrderId.length === 0 ||
+      marketOrderId.length === 0 ||
+      originalOrderId === marketOrderId
+    ) {
+      throw new Error('[订单监控] 超时转市价缺少独立 broker identity');
+    }
+
+    const previous = acceptedSellContinuations.get(originalOrderId);
+    if (previous !== undefined && previous !== marketOrderId)
+      throw new Error('[订单监控] 同一卖单出现冲突的超时转市价 ACK');
+
+    acceptedSellContinuations.set(originalOrderId, marketOrderId);
+  }
+
+  /** 操作身份独立于 tracking 终态与恢复；这里只给出原单和真实 accepted 后继，不推造经济事实。 */
+  function getSellOperationOrderIds(originalOrderId: string): ReadonlyArray<string> {
+    const marketOrderId = acceptedSellContinuations.get(originalOrderId);
+    return marketOrderId === undefined ? [originalOrderId] : [originalOrderId, marketOrderId];
+  }
+
   const routeProcessor = createRouteProcessor({
+    logger: logger,
     tradeMutationPort: deps.tradeMutationPort,
     now,
     runtime,
@@ -263,6 +292,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     orderRecorder,
     rateLimiter,
     isContinuousTradingAllowed,
+    recordAcceptedSellContinuation,
     trackOrder: orderOps.trackOrder,
     cancelOrder: cancelOrderForRoute,
     settleOrder: settlementFlow.settleOrder,
@@ -275,6 +305,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   });
 
   routeRuntime = createRouteRuntime({
+    scheduleBoundedOneShotAt: deps.scheduleBoundedOneShotAt,
     runtime,
     config,
     marketDataClient,
@@ -534,14 +565,14 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
           const results = await Promise.allSettled([
             observeIngressRead(
-              wrapExternalApiRequest({
+              deps.requestExternalApi({
                 operation: 'TradeContext.todayExecutions',
                 request: () =>
                   deps.executionLedgerPort.todayExecutions({ orderId: readFact.orderId }),
               }),
             ),
             observeIngressRead(
-              wrapExternalApiRequest({
+              deps.requestExternalApi({
                 operation: 'TradeContext.historyExecutions',
                 request: () =>
                   deps.executionLedgerPort.historyExecutions({
@@ -605,7 +636,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     if (initialized) return;
 
     deps.orderPushPort.setOnOrderChanged(handleOrderPush);
-    await wrapExternalApiRequest({
+    await deps.requestExternalApi({
       operation: 'TradeContext.subscribe.private',
       request: () => deps.orderPushPort.subscribePrivate(),
     });
@@ -642,7 +673,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       await initializationPromise;
       if (!initialized) return;
 
-      await wrapExternalApiRequest({
+      await deps.requestExternalApi({
         operation: 'TradeContext.unsubscribe.private',
         request: () => deps.orderPushPort.unsubscribePrivate(),
       });
@@ -652,7 +683,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   }
 
   /**
-   * 清空恢复相关运行态与 BOOTSTRAPPING 事件缓存。
+   * 生命周期完整清空 tracking、accepted 转单身份与 BOOTSTRAPPING 事件缓存。
    *
    * @returns 无返回值
    */
@@ -661,6 +692,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     recoveryFlow.clearBootstrappingEventBuffer();
     runtime.trackedOrderLifecycles.clear();
     runtime.closedOrderIds.clear();
+    acceptedSellContinuations.clear();
     runtime.runtimeState = 'STOPPED';
   }
 
@@ -778,6 +810,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     stopRuntimeAndDrain,
     recoverOrderTrackingFromSnapshot,
     getPendingSellOrders,
+    getSellOperationOrderIds,
     hasPendingProtectiveLiquidationOrders,
     clearTrackedOrders,
   };

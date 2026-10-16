@@ -6,17 +6,17 @@
  * - 创建 dayLifecycleManager
  * - 固化 open rebuild 统一入口与 signal runtime 恢复顺序
  */
-import { createDayLifecycleManager } from '../../main/lifecycle/dayLifecycleManager.js';
-import { createGlobalStateDomain } from '../../main/lifecycle/cacheDomains/globalStateDomain.js';
-import { createMarketDataDomain } from '../../main/lifecycle/cacheDomains/marketDataDomain.js';
-import { createOrderDomain } from '../../main/lifecycle/cacheDomains/orderDomain.js';
-import { createRiskDomain } from '../../main/lifecycle/cacheDomains/riskDomain.js';
-import { createSeatDomain } from '../../main/lifecycle/cacheDomains/seatDomain.js';
-import { createSignalRuntimeDomain } from '../../main/lifecycle/cacheDomains/signalRuntimeDomain.js';
-import { executeTradingDayOpenRebuild } from './rebuild.js';
-import type { CacheDomain } from '../../main/lifecycle/types.js';
+import { createDayLifecycleManager } from '../../runtime/lifecycle/dayLifecycleManager.js';
+import { createGlobalStateDomain } from '../../runtime/lifecycle/cacheDomains/globalStateDomain.js';
+import { createMarketDataDomain } from '../../runtime/lifecycle/cacheDomains/marketDataDomain.js';
+import { createOrderDomain } from '../../runtime/lifecycle/cacheDomains/orderDomain.js';
+import { createRiskDomain } from '../../runtime/lifecycle/cacheDomains/riskDomain.js';
+import { createSeatDomain } from '../../runtime/lifecycle/cacheDomains/seatDomain.js';
+import { createSignalRuntimeDomain } from '../../runtime/lifecycle/cacheDomains/signalRuntimeDomain.js';
+import { executeTradingDayOpenRebuild } from '../../application/tradingDayRebuild/openRebuild.js';
+import type { CacheDomain } from '../../runtime/lifecycle/types.js';
 import type { DayLifecycleManager } from '../../types/timeControlPlane.js';
-import type { LifecycleRuntimeFactories, LifecycleRuntimeFactoryDeps } from '../types.js';
+import type { LifecycleRuntimeFactories, LifecycleRuntimeFactoryDeps } from './types.js';
 
 const DEFAULT_LIFECYCLE_RUNTIME_FACTORIES: LifecycleRuntimeFactories = {
   createSignalRuntimeDomain,
@@ -65,14 +65,18 @@ function createLifecycleCacheDomains(
     seatRuntimeCleanupDispatcher,
     postTradeConsistencyRuntime,
     snapshot,
-    trader,
-    lastState,
+    tradeRuntime,
+    tradingTimeState,
+    tradingCalendarState,
+    quoteSubscriptionState,
     ordinaryBuy,
     dailyLossTracker,
     protectiveLiquidationEpisodeTracker,
     liquidationCooldownTracker,
     loadTradingDayRuntimeSnapshot,
   } = postGateRuntime;
+  const { orderRecorder, cacheManager, orderHoldRegistry, orderMonitor, orderExecutor } =
+    tradeRuntime;
   const { buyProcessor, sellProcessor, monitorTaskProcessor } = asyncRuntime;
   const {
     createSignalRuntimeDomain: buildSignalRuntimeDomain,
@@ -103,7 +107,7 @@ function createLifecycleCacheDomains(
       autoSearchWakeupRuntime,
       seatActivationDispatcher,
       seatRuntimeCleanupDispatcher,
-      trader,
+      orderMonitor,
       postTradeConsistencyRuntime,
       buyTaskQueue,
       sellTaskQueue,
@@ -121,7 +125,11 @@ function createLifecycleCacheDomains(
     }),
     buildOrderDomain({
       logger,
-      trader,
+      orderRecorder,
+      cacheManager,
+      orderHoldRegistry,
+      orderMonitor,
+      orderExecutor,
     }),
     buildRiskDomain({
       logger,
@@ -133,7 +141,9 @@ function createLifecycleCacheDomains(
     }),
     buildGlobalStateDomain({
       logger,
-      lastState,
+      tradingTimeState,
+      tradingCalendarState,
+      quoteSubscriptionState,
       snapshot,
       runTradingDayOpenRebuild: (now) =>
         runTradingDayOpenRebuild({
@@ -164,7 +174,7 @@ export function createLifecycleRuntime(
   const cacheDomains = createLifecycleCacheDomains(params, factories);
 
   return factories.createDayLifecycleManager({
-    mutableState: postGateRuntime.lastState,
+    mutableState: postGateRuntime.lifecycleState,
     snapshot: postGateRuntime.snapshot,
     cacheDomains,
     logger,

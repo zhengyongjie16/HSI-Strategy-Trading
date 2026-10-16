@@ -1,3 +1,19 @@
+import { scheduleBoundedOneShotAt } from '../../../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../../../src/infrastructure/time/index.js';
+import {
+  createLoggerDouble,
+  createDailyLossTrackerDouble,
+  createLiquidationCooldownTrackerDouble,
+  createMarketDataClientDouble,
+  createMonitorContextDouble,
+  createProtectiveLiquidationEpisodeTrackerDouble,
+  createRateLimiterDouble,
+  createSymbolRegistryDouble,
+  createTerminationDouble,
+  createTradeRuntimeDouble,
+} from '../../../helpers/testDoubles.js';
+
 /**
  * api-flaky-recovery 混沌测试
  *
@@ -11,17 +27,7 @@ import { createPostTradeConsistencyRuntime } from '../../../../src/app/runtime/c
 import { createAccountPositionSnapshot } from '../../../../src/application/accountPositionSnapshot/index.js';
 import { createOrderHoldRegistry } from '../../../../src/application/orderTracking/orderHoldRegistry.js';
 import { API } from '../../../../src/constants/index.js';
-import {
-  createDailyLossTrackerDouble,
-  createLiquidationCooldownTrackerDouble,
-  createMarketDataClientDouble,
-  createMonitorContextDouble,
-  createProtectiveLiquidationEpisodeTrackerDouble,
-  createRateLimiterDouble,
-  createSymbolRegistryDouble,
-  createTerminationDouble,
-  createTraderDouble,
-} from '../../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 async function waitForObservedCondition(params: {
@@ -189,14 +195,15 @@ describe('chaos: api flaky recovery', () => {
     }).result;
     if (paired.status !== 'COMMITTED') throw new Error('expected paired baseline');
 
-    let trader: ReturnType<typeof createTraderDouble> | null = null;
+    let tradeRuntime: ReturnType<typeof createTradeRuntimeDouble> | null = null;
     const postTrade = createPostTradeConsistencyRuntime({
+      logger: createLoggerDouble(),
       snapshot,
       termination: createTerminationDouble(),
-      getTrader: () => {
-        if (trader === null) throw new Error('trader unbound');
+      getProtectiveOrderReader: () => {
+        if (tradeRuntime === null) throw new Error('tradeRuntime unbound');
 
-        return trader;
+        return tradeRuntime.orderMonitor;
       },
       onPositionsCommitted: async (token) => {
         if (!snapshot.isCurrent(token, { positions: true, account: false }))
@@ -205,6 +212,7 @@ describe('chaos: api flaky recovery', () => {
       scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
     });
     const orderRecorder = fixture.createRecorder({
+      logger: createLoggerDouble(),
       rateLimiter: createRateLimiterDouble(),
       getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
       settlementRefreshNeedRecorder: postTrade,
@@ -219,7 +227,7 @@ describe('chaos: api flaky recovery', () => {
       ),
     );
     const protectiveTracker = createProtectiveLiquidationEpisodeTrackerDouble();
-    trader = createTraderDouble({ ...account, orderRecorder });
+    tradeRuntime = createTradeRuntimeDouble({ ...account, orderRecorder });
     postTrade.bindBusinessDeps({
       monitorContext: createMonitorContextDouble({ orderRecorder, dailyLossTracker }),
       dailyLossTracker,
@@ -287,6 +295,10 @@ describe('chaos: api flaky recovery', () => {
     const runtimeTimers = createRuntimeTimerHarness(nowMs);
     const originalWork = { live: true };
     const monitor = fixture.createMonitor({
+      logger: createLoggerDouble(),
+      wait: wait,
+      requestExternalApi: wrapExternalApiRequest,
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       now: () => new Date(),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
@@ -294,6 +306,8 @@ describe('chaos: api flaky recovery', () => {
       },
       rateLimiter: createRateLimiterDouble(),
       cacheManager: fixture.createCacheManager({
+        logger: createLoggerDouble(),
+        requestExternalApi: wrapExternalApiRequest,
         rateLimiter: createRateLimiterDouble(),
         now: () => new Date(),
       }),

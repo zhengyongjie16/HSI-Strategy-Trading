@@ -1,3 +1,5 @@
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
+
 /** 执行事实边界回归：真实同步 O/Daily/S 准入保留原无效输入、无污染与价格优先抵扣 oracle。 */
 
 import { describe, expect, it } from 'bun:test';
@@ -62,7 +64,7 @@ describe('OrderRecorder execution-fact boundary', () => {
     });
 
     it(`rejects invalid ${invalid.label} at the direct cost-analysis boundary without mutating storage`, () => {
-      const storage = createOrderStorage();
+      const storage = createOrderStorage(createLoggerDouble());
       const valid = {
         orderId: 'BUY',
         symbol: SYMBOL,

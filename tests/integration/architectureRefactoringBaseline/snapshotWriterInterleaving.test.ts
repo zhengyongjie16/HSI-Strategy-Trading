@@ -1,3 +1,6 @@
+import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
+import type { RuntimeStateFixtures } from '../../helpers/types.js';
+
 /**
  * P1 snapshot 跨来源安全回归。
  * 真实 coordinator 统一准入和提交，午夜使用真实 globalState domain；
@@ -5,9 +8,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
-import { createGlobalStateDomain } from '../../../src/main/lifecycle/cacheDomains/globalStateDomain.js';
+import { createGlobalStateDomain } from '../../../src/runtime/lifecycle/cacheDomains/globalStateDomain.js';
 import type { AccountSnapshot, Position } from '../../../src/types/account.js';
-import type { LastState } from '../../../src/types/state.js';
 import { createLoggerDouble } from '../../helpers/testDoubles.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 
@@ -33,19 +35,18 @@ function position(symbol: string): Position {
   };
 }
 
-function createState(): LastState {
-  return {
-    canTrade: false,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: '2026-07-10',
-    lifecycleState: 'MIDNIGHT_CLEANING',
-    pendingOpenRebuild: false,
-    isTradingEnabled: false,
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-    allTradingSymbols: new Set(),
-  };
+function createState(): RuntimeStateFixtures {
+  return createRuntimeStateFixtures({
+    tradingTimeState: { canTrade: false, isHalfDay: false, openProtectionActive: false },
+    lifecycleState: {
+      currentDayKey: '2026-07-10',
+      lifecycleState: 'MIDNIGHT_CLEANING',
+      pendingOpenRebuild: false,
+      isTradingEnabled: false,
+    },
+    tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
+  });
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -110,7 +111,7 @@ describe('P1 snapshot cross-source targets', () => {
     const clear = owner.requestClear({ reason: 'DAY_CUT', dayEpoch: 2 });
     const state = createState();
     const domain = createGlobalStateDomain({
-      lastState: state,
+      ...state,
       snapshot: owner,
       logger: createLoggerDouble(),
       runTradingDayOpenRebuild: async () => {
@@ -142,7 +143,7 @@ describe('P1 snapshot cross-source targets', () => {
     const afterCut = owner.getView().token;
     await owner.requestClear({ reason: 'DAY_CUT', dayEpoch: 2 });
     expect(owner.getView().token).toEqual(afterCut);
-    expect(state.canTrade).toBe(false);
+    expect(state.tradingTimeState.canTrade).toBe(false);
   });
 
   it('serializes issued settlement and pending seat requests and discards the superseded pair', async () => {

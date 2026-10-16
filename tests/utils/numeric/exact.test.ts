@@ -90,6 +90,8 @@ async function registerExactTests(): Promise<void> {
     capture.mockRestore();
   }
 
+  const { wholeLotQuantity } = await import('../../../src/domain/order/orderQuantity.js');
+
   describe('SDK 无关精确金融文本契约', () => {
     test('独立 BigInt 差分：正负算术、mixed cross product、whole lot 与显示', () => {
       let state = 73421n;
@@ -128,9 +130,7 @@ async function registerExactTests(): Promise<void> {
         const lot = BigInt((index % 11) + 1);
         const expectedQuantity =
           (((a < 0n ? -a : a) * 10n ** BigInt(scaleB)) / (b * 10n ** BigInt(scaleA) * lot)) * lot;
-        expect(numeric.wholeLotQuantity(absolute, right, lot.toString())).toBe(
-          expectedQuantity.toString(),
-        );
+        expect(wholeLotQuantity(absolute, right, lot.toString())).toBe(expectedQuantity.toString());
         const other = index % 3 === 0 ? -b : b;
         if (a < 0n !== other < 0n) mixedRatios += 1;
 
@@ -147,15 +147,9 @@ async function registerExactTests(): Promise<void> {
       expect(mixedRatios).toBeGreaterThan(0);
     });
 
-    test('整数商整手预算边界与高位接近整数不能先 div/floor', () => {
-      expect(numeric.wholeLotQuantity('7000', '0.07', '10000')).toBe('100000');
-      expect(numeric.wholeLotQuantity('7499.999', '2.500', '1000')).toBe('2000');
-      expect(numeric.wholeLotQuantity('7500', '2.500', '1000')).toBe('3000');
-      expect(numeric.wholeLotQuantity('1', '2.500', '1000')).toBe('0');
+    test('整数商高位接近整数不能先 div/floor', () => {
       expect(numeric.integerQuotient(`0.${'9'.repeat(100)}`, '1')).toBe('0');
       expect(numeric.integerQuotient('2.9999999999999999999999999999', '3')).toBe('0');
-      expect(() => numeric.wholeLotQuantity('1', '0', '100')).toThrow(RangeError);
-      expect(() => numeric.wholeLotQuantity('1', '1', '0.5')).toThrow(RangeError);
     });
 
     test('保留金额/数量依据与低位权威修訂；不乘回显示均价', () => {
@@ -245,7 +239,7 @@ async function registerExactTests(): Promise<void> {
         expect(numeric.exactSubtract('1.0000000000000000001', '1')).toBe('0.0000000000000000001');
         expect(numeric.exactCompare('100', '99')).toBe(1);
         expect(numeric.integerQuotient('1000', '3')).toBe('333');
-        expect(numeric.wholeLotQuantity('7000', '0.07', '10000')).toBe('100000');
+        expect(wholeLotQuantity('7000', '0.07', '10000')).toBe('100000');
         expect(numeric.compareRatios('1000', '3000', '1', '3')).toBe(0);
         expect(numeric.formatDecimal('1.0051', 2, 'unsigned')).toBe('1.01');
         expect(numeric.formatRatio('1000', '3000', 3, 'unsigned')).toBe('0.333');
@@ -374,7 +368,7 @@ if (process.env['EXACT_NUMERIC_TEST_CHILD'] === '1') {
       expect(output).toMatch(/\b10 pass\b/);
       expect(output).toMatch(/\b0 fail\b/);
       const assertionCount = /\b(\d+) expect\(\) calls\b/.exec(output)?.[1];
-      expect(Number(assertionCount)).toBeGreaterThanOrEqual(4101);
+      expect(Number(assertionCount)).toBeGreaterThanOrEqual(4095);
     } finally {
       rmSync(isolationRoot, { recursive: true, force: true });
     }

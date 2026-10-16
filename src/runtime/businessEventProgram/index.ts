@@ -42,12 +42,13 @@ export function createBusinessEventProgram(deps: BusinessEventProgramDeps): Busi
       return;
     }
 
-    const dayKey = deps.lastState.currentDayKey;
+    const dayKey = deps.lifecycleState.currentDayKey;
     const allowNewEvaluation =
       isValidDayKey(dayKey) &&
-      deps.lastState.openProtectionActive !== true &&
+      deps.tradingTimeState.openProtectionActive !== true &&
       ordinarySignalGuard({
-        lastState: deps.lastState,
+        tradingTimeState: deps.tradingTimeState,
+        lifecycleState: deps.lifecycleState,
         now,
         doomsdayProtectionEnabled: deps.tradingConfig.global.doomsdayProtection,
       });

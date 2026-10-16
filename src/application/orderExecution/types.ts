@@ -1,3 +1,4 @@
+import type { Logger } from '../../types/logger.js';
 import type {
   OrderActionAuthorization,
   OrderMutationRequest,
@@ -7,16 +8,19 @@ import type {
 } from '../../domain/order/types.js';
 import type { Position } from '../../types/account.js';
 import type { GlobalConfig, MonitorConfig, TradingConfig } from '../../types/config.js';
-import type { MarketDataClient, TradingDayInfo } from '../../types/marketPorts.js';
+import type { MarketDataClient } from '../../types/marketPorts.js';
+import type { TradingDayInfo } from '../../types/tradingCalendar.js';
 import type { RuntimeClock } from '../../types/runtime.js';
 import type { SymbolRegistry } from '../../types/seat.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
+import type { RateLimiter, TradeMutationPermit } from '../../types/rateLimit.js';
+import type { RiskChecker } from '../../types/riskCheck.js';
 import type {
-  OrderRecorder,
-  RateLimiter,
-  RiskChecker,
   TradeCheckResult,
-  TradeMutationPermit,
-} from '../../types/services.js';
+  DoomsdayClearanceExecutionResult,
+  ExecuteSignalsResult,
+  SignalCallerAuthorization,
+} from '../../types/orderExecutionPorts.js';
 import type {
   BuySignal,
   DoomsdayClearanceCommand,
@@ -28,12 +32,7 @@ import type {
   SignalType,
 } from '../../types/signal.js';
 import type { OrderCommandPurpose, TradeMutationPort } from '../../types/tradeMutationPorts.js';
-import type {
-  CancelOrderOutcome,
-  DoomsdayClearanceExecutionResult,
-  ExecuteSignalsResult,
-  SignalCallerAuthorization,
-} from '../../types/trader.js';
+import type { CancelOrderOutcome } from '../../types/orderCancellation.js';
 
 /**
  * 提交目标订单函数签名。
@@ -180,6 +179,7 @@ export type RelatedBuyOrderQuantityValidationParams = {
  * 使用范围：仅 orderExecutor/submitFlow.ts 使用。
  */
 export type SubmitTargetOrderDeps = {
+  readonly logger: Logger;
   readonly readSellPositions: (symbol: string) => Promise<ReadonlyArray<Position>>;
   readonly tradeMutationPort: TradeMutationPort;
   readonly rateLimiter: RateLimiter;
@@ -294,6 +294,7 @@ export interface OrderExecutor {
 
 /** 共享订单执行依赖；仅注入中性 port/事实，无 SDK 或旧混合 owner 类型。 */
 export type OrderExecutorDeps = {
+  readonly logger: Logger;
   readonly readSellPositions: (symbol: string) => Promise<ReadonlyArray<Position>>;
   readonly tradeMutationPort: TradeMutationPort;
   readonly rateLimiter: RateLimiter;
@@ -331,5 +332,8 @@ export type RateLimiterConfig = {
  * 使用范围：仅在 trader 模块内部使用。
  */
 export type RateLimiterDeps = {
+  readonly wait: (delayMs: number) => Promise<void>;
+  readonly nowMonotonicMs: () => number;
+  readonly logger: Logger;
   readonly config?: RateLimiterConfig;
 };

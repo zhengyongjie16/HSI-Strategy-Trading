@@ -1,3 +1,9 @@
+import type { RuntimeStateFixtures } from '../helpers/types.js';
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../src/infrastructure/time/index.js';
+import type { TradeRuntime } from '../../src/app/runtime/types.js';
+
 /**
  * M1 真实连接回归：SDK bootstrap 缓冲成交 → 同一 O/Daily/H/S → loader 重载 → quote/业务 ready → lifecycle 开门。
  * 仅券商、行情 IO 与 timer 可控；不为 S 改 source，不人工清 need 或直接签 freshness。
@@ -5,9 +11,9 @@
 
 import { describe, expect, it } from 'bun:test';
 import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
-import { executeTradingDayOpenRebuild } from '../../src/app/lifecycle/rebuild.js';
+import { executeTradingDayOpenRebuild } from '../../src/application/tradingDayRebuild/openRebuild.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
-import { createTerminationRuntime } from '../../src/app/runtime/createTerminationRuntime.js';
+import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createWarrantCandidateSearch } from '../../src/application/autoSearch/candidateSearch.js';
 import { createStartupSeatSearch } from '../../src/application/autoSearch/startupSeatSearch.js';
@@ -21,15 +27,14 @@ import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitC
 import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
 import { createWarrantRiskChecker } from '../../src/domain/risk/warrantRiskChecker.js';
 import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
-import { createDayLifecycleManager } from '../../src/main/lifecycle/dayLifecycleManager.js';
-import { createLoadTradingDayRuntimeSnapshot } from '../../src/main/lifecycle/loadTradingDayRuntimeSnapshot.js';
-import { createRebuildTradingDayState } from '../../src/main/lifecycle/rebuildTradingDayState.js';
-import { createQuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/index.js';
-import type { QuoteSubscriptionRuntime } from '../../src/main/quoteSubscriptionRuntime/types.js';
+import { createDayLifecycleManager } from '../../src/runtime/lifecycle/dayLifecycleManager.js';
+import { createLoadTradingDayRuntimeSnapshot } from '../../src/application/tradingDayRebuild/loadTradingDayRuntimeSnapshot.js';
+import { createRebuildTradingDayState } from '../../src/application/tradingDayRebuild/rebuildTradingDayState.js';
+import { createQuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscriptionRuntime/index.js';
+import type { QuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscriptionRuntime/types.js';
 import type { RuntimeScheduler } from '../../src/types/runtime.js';
-import type { Trader } from '../../src/types/services.js';
-import type { LastState } from '../../src/types/state.js';
-import { getTradingMinutesSinceOpen, toHongKongTimeIso } from '../../src/utils/time/index.js';
+import { getTradingMinutesSinceOpen } from '../../src/domain/tradingSession/index.js';
+import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 import {
   createLiquidationCooldownTrackerDouble,
@@ -38,7 +43,7 @@ import {
   createMonitorContextDouble,
   createQuoteDouble,
   createRateLimiterDouble,
-  createTraderDouble,
+  createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
@@ -116,21 +121,20 @@ async function createHarness(
     ]);
   };
   setPositions(options.emitRecovery === false ? '0' : '100');
-  const lastState: LastState = {
-    canTrade: false,
-    isHalfDay: false,
-    openProtectionActive: false,
-    currentDayKey: dayKey,
-    lifecycleState: 'MIDNIGHT_CLEANED',
-    pendingOpenRebuild: true,
-    isTradingEnabled: false,
-    cachedTradingDayInfo: null,
-    tradingCalendarSnapshot: new Map(),
-    allTradingSymbols: new Set(),
+  const stateFixtures: RuntimeStateFixtures = {
+    tradingTimeState: { canTrade: false, isHalfDay: false, openProtectionActive: false },
+    lifecycleState: {
+      currentDayKey: dayKey,
+      lifecycleState: 'MIDNIGHT_CLEANED',
+      pendingOpenRebuild: true,
+      isTradingEnabled: false,
+    },
+    tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
   };
   const termination = createTerminationRuntime({
     closeTradingGate: () => {
-      lastState.isTradingEnabled = false;
+      stateFixtures.lifecycleState.isTradingEnabled = false;
     },
     closeProducerAdmission: () => {},
     stopProducers: [],
@@ -190,16 +194,17 @@ async function createHarness(
       if (recovered) await options.subscribe?.();
     },
   });
-  let trader: Trader | null = null;
+  let tradeRuntime: TradeRuntime | null = null;
   let quote: QuoteSubscriptionRuntime | null = null;
   const postTrade = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     snapshot,
     termination,
     scheduler,
-    getTrader: () => {
-      if (trader === null) throw new Error('Trader must be assembled before S starts');
+    getProtectiveOrderReader: () => {
+      if (tradeRuntime === null) throw new Error('Trader must be assembled before S starts');
 
-      return trader;
+      return tradeRuntime.orderMonitor;
     },
     onPositionsCommitted: async (token) => {
       if (quote === null) throw new Error('Quote owner must be assembled before S starts');
@@ -209,12 +214,17 @@ async function createHarness(
     },
   });
   const recorder = native.createRecorder({
+    logger: createLoggerDouble(),
     rateLimiter,
     getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: postTrade,
   });
   const holds = createOrderHoldRegistry();
   const monitor = native.createMonitor({
+    logger: createLoggerDouble(),
+    wait: wait,
+    requestExternalApi: wrapExternalApiRequest,
+    scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
     rateLimiter,
     marketDataClient: market,
     orderRecorder: recorder,
@@ -234,13 +244,16 @@ async function createHarness(
     scheduleTimer: setTimeout,
     clearTimer: clearTimeout,
   });
-  trader = createTraderDouble({
-    orderRecorder: recorder,
-    initializeOrderMonitor: monitor.initialize,
-    fetchAllOrdersFromAPI: recorder.fetchAllOrdersFromAPI,
-    recoverOrderTrackingFromSnapshot: monitor.recoverOrderTrackingFromSnapshot,
-    seedOrderHoldSymbols: holds.seedFromOrders,
-    getOrderHoldSymbols: holds.getHoldSymbols,
+  tradeRuntime = createTradeRuntimeDouble({
+    orderMonitor: {
+      initialize: monitor.initialize,
+      recoverOrderTrackingFromSnapshot: monitor.recoverOrderTrackingFromSnapshot,
+    },
+    orderRecorder: { fetchAllOrdersFromAPI: recorder.fetchAllOrdersFromAPI },
+    orderHoldRegistry: {
+      seedFromOrders: holds.seedFromOrders,
+      getHoldSymbols: holds.getHoldSymbols,
+    },
   });
   const warrantRiskChecker = createWarrantRiskChecker({
     onInvalidCallPrice: () => {},
@@ -264,10 +277,10 @@ async function createHarness(
   quote = createQuoteSubscriptionRuntime({
     snapshot,
     termination,
-    trader,
+    orderHoldRegistry: tradeRuntime.orderHoldRegistry,
     symbolRegistry,
     tradingConfig,
-    lastState,
+    ...stateFixtures,
     logger: createLoggerDouble(),
     marketDataClient: {
       subscribeSymbols: async () => {
@@ -297,10 +310,13 @@ async function createHarness(
     mixedTradeLogRepository: repository,
   });
   const load = createLoadTradingDayRuntimeSnapshot({
+    logger: createLoggerDouble(),
     snapshot,
     marketDataClient: market,
-    trader,
-    lastState,
+    orderRecorder: tradeRuntime.orderRecorder,
+    orderHoldRegistry: tradeRuntime.orderHoldRegistry,
+    orderMonitor: tradeRuntime.orderMonitor,
+    ...stateFixtures,
     tradingConfig,
     symbolRegistry,
     dailyLossTracker: daily,
@@ -332,8 +348,8 @@ async function createHarness(
       warrantRiskChecker,
       logger: createLoggerDouble(),
     }),
-    trader,
-    lastState,
+    orderMonitor: tradeRuntime.orderMonitor,
+    ...stateFixtures,
     symbolRegistry,
     monitorContext: context,
     dailyLossTracker: daily,
@@ -343,7 +359,7 @@ async function createHarness(
   const manager = createDayLifecycleManager({
     snapshot,
     termination,
-    mutableState: lastState,
+    mutableState: stateFixtures.lifecycleState,
     logger: createLoggerDouble(),
     rebuildRetryDelayMs: 1000,
     cacheDomains: [
@@ -373,7 +389,7 @@ async function createHarness(
     recorder,
     context,
     termination,
-    lastState,
+    ...stateFixtures,
     manager,
     loads: () => loads,
     pendingTimers: () => timerCallbacks.size,
@@ -431,7 +447,7 @@ describe('rebuild settlement readiness real owner integration', () => {
       release.resolve();
       const result = await opening;
       expect(result.pendingOpenRebuild).toBe(true);
-      expect(f.lastState.isTradingEnabled).toBe(false);
+      expect(f.lifecycleState.isTradingEnabled).toBe(false);
       expect(f.snapshot.getStatus().admission).toBe('CLOSED');
       expect(f.postTrade.getStatus()).toMatchObject({ currentVersion: 0, staleVersion: 1 });
       expect(events).toBe(0);
@@ -458,7 +474,7 @@ describe('rebuild settlement readiness real owner integration', () => {
       await entered.promise;
       expect(f.loads()).toBe(2);
       expect(f.postTrade.getStatus()).toMatchObject({ currentVersion: 0, staleVersion: 1 });
-      expect(f.lastState.isTradingEnabled).toBe(false);
+      expect(f.lifecycleState.isTradingEnabled).toBe(false);
       expect(f.snapshot.getStatus().admission).toBe('REBUILD');
       // S 即使已经在 failed/retry 生命周期中启动，也不能普通 admission 发读或 0ms 自转。
       f.postTrade.start();
@@ -487,7 +503,7 @@ describe('rebuild settlement readiness real owner integration', () => {
         costAmount: '1000',
         quantity: 100,
       });
-      expect(f.lastState.isTradingEnabled).toBe(true);
+      expect(f.lifecycleState.isTradingEnabled).toBe(true);
       expect(f.snapshot.getStatus().admission).toBe('OPEN');
       expect(f.native.accountReadCounts()).toEqual(reads);
       expect(f.termination.getFatalState()).toEqual({ hasFatalError: false });
@@ -519,7 +535,7 @@ describe('rebuild settlement readiness real owner integration', () => {
       await f.fillRemainder();
       expect(f.postTrade.getStatus()).toMatchObject({ currentVersion: 0, staleVersion: 2 });
       expect(f.pendingTimers()).toBe(0);
-      expect(f.lastState.isTradingEnabled).toBe(false);
+      expect(f.lifecycleState.isTradingEnabled).toBe(false);
       release.resolve();
       await opening;
       expect(f.loads()).toBe(3);
@@ -531,7 +547,7 @@ describe('rebuild settlement readiness real owner integration', () => {
         costAmount: '2000',
         quantity: 200,
       });
-      expect(f.lastState.isTradingEnabled).toBe(true);
+      expect(f.lifecycleState.isTradingEnabled).toBe(true);
     } finally {
       release.resolve();
       await opening;
@@ -556,8 +572,8 @@ describe('rebuild settlement readiness real owner integration', () => {
     try {
       const failed = await f.manager.tick(now, flags);
       expect(failed.nextRetryAtMs).toBe(timeMs + 1000);
-      expect(f.lastState.lifecycleState).toBe('OPEN_REBUILD_FAILED');
-      expect(f.lastState.isTradingEnabled).toBe(false);
+      expect(f.lifecycleState.lifecycleState).toBe('OPEN_REBUILD_FAILED');
+      expect(f.lifecycleState.isTradingEnabled).toBe(false);
       expect(f.postTrade.getStatus()).toMatchObject({ currentVersion: 0, staleVersion: 0 });
       expect(f.pendingTimers()).toBe(0);
       let fresh = false;
@@ -570,7 +586,7 @@ describe('rebuild settlement readiness real owner integration', () => {
       await f.manager.tick(new Date(timeMs + 1000), flags);
       await waiting;
       expect(callbacks).toBe(2);
-      expect(f.lastState.isTradingEnabled).toBe(true);
+      expect(f.lifecycleState.isTradingEnabled).toBe(true);
       expect(f.termination.getFatalState()).toEqual({ hasFatalError: false });
     } finally {
       await f.cleanup();

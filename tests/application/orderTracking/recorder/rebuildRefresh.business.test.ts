@@ -1,9 +1,10 @@
+import { spyOn, describe, expect, it } from 'bun:test';
+
 /** 重建经济回归：实际 issued H token → Daily prepare → O batch → Daily publish，与真实在线结算比较。 */
 
-import { describe, expect, it } from 'bun:test';
 import { classifyOrdersForRebuild } from '../../../../src/domain/order/orderRecordPolicy.js';
 import type { SnapshotToken } from '../../../../src/types/accountPosition.js';
-import type { OrderRecord } from '../../../../src/types/services.js';
+import type { OrderRecord } from '../../../../src/types/orderRecorder.js';
 import type { OrderFact } from '../../../../src/types/trade.js';
 import {
   createMonitorConfigDouble,
@@ -468,15 +469,15 @@ describe('OrderRecorder rebuild refresh', () => {
     let commitCalls = 0;
     const validate = f.recorder.validateRebuildSnapshot;
     const commit = f.recorder.commitRebuildSnapshot;
-    f.recorder.validateRebuildSnapshot = (...args) => {
+    spyOn(f.recorder, 'validateRebuildSnapshot').mockImplementation((...args) => {
       preflightCalls++;
       validate(...args);
-    };
+    });
 
-    f.recorder.commitRebuildSnapshot = (...args) => {
+    spyOn(f.recorder, 'commitRebuildSnapshot').mockImplementation((...args) => {
       commitCalls++;
       return commit(...args);
-    };
+    });
     const targetObservation = createRawOrder({
       orderId: 'UNKNOWN-PREFLIGHT-TARGET',
       symbol: 'BULL.HK',

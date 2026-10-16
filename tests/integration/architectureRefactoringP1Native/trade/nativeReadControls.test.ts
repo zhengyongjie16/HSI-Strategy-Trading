@@ -1,3 +1,6 @@
+import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
+
+import { createLoggerDouble } from '../../../helpers/testDoubles.js';
 import { expect, test } from 'bun:test';
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
@@ -21,7 +24,13 @@ const frame = {
 
 test('explicit samectx account/positions replies flow through production account adapter/service without defaults', async () => {
   const f = await createBrokerIngressFixture(frame);
-  const account = f.createAccountService({ rateLimiter: createRateLimiter() });
+  const account = f.createAccountService({
+    rateLimiter: createRateLimiter({
+      wait: wait,
+      nowMonotonicMs: nowMonotonicMs,
+      logger: createLoggerDouble(),
+    }),
+  });
   const missing = await account
     .getStockPositions({ retryConfig: { retries: 0, delayMs: 0 } })
     .catch((error: unknown) => error);

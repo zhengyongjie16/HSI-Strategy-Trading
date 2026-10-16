@@ -5,7 +5,7 @@
  * - 作为终端显示纯渲染器，直接格式化并输出 monitor indicators / trading quote
  * - 不再承担任何本地变化检测与显示缓存所有权
  */
-import { logger } from '../../../utils/logger/index.js';
+import { logger } from '../../logger/index.js';
 import { toHongKongTimeLog } from '../../../utils/time/index.js';
 import {
   formatQuoteDisplay,

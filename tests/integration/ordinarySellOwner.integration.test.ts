@@ -1,3 +1,13 @@
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createOrderMonitorDouble,
+  createQuoteDouble,
+  createRateLimiterDouble,
+  createRiskCheckerDouble,
+  createSignalDouble,
+} from '../helpers/testDoubles.js';
+
 /** 普通 SELL owner 全链路：真实 S/H readiness -> FIFO -> 可卖量重选 -> native mutation，停留在离线 adapter fixture。 */
 import { describe, expect, it } from 'bun:test';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
@@ -6,15 +16,7 @@ import { createSellProcessor } from '../../src/runtime/asyncProgram/sellProcesso
 import { createSellTaskQueue } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import { createSellHarness } from '../application/ordinarySell/fixture.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { waitUntil } from '../main/asyncProgram/utils.js';
-import {
-  createMarketDataClientDouble,
-  createOrderMonitorDouble,
-  createQuoteDouble,
-  createRateLimiterDouble,
-  createRiskCheckerDouble,
-  createSignalDouble,
-} from '../helpers/testDoubles.js';
+import { waitUntil } from '../helpers/asyncProgram.js';
 
 // 所有外部 DTO 仅进入获准的 native producer；真实 application 不识别 SDK enum/Decimal。
 describe('ordinary SELL real owner integration', () => {
@@ -72,6 +74,7 @@ describe('ordinary SELL real owner integration', () => {
       });
       let tracked = 0;
       const executor = ingress.createExecutor({
+        logger: createLoggerDouble(),
         rateLimiter: createRateLimiterDouble(),
         marketDataClient: market,
         cacheManager: { clearCache: () => {} },
@@ -98,12 +101,14 @@ describe('ordinary SELL real owner integration', () => {
       });
       const workflow = createOrdinarySellWorkflow({
         ...h.deps,
-        trader: executor,
+
+        orderExecutor: executor,
         marketDataClient: market,
       });
       const queue = createSellTaskQueue();
       const retries: Array<() => void> = [];
       const worker = createSellProcessor({
+        logger: createLoggerDouble(),
         taskQueue: queue,
         workflow,
         scheduler: {

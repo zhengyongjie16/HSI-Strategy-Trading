@@ -1,3 +1,5 @@
+import { wholeLotQuantity } from '../order/orderQuantity.js';
+
 /**
  * 换标领域 policy。
  * PERIODIC_REPLACE 只替换空席位；DISTANCE_MOVE 撤买、卖旧且等待空仓，并按真实卖出预算在 SWITCHING 内回补。
@@ -9,7 +11,6 @@ import {
   exactMultiply,
   exactCompare,
   safeQuantityNumber,
-  wholeLotQuantity,
 } from '../../utils/numeric/exact.js';
 
 /** 选择具名 policy；阶段执行器消费明确动作，不以布尔组合推导周期/距离差异。 */

@@ -8,9 +8,9 @@ import type {
   DirectionalAutoSearchPolicy,
   WarrantCandidate,
 } from '../../src/domain/seat/warrantSelection/types.js';
-import type { Logger } from '../../src/utils/logger/types.js';
+import type { Logger } from '../../src/types/logger.js';
 import type { SymbolRegistry } from '../../src/types/seat.js';
-import type { SignalCallerAuthorization } from '../../src/types/trader.js';
+import type { SignalCallerAuthorization } from '../../src/types/orderExecutionPorts.js';
 
 /**
  * 场景显式捕获原席位版本；异步期间真实版本变化后不得继续推进。

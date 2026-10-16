@@ -1,12 +1,18 @@
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../src/infrastructure/time/index.js';
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createSymbolRegistryDouble,
+} from '../helpers/testDoubles.js';
+
 /** closed tracking 不关闭 O/Daily revision 水位：真实 SDK push→EventFlow→结算及经济/刷新幂等回归。 */
 
 import { expect, test } from 'bun:test';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
-import {
-  createMarketDataClientDouble,
-  createSymbolRegistryDouble,
-} from '../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const T = Date.parse('2026-10-07T02:00:00.000Z');
@@ -55,6 +61,10 @@ for (const conflictingRevision of [20, 15])
     });
     const closed: string[] = [];
     const monitor = native.createMonitor({
+      logger: createLoggerDouble(),
+      wait: wait,
+      requestExternalApi: wrapExternalApiRequest,
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       now: () => new Date(T),
       scheduleTimer: setTimeout,
       clearTimer: clearTimeout,

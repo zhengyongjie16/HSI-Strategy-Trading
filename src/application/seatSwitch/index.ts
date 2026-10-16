@@ -9,10 +9,11 @@ import {
   ORDER_READ_STATUS_VALUES,
   isOpenOrderReadStatus,
 } from '../../constants/orderReadMetadata.js';
-import { calculateTradingDurationMsBetween, getHKDateKey } from '../../utils/time/index.js';
+import { calculateTradingDurationMsBetween } from '../../domain/tradingSession/index.js';
+import { getHKDateKey } from '../../utils/time/index.js';
 import { AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY } from '../../constants/index.js';
 import type { SeatSwitchWorkflowDeps } from './types.js';
-import type { SeatSwitchWorkflow } from '../../types/monitorContextPorts.js';
+import type { SeatSwitchWorkflow } from '../../types/seatSwitch.js';
 import type {
   PeriodicSwitchInternalPendingState,
   SwitchState,
@@ -34,7 +35,10 @@ export function createSeatSwitchWorkflow(deps: SeatSwitchWorkflowDeps): SeatSwit
     monitorConfig,
     symbolRegistry,
     marketDataClient,
-    trader,
+    cacheManager,
+    orderHoldRegistry,
+    orderMonitor,
+    orderExecutor,
     riskChecker,
     orderRecorder,
     candidateSearch,
@@ -60,7 +64,10 @@ export function createSeatSwitchWorkflow(deps: SeatSwitchWorkflowDeps): SeatSwit
     autoSearchConfig,
     monitorSymbol,
     symbolRegistry,
-    trader,
+    cacheManager,
+    orderHoldRegistry,
+    orderMonitor,
+    orderExecutor,
     orderRecorder,
     riskChecker,
     marketDataClient,

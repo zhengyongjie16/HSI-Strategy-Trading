@@ -1,0 +1,265 @@
+/**
+ * tradingQuoteDisplayRuntime 模块
+ *
+ * 职责：
+ * - 监听标准化交易标的 quote 事件
+ * - 复用 tradingRisk routing 规则解析当前 ACTIVE route
+ * - 按方向执行 single-flight + latest-only collapse，避免异步期间输出旧 quote
+ * - 在异步补充 monitor quote 后再次复核方向 + seatVersion，再交给纯渲染器输出
+ */
+import { buildTradingRiskRoutingIndex } from '../tradingRiskEventRuntime/routingIndex.js';
+import {
+  isTradingRiskRouteCurrent,
+  resolveTradingRiskRoute,
+} from '../tradingRiskEventRuntime/routeValidation.js';
+import { formatError } from '../../utils/error/index.js';
+import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
+import type { TradingRiskRoutingIndex } from '../tradingRiskEventRuntime/types.js';
+import type {
+  TradingQuoteDisplayRouteState,
+  TradingQuoteDisplayRuntime,
+  TradingQuoteDisplayRuntimeDeps,
+} from './types.js';
+
+function isGateOpen(
+  tradingTimeState: TradingQuoteDisplayRuntimeDeps['tradingTimeState'],
+  lifecycleState: { readonly isTradingEnabled: boolean },
+): boolean {
+  return lifecycleState.isTradingEnabled && tradingTimeState.canTrade === true;
+}
+
+/**
+ * 创建交易标的 quote 的事件驱动显示 runtime。
+ *
+ * start 后监听 quote 与席位事实，按方向执行 single-flight + latest-only 路由；补取监控行情后
+ * 再校验交易门禁、方向和 seatVersion，避免切席期间输出过期标的。外部行情失败仅跳过本次显示，
+ * 内部 routing/render 错误进入 fatal 状态；stopAndDrain 先退订事件源，再等待所有在途显示收口。
+ *
+ * @param deps 行情事件、席位事实、交易门禁、logger、渲染端口与 fatal 通道
+ * @returns 可启动并按停止顺序排空的交易 quote 显示 runtime
+ */
+export function createTradingQuoteDisplayRuntime(
+  deps: TradingQuoteDisplayRuntimeDeps,
+): TradingQuoteDisplayRuntime {
+  const { logger } = deps;
+  const activePromises = new Set<Promise<void>>();
+  const routeStates = new Map<'LONG' | 'SHORT', TradingQuoteDisplayRouteState>();
+  let cachedRoutingIndex: TradingRiskRoutingIndex | null = null;
+  let running = false;
+  let unsubscribeQuoteUpdated: (() => void) | null = null;
+  let unsubscribeSeatTruthChanged: (() => void) | null = null;
+
+  function isRunning(): boolean {
+    return running && !deps.termination.isTerminated();
+  }
+
+  function trackPromise(promise: Promise<void>): void {
+    activePromises.add(promise);
+    void promise.finally(() => {
+      activePromises.delete(promise);
+    });
+  }
+
+  /**
+   * 按当前席位事实重建交易 quote 到监控 route 的派生索引。
+   */
+  function rebuildRoutingIndex(): void {
+    const nextRoutingIndex = buildTradingRiskRoutingIndex({
+      symbolRegistry: deps.symbolRegistry,
+    });
+    cachedRoutingIndex = nextRoutingIndex;
+  }
+
+  function enterFatalState(error: unknown, logMessage: string): void {
+    deps.termination.reportFatalError(error);
+    stop();
+    cachedRoutingIndex = null;
+    routeStates.clear();
+    logger.error(logMessage, formatError(error));
+  }
+
+  /**
+   * 获取当前可用的派生 routing index。
+   *
+   * @returns 尚未初始化时返回 null
+   */
+  function getCurrentRoutingIndex(): TradingRiskRoutingIndex | null {
+    if (deps.termination.isTerminated()) {
+      return null;
+    }
+
+    return cachedRoutingIndex;
+  }
+
+  function getOrCreateRouteState(direction: 'LONG' | 'SHORT'): TradingQuoteDisplayRouteState {
+    const existing = routeStates.get(direction);
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const routeState: TradingQuoteDisplayRouteState = {
+      inFlight: false,
+      dirty: false,
+      latestEvent: null,
+      latestRoute: null,
+    };
+    routeStates.set(direction, routeState);
+    return routeState;
+  }
+
+  async function processRoute(direction: 'LONG' | 'SHORT'): Promise<void> {
+    const routeState = routeStates.get(direction);
+    if (routeState === undefined) {
+      return;
+    }
+
+    try {
+      while (running && routeState.dirty) {
+        routeState.dirty = false;
+        const event = routeState.latestEvent;
+        const route = routeState.latestRoute;
+        if (event === null || route === null) {
+          return;
+        }
+
+        if (
+          deps.termination.isTerminated() ||
+          !isGateOpen(deps.tradingTimeState, deps.lifecycleState)
+        ) {
+          return;
+        }
+
+        let quotesMap: Awaited<
+          ReturnType<TradingQuoteDisplayRuntimeDeps['marketDataClient']['getQuotes']>
+        >;
+        const monitorSymbol = deps.monitorContext.config.monitorSymbol;
+        try {
+          quotesMap = await deps.marketDataClient.getQuotes([monitorSymbol]);
+        } catch (error) {
+          if (!isExternalApiRequestError(error)) {
+            enterFatalState(
+              error,
+              '[tradingQuoteDisplayRuntime] quote supplement entered fatal state',
+            );
+            return;
+          }
+
+          logger.warn(
+            `[tradingQuoteDisplayRuntime] quote supplement failed direction=${direction}`,
+            formatError(error),
+          );
+          return;
+        }
+
+        const latestRouteState = routeStates.get(direction);
+        if (latestRouteState?.dirty === true) {
+          continue;
+        }
+
+        const routingIndex = getCurrentRoutingIndex();
+        if (
+          !isRunning() ||
+          deps.termination.isTerminated() ||
+          routingIndex === null ||
+          !isGateOpen(deps.tradingTimeState, deps.lifecycleState) ||
+          !isTradingRiskRouteCurrent(route, routingIndex)
+        ) {
+          return;
+        }
+
+        try {
+          deps.renderTradingQuote({
+            event,
+            tradingSymbol: route.tradingSymbol,
+            direction: route.direction,
+            monitorQuote: quotesMap.get(monitorSymbol) ?? null,
+          });
+        } catch (error) {
+          enterFatalState(error, '[tradingQuoteDisplayRuntime] render entered fatal state');
+          return;
+        }
+      }
+    } finally {
+      routeState.inFlight = false;
+      if (routeState.dirty && running) {
+        routeState.inFlight = true;
+        trackPromise(processRoute(direction));
+      }
+    }
+  }
+
+  function handleQuoteUpdated(
+    event: Parameters<TradingQuoteDisplayRuntimeDeps['renderTradingQuote']>[0]['event'],
+  ): void {
+    if (
+      deps.termination.isTerminated() ||
+      !running ||
+      !isGateOpen(deps.tradingTimeState, deps.lifecycleState)
+    ) {
+      return;
+    }
+
+    const routingIndex = getCurrentRoutingIndex();
+    if (routingIndex === null) {
+      return;
+    }
+
+    const route = resolveTradingRiskRoute(routingIndex, event.symbol);
+    if (route === null) {
+      return;
+    }
+
+    const routeState = getOrCreateRouteState(route.direction);
+    routeState.latestEvent = event;
+    routeState.latestRoute = route;
+    routeState.dirty = true;
+    if (routeState.inFlight) {
+      return;
+    }
+
+    routeState.inFlight = true;
+    trackPromise(processRoute(route.direction));
+  }
+
+  function start(): void {
+    if (running || deps.termination.isTerminated()) {
+      return;
+    }
+
+    rebuildRoutingIndex();
+    running = true;
+    unsubscribeSeatTruthChanged = deps.symbolRegistry.onSeatTruthChanged(() => {
+      try {
+        rebuildRoutingIndex();
+      } catch (error) {
+        enterFatalState(error, '[tradingQuoteDisplayRuntime] routing index entered fatal state');
+      }
+    });
+
+    unsubscribeQuoteUpdated = deps.marketDataClient.onQuoteUpdated((event) => {
+      handleQuoteUpdated(event);
+    });
+  }
+
+  function stop(): void {
+    running = false;
+    unsubscribeQuoteUpdated?.();
+    unsubscribeQuoteUpdated = null;
+    unsubscribeSeatTruthChanged?.();
+    unsubscribeSeatTruthChanged = null;
+    cachedRoutingIndex = null;
+  }
+
+  async function stopAndDrain(): Promise<void> {
+    stop();
+    await Promise.all(activePromises);
+
+    routeStates.clear();
+  }
+
+  return {
+    start,
+    stop,
+    stopAndDrain,
+  };
+}

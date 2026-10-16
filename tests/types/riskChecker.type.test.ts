@@ -4,8 +4,9 @@
  * 验证基础买入风控只接受已路由的买入信号，不能被卖出、HOLD 或空信号调用。
  */
 import { describe, expect, it } from 'bun:test';
-import type { OrderRecorder, RiskChecker } from '../../src/types/services.js';
-import type { OrderCostBasis } from '../../src/types/orderRecorder.js';
+import type { OrderRecorder, OrderCostBasis } from '../../src/types/orderRecorder.js';
+import type { RiskChecker } from '../../src/types/riskCheck.js';
+
 import type { SellSignal, Signal } from '../../src/types/signal.js';
 
 const sellSignal: SellSignal = {

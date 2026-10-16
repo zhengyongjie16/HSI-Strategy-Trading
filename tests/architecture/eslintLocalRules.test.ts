@@ -39,7 +39,7 @@ function hasRuleMessage(messages: Awaited<ReturnType<typeof lintText>>, ruleId: 
 describe('local ESLint rules', () => {
   it('rejects named import aliases in src files', async () => {
     const messages = await lintText(
-      'src/core/utils.ts',
+      'src/domain/seat/seatPolicy.ts',
       "import { foo as bar } from './foo.js';\nvoid bar;\n",
     );
 
@@ -48,7 +48,7 @@ describe('local ESLint rules', () => {
 
   it('allows named imports without aliases in src files', async () => {
     const messages = await lintText(
-      'src/core/utils.ts',
+      'src/domain/seat/seatPolicy.ts',
       "import { foo } from './foo.js';\nvoid foo;\n",
     );
 
@@ -176,7 +176,7 @@ describe('local ESLint rules', () => {
     const messages = await lintText(
       'src/runtime/periodicSwitchWakeupRuntime/types.ts',
       [
-        "import type { BoundedOneShotTimerController } from '../../utils/timer/types.js';",
+        "import type { BoundedOneShotTimerController } from '../../src/types/timer.js';",
         'type PeriodicSwitchTimerHandle = BoundedOneShotTimerController;',
         'export type Probe = { readonly timerHandle: PeriodicSwitchTimerHandle | null };',
       ].join('\n'),
@@ -189,7 +189,7 @@ describe('local ESLint rules', () => {
     const messages = await lintText(
       'src/runtime/periodicSwitchWakeupRuntime/types.ts',
       [
-        "import type * as TimerTypes from '../../utils/timer/types.js';",
+        "import type * as TimerTypes from '../../src/types/timer.js';",
         'type PeriodicSwitchTimerHandle = TimerTypes.BoundedOneShotTimerController;',
         'export type Probe = { readonly timerHandle: PeriodicSwitchTimerHandle | null };',
       ].join('\n'),

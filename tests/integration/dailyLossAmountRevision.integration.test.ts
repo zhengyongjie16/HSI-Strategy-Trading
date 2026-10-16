@@ -1,3 +1,13 @@
+import {
+  createLoggerDouble,
+  createLiquidationCooldownTrackerDouble,
+  createMonitorContextDouble,
+  createRateLimiterDouble,
+  createRiskCheckerDouble,
+  createTerminationDouble,
+  createTradeRuntimeDouble,
+} from '../helpers/testDoubles.js';
+
 /**
  * DailyLoss 金额修订链路集成测试。
  *
@@ -22,14 +32,7 @@ import type { OrderMonitorTrackedOrder } from '../../src/domain/order/types.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import type { OrderFact } from '../../src/types/trade.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
-import {
-  createLiquidationCooldownTrackerDouble,
-  createMonitorContextDouble,
-  createRateLimiterDouble,
-  createRiskCheckerDouble,
-  createTerminationDouble,
-  createTraderDouble,
-} from '../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 type TestEventFlowDeps = Omit<EventFlowDeps, 'now' | 'monitorConfig'> &
@@ -176,14 +179,15 @@ async function createAmountActors(
   }).result;
   if (committed.status !== 'COMMITTED') throw new Error('expected actual paired baseline');
 
-  let boundTrader: ReturnType<typeof createTraderDouble> | null = null;
+  let boundTrader: ReturnType<typeof createTradeRuntimeDouble> | null = null;
   const postTrade = createPostTradeConsistencyRuntime({
+    logger: createLoggerDouble(),
     snapshot,
     termination: createTerminationDouble(),
-    getTrader: () => {
-      if (boundTrader === null) throw new Error('unbound trader');
+    getProtectiveOrderReader: () => {
+      if (boundTrader === null) throw new Error('unbound tradeRuntime');
 
-      return boundTrader;
+      return boundTrader.orderMonitor;
     },
     onPositionsCommitted: async (token) => {
       if (!snapshot.isCurrent(token, { account: false, positions: true }))
@@ -192,6 +196,7 @@ async function createAmountActors(
     scheduler: { scheduleTimer: setTimeout, clearTimer: clearTimeout },
   });
   const orderRecorder = native.createRecorder({
+    logger: createLoggerDouble(),
     rateLimiter: createRateLimiterDouble(),
     getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: {
@@ -238,15 +243,17 @@ async function createAmountActors(
         orderId: 'BUY-AMOUNT-REVISION-COST',
       }).admission,
   );
-  const trader = createTraderDouble({
+  const tradeRuntime = createTradeRuntimeDouble({
     ...account,
     orderRecorder,
-    executeSignals: async () => {
-      throw new Error('revision facts never submit');
+    orderExecutor: {
+      executeSignals: async () => {
+        throw new Error('revision facts never submit');
+      },
     },
-    hasPendingProtectiveLiquidationOrders: () => false,
+    orderMonitor: { hasPendingProtectiveLiquidationOrders: () => false },
   });
-  boundTrader = trader;
+  boundTrader = tradeRuntime;
   const monitorContext = createMonitorContextDouble({
     config,
     orderRecorder,
@@ -467,6 +474,7 @@ describe('DailyLoss protective amount revision integration', () => {
     const trackedOrder = createProtectiveTrackedOrder(firstRevisionMs, actors.newSell);
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const eventFlow = createEventFlow({
+      logger: createLoggerDouble(),
       runtime,
       orderRecorder: actors.orderRecorder,
       recordCumulativeExecution: (params) => {

@@ -1,15 +1,21 @@
+import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
+import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
+import { wait } from '../../src/infrastructure/time/index.js';
+import {
+  createLoggerDouble,
+  createMarketDataClientDouble,
+  createRateLimiterDouble,
+  createSymbolRegistryDouble,
+} from '../helpers/testDoubles.js';
+
 /** 保护性清仓：真实 native push/ledger 经同 O/Daily/S owner 收口，原一次性进度与终态经济断言不变。 */
 
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import type { DailyLossCumulativeExecutionInput } from '../../src/types/risk.js';
 import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
-import {
-  createMarketDataClientDouble,
-  createRateLimiterDouble,
-  createSymbolRegistryDouble,
-} from '../helpers/testDoubles.js';
-import { waitUntil } from '../main/asyncProgram/utils.js';
+
+import { waitUntil } from '../helpers/asyncProgram.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const EXECUTION_MS = Date.parse('2026-03-13T02:00:01.000Z');
@@ -120,6 +126,10 @@ describe('protective-liquidation integration', () => {
     if (paired.status !== 'COMMITTED') throw new Error('Protective paired H refresh aborted');
 
     const monitor = native.createMonitor({
+      logger: createLoggerDouble(),
+      wait: wait,
+      requestExternalApi: wrapExternalApiRequest,
+      scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
       now: () => new Date(EXECUTION_MS),
       scheduleTimer: setTimeout,
       clearTimer: clearTimeout,

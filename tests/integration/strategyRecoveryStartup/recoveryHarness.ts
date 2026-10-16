@@ -1,3 +1,7 @@
+import { nowMonotonicMs, wait } from '../../../src/infrastructure/time/index.js';
+
+import { createLoggerDouble, createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
+
 /** T28 real same-context recovery admission, authority query, O/Daily/H/S and resource close. */
 
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
@@ -5,16 +9,16 @@ import type { PostGateRuntime } from '../../../src/app/types.js';
 import { createRateLimiter } from '../../../src/application/orderExecution/rateLimiter.js';
 import { createRecoveryFlow } from '../../../src/application/orderTracking/orderMonitor/recoveryFlow.js';
 import { createSettlementFlow } from '../../../src/application/orderTracking/orderMonitor/settlementFlow.js';
-import type { OrderStateChangedEvent } from '../../../src/types/services.js';
+import type { OrderStateChangedEvent } from '../../../src/types/orderTracking.js';
 import { createExecutionFixture } from '../../application/orderTracking/recorder/executionFixture.js';
-import { createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
+
 import { createBrokerIngressFixture } from '../architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import type { RecoveryHarness, RecoveryScenario } from './types.js';
 
 /** Issued cancellation completion and canonical terminal confirmation remain independent. */
 export async function createRecoveryHarness(
   scenario: RecoveryScenario,
-  getAppRuntime: () => Pick<PostGateRuntime, 'trader' | 'quoteSubscriptionRuntime'>,
+  getAppRuntime: () => Pick<PostGateRuntime, 'tradeRuntime' | 'quoteSubscriptionRuntime'>,
   externalError?: unknown,
 ): Promise<RecoveryHarness> {
   const entered = Promise.withResolvers<undefined>();
@@ -46,14 +50,18 @@ export async function createRecoveryHarness(
     availableCash: '100000',
   });
   broker.setStockPositions([]);
-  const rateLimiter = createRateLimiter();
+  const rateLimiter = createRateLimiter({
+    wait: wait,
+    nowMonotonicMs: nowMonotonicMs,
+    logger: createLoggerDouble(),
+  });
   const f = createExecutionFixture({
     nowMs: now.getTime(),
     rateLimiter,
     readPort: broker.createAccountService({ rateLimiter }),
     createRecorder: broker.createRecorder,
     // 同一 app 已组装的 collaborator 接续异步 baseline，不能复用 economic-only 的禁止 IO 默认值。
-    getTrader: () => getAppRuntime().trader,
+    getTradeRuntime: () => getAppRuntime().tradeRuntime,
     onPositionsCommitted: () =>
       getAppRuntime().quoteSubscriptionRuntime.reconcileFromCurrentTruth(),
   });
@@ -110,6 +118,8 @@ export async function createRecoveryHarness(
   const tradingConfig = createTradingConfig();
   const termination = f.termination;
   const orderOps = broker.createOperations({
+    logger: createLoggerDouble(),
+    wait: wait,
     runtime,
     rateLimiter: f.rateLimiter,
     orderRecorder,
@@ -139,6 +149,7 @@ export async function createRecoveryHarness(
     termination,
   });
   const recovery = createRecoveryFlow({
+    logger: createLoggerDouble(),
     runtime,
     orderRecorder,
     orderHoldRegistry,

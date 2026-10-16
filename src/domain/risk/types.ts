@@ -1,17 +1,19 @@
 import type { DailyLossOrderSnapshot } from '../../types/risk.js';
 import type { Position } from '../../types/account.js';
 import type { BuySignal, SignalType } from '../../types/signal.js';
+import type { OrderRecorder } from '../../types/orderRecorder.js';
 import type {
-  OrderRecorder,
   BullBearWarrantType,
-  RiskCheckResult,
   WarrantDistanceInfo,
   WarrantDistanceLiquidationResult,
   WarrantRefreshResult,
+} from '../../types/warrantRisk.js';
+import type { RiskCheckResult } from '../../types/riskCheck.js';
+import type {
   UnrealizedLossData,
   PreparedUnrealizedLossData,
   UnrealizedLossCheckResult,
-} from '../../types/services.js';
+} from '../../types/unrealizedLoss.js';
 
 // ==================== 当日亏损追踪 ====================
 
@@ -194,7 +196,7 @@ export interface UnrealizedLossChecker {
   readonly getUnrealizedLossData: (symbol: string) => UnrealizedLossData | undefined;
   readonly clearUnrealizedLossData: (symbol?: string | null) => void;
   readonly prepare: (
-    orderRecorder: OrderRecorder,
+    orderRecorder: Pick<OrderRecorder, 'getCostBasis'>,
     symbol: string,
     isLongSymbol: boolean,
     dailyLossOffset: string,

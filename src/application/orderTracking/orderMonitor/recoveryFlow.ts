@@ -21,9 +21,8 @@ import {
 import type { TrackOrderParams } from '../../../domain/order/types.js';
 import type { OrderFact } from '../../../types/trade.js';
 import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
-import { logger } from '../../../utils/logger/index.js';
 import { exactCompare } from '../../../utils/numeric/exact.js';
-import { isSeatActive } from '../../../utils/seat/guards.js';
+import { isSeatActive } from '../../../domain/seat/seatPolicy.js';
 import type { OrderSeatOwnership, RecoverySnapshotReconciliationParams } from '../types.js';
 import { acknowledgeQueriedTerminalState, peekQueriedTerminalState } from './orderOps.js';
 import { resetRoutingIndex } from './routingIndex.js';
@@ -36,6 +35,7 @@ import type { RecoveryFlow, RecoveryFlowDeps } from './types.js';
  * @returns 恢复流程接口
  */
 export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
+  const { logger } = deps;
   const {
     runtime,
     orderHoldRegistry,

@@ -4,7 +4,7 @@
  */
 import type { Position } from '../../types/account.js';
 import type { BuySignal } from '../../types/signal.js';
-import type { RiskCheckResult } from '../../types/services.js';
+import type { RiskCheckResult } from '../../types/riskCheck.js';
 import { exactAdd, exactCompare, exactMultiply, formatDecimal } from '../../utils/numeric/exact.js';
 import type { PositionLimitChecker, PositionLimitCheckerDeps } from './types.js';
 

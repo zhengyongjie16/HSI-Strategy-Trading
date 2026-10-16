@@ -9,16 +9,8 @@
 
 import { API } from '../../constants/index.js';
 import { DEFAULT_TRADE_RATE_LIMIT } from '../../constants/tradeRateLimit.js';
-import type { RateLimiter, TradeMutationPermit } from '../../types/services.js';
-import { logger } from '../../utils/logger/index.js';
+import type { RateLimiter, TradeMutationPermit } from '../../types/rateLimit.js';
 import type { RateLimiterDeps } from './types.js';
-
-/** 等待指定毫秒数。 */
-function wait(delayMs: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    setTimeout(resolve, delayMs);
-  });
-}
 
 /**
  * 创建频率限制器。
@@ -27,7 +19,8 @@ function wait(delayMs: number): Promise<void> {
  * @param deps 依赖配置（config 可选，缺省为 30 次/30 秒）
  * @returns RateLimiter 接口实例（throttle、withTradeMutation）
  */
-export const createRateLimiter = (deps: RateLimiterDeps = {}): RateLimiter => {
+export const createRateLimiter = (deps: RateLimiterDeps): RateLimiter => {
+  const { logger, wait, nowMonotonicMs } = deps;
   const config = deps.config ?? DEFAULT_TRADE_RATE_LIMIT;
   const { maxCalls, windowMs } = config;
   let callTimestamps: number[] = [];
@@ -57,12 +50,12 @@ export const createRateLimiter = (deps: RateLimiterDeps = {}): RateLimiter => {
 
   /** 等待当前 API 调用可执行，但不写入本次调用时间戳。 */
   async function waitForApiSlot(): Promise<void> {
-    let now = performance.now();
+    let now = nowMonotonicMs();
     const lastCallTime = callTimestamps.at(-1);
     if (lastCallTime !== undefined) {
       while (now - lastCallTime < API.MIN_CALL_INTERVAL_MS) {
         await wait(API.MIN_CALL_INTERVAL_MS - (now - lastCallTime));
-        now = performance.now();
+        now = nowMonotonicMs();
       }
     }
 
@@ -78,7 +71,7 @@ export const createRateLimiter = (deps: RateLimiterDeps = {}): RateLimiter => {
         `[频率限制] Trade API 调用频率达到上限 (${maxCalls}次/${windowMs}ms)，等待 ${waitTime}ms`,
       );
       await wait(waitTime);
-      now = performance.now();
+      now = nowMonotonicMs();
       const currentNow = now;
       callTimestamps = callTimestamps.filter((timestamp) => currentNow - timestamp < windowMs);
     }
@@ -86,7 +79,7 @@ export const createRateLimiter = (deps: RateLimiterDeps = {}): RateLimiter => {
 
   /** 在真实 API 调用即将开始时记录配额。 */
   function recordApiInvocation(): void {
-    callTimestamps.push(performance.now());
+    callTimestamps.push(nowMonotonicMs());
   }
 
   /** 读取 API 的限流入口。 */

@@ -7,11 +7,12 @@ import { createBuyRiskChecks } from './riskChecks.js';
 import { formatError } from '../../utils/error/index.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { exactCompare } from '../../utils/numeric/exact.js';
-import { isSeatActive } from '../../utils/seat/guards.js';
 import {
+  isSeatActive,
   validateSignalSeat,
   describeSignalSeatValidationFailure,
 } from '../../domain/seat/seatPolicy.js';
+
 import {
   isExternalApiRequestError,
   isUnconfirmedOrderSubmissionError,
@@ -27,7 +28,9 @@ export function createOrdinaryBuyWorkflow(deps: OrdinaryBuyWorkflowDeps): Ordina
     symbolRegistry,
     orderRecorder,
     riskChecker,
-    trader,
+    accountService,
+    tradeFrequencyReader,
+    orderExecutor,
     marketDataClient,
     getIsHalfDay,
     now,
@@ -96,7 +99,8 @@ export function createOrdinaryBuyWorkflow(deps: OrdinaryBuyWorkflowDeps): Ordina
       }
 
       const checked = await checkRisk([signal], {
-        trader,
+        accountService,
+        tradeFrequencyReader,
         riskChecker,
         orderRecorder,
         longQuote,
@@ -113,7 +117,7 @@ export function createOrdinaryBuyWorkflow(deps: OrdinaryBuyWorkflowDeps): Ordina
       if (checked.length === 0 || !callerAuthorization()) return;
 
       // 不再读取第二份处理器报价；最新价/整手数量/频率记录与最终门禁由 execution permit 原 owner 负责。
-      const result = await trader.executeSignals([signal], callerAuthorization);
+      const result = await orderExecutor.executeSignals([signal], callerAuthorization);
       if (!Array.isArray(result.executedOrderIds)) {
         throw new TypeError('信号执行必须显式报告原 accepted order IDs');
       }

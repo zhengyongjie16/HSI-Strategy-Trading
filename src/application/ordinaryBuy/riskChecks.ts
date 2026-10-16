@@ -7,7 +7,7 @@
  * - 轻检查通过后实时拉取账户与持仓
  */
 import { exactCompare, formatDecimal, formatRatio } from '../../utils/numeric/exact.js';
-import { readAccountAndPositionsBothSettled } from '../../utils/accountPositions/index.js';
+import { readAccountAndPositionsBothSettled } from './accountPositionsRead.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../constants/index.js';
 import {
@@ -110,7 +110,8 @@ export const createBuyRiskChecks = ({
     assertBuySignals(signals);
 
     const {
-      trader,
+      accountService,
+      tradeFrequencyReader,
       riskChecker,
       orderRecorder,
       longQuote,
@@ -194,7 +195,7 @@ export const createBuyRiskChecks = ({
        * 8. 专用双读取实时账户与持仓（两个请求全部落定，内部错误优先）
        * 9. 基础风险检查（使用第 8 步实时数据）
        */
-      const tradeCheck = trader.canTradeNow(sig.action);
+      const tradeCheck = tradeFrequencyReader.canTradeNow(sig.action);
       if (!tradeCheck.canTrade) {
         const waitSeconds = tradeCheck.waitSeconds ?? 0;
         const reason = `交易频率限制：${directionDesc} 在${context.config.buyIntervalSeconds}秒内已买入过，需等待 ${waitSeconds} 秒后才能再次买入`;
@@ -285,7 +286,7 @@ export const createBuyRiskChecks = ({
 
       const { account: realtimeAccount, positions: realtimePositions } =
         await readAccountAndPositionsBothSettled({
-          trader,
+          accountService,
           retryConfig: { retries: 0, delayMs: 0 },
           reportFatalError,
         });

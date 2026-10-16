@@ -1,3 +1,11 @@
+import {
+  createLoggerDouble,
+  createAccountSnapshotDouble,
+  createMarketDataClientDouble,
+  createQuoteSubscriptionRuntimeDouble,
+  createTradeRuntimeDouble,
+} from '../../helpers/testDoubles.js';
+
 /**
  * seatRefresh release/retry 恢复语义业务测试
  *
@@ -13,17 +21,12 @@ import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monito
 import type { Quote } from '../../../src/types/quote.js';
 import type { OrderFact } from '../../../src/types/trade.js';
 import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
-import type { ExternalApiRequestError } from '../../../src/utils/apiFailure/types.js';
-import { logger } from '../../../src/utils/logger/index.js';
+import type { ExternalApiRequestError } from '../../../src/types/apiFailure.js';
+import { logger } from '../../../src/infrastructure/logger/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
-import {
-  createAccountSnapshotDouble,
-  createMarketDataClientDouble,
-  createQuoteSubscriptionRuntimeDouble,
-  createTraderDouble,
-} from '../../helpers/testDoubles.js';
-import { createMonitorContext, waitUntil } from '../../main/asyncProgram/utils.js';
-import { createSnapshotFixture } from '../../main/fixtures/accountPositionSnapshot.js';
+
+import { createMonitorContext, waitUntil } from '../../helpers/asyncProgram.js';
+import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessor } from '../../runtime/asyncProgram/monitorTaskProcessor/fixtures.js';
 import { createSeatActivationFixture } from './fixtures.js';
 
@@ -82,44 +85,48 @@ async function createActivationProtocolFixture() {
   const prepared: Array<ReturnType<typeof context.riskChecker.prepareUnrealizedLossData>> = [];
   const published: Array<ReturnType<typeof context.riskChecker.prepareUnrealizedLossData>> = [];
   const allOrders: ReadonlyArray<OrderFact> = [];
-  context.orderRecorder.fetchAllOrdersFromAPI = async () => {
+  spyOn(context.orderRecorder, 'fetchAllOrdersFromAPI').mockImplementation(async () => {
     stages.push('orders');
     return allOrders;
-  };
+  });
 
-  context.orderRecorder.validateRebuildSnapshot = (symbol, orders) => {
+  spyOn(context.orderRecorder, 'validateRebuildSnapshot').mockImplementation((symbol, orders) => {
     stages.push(`preflight:${symbol}`);
     expect(orders).toBe(allOrders);
     classifyOrdersForRebuild(orders.filter((order) => order.symbol === symbol));
-  };
+  });
 
-  context.orderRecorder.commitRebuildSnapshot = (targets, orders, isCurrent, mode) => {
-    stages.push('commit');
-    expect(targets).toEqual([
-      { symbol: 'BULL.HK', isLongSymbol: true },
-      { symbol: 'BEAR.HK', isLongSymbol: false },
-      { symbol: 'OLD_BULL.HK', isLongSymbol: true },
-    ]);
-    expect(orders).toBe(allOrders);
-    expect(mode).toBe('ACTIVATION');
-    expect(snapshot.getView().token).toEqual(capturedToken);
-    if (!isCurrent()) return { status: 'ABORTED' };
+  spyOn(context.orderRecorder, 'commitRebuildSnapshot').mockImplementation(
+    (targets, orders, isCurrent, mode) => {
+      stages.push('commit');
+      expect(targets).toEqual([
+        { symbol: 'BULL.HK', isLongSymbol: true },
+        { symbol: 'BEAR.HK', isLongSymbol: false },
+        { symbol: 'OLD_BULL.HK', isLongSymbol: true },
+      ]);
+      expect(orders).toBe(allOrders);
+      expect(mode).toBe('ACTIVATION');
+      expect(snapshot.getView().token).toEqual(capturedToken);
+      if (!isCurrent()) return { status: 'ABORTED' };
 
-    return { status: 'COMMITTED', receipts: [] };
-  };
-  context.dailyLossTracker.getLossOffset = () => '0';
-  context.riskChecker.prepareUnrealizedLossData = (recorder, symbol, isLong, offset) => {
-    stages.push('prepare');
-    expect(recorder).toBe(context.orderRecorder);
-    expect(symbol).toBe('BULL.HK');
-    expect(isLong).toBe(true);
-    expect(offset).toBe('0');
-    const candidate = Object.freeze({ symbol, data: Object.freeze({ r1: '0', n1: 0 }) });
-    prepared.push(candidate);
-    return candidate;
-  };
+      return { status: 'COMMITTED', receipts: [] };
+    },
+  );
+  spyOn(context.dailyLossTracker, 'getLossOffset').mockImplementation(() => '0');
+  spyOn(context.riskChecker, 'prepareUnrealizedLossData').mockImplementation(
+    (recorder, symbol, isLong, offset) => {
+      stages.push('prepare');
+      expect(recorder).toBe(context.orderRecorder);
+      expect(symbol).toBe('BULL.HK');
+      expect(isLong).toBe(true);
+      expect(offset).toBe('0');
+      const candidate = Object.freeze({ symbol, data: Object.freeze({ r1: '0', n1: 0 }) });
+      prepared.push(candidate);
+      return candidate;
+    },
+  );
 
-  context.riskChecker.publishUnrealizedLossData = (candidate) => {
+  spyOn(context.riskChecker, 'publishUnrealizedLossData').mockImplementation((candidate) => {
     stages.push('publish');
     expect(prepared).toEqual([candidate]);
     const preparedCandidate = prepared[0];
@@ -127,9 +134,9 @@ async function createActivationProtocolFixture() {
 
     expect(candidate).toBe(preparedCandidate);
     published.push(candidate);
-  };
+  });
   const requestRefresh = snapshot.requestRefresh;
-  snapshot.requestRefresh = (request) => {
+  spyOn(snapshot, 'requestRefresh').mockImplementation((request) => {
     stages.push('request');
     expect(request.dayEpoch).toBe(capturedToken.dayEpoch);
     expect(request.source).toBe('SEAT_ACTIVATION');
@@ -146,7 +153,7 @@ async function createActivationProtocolFixture() {
       },
       cancelIfNotIssued: handle.cancelIfNotIssued,
     };
-  };
+  });
   return { context, snapshot, capturedToken, stages, prepared, published };
 }
 
@@ -522,7 +529,7 @@ async function createLateFailureHarness(params: {
   readonly isTerminated?: () => boolean;
   readonly releaseFailure?: Error;
 }): Promise<ProcessorHarness> {
-  const queue = createMonitorTaskQueue<MonitorTaskDataMap>();
+  const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
   const protocol = await createActivationProtocolFixture();
   const context = protocol.context;
   const quotesStarted = createDeferred<null>();
@@ -544,7 +551,7 @@ async function createLateFailureHarness(params: {
     },
     monitorTaskQueue: queue,
     monitorContext: context,
-    trader: createTraderDouble({ orderRecorder: context.orderRecorder }),
+    tradeRuntime: createTradeRuntimeDouble({ orderRecorder: context.orderRecorder }),
     snapshot: protocol.snapshot,
     marketDataClient: createMarketDataClientDouble({
       getQuotes: async () => {
