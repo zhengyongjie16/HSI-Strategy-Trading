@@ -467,18 +467,29 @@ export async function createMarketDataClient(
 
   /**
    * 获取行情数据（从 SDK realtime 状态读取）。支持任意可迭代对象（Array、Set 等）。
+   * 在首个 await 前校验并捕获订阅 metadata，避免在途退订/重新订阅改变本次报价与日志。
    *
    * @param requestSymbols 请求的标的代码集合（可迭代）
    * @returns 标的 -> Quote 或 null 的 Map；已接入但 realtime 未 warm 的标的返回 null
-   * @throws Error 若 requestSymbols 中包含尚未通过 subscribeSymbols 接入的标的，将抛出错误以暴露配置问题
+   * @throws Error 若请求包含尚未订阅的标的；订阅 metadata 缺失时抛出 TypeError 暴露内部状态失配
    */
   async function getQuotes(requestSymbols: Iterable<string>): Promise<Map<string, Quote | null>> {
     const requestedSymbols = [...requestSymbols];
-    for (const reqSymbol of requestedSymbols) {
-      if (!subscribedSymbols.has(reqSymbol)) {
-        throw new Error(`[行情获取] 标的 ${reqSymbol} 未订阅，请先订阅`);
+    const requestMetadata = requestedSymbols.map((symbol) => {
+      if (!subscribedSymbols.has(symbol)) {
+        throw new Error(`[行情获取] 标的 ${symbol} 未订阅，请先订阅`);
       }
-    }
+
+      if (!staticInfoCache.has(symbol)) {
+        throw new TypeError(`Subscribed quote missing static info: ${symbol}`);
+      }
+
+      return {
+        symbol,
+        staticInfo: staticInfoCache.get(symbol),
+        prevClose: requirePrevClose(symbol),
+      };
+    });
 
     const realtimeQuotes = await wrapExternalApiRequest({
       operation: 'QuoteContext.realtimeQuote',
@@ -501,25 +512,22 @@ export async function createMarketDataClient(
     }
 
     const result = new Map<string, Quote | null>();
-    for (const reqSymbol of requestedSymbols) {
-      const realtimeQuote = realtimeQuoteBySymbol.get(reqSymbol);
+    for (const { symbol, staticInfo, prevClose } of requestMetadata) {
+      const realtimeQuote = realtimeQuoteBySymbol.get(symbol);
       if (!realtimeQuote) {
-        const staticInfo = staticInfoCache.get(reqSymbol);
         const symbolName = extractName(staticInfo);
-        logger.warn(
-          `[行情获取] 标的 ${formatSymbolDisplay(reqSymbol, symbolName)} 无 realtime 数据`,
-        );
-        result.set(reqSymbol, null);
+        logger.warn(`[行情获取] 标的 ${formatSymbolDisplay(symbol, symbolName)} 无 realtime 数据`);
+        result.set(symbol, null);
         continue;
       }
 
       const quote = buildQuoteFromRealtime({
-        symbol: reqSymbol,
+        symbol,
         realtimeQuote,
-        staticInfo: staticInfoCache.get(reqSymbol),
-        prevClose: requirePrevClose(reqSymbol),
+        staticInfo,
+        prevClose,
       });
-      result.set(reqSymbol, quote);
+      result.set(symbol, quote);
     }
 
     return result;

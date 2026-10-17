@@ -4,7 +4,8 @@
  * 功能：
  * - 验证行情客户端相关场景意图、边界条件与业务期望。
  */
-import { beforeEach, describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { logger } from '../../../../src/infrastructure/logger/index.js';
 
 class TestDecimal {
   private readonly value: number;
@@ -718,7 +719,119 @@ describe('quoteClient business flow', () => {
     });
 
     expect(client.getQuotes(['NOT_SUBSCRIBED.HK'])).rejects.toThrow('未订阅');
+    expect(quoteMock.getCalls('realtimeQuote')).toHaveLength(0);
   });
+
+  it.each(['staticInfo', 'prevClose'] as const)(
+    'rejects subscription without real %s before quote-read admission',
+    async (missingMetadata) => {
+      if (missingMetadata !== 'staticInfo') {
+        quoteMock.seedStaticInfo([{ symbol: 'BULL.HK', info: { symbol: 'BULL.HK' } }]);
+      }
+
+      quoteMock.seedQuotes([
+        {
+          symbol: 'BULL.HK',
+          quote: {
+            ...makeSeedQuote('BULL.HK', 1.23, 1.2),
+            ...(missingMetadata === 'prevClose' ? { prevClose: undefined } : {}),
+          },
+        },
+      ]);
+      const client = await createMarketDataClient({
+        config: createSdkConfigDouble(),
+        quoteContextFactory: () => quoteMock,
+      });
+      expect(client.subscribeSymbols(['BULL.HK'])).rejects.toThrow(
+        missingMetadata === 'staticInfo' ? '静态信息初始化不完整' : 'prevClose 初始化不完整',
+      );
+      expect(quoteMock.getCalls('subscribe')).toHaveLength(0);
+      expect(client.getQuotes(['BULL.HK'])).rejects.toThrow('未订阅');
+      expect(quoteMock.getCalls('realtimeQuote')).toHaveLength(0);
+    },
+  );
+
+  it('allows admitted static info without optional name and lot size', async () => {
+    quoteMock.seedStaticInfo([{ symbol: 'BULL.HK', info: { symbol: 'BULL.HK' } }]);
+    quoteMock.seedQuotes([{ symbol: 'BULL.HK', quote: makeSeedQuote('BULL.HK', 1.23, 1.2) }]);
+    const client = await createMarketDataClient({
+      config: createSdkConfigDouble(),
+      quoteContextFactory: () => quoteMock,
+    });
+    await client.subscribeSymbols(['BULL.HK']);
+    const quotes = await client.getQuotes(['BULL.HK']);
+    expect(quotes.get('BULL.HK')).toEqual({
+      symbol: 'BULL.HK',
+      name: null,
+      price: '1.23',
+      prevClose: '1.2',
+      timestamp: Date.parse('2026-02-16T01:00:00.000Z'),
+    });
+  });
+
+  it.each(['quote', 'missing'] as const)(
+    'uses entry metadata for %s realtime result after unsubscribe and resubscribe',
+    async (realtimeState) => {
+      quoteMock.seedStaticInfo([
+        { symbol: 'BULL.HK', info: { symbol: 'BULL.HK', nameHk: '入口名称', lotSize: 500 } },
+      ]);
+      quoteMock.seedQuotes([{ symbol: 'BULL.HK', quote: makeSeedQuote('BULL.HK', 1.23, 1.2) }]);
+      const entered = Promise.withResolvers<undefined>();
+      const release = Promise.withResolvers<undefined>();
+      const client = await createMarketDataClient({
+        config: createSdkConfigDouble(),
+        quoteContextFactory: () => ({
+          ...quoteMock,
+          realtimeQuote: async (symbols) => {
+            const quotes = await quoteMock.realtimeQuote(symbols);
+            entered.resolve();
+            await release.promise;
+            return quotes;
+          },
+        }),
+      });
+      await client.subscribeSymbols(['BULL.HK']);
+      if (realtimeState === 'missing') quoteMock.seedRealtimeQuotes([]);
+
+      const warnings: string[] = [];
+      const warn = spyOn(logger, 'warn').mockImplementation((message) => {
+        warnings.push(message);
+      });
+      const reading = client.getQuotes(['BULL.HK']);
+      try {
+        await entered.promise;
+        await client.unsubscribeSymbols(['BULL.HK']);
+        quoteMock.seedStaticInfo([
+          { symbol: 'BULL.HK', info: { symbol: 'BULL.HK', nameHk: '新名称', lotSize: 2000 } },
+        ]);
+        quoteMock.seedQuotes([{ symbol: 'BULL.HK', quote: makeSeedQuote('BULL.HK', 2.23, 2.2) }]);
+        await client.subscribeSymbols(['BULL.HK']);
+        release.resolve();
+        const quotes = await reading;
+        if (realtimeState === 'missing') {
+          expect(quotes.get('BULL.HK')).toBeNull();
+          expect(warnings).toEqual(['[行情获取] 标的 入口名称(BULL.HK) 无 realtime 数据']);
+        } else {
+          expect(quotes.get('BULL.HK')).toEqual({
+            symbol: 'BULL.HK',
+            name: '入口名称',
+            price: '1.23',
+            prevClose: '1.2',
+            timestamp: Date.parse('2026-02-16T01:00:00.000Z'),
+            lotSize: 500,
+          });
+          expect(warnings).toEqual([]);
+        }
+      } finally {
+        release.resolve();
+        try {
+          await reading;
+        } finally {
+          warn.mockRestore();
+        }
+      }
+    },
+  );
 
   it('deduplicates candlestick subscription for the same symbol+period', async () => {
     quoteMock.seedCandlesticks('BULL.HK', RealPeriod.Min_1, [
