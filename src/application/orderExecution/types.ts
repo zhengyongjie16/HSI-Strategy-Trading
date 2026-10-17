@@ -127,14 +127,14 @@ export type ExecutableOrderCommand = OrdinaryOrderCommand | DoomsdayClearanceOrd
 export type OrderActionResult =
   | { readonly kind: 'SUBMITTED'; readonly orderId: string }
   | { readonly kind: 'REPLACED'; readonly orderId: string }
-  | { readonly kind: 'WAITING_FOR_AUTHORITATIVE_TERMINAL'; readonly symbol: string }
+  | { readonly kind: 'SELL_AVAILABILITY_CHANGED'; readonly symbol: string }
   | { readonly kind: 'QUOTE_MISSING' | 'QUOTE_INVALID'; readonly symbol: string }
   | { readonly kind: 'SKIPPED' };
 
 /** 命令批次的内部执行事实；commandIndex 保留输入序号，解析时克隆的 signal 不承担回映身份。 */
 export type OrderCommandBatchResult = {
   readonly executedOrderIds: ReadonlyArray<string>;
-  readonly awaitingAuthoritativeTerminalSymbols: ReadonlyArray<string>;
+  readonly reevaluationSymbols: ReadonlyArray<string>;
   readonly unresolvedQuoteSymbols: ReadonlyArray<string>;
   readonly quoteFailures: ReadonlyArray<{
     readonly commandIndex: number;
@@ -154,6 +154,9 @@ export type SubmitOrderParams = {
 
   /** SELL 在最终报价前已完成的数量计划；BUY 必须为 null 并在 permit 内按 P1 重算。 */
   readonly submittedQuantity: number | null;
+
+  /** 末日读仓前由 tracking owner 捕获，最终提交边界不得重签；普通交易不提供。 */
+  readonly isSellAvailabilityCurrent?: () => boolean;
   readonly orderTypeConfig: OrderTypeConfig;
   readonly remark: string | undefined;
   readonly relatedBuyOrderIds?: ReadonlyArray<string> | null;
@@ -270,6 +273,7 @@ export interface OrderExecutionCacheInvalidator {
 export interface OrderExecutionTrackingPort {
   trackOrder: (params: TrackOrderParams) => void;
   getPendingSellOrders: (symbol: string) => ReadonlyArray<PendingSellOrderSnapshot>;
+  captureSellAvailabilityGuard: (symbol: string) => () => boolean;
   cancelOrder: (orderId: string, request: OrderMutationRequest) => Promise<CancelOrderOutcome>;
   replaceOrderPriceWithPermit: (
     orderId: string,

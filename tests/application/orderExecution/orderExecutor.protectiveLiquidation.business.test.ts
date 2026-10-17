@@ -264,7 +264,7 @@ describe('orderExecutor protective-liquidation contract', () => {
 
     expect(result).toEqual({
       executedOrderIds: [],
-      awaitingAuthoritativeTerminalSymbols: [],
+      reevaluationSymbols: [],
       unresolvedQuoteSymbols: [],
     });
 
@@ -299,7 +299,7 @@ describe('orderExecutor protective-liquidation contract', () => {
 
     expect(result).toEqual({
       executedOrderIds: [],
-      awaitingAuthoritativeTerminalSymbols: [],
+      reevaluationSymbols: [],
       unresolvedQuoteSymbols: [],
     });
 
@@ -333,7 +333,7 @@ describe('orderExecutor protective-liquidation contract', () => {
 
     expect(result).toEqual({
       executedOrderIds: [],
-      awaitingAuthoritativeTerminalSymbols: [],
+      reevaluationSymbols: [],
       unresolvedQuoteSymbols: [],
     });
 
@@ -708,7 +708,7 @@ describe('orderExecutor protective-liquidation contract', () => {
     expect(executionError).toBeNull();
     expect(result).toEqual({
       executedOrderIds: ['MOCK-000001'],
-      awaitingAuthoritativeTerminalSymbols: [],
+      reevaluationSymbols: [],
       unresolvedQuoteSymbols: [],
     });
     expect(native.nativeSubmitObservations()).toHaveLength(1);

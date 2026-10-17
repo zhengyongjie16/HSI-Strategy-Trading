@@ -627,7 +627,7 @@ SnapshotCoordinator 内部允许：
 | 启动快照     | startup/lifecycle                      | 不伪装成 seat refresh 失败              |
 | 开盘重建     | day lifecycle                          | 不让普通业务 runtime 自行恢复           |
 
-submit UNKNOWN 不属于 snapshot refresh 来源：直接经既有 fatal 通道终止，不安排专用查询或重评估；撤单终态等待等既有末日业务重评估不变。
+submit UNKNOWN 不属于 snapshot refresh 来源：直接经既有 fatal 通道终止，不安排专用查询或重评估；末日缺行情、可卖量计划失效及超时跟进交接的窗口内业务重评估独立保留，不以撤销旧 SELL 或等待其终态为前置条件。
 
 SnapshotCoordinator 可以负责请求合并和结果分类，但不应该再建立一个覆盖所有业务的通用 retry policy。
 
@@ -810,14 +810,14 @@ DoomsdayClearance
 | --- | --- | --- | --- |
 | 浮亏保护性 | `isProtectiveLiquidation=true`，原保护性委托类型 | 风险判定数量，executor 按最新可卖量裁剪 | 保护性 execution progress、episode、completion durable boundary、亏损分段和冷却保持当前顺序 |
 | 静态距回收价 | `isProtectiveLiquidation=false`，WARRANT_LIQUIDATION_ORDER_TYPE | 原缓存可用量发起，executor 最终裁剪；新增量不得扩入 protective 旧单 | 保留提交成功后的原买单记录清理和浮亏刷新；静态成交不创建或推进 protective progress/episode。此前真实 protective episode 仍可在完成条件满足时提交 completion 并按原规则计冷却 |
-| 末日 | 专用命令，非 protective，全局交易订单类型 + Day | 当前席位可证明归属；不要求整手、不智能选单、不关联买单；撤旧卖单后等权威终态再取量 | 保留既有提交成功条件下的买单记录投影清理；提交不证明空仓，不新建保护性分段/冷却。已有保护性 episode 仍按实际事实完成 |
+| 末日 | 专用命令，非 protective，全局交易订单类型 + Day | 当前席位可证明归属；不要求整手、不智能选单、不关联买单；不撤改合并已有 SELL，只按权威实时 available 新增 | 提交不清整方向买单；统一成交处理沿原关联及低价优先整单规则更新。提交不证明空仓，不新建保护性分段/冷却。已有保护性 episode 仍按实际事实完成 |
 
 末日旧副作用逐项迁移：
 
-- `cachedPositions.filter` / `positionCache.update`：删除这条伪事实写入；已确认订单的防重复用既有 OrderMonitor 和 awaiting-terminal 状态，不新建 overlay 或第二本订单账。属于本次明确修复，而非宣称行为完全不变。
+- `cachedPositions.filter` / `positionCache.update`：删除这条伪事实写入；已确认订单的防重复用既有 OrderMonitor 生命周期身份与读仓前计划证明，覆盖并发及新增后立即终态的 ABA；超时跟进占用交接中暂缓并重评估，不新建 overlay、预扣账或第二本订单账。属于本次明确修复，而非宣称行为完全不变。
 - `cachedAccount=null`：改为 snapshot owner 的账户有效性标记失效，不伪造余额/持仓归零。原 loader 用 null 判断是否需要双读的调用一并改读明确初始化/失效状态；重建仍成对读取。
 - `onPositionsCommitted`：不为“提交成功”发 PositionSnapshotCommitted。订阅继续依据实际持仓、席位、订单和已有 retain 集合，不因 action accepted 提前退订；实际新快照提交后正常触发对账。
-- `orderRecorder.clearBuyOrders`：按原全部执行成功条件保留为原 owner 的本地选单记录操作，不清除权威成交/durable progress；部分执行失败保留原条件。不能因删除 filter 就顺手删除或提前该操作。
+- `orderRecorder.clearBuyOrders`：末日提交成功后不再调用，既有共享能力与其他清仓调用不变。新旧 SELL 真实成交仍由统一成交处理沿原关联及低价优先整单规则更新，不拆单、不要求本地买单量等于券商持仓；原全部成功/live 条件下的账户失效保留。
 - submit UNKNOWN：按 §6.6 统一为直接 fatal，删除末日 UNKNOWN 特殊刷新/重评估分支；关闭交易放行且不自动重提，不新增查询接管或持久化协议。
 
 #### 7.2.1 共享卖单的 protective 归属隔离（明确的受控修正）

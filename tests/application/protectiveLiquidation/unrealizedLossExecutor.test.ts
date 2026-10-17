@@ -11,6 +11,7 @@ import { createTerminationRuntime } from '../../../src/runtime/lifecycle/termina
 import { createUnrealizedLossMonitor } from '../../../src/application/protectiveLiquidation/unrealizedLossExecutor.js';
 import { createRiskChecker } from '../../../src/domain/risk/index.js';
 import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
+import { createTradeMutationUnknownError } from '../../../src/application/orderExecution/tradeMutationErrors.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { PositionLimitChecker, WarrantRiskChecker } from '../../../src/domain/risk/types.js';
 import {
@@ -52,7 +53,7 @@ afterEach(async () => {
 });
 
 describe('protective liquidation executor', () => {
-  it('rethrows submitOrder API failure during protective liquidation', async () => {
+  it('rethrows submit UNKNOWN without retrying during protective liquidation', async () => {
     const authorization = { revision: 1 };
     const capturedRevision = authorization.revision;
     const isCurrent = () => authorization.revision === capturedRevision;
@@ -60,11 +61,14 @@ describe('protective liquidation executor', () => {
       logger: createLoggerDouble(),
       maxUnrealizedLossPerSymbol: '1000',
     });
-    const submitError = await createExternalApiRequestError({
+    const submitError = createTradeMutationUnknownError({
+      kind: 'UNKNOWN',
       operation: 'TradeContext.submitOrder',
-      attempts: 1,
+      requestAttempted: true,
+      code: null,
       cause: new Error('submit timeout'),
     });
+    let submitAttempts = 0;
     const riskChecker = createRiskCheckerDouble({
       checkUnrealizedLoss: () => ({ shouldLiquidate: true, reason: 'loss limit', quantity: 100 }),
     });
@@ -73,6 +77,7 @@ describe('protective liquidation executor', () => {
         executeSignals: async (_signals, callerAuthorization) => {
           expect(callerAuthorization).toBe(isCurrent);
           expect(callerAuthorization()).toBeTrue();
+          submitAttempts += 1;
           throw submitError;
         },
       },
@@ -98,6 +103,7 @@ describe('protective liquidation executor', () => {
     }
 
     expect(caught).toBe(submitError);
+    expect(submitAttempts).toBe(1);
   });
 
   it('rethrows internal tradeRuntime execution errors during protective liquidation', async () => {

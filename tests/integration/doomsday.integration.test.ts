@@ -31,7 +31,6 @@ import type { DoomsdayClearanceCommand } from '../../src/types/signal.js';
 import type { PendingOrder } from '../../src/types/orderReadMetadata.js';
 import type { MarketDataClient } from '../../src/types/marketPorts.js';
 import type { TimeWakeupEvaluationContext } from '../../src/runtime/timeWakeupEvaluationProgram/types.js';
-import type { CancelOrderOutcome } from '../../src/types/orderCancellation.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 import { getRequiredHKDateKey } from '../../src/utils/time/index.js';
@@ -171,7 +170,7 @@ async function createRealDoomsdayTrader(params: {
   readonly now: () => Date;
   readonly isExecutionAllowed?: () => boolean;
 }): Promise<TradeRuntime> {
-  return createTradeRuntime({
+  const runtime = await createTradeRuntime({
     diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
@@ -209,6 +208,9 @@ async function createRealDoomsdayTrader(params: {
       };
     },
   });
+  await runtime.orderMonitor.initialize();
+  await runtime.orderMonitor.recoverOrderTrackingFromSnapshot([]);
+  return runtime;
 }
 
 const snapshotFixtures = new WeakMap<
@@ -331,22 +333,6 @@ function createDoomsdayClearanceCommand(triggerTime: Date): DoomsdayClearanceCom
   } satisfies DoomsdayClearanceCommand;
 }
 
-function createTerminalCancelOutcome(params: {
-  readonly closedReason: 'FILLED' | 'CANCELED';
-  readonly submittedQuantity: number;
-  readonly executedQuantity: number;
-}): CancelOrderOutcome {
-  return {
-    kind: 'ALREADY_CLOSED',
-    closedReason: params.closedReason,
-    relatedBuyOrderIds: ['OLD-BUY'],
-    terminalExecution: {
-      submittedQuantity: params.submittedQuantity,
-      executedQuantity: params.executedQuantity,
-    },
-  };
-}
-
 afterEach(() => {});
 
 describe('doomsday integration', () => {
@@ -445,7 +431,7 @@ describe('doomsday integration', () => {
           submittedCommands.push([...commands]);
           return {
             executedOrderIds: ['DOOMSDAY-SWITCHING-OLD'],
-            awaitingAuthoritativeTerminalSymbols: [],
+            reevaluationSymbols: [],
             unresolvedQuoteSymbols: [],
           };
         },
@@ -481,177 +467,93 @@ describe('doomsday integration', () => {
     ]);
   });
 
-  it('waits for an authoritative terminal without repeated cancellation, then submits the fresh unlinked doomsday ELO', async () => {
+  it('keeps existing ordinary, protective, market and multiple sells unchanged and submits only available quantity', async () => {
     const currentTime = new Date('2026-02-16T07:56:00.000Z');
-    const tradingConfig = createTradingConfig();
-    const broker = createDoomsdayBrokerFixture([
+    const oldOrder = await createPendingDoomsdayOrder('SELL-OLD', currentTime.getTime());
+    for (const scenario of [
+      { available: 40, orders: [{ ...oldOrder, submittedQuantity: 60 }] },
+      { available: 0, orders: [{ ...oldOrder, submittedQuantity: 100 }] },
       {
-        symbol: 'BULL.HK',
-        quantity: 500,
-        availableQuantity: 500,
+        available: 40,
+        orders: [{ ...oldOrder, submittedQuantity: 60, isProtectiveLiquidation: true }],
       },
-    ]);
-
-    const cancelOrderIds: string[] = [];
-    let pendingSellVisible = true;
-    const trackedOrders: TrackOrderParams[] = [];
-    const pendingOrder = await createPendingDoomsdayOrder(
-      'SELL-ORDINARY-ELO',
-      currentTime.getTime(),
-    );
-    const orderMonitor = createOrderMonitorDouble({
-      trackOrder: (params) => {
-        trackedOrders.push(params);
+      {
+        available: 40,
+        orders: [
+          { ...oldOrder, submittedQuantity: 60, orderType: 'MO' as const, submittedPrice: null },
+        ],
       },
-      cancelOrder: async (orderId) => {
-        cancelOrderIds.push(orderId);
-        return {
-          kind: 'CANCEL_CONFIRMED' as const,
-          relatedBuyOrderIds: ['BUY-ORDINARY'],
-        };
+      {
+        available: 40,
+        orders: [
+          { ...oldOrder, submittedQuantity: 30 },
+          { ...oldOrder, orderId: 'SELL-SECOND', submittedQuantity: 30 },
+        ],
       },
-      getPendingSellOrders: () =>
-        pendingSellVisible
-          ? [
-              {
-                ...pendingOrder,
-                submittedAt: currentTime.getTime(),
-              },
-            ]
-          : [],
-    });
+    ]) {
+      const broker = createDoomsdayBrokerFixture([
+        { symbol: 'BULL.HK', quantity: 100, availableQuantity: scenario.available },
+      ]);
+      const before = structuredClone(scenario.orders);
+      const tracked: TrackOrderParams[] = [];
+      const executor = createOrderExecutor({
+        diagnostics: createDiagnosticObserverDouble(),
+        logger: createLoggerDouble(),
+        tradeMutationPort: broker.ports.createTradeMutationPort(),
+        readSellPositions: broker.ports.createSellPositionReader(),
+        rateLimiter: createRateLimiterDouble(),
+        marketDataClient: createDoomsdayExecutionQuoteClient(),
+        cacheManager: { clearCache: () => {} },
+        orderMonitor: createOrderMonitorDouble({
+          getPendingSellOrders: () => scenario.orders,
+          trackOrder: (order) => {
+            tracked.push(order);
+          },
+          cancelOrder: async () => {
+            throw new Error('末日不得撤销旧 SELL');
+          },
+          replaceOrderPriceWithPermit: async () => {
+            throw new Error('末日不得修改旧 SELL');
+          },
+        }),
+        orderRecorder: createOrderRecorderDouble({
+          submitSellOrder: () => {
+            throw new Error('末日不得生成关联买单占用');
+          },
+        }),
+        tradingConfig: createTradingConfig(),
+        symbolRegistry: createSymbolRegistryDouble(),
+        isExecutionAllowed: () => true,
+        isContinuousTradingAllowed: () => true,
+        now: () => currentTime,
+        readCurrentTradingDayInfo: () => ({
+          dateKey: getRequiredHKDateKey(currentTime),
+          info: { isTradingDay: true, isHalfDay: false },
+        }),
+      });
+      const result = await executor.executeDoomsdayClearanceSignals(
+        [createDoomsdayClearanceCommand(currentTime)],
+        alwaysLive,
+      );
+      expect(scenario.orders).toEqual(before);
+      expect(result.reevaluationSymbols).toEqual([]);
+      expect(broker.getCallCounts().replaceOrder).toBe(0);
+      expect(broker.getCallCounts().stockPositions).toBe(1);
+      expect(broker.getCallCounts().submitOrder).toBe(scenario.available === 0 ? 0 : 1);
+      expect(broker.getSubmissions().map((order) => order.quantity)).toEqual(
+        scenario.available === 0 ? [] : ['40'],
+      );
 
-    const mappedBuys = await Promise.all(
-      ['BUY-ORDINARY', 'BUY-FRESH'].map(async (orderId) => {
-        const ingress = await createBrokerIngressFixture({
-          orderId,
-          tradeId: 'T-' + orderId,
-          symbol: 'BULL.HK',
-          stockName: 'BULL',
-          remark: '',
-          side: 'BUY',
-          status: 'Filled',
-          quantity: '100',
-          executedQuantity: '100',
-          submittedPrice: '1',
-          executedPrice: '1',
-          submittedAtMs: currentTime.getTime(),
-          executionTimeMs: currentTime.getTime(),
-          updatedAtMs: currentTime.getTime(),
-        });
-        const fact = ingress.queryObservation;
-        if (fact.executionTimeMs === null)
-          throw new Error('expected actual ingress execution time');
-
-        return {
-          orderId: fact.orderId,
-          symbol: fact.symbol,
-          costAmount: fact.executedAmount,
-          executedQuantity: fact.executedQuantity,
-          executedTime: fact.executionTimeMs,
-          submittedAt: fact.submittedAt,
-          updatedAt: fact.updatedAt ?? undefined,
-        };
-      }),
-    );
-    const submittedSellLinks: Array<ReadonlyArray<string>> = [];
-    const orderRecorder = createOrderRecorderDouble({
-      getBuyOrdersForSymbol: () => mappedBuys,
-      getPendingSellSnapshot: () => [
-        {
-          orderId: 'SELL-ORDINARY-ELO',
-          symbol: 'BULL.HK',
-          direction: 'LONG',
-          submittedQuantity: 100,
-          filledQuantity: 0,
-          relatedBuyOrderIds: ['BUY-ORDINARY'],
-          status: 'pending',
+      if (scenario.available > 0)
+        expect(tracked[0]).toMatchObject({
+          quantity: 40,
           isProtectiveLiquidation: false,
-          submittedAt: currentTime.getTime(),
-        },
-      ],
-      submitSellOrder: (_orderId, _symbol, _direction, _quantity, relatedBuyOrderIds) => {
-        submittedSellLinks.push(relatedBuyOrderIds);
-      },
-    });
-
-    const orderExecutor = createOrderExecutor({
-      diagnostics: createDiagnosticObserverDouble(),
-      logger: createLoggerDouble(),
-      tradeMutationPort: broker.ports.createTradeMutationPort(),
-      readSellPositions: broker.ports.createSellPositionReader(),
-      rateLimiter: createRateLimiterDouble(),
-      marketDataClient: createDoomsdayExecutionQuoteClient(),
-      cacheManager: { clearCache: () => {} },
-      orderMonitor,
-      orderRecorder,
-      tradingConfig,
-      symbolRegistry: createSymbolRegistryDouble(),
-      isExecutionAllowed: () => true,
-      isContinuousTradingAllowed: () => true,
-      now: () => currentTime,
-      readCurrentTradingDayInfo: () => ({
-        dateKey: getRequiredHKDateKey(currentTime),
-        info: { isTradingDay: true, isHalfDay: false },
-      }),
-    });
-    const clearanceCommand = createDoomsdayClearanceCommand(currentTime);
-
-    const beforeTerminalResult = await orderExecutor.executeDoomsdayClearanceSignals(
-      [clearanceCommand],
-      alwaysLive,
-    );
-
-    expect(broker.getCallCounts().replaceOrder).toBe(0);
-    expect(beforeTerminalResult.executedOrderIds).toEqual([]);
-    expect(Reflect.get(beforeTerminalResult, 'awaitingAuthoritativeTerminalSymbols')).toEqual([
-      'BULL.HK',
-    ]);
-    expect(broker.getCallCounts().stockPositions).toBe(0);
-    expect(broker.getCallCounts().submitOrder).toBe(0);
-
-    const repeatedBeforeTerminalResult = await orderExecutor.executeDoomsdayClearanceSignals(
-      [clearanceCommand],
-      alwaysLive,
-    );
-
-    expect(repeatedBeforeTerminalResult.executedOrderIds).toEqual([]);
-    expect(
-      Reflect.get(repeatedBeforeTerminalResult, 'awaitingAuthoritativeTerminalSymbols'),
-    ).toEqual(['BULL.HK']);
-    expect(cancelOrderIds).toEqual(['SELL-ORDINARY-ELO']);
-    expect(broker.getCallCounts().stockPositions).toBe(0);
-    expect(broker.getCallCounts().submitOrder).toBe(0);
-
-    // WebSocket/权威订单终态已经从 pending 视图移除该旧单。
-    pendingSellVisible = false;
-    const result = await orderExecutor.executeDoomsdayClearanceSignals(
-      [clearanceCommand],
-      alwaysLive,
-    );
-
-    expect(result.executedOrderIds).toEqual(['MOCK-000001']);
-    expect(cancelOrderIds).toEqual(['SELL-ORDINARY-ELO']);
-    expect(broker.getCallCounts().stockPositions).toBe(1);
-    expect(broker.getCallCounts().submitOrder).toBe(1);
-    expect(submittedSellLinks).toEqual([]);
-
-    const submitPayload = broker.getSubmissions()[0];
-    if (submitPayload === undefined) {
-      throw new TypeError('expected doomsday clearance submit payload');
+          orderType: 'ELO',
+        });
     }
-
-    expect(trackedOrders[0]?.side).toBe('SELL');
-    expect(submitPayload.side).toBe('SELL');
-    expect(submitPayload.orderType).toBe('ELO');
-    expect(submitPayload.quantity).toBe('500');
-    expect(submitPayload.remark).toBe('QuantDemo');
-    expect(trackedOrders).toHaveLength(1);
-    expect(trackedOrders[0]?.isProtectiveLiquidation).toBeFalse();
-    expect(trackedOrders[0]?.orderType).toBe('ELO');
   });
 
-  it('uses the actual time-wakeup chain to retry an acknowledged cancellation, then submits only after a WebSocket terminal fact', async () => {
+  it('uses the actual time-wakeup chain to reread an invalidated availability plan without cancelling sells', async () => {
     let currentTime = new Date('2026-02-16T07:56:00.000Z');
     const retryIntervalMs = 1_000;
     const monitorConfig = createMonitorConfigDouble();
@@ -665,13 +567,17 @@ describe('doomsday integration', () => {
       },
     ]);
     const cancelOrderIds: string[] = [];
-    let pendingSellVisible = true;
-    const pendingOrder = await createPendingDoomsdayOrder('SELL-WAITING-WS', currentTime.getTime());
+    let addedSellVisible = false;
+    const pendingOrder = await createPendingDoomsdayOrder('SELL-UNCHANGED', currentTime.getTime());
     const orderExecutor = createOrderExecutor({
       diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       tradeMutationPort: broker.ports.createTradeMutationPort(),
-      readSellPositions: broker.ports.createSellPositionReader(),
+      readSellPositions: async (symbol) => {
+        const positions = await broker.ports.createSellPositionReader()(symbol);
+        addedSellVisible = true;
+        return positions;
+      },
       rateLimiter: createRateLimiterDouble(),
       marketDataClient: createDoomsdayExecutionQuoteClient(),
       cacheManager: { clearCache: () => {} },
@@ -679,20 +585,12 @@ describe('doomsday integration', () => {
         trackOrder: () => {},
         cancelOrder: async (orderId) => {
           cancelOrderIds.push(orderId);
-          return {
-            kind: 'CANCEL_CONFIRMED',
-            relatedBuyOrderIds: null,
-          };
+          throw new Error('末日不得撤旧卖单');
         },
-        getPendingSellOrders: () =>
-          pendingSellVisible
-            ? [
-                {
-                  ...pendingOrder,
-                  submittedAt: currentTime.getTime(),
-                },
-              ]
-            : [],
+        getPendingSellOrders: () => [
+          pendingOrder,
+          ...(addedSellVisible ? [{ ...pendingOrder, orderId: 'SELL-ADDED' }] : []),
+        ],
       }),
       orderRecorder: createOrderRecorderDouble(),
       tradingConfig,
@@ -749,22 +647,21 @@ describe('doomsday integration', () => {
       const retryAtMs = currentTime.getTime() + retryIntervalMs;
 
       expect(firstResult.plan.nextWakeupAtMs).toBe(retryAtMs);
-      expect(cancelOrderIds).toEqual(['SELL-WAITING-WS']);
+      expect(cancelOrderIds).toEqual([]);
       expect(broker.getCallCounts().submitOrder).toBe(0);
 
-      // 模拟订单 WebSocket 已将撤单终态收敛到 OrderMonitor 的 pending 事实。
-      pendingSellVisible = false;
+      // 既有 SELL 保留；下一次系统唤醒重新捕获稳定事实并重读可卖量。
       currentTime = new Date(retryAtMs);
       setSystemTime(currentTime);
-      const afterTerminalResult = await timeWakeupEvaluationProgram(context);
+      const afterReevaluationResult = await timeWakeupEvaluationProgram(context);
 
-      expect(afterTerminalResult.plan.nextWakeupAtMs).not.toBe(retryAtMs);
-      expect(cancelOrderIds).toEqual(['SELL-WAITING-WS']);
-      expect(broker.getCallCounts().stockPositions).toBe(1);
+      expect(afterReevaluationResult.plan.nextWakeupAtMs).not.toBe(retryAtMs);
+      expect(cancelOrderIds).toEqual([]);
+      expect(broker.getCallCounts().stockPositions).toBe(2);
       expect(broker.getCallCounts().submitOrder).toBe(1);
       const submitPayload = broker.getSubmissions()[0];
       if (submitPayload === undefined) {
-        throw new TypeError('expected fresh doomsday order after WebSocket terminal');
+        throw new TypeError('expected fresh doomsday order after availability reevaluation');
       }
 
       expect(submitPayload.quantity).toBe('500');
@@ -773,130 +670,7 @@ describe('doomsday integration', () => {
     }
   });
 
-  it('uses only fresh available quantity after partial, multiple, or filled old sell terminals', async () => {
-    const currentTime = new Date('2026-02-16T07:56:00.000Z');
-    const scenarios: ReadonlyArray<{
-      readonly name: string;
-      readonly freshAvailableQuantity: number;
-      readonly terminalOutcomes: ReadonlyArray<CancelOrderOutcome>;
-    }> = [
-      {
-        name: 'partial fill',
-        freshAvailableQuantity: 500,
-        terminalOutcomes: [
-          createTerminalCancelOutcome({
-            closedReason: 'CANCELED',
-            submittedQuantity: 100,
-            executedQuantity: 50,
-          }),
-        ],
-      },
-      {
-        name: 'multiple pending sells',
-        freshAvailableQuantity: 500,
-        terminalOutcomes: [
-          createTerminalCancelOutcome({
-            closedReason: 'CANCELED',
-            submittedQuantity: 300,
-            executedQuantity: 0,
-          }),
-          createTerminalCancelOutcome({
-            closedReason: 'CANCELED',
-            submittedQuantity: 200,
-            executedQuantity: 100,
-          }),
-        ],
-      },
-      {
-        name: 'already filled sell',
-        freshAvailableQuantity: 300,
-        terminalOutcomes: [
-          createTerminalCancelOutcome({
-            closedReason: 'FILLED',
-            submittedQuantity: 200,
-            executedQuantity: 200,
-          }),
-        ],
-      },
-    ];
-
-    for (const scenario of scenarios) {
-      const broker = createDoomsdayBrokerFixture([
-        {
-          symbol: 'BULL.HK',
-          quantity: scenario.freshAvailableQuantity,
-          availableQuantity: scenario.freshAvailableQuantity,
-        },
-      ]);
-      const cancelOrderIds: string[] = [];
-      const pendingOrders = await Promise.all(
-        scenario.terminalOutcomes.map((_, index) =>
-          createPendingDoomsdayOrder(`SELL-OLD-${String(index + 1)}`, currentTime.getTime()),
-        ),
-      );
-      let outcomeIndex = 0;
-      const closedOrderIds = new Set<string>();
-      const orderExecutor = createOrderExecutor({
-        diagnostics: createDiagnosticObserverDouble(),
-        logger: createLoggerDouble(),
-        tradeMutationPort: broker.ports.createTradeMutationPort(),
-        readSellPositions: broker.ports.createSellPositionReader(),
-        rateLimiter: createRateLimiterDouble(),
-        marketDataClient: createDoomsdayExecutionQuoteClient(),
-        cacheManager: { clearCache: () => {} },
-        orderMonitor: createOrderMonitorDouble({
-          trackOrder: () => {},
-          cancelOrder: async (orderId) => {
-            cancelOrderIds.push(orderId);
-            const outcome = scenario.terminalOutcomes[outcomeIndex];
-            outcomeIndex += 1;
-            if (outcome === undefined) {
-              throw new Error(`unexpected cancel request for ${scenario.name}: ${orderId}`);
-            }
-
-            if (outcome.kind === 'ALREADY_CLOSED') closedOrderIds.add(orderId);
-
-            return outcome;
-          },
-          getPendingSellOrders: () =>
-            pendingOrders
-              .filter((pendingOrder) => !closedOrderIds.has(pendingOrder.orderId))
-              .map((pendingOrder) => ({
-                ...pendingOrder,
-                submittedAt: currentTime.getTime(),
-              })),
-        }),
-        orderRecorder: createOrderRecorderDouble(),
-        tradingConfig: createTradingConfig(),
-        symbolRegistry: createSymbolRegistryDouble(),
-        isExecutionAllowed: () => true,
-        isContinuousTradingAllowed: () => true,
-        now: () => currentTime,
-        readCurrentTradingDayInfo: () => ({
-          dateKey: getRequiredHKDateKey(currentTime),
-          info: { isTradingDay: true, isHalfDay: false },
-        }),
-      });
-
-      const result = await orderExecutor.executeDoomsdayClearanceSignals(
-        [createDoomsdayClearanceCommand(currentTime)],
-        alwaysLive,
-      );
-
-      expect(result.executedOrderIds).toEqual(['MOCK-000001']);
-      expect(cancelOrderIds).toHaveLength(scenario.terminalOutcomes.length);
-      expect(broker.getCallCounts().replaceOrder).toBe(0);
-      expect(broker.getCallCounts().stockPositions).toBe(1);
-      const submitPayload = broker.getSubmissions()[0];
-      if (submitPayload === undefined) {
-        throw new TypeError(`expected fresh doomsday order for ${scenario.name}`);
-      }
-
-      expect(submitPayload.quantity).toBe(String(scenario.freshAvailableQuantity));
-    }
-  });
-
-  it('does not schedule a terminal wait past close or submit after the clearance window', async () => {
+  it('does not schedule availability reevaluation past close or submit after the clearance window', async () => {
     const closeTime = new Date('2026-02-16T08:00:00.000Z');
     const beforeClose = new Date(closeTime.getTime() - 100);
     const monitorConfig = createMonitorConfigDouble();
@@ -913,7 +687,7 @@ describe('doomsday integration', () => {
           executionCalls += 1;
           return {
             executedOrderIds: [],
-            awaitingAuthoritativeTerminalSymbols: ['BULL.HK'],
+            reevaluationSymbols: ['BULL.HK'],
             unresolvedQuoteSymbols: [],
           };
         },
@@ -1018,7 +792,7 @@ describe('doomsday integration', () => {
 
               return {
                 executedOrderIds: ['SELL-INJECTED-CLOCK'],
-                awaitingAuthoritativeTerminalSymbols: [],
+                reevaluationSymbols: [],
                 unresolvedQuoteSymbols: [],
               };
             },
@@ -1065,7 +839,7 @@ describe('doomsday integration', () => {
         createPositionDouble({ symbol: 'BULL.HK', quantity: 100, availableQuantity: 100 }),
       ]);
 
-      const terminalResult = await createDoomsdayClearanceWorkflow({
+      const reevaluationResult = await createDoomsdayClearanceWorkflow({
         logger: createLoggerDouble(),
         now: () => currentTime,
         quoteRetryIntervalMs: 200,
@@ -1079,7 +853,7 @@ describe('doomsday integration', () => {
           orderExecutor: {
             executeDoomsdayClearanceSignals: async () => ({
               executedOrderIds: [],
-              awaitingAuthoritativeTerminalSymbols: ['BULL.HK'],
+              reevaluationSymbols: ['BULL.HK'],
               unresolvedQuoteSymbols: [],
             }),
           },
@@ -1091,7 +865,7 @@ describe('doomsday integration', () => {
         snapshot: snapshotOf(stateFixtures),
       });
 
-      expect(terminalResult.nextRetryAtMs, `${scenario.label} terminal`).toBeNull();
+      expect(reevaluationResult.nextRetryAtMs, `${scenario.label} reevaluation`).toBeNull();
 
       const missingQuoteState = await createRuntimeStates();
       await publishPositions(missingQuoteState, [
@@ -1219,12 +993,12 @@ describe('doomsday integration', () => {
     for (const scenario of closeScenarios) {
       const currentTime = new Date(scenario.closeMs - 300);
       const expectedRetryAtMs = scenario.closeMs - 100;
-      const terminalState = await createRuntimeStates();
-      await publishPositions(terminalState, [
+      const reevaluationState = await createRuntimeStates();
+      await publishPositions(reevaluationState, [
         createPositionDouble({ symbol: 'BULL.HK', quantity: 100, availableQuantity: 100 }),
       ]);
 
-      const terminalResult = await createDoomsdayClearanceWorkflow({
+      const reevaluationResult = await createDoomsdayClearanceWorkflow({
         logger: createLoggerDouble(),
         now: () => currentTime,
         quoteRetryIntervalMs: 200,
@@ -1232,13 +1006,13 @@ describe('doomsday integration', () => {
         currentTime,
         isHalfDay: scenario.isHalfDay,
         isLive: alwaysLive,
-        positions: snapshotOf(terminalState).getView().positions,
+        positions: snapshotOf(reevaluationState).getView().positions,
         monitorContext: createMonitorContext(),
         ...createTradeRuntimeDouble({
           orderExecutor: {
             executeDoomsdayClearanceSignals: async () => ({
               executedOrderIds: [],
-              awaitingAuthoritativeTerminalSymbols: ['BULL.HK'],
+              reevaluationSymbols: ['BULL.HK'],
               unresolvedQuoteSymbols: [],
             }),
           },
@@ -1246,11 +1020,13 @@ describe('doomsday integration', () => {
         marketDataClient: createMarketDataClientDouble({
           getQuotes: async () => new Map([['BULL.HK', createQuoteDouble('BULL.HK', '1.1', 100)]]),
         }),
-        ...terminalState,
-        snapshot: snapshotOf(terminalState),
+        ...reevaluationState,
+        snapshot: snapshotOf(reevaluationState),
       });
 
-      expect(terminalResult.nextRetryAtMs, `${scenario.label} terminal`).toBe(expectedRetryAtMs);
+      expect(reevaluationResult.nextRetryAtMs, `${scenario.label} reevaluation`).toBe(
+        expectedRetryAtMs,
+      );
 
       const missingQuoteState = await createRuntimeStates();
       await publishPositions(missingQuoteState, [
@@ -1629,7 +1405,7 @@ describe('doomsday integration', () => {
     expect(getPendingOrdersCalls).toBe(2);
   });
 
-  it('executes close-5 liquidation, invalidates only account and clears local buy records for both sides', async () => {
+  it('executes close-5 liquidation, invalidates only account and preserves local buy records for both sides', async () => {
     const doomsday = createDoomsdayClearanceWorkflow({
       logger: createLoggerDouble(),
       now: () => CLEARANCE_TEST_NOW,
@@ -1643,7 +1419,7 @@ describe('doomsday integration', () => {
           executedSignals = signals.length;
           return {
             executedOrderIds: signals.map(() => `EXECUTED-ORDER`),
-            awaitingAuthoritativeTerminalSymbols: [],
+            reevaluationSymbols: [],
             unresolvedQuoteSymbols: [],
           };
         },
@@ -1683,8 +1459,7 @@ describe('doomsday integration', () => {
     expect(result.executed).toBeTrue();
     expect(executedSignals).toBe(2);
 
-    expect(clearCallsBySide[1]).toBe(1);
-    expect(clearCallsBySide[0]).toBe(1);
+    expect(clearCallsBySide).toEqual([0, 0]);
 
     expect(snapshotOf(stateFixtures).getView().accountValid).toBeFalse();
     expect(snapshotOf(stateFixtures).getView().account).not.toBeNull();
@@ -1726,7 +1501,7 @@ describe('doomsday integration', () => {
           executeCalls += 1;
           return {
             executedOrderIds: signals.map(() => `EXECUTED-ORDER`),
-            awaitingAuthoritativeTerminalSymbols: [],
+            reevaluationSymbols: [],
             unresolvedQuoteSymbols: [],
           };
         },
@@ -1782,7 +1557,7 @@ describe('doomsday integration', () => {
       orderExecutor: {
         executeDoomsdayClearanceSignals: async () => ({
           executedOrderIds: [],
-          awaitingAuthoritativeTerminalSymbols: [],
+          reevaluationSymbols: [],
           unresolvedQuoteSymbols: [],
         }),
       },
@@ -1843,7 +1618,7 @@ describe('doomsday integration', () => {
           executedSignals += signals.length;
           return {
             executedOrderIds: signals.map(() => `EXECUTED-ORDER`),
-            awaitingAuthoritativeTerminalSymbols: [],
+            reevaluationSymbols: [],
             unresolvedQuoteSymbols: [],
           };
         },
@@ -1905,7 +1680,7 @@ describe('doomsday integration', () => {
           executedSignals += signals.length;
           return {
             executedOrderIds: signals.map(() => `EXECUTED-ORDER`),
-            awaitingAuthoritativeTerminalSymbols: [],
+            reevaluationSymbols: [],
             unresolvedQuoteSymbols: [],
           };
         },
@@ -1969,7 +1744,7 @@ describe('doomsday integration', () => {
           executedSignals += signals.length;
           return {
             executedOrderIds: signals.map(() => `EXECUTED-ORDER`),
-            awaitingAuthoritativeTerminalSymbols: [],
+            reevaluationSymbols: [],
             unresolvedQuoteSymbols: [],
           };
         },
@@ -2049,7 +1824,7 @@ describe('doomsday integration', () => {
 
           return {
             executedOrderIds: signals.map(() => `EXECUTED-ORDER`),
-            awaitingAuthoritativeTerminalSymbols: [],
+            reevaluationSymbols: [],
             unresolvedQuoteSymbols: [],
           };
         },
@@ -2122,7 +1897,7 @@ describe('doomsday integration', () => {
 
           return {
             executedOrderIds: signals.map(() => `EXECUTED-ORDER`),
-            awaitingAuthoritativeTerminalSymbols: [],
+            reevaluationSymbols: [],
             unresolvedQuoteSymbols: [],
           };
         },
@@ -2211,7 +1986,7 @@ describe('doomsday integration', () => {
 
           return {
             executedOrderIds: signals.map(() => `EXECUTED-ORDER`),
-            awaitingAuthoritativeTerminalSymbols: [],
+            reevaluationSymbols: [],
             unresolvedQuoteSymbols: [],
           };
         },
@@ -2638,7 +2413,7 @@ describe('doomsday integration', () => {
           executionCalls += 1;
           return {
             executedOrderIds: ['STALE-CLEARANCE'],
-            awaitingAuthoritativeTerminalSymbols: [],
+            reevaluationSymbols: [],
             unresolvedQuoteSymbols: [],
           };
         },
@@ -2704,7 +2479,7 @@ describe('doomsday integration', () => {
           stateFixtures.lifecycleState.isTradingEnabled = false;
           return {
             executedOrderIds: ['SUBMITTED-BEFORE-CLOSE'],
-            awaitingAuthoritativeTerminalSymbols: [],
+            reevaluationSymbols: [],
             unresolvedQuoteSymbols: [],
           };
         },

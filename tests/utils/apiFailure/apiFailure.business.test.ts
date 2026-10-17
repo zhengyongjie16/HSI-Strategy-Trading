@@ -1,7 +1,7 @@
 /**
  * apiFailure 中性事实业务测试
  *
- * 场景意图：锁定真实错误身份、聚合原因与下单结果不可确认的分类边界。
+ * 场景意图：锁定真实错误身份、聚合原因与外部请求失败的分类边界。
  */
 import { describe, expect, it } from 'bun:test';
 import {
@@ -9,7 +9,6 @@ import {
   createExternalApiRequestError,
   isAllExternalApiRequestErrors,
   isExternalApiRequestError,
-  isUnconfirmedOrderSubmissionError,
 } from '../../../src/utils/apiFailure/index.js';
 
 describe('apiFailure neutral facts', () => {
@@ -80,34 +79,5 @@ describe('apiFailure neutral facts', () => {
     expect(aggregate).toBeInstanceOf(AggregateError);
     expect(isAllExternalApiRequestErrors([first, second])).toBeTrue();
     expect(isAllExternalApiRequestErrors([first, new Error('internal')])).toBeFalse();
-  });
-
-  it('classifies only submitOrder external failures as unconfirmed order submission errors', () => {
-    const submitError = createExternalApiRequestError({
-      operation: 'TradeContext.submitOrder',
-      attempts: 1,
-      cause: new Error('submit timeout'),
-    });
-    const timeoutMarketConversionSubmitError = createExternalApiRequestError({
-      operation: 'TradeContext.submitOrder.timeoutMarketConversion',
-      attempts: 1,
-      cause: new Error('market conversion submit timeout'),
-    });
-    const positionError = createExternalApiRequestError({
-      operation: 'TradeContext.stockPositions.quantityResolver',
-      attempts: 1,
-      cause: new Error('position timeout'),
-    });
-    const quoteError = createExternalApiRequestError({
-      operation: 'QuoteContext.realtimeQuote',
-      attempts: 1,
-      cause: new Error('quote timeout'),
-    });
-
-    expect(isUnconfirmedOrderSubmissionError(submitError)).toBeTrue();
-    expect(isUnconfirmedOrderSubmissionError(timeoutMarketConversionSubmitError)).toBeTrue();
-    expect(isUnconfirmedOrderSubmissionError(positionError)).toBeFalse();
-    expect(isUnconfirmedOrderSubmissionError(quoteError)).toBeFalse();
-    expect(isUnconfirmedOrderSubmissionError(new Error('internal'))).toBeFalse();
   });
 });

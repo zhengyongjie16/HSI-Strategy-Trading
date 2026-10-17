@@ -162,6 +162,9 @@ export interface OrderMonitor {
   /** 获取指定标的的未成交卖单快照 */
   getPendingSellOrders: (symbol: string) => ReadonlyArray<PendingSellOrderSnapshot>;
 
+  /** 读仓前捕获原 tracking 事实证明；新增生命周期、挂单变化或超时跟进交接使本次计划失效。 */
+  captureSellAvailabilityGuard: (symbol: string) => () => boolean;
+
   /** 原卖单及其已 accepted 的超时转市价单身份；不按标的合并，不持有成交金额。 */
   readonly getSellOperationOrderIds: (originalOrderId: string) => ReadonlyArray<string>;
 

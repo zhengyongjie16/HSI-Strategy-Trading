@@ -7,10 +7,7 @@
  */
 import { isWithinDoomsdayClearanceTakeoverWindow } from '../../domain/liquidation/doomsday/index.js';
 import { exactCompare, sumSafeQuantities } from '../../utils/numeric/exact.js';
-import {
-  isExternalApiRequestError,
-  isUnconfirmedOrderSubmissionError,
-} from '../../utils/apiFailure/index.js';
+import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isSettlementReadinessAbortError } from '../postTradeSettlement/readinessGate.js';
 import type { SettlementReadinessReceipt } from '../../types/settlement.js';
@@ -173,7 +170,7 @@ export function createProtectiveLiquidationWorkflow(
       } catch (error) {
         deps.logger.error('[ProtectiveLiquidationWorkflow] 风险事件处理失败', formatError(error));
         // 明确外部失败由原 quote owner 等待下次事件；UNKNOWN submit 与内部错误仍 fatal。
-        if (!isExternalApiRequestError(error) || isUnconfirmedOrderSubmissionError(error)) {
+        if (!isExternalApiRequestError(error)) {
           throw error;
         }
 

@@ -6,18 +6,16 @@ import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { AccountPositionSnapshot } from '../../types/accountPosition.js';
 import type { SellSignalAction } from '../../types/signal.js';
-import type { OrderRecorder } from '../../types/orderRecorder.js';
 import type { MarketDataClient } from '../../types/marketPorts.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 import type { SeatSwitchWorkflow } from '../../types/seatSwitch.js';
 import type { Logger } from '../../types/logger.js';
 
-/** 末日 owner 所需的席位归属与本地买单投影能力，不携带策略、风控或整个监控上下文。 */
+/** 末日 owner 所需的席位归属，不携带本地买单清理、策略、风控或整个监控上下文。 */
 export type DoomsdayMonitorContext = {
   readonly config: { readonly monitorSymbol: string };
   readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
   readonly seatSwitch: Pick<SeatSwitchWorkflow, 'hasPendingSwitch'>;
-  readonly orderRecorder: Pick<OrderRecorder, 'clearBuyOrders'>;
 };
 
 /** 已验证持仓与行情构造的末日卖出身份；不保存执行价格、数量或关联买单。 */
@@ -104,7 +102,7 @@ export interface DoomsdayClearanceWorkflow {
   /** 顺序执行撤买与清仓；submit UNKNOWN 原错上抛，明确外部读取失败按原规则重评估。 */
   readonly evaluate: (context: DoomsdayEvaluationContext) => Promise<DoomsdayClearanceResult>;
 
-  /** 根据 canonical 持仓生成命令，数量、旧卖单终态与订单事实由既有执行/追踪 owner 负责。 */
+  /** 根据 canonical 持仓生成命令，实时可卖量及订单事实由既有执行/追踪 owner 负责。 */
   readonly executeClearance: (
     context: DoomsdayClearanceContext,
   ) => Promise<DoomsdayClearanceResult>;

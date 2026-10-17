@@ -44,6 +44,7 @@ import {
 import { calculateTradingDurationMsBetween } from '../../../src/domain/tradingSession/index.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
 import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
+import { createTradeMutationUnknownError } from '../../../src/application/orderExecution/tradeMutationErrors.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type {
@@ -4666,9 +4667,11 @@ describe('P1 switch 原授权与真实ack交错', () => {
     const release = createDeferred();
     let gateOpen = true;
     let submissions = 0;
-    const original = await createExternalApiRequestError({
+    const original = createTradeMutationUnknownError({
+      kind: 'UNKNOWN',
       operation: 'TradeContext.submitOrder',
-      attempts: 1,
+      requestAttempted: true,
+      code: null,
       cause: new Error('remote result unknown'),
     });
     const harness = createLongSwitchAdmissionHarness({

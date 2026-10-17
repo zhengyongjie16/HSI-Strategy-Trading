@@ -574,6 +574,8 @@ type OrderTerminalConfirmation = {
  * 首个 ACK 的 null 时间表示诊断时钟无效，不得拿后续 ACK 补造 duration。
  */
 export type TrackedOrderLifecycle = {
+  /** 仅在真实 tracking 证明归属后写入，终态保留，用于标的内读仓计划的 ABA 失效。 */
+  readonly symbol?: string;
   readonly state: 'OPEN' | 'CLOSED' | null;
   readonly firstCancelAcknowledgedAtMs?: number | null;
   readonly terminalConfirmation?: OrderTerminalConfirmation;

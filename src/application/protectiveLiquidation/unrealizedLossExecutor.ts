@@ -8,10 +8,7 @@
 import { exactCompare } from '../../utils/numeric/exact.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { formatError } from '../../utils/error/index.js';
-import {
-  isExternalApiRequestError,
-  isUnconfirmedOrderSubmissionError,
-} from '../../utils/apiFailure/index.js';
+import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import type {
   DirectionalUnrealizedLossMonitorContext,
   UnrealizedLossMonitor,
@@ -85,8 +82,7 @@ export const createUnrealizedLossMonitor = (
       executedOrderCount = executionResult.executedOrderIds.length;
     } catch (error) {
       // UNKNOWN submit 与内部错误即使旧授权已失效也必须穿透，不假定远端未发生。
-      if (!isExternalApiRequestError(error) || isUnconfirmedOrderSubmissionError(error))
-        throw error;
+      if (!isExternalApiRequestError(error)) throw error;
 
       const direction = isLong ? '做多标的' : '做空标的';
       logger.error(

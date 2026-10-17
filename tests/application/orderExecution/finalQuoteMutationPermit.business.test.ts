@@ -942,7 +942,7 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     expect(fixture.settledOrders).toEqual([]);
   });
 
-  it('cancels old doomsday sells, reads fresh quantity, then submits and tracks with P1', async () => {
+  it('preserves old doomsday sells, reads available quantity, then submits and tracks with P1', async () => {
     const currentTime = new Date('2026-07-10T07:56:00.000Z');
     const cancelOrderIds: string[] = [];
     let unrealizedLossGateCalls = 0;
@@ -987,13 +987,13 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     );
 
     expect(result.executedOrderIds).toHaveLength(1);
-    expect(cancelOrderIds).toEqual(['SELL-OLD-DOOMSDAY']);
-    expect(fixture.native.nativeReadCounts()).toEqual({ cancel: 1, detail: 1 });
-    expect(fixture.native.nativeCancelOrderIds()).toEqual(['SELL-OLD-DOOMSDAY']);
-    expect(fixture.getPendingSellOrders('BULL.HK')).toEqual([]);
-    expect(fixture.settledOrders).toMatchObject([
-      { orderId: 'SELL-OLD-DOOMSDAY', status: 'CANCELED' },
+    expect(cancelOrderIds).toEqual([]);
+    expect(fixture.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 0 });
+    expect(fixture.native.nativeCancelOrderIds()).toEqual([]);
+    expect(fixture.getPendingSellOrders('BULL.HK')).toMatchObject([
+      { orderId: 'SELL-OLD-DOOMSDAY', submittedQuantity: 100 },
     ]);
+    expect(fixture.settledOrders).toEqual([]);
     expect(fixture.events.slice(-3)).toEqual(['permit', 'quote', 'invoke']);
     expect(
       Object.is(readSubmittedPrice(fixture.native.nativeSubmitObservations()[0]), '1.9'),

@@ -15,6 +15,7 @@ import {
 import { logger } from '../../../src/infrastructure/logger/index.js';
 import { describe, expect, it } from 'bun:test';
 import { createOrdinaryBuyWorkflow } from '../../../src/application/ordinaryBuy/index.js';
+import { createTradeMutationUnknownError } from '../../../src/application/orderExecution/tradeMutationErrors.js';
 import { createBuyProcessor } from '../../../src/runtime/asyncProgram/buyProcessor/index.js';
 import { createBuyTaskQueue } from '../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
@@ -230,11 +231,20 @@ describe('ordinaryBuy owner', () => {
   it.each(['getQuotes', 'submitOrder'])(
     'keeps %s failure at the owning business/fatal boundary',
     async (operation) => {
-      const failure = await createExternalApiRequestError({
-        operation: operation === 'submitOrder' ? 'TradeContext.submitOrder' : 'QuoteContext.quote',
-        attempts: 1,
-        cause: new Error('network'),
-      });
+      const failure =
+        operation === 'submitOrder'
+          ? createTradeMutationUnknownError({
+              kind: 'UNKNOWN',
+              operation: 'TradeContext.submitOrder',
+              requestAttempted: true,
+              code: null,
+              cause: new Error('submit outcome unknown'),
+            })
+          : await createExternalApiRequestError({
+              operation: 'QuoteContext.quote',
+              attempts: 1,
+              cause: new Error('network'),
+            });
       const queue = createBuyTaskQueue({
         clock: { now: () => new Date() },
         diagnostics: createDiagnosticObserverDouble(),
@@ -291,6 +301,8 @@ describe('ordinaryBuy owner', () => {
       expect(termination.isTerminated()).toBe(operation === 'submitOrder');
       expect(executions).toBe(operation === 'submitOrder' ? 1 : 0);
       if (operation === 'submitOrder') {
+        const fatalState = termination.getFatalState();
+        expect(fatalState.hasFatalError && fatalState.error).toBe(failure);
         expect(queue.isEmpty()).toBeFalse();
         expect(queue.pop()?.data.action).toBe('BUYCALL');
         expect(queue.isEmpty()).toBeTrue();

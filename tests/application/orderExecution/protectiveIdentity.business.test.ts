@@ -57,6 +57,9 @@ function createHarness(params: {
   let replaceCalls = 0;
   const monitor: OrderExecutionTrackingPort = {
     getPendingSellOrders: () => pending,
+    captureSellAvailabilityGuard: () => {
+      throw new Error('普通 SELL 不得使用末日读仓计划证明');
+    },
     trackOrder: (order) => {
       tracked.push(order);
     },

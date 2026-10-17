@@ -30,14 +30,14 @@ export type ExecuteSignalsResult = {
 
 /**
  * 末日清仓执行结果。
- * 类型用途：末日专用结果独立保留 accepted ID、权威订单终态等待与缺价标的事实，
- * 让末日保护安排系统级一次性重评估而不是将其压缩为普通跳过。
+ * 类型用途：末日专用结果独立保留 accepted ID、可卖量计划失效与缺价标的事实，
+ * 让末日保护安排系统级重评估，且计划失效不消耗行情缺失重试预算。
  * 数据来源：OrderExecutor 的末日清仓专用入口。
  * 使用范围：末日清仓用例 与系统级时间唤醒链路。
  */
 export type DoomsdayClearanceExecutionResult = {
   readonly executedOrderIds: ReadonlyArray<string>;
-  readonly awaitingAuthoritativeTerminalSymbols: ReadonlyArray<string>;
+  readonly reevaluationSymbols: ReadonlyArray<string>;
 
   /** 最终 mutation permit 内行情缺失的标的，由末日窗口 owner 使用既有重评估机制处理。 */
   readonly unresolvedQuoteSymbols: ReadonlyArray<string>;

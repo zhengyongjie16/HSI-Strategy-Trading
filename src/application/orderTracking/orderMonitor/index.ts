@@ -23,7 +23,7 @@ import type {
   TerminalStateSnapshot,
 } from '../../../domain/order/types.js';
 import type { OrderExecutionLedgerFact } from '../../../types/orderExecutionLedger.js';
-import type { OrderPushDecoder } from '../../../types/orderPushPorts.js';
+import type { OrderPushDecoder, OrderPushReadFact } from '../../../types/orderPushPorts.js';
 import type { OrderExecutionTimeEvidence } from '../../../types/orderRecorder.js';
 import type { OrderStateChangedEvent } from '../../../types/orderTracking.js';
 import type { TradeMutationPermit } from '../../../types/rateLimit.js';
@@ -563,6 +563,21 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
     if (runtime.runtimeState === 'STOPPED' || termination.isTerminated()) return;
 
+    let readFact: OrderPushReadFact;
+    try {
+      readFact = decoder.inspect();
+    } catch (error) {
+      termination.reportFatalError(error);
+      return;
+    }
+
+    // 正成交流水读取与 mutation 共用 FIFO，不能等异步收口后才撤销此前的可卖量计划。
+    // 仅更换已归属 lifecycle 的身份，不提前发布未验证订单/成交，也不影响其他标的证明。
+    const lifecycle = runtime.trackedOrderLifecycles.get(readFact.orderId);
+    if (lifecycle?.symbol === readFact.symbol) {
+      runtime.trackedOrderLifecycles.set(readFact.orderId, { ...lifecycle });
+    }
+
     const generation = orderIngressGeneration;
     // ingress 串行包含实际 ledger IO；stop 等本链，旧 generation 不发布或重发订单。
     orderIngressDrain = orderIngressDrain
@@ -574,7 +589,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
         )
           return;
 
-        const readFact = decoder.inspect();
         let executions: ReadonlyArray<OrderExecutionLedgerFact> = [];
         if (readFact.executedQuantity > 0) {
           await rateLimiter.throttle();
@@ -705,6 +719,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
    * @returns 无返回值
    */
   function clearTrackedOrders(): void {
+    orderIngressGeneration++;
     recoveryFlow.resetRecoveryTrackingState();
     recoveryFlow.clearBootstrappingEventBuffer();
     runtime.trackedOrderLifecycles.clear();
@@ -790,6 +805,58 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     return [...pendingOrders].sort((left, right) => left.submittedAt - right.submittedAt);
   }
 
+  /**
+   * 在权威读仓前捕获一次性计划证明，不持有第二份订单账或预扣可卖量。
+   * lifecycle 身份包含已关闭订单，故新增单在等待期间成交消失也不能让旧计划重新有效。
+   * 超时撤旧至市价跟进单接管期间，broker 已释放的数量仍归原 owner，末日必须稍后重读。
+   */
+  function captureSellAvailabilityGuard(symbol: string): () => boolean {
+    const isWorkCurrent = captureWorkGuard();
+    const readSymbolLifecycles = () =>
+      new Map(
+        [...runtime.trackedOrderLifecycles].filter(([, lifecycle]) => lifecycle.symbol === symbol),
+      );
+    const lifecycles = readSymbolLifecycles();
+    const trackedFacts = [...runtime.trackedOrders.values()]
+      .filter((order) => order.symbol === symbol)
+      .map((order) => ({
+        order,
+        quantity: order.submittedQuantity,
+        executedQuantity: order.executedQuantity,
+        status: order.status,
+        price: order.submittedPrice,
+      }));
+
+    const hasSellHandoff = (): boolean =>
+      [...runtime.trackedOrders.values()].some(
+        (order) =>
+          order.symbol === symbol &&
+          order.executionSide === 'SELL' &&
+          order.timeoutMarketConversionPending,
+      ) ||
+      orderRecorder
+        .getPendingSellSnapshot()
+        .some((order) => order.symbol === symbol && runtime.closedOrderIds.has(order.orderId));
+    const initiallyAvailable = !hasSellHandoff();
+
+    return () =>
+      initiallyAvailable &&
+      isWorkCurrent() &&
+      !hasSellHandoff() &&
+      lifecycles.size === readSymbolLifecycles().size &&
+      [...lifecycles].every(
+        ([orderId, lifecycle]) => runtime.trackedOrderLifecycles.get(orderId) === lifecycle,
+      ) &&
+      trackedFacts.every(
+        ({ order, quantity, executedQuantity, status, price }) =>
+          runtime.trackedOrders.get(order.orderId) === order &&
+          order.submittedQuantity === quantity &&
+          order.executedQuantity === executedQuantity &&
+          order.status === status &&
+          order.submittedPrice === price,
+      );
+  }
+
   function hasPendingProtectiveLiquidationOrders(direction: 'LONG' | 'SHORT'): boolean {
     for (const trackedOrder of runtime.trackedOrders.values()) {
       if (!trackedOrder.isProtectiveLiquidation) {
@@ -827,6 +894,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     stopRuntimeAndDrain,
     recoverOrderTrackingFromSnapshot,
     getPendingSellOrders,
+    captureSellAvailabilityGuard,
     getSellOperationOrderIds,
     hasPendingProtectiveLiquidationOrders,
     clearTrackedOrders,

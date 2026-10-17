@@ -13,6 +13,7 @@ import { rejects } from 'node:assert/strict';
 import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
 import { createSellHarness } from './fixture.js';
 
+import { createTradeMutationUnknownError } from '../../../src/application/orderExecution/tradeMutationErrors.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type {
   SellExecutionAttempt,
@@ -371,9 +372,11 @@ describe('ordinarySell owner', () => {
   });
 
   it('surfaces UNKNOWN submission from SELL without retrying or converting it to a normal read failure', async () => {
-    const unknown = await createExternalApiRequestError({
+    const unknown = createTradeMutationUnknownError({
+      kind: 'UNKNOWN',
       operation: 'TradeContext.submitOrder',
-      attempts: 1,
+      requestAttempted: true,
+      code: null,
       cause: new Error('network'),
     });
     let calls = 0;

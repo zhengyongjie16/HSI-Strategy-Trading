@@ -13,10 +13,7 @@ import {
   describeSignalSeatValidationFailure,
 } from '../../domain/seat/seatPolicy.js';
 
-import {
-  isExternalApiRequestError,
-  isUnconfirmedOrderSubmissionError,
-} from '../../utils/apiFailure/index.js';
+import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import type { BuySignal } from '../../types/signal.js';
 import type { OrdinaryBuyWorkflow, OrdinaryBuyWorkflowDeps } from './types.js';
 
@@ -124,8 +121,7 @@ export function createOrdinaryBuyWorkflow(deps: OrdinaryBuyWorkflowDeps): Ordina
 
       logger.debug(`[OrdinaryBuy] 买入处理完成: ${symbolDisplay} ${signal.action}`);
     } catch (error) {
-      if (!isExternalApiRequestError(error) || isUnconfirmedOrderSubmissionError(error))
-        throw error;
+      if (!isExternalApiRequestError(error)) throw error;
 
       logger.error(`[OrdinaryBuy] 处理失败: ${symbolDisplay} ${signal.action}`, formatError(error));
     }

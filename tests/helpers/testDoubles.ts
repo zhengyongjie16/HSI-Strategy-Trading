@@ -355,7 +355,7 @@ export function createTradeRuntimeDouble(overrides: TradeRuntimeOverrides = {}):
       executeSignals: async () => ({ executedOrderIds: [], quoteFailures: [] }),
       executeDoomsdayClearanceSignals: async () => ({
         executedOrderIds: [],
-        awaitingAuthoritativeTerminalSymbols: [],
+        reevaluationSymbols: [],
         unresolvedQuoteSymbols: [],
       }),
       resetBuyThrottle: () => {},
@@ -446,6 +446,7 @@ export function createRateLimiterDouble(options: RateLimiterDoubleOptions = {}):
  * @returns 完整的 OrderMonitor 契约测试替身
  */
 export function createOrderMonitorDouble(overrides: Partial<OrderMonitor> = {}): OrderMonitor {
+  let trackingGeneration = 0;
   const base: OrderMonitor = {
     initialize: async () => {},
     teardown: async () => {},
@@ -466,6 +467,13 @@ export function createOrderMonitorDouble(overrides: Partial<OrderMonitor> = {}):
     stopRuntimeAndDrain: async () => {},
     recoverOrderTrackingFromSnapshot: async () => {},
     getPendingSellOrders: () => [],
+    captureSellAvailabilityGuard: (symbol) => {
+      const generation = trackingGeneration;
+      const pending = JSON.stringify(overrides.getPendingSellOrders?.(symbol) ?? []);
+      return () =>
+        generation === trackingGeneration &&
+        pending === JSON.stringify(overrides.getPendingSellOrders?.(symbol) ?? []);
+    },
     getSellOperationOrderIds: (originalOrderId) => [originalOrderId],
     hasPendingProtectiveLiquidationOrders: () => false,
     clearTrackedOrders: () => {},
@@ -474,6 +482,14 @@ export function createOrderMonitorDouble(overrides: Partial<OrderMonitor> = {}):
   return {
     ...base,
     ...overrides,
+    trackOrder: (params) => {
+      trackingGeneration += 1;
+      (overrides.trackOrder ?? base.trackOrder)(params);
+    },
+    clearTrackedOrders: () => {
+      trackingGeneration += 1;
+      (overrides.clearTrackedOrders ?? base.clearTrackedOrders)();
+    },
   };
 }
 

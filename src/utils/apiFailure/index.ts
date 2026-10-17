@@ -1,10 +1,6 @@
 import { formatError } from '../error/index.js';
 import type { ExternalApiRequestError } from '../../types/apiFailure.js';
 
-const UNCONFIRMED_ORDER_SUBMISSION_OPERATIONS: ReadonlySet<string> = new Set([
-  'TradeContext.submitOrder',
-  'TradeContext.submitOrder.timeoutMarketConversion',
-]);
 const externalApiRequestErrors = new WeakSet<Error>();
 
 /**
@@ -76,18 +72,6 @@ export function isExternalApiRequestError(error: unknown): error is ExternalApiR
     typeof error.attempts === 'number' &&
     Number.isInteger(error.attempts) &&
     error.attempts > 0
-  );
-}
-
-/**
- * 判断错误是否为下单提交结果不可确认。
- *
- * @param error 待判断错误对象
- * @returns true 表示明确的 submitOrder 请求失败，远端订单事实不可直接判定
- */
-export function isUnconfirmedOrderSubmissionError(error: unknown): boolean {
-  return (
-    isExternalApiRequestError(error) && UNCONFIRMED_ORDER_SUBMISSION_OPERATIONS.has(error.operation)
   );
 }
 

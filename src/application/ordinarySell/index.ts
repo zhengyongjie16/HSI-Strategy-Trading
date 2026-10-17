@@ -6,10 +6,7 @@ import { isStaleCrossDaySignal, isLiquidationSignal } from '../../domain/order/e
 import { ORDER_QUOTE_RETRY } from '../../constants/index.js';
 import { resolveNextQuoteRetry } from '../quoteRetry.js';
 import { resolveQuoteReadinessForRequirement } from '../../domain/order/quoteReadiness.js';
-import {
-  isExternalApiRequestError,
-  isUnconfirmedOrderSubmissionError,
-} from '../../utils/apiFailure/index.js';
+import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { isSettlementReadinessAbortError } from '../postTradeSettlement/readinessGate.js';
 import { formatError } from '../../utils/error/index.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
@@ -290,10 +287,6 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
       return { status: 'COMPLETED' };
     } catch (err) {
       if (!isExternalApiRequestError(err)) {
-        throw err;
-      }
-
-      if (isUnconfirmedOrderSubmissionError(err)) {
         throw err;
       }
 

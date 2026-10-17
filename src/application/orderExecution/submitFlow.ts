@@ -287,7 +287,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     rateLimiter,
     readSellPositions,
   });
-  const doomsdayAwaitingTerminalOrderIdsBySymbol = new Map<string, ReadonlySet<string>>();
 
   /**
    * 根据全局配置与信号属性解析最终订单类型。
@@ -314,6 +313,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       orderTypeConfig,
       remark,
       relatedBuyOrderIds,
+      isSellAvailabilityCurrent,
     } = params;
     const { signal, side } = command;
     const orderTypeParam = getOrderTypeFromConfig(orderTypeConfig);
@@ -326,12 +326,21 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
     const symbolDisplayForLog = formatSymbolDisplay(symbol, signal.symbolName ?? null);
     const finalAuthorizationAborted = new Error('原 caller 最终提交授权失效');
+    const sellAvailabilityChanged = new Error('末日可卖量计划已失效');
 
     try {
       return await rateLimiter.withTradeMutation(async (permit) => {
         if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
 
+        if (isSellAvailabilityCurrent !== undefined && !isSellAvailabilityCurrent())
+          return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+
         const finalQuotes = await marketDataClient.getQuotes([symbol]);
+        if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
+
+        if (isSellAvailabilityCurrent !== undefined && !isSellAvailabilityCurrent())
+          return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+
         const finalQuote = finalQuotes.get(symbol) ?? null;
         if (finalQuote === null) {
           logger.warn(`[订单提交] 最终执行行情缺失，尚未提交: ${symbolDisplayForLog}`);
@@ -453,17 +462,29 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
         if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
 
-        // 新提交只能沿已经收口的挂单基线进行；等待报价或 adapter entry 时新增旧单不得绕过合单规则。
-        const isSellSubmissionCurrent = (): boolean =>
-          side !== 'SELL' ||
-          resolveSellMergeDecision({
-            symbol,
-            pendingOrders: orderMonitor.getPendingSellOrders(symbol),
-            newOrderQuantity: finalSubmittedQuantity,
-            newOrderType: orderTypeParam,
-            isProtectiveLiquidation:
-              command.executionPurpose !== 'DOOMSDAY_CLEARANCE' && isLiquidationSignal(signal),
-          }).action === 'SUBMIT';
+        // 普通 SELL 保留原合单门禁；末日只沿读仓前的 owner 证明新增，不改动任何既有 SELL。
+        const isSellSubmissionCurrent = (): boolean => {
+          if (command.executionPurpose === 'DOOMSDAY_CLEARANCE') {
+            if (isSellAvailabilityCurrent === undefined)
+              throw new TypeError('[末日清仓] 缺少读仓前的可卖量计划证明');
+
+            if (!isSellAvailabilityCurrent()) throw sellAvailabilityChanged;
+
+            return true;
+          }
+
+          return (
+            side !== 'SELL' ||
+            resolveSellMergeDecision({
+              symbol,
+              pendingOrders: orderMonitor.getPendingSellOrders(symbol),
+              newOrderQuantity: finalSubmittedQuantity,
+              newOrderType: orderTypeParam,
+              isProtectiveLiquidation: isLiquidationSignal(signal),
+            }).action === 'SUBMIT'
+          );
+        };
+
         const onRemoteIssued = (): void => {
           if (!authorizeOrderAction('submitOrder.beforeApi') || !isSellSubmissionCurrent()) {
             throw finalAuthorizationAborted;
@@ -553,83 +574,23 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       // 只接收本轮私有取消身份；任何内部/SDK 错误即使原授权过期仍原样暴露。
       if (err === finalAuthorizationAborted) return { kind: 'SKIPPED' };
 
+      if (err === sellAvailabilityChanged) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+
       throw err;
     }
   }
 
   /**
-   * 执行末日清仓卖出。
-   * 末日清仓不能复用普通卖单的合并/改单语义：先清理当前标的全部待成交卖单，
-   * 仅在每条链路均返回权威终态后重新读取可用仓位，并以新鲜可卖量提交一张普通卖单。
-   * 已成交或部分成交的旧单不参与数量合并，是否仍需提交完全由新鲜持仓事实决定。
-   *
-   * @param command 受控末日清仓卖出命令
-   * @param authorizeOrderAction 每次订单副作用前重新校验的授权器
-   * @returns 新提交订单或明确跳过结果
+   * 末日只为执行时的权威可卖量新增 SELL，既有卖单的数量、目的与类型均不变。
+   * 读仓仍在 mutation permit 外限流；本次证明跨越所有等待，失效或超时跟进交接由窗口稍后重评估。
    */
   async function submitDoomsdayClearanceSell(
     command: DoomsdayClearanceOrderCommand,
     authorizeOrderAction: OrderActionAuthorization,
   ): Promise<OrderActionResult> {
-    const { signal } = command;
-    const symbol = signal.symbol;
-    const pendingOrderIds = orderMonitor
-      .getPendingSellOrders(symbol)
-      .map((pendingOrder) => pendingOrder.orderId);
-
-    const awaitingTerminalOrderIds = doomsdayAwaitingTerminalOrderIdsBySymbol.get(symbol);
-    if (awaitingTerminalOrderIds !== undefined) {
-      const stillAwaitingAuthoritativeTerminal = pendingOrderIds.some((orderId) =>
-        awaitingTerminalOrderIds.has(orderId),
-      );
-      if (stillAwaitingAuthoritativeTerminal) {
-        return { kind: 'WAITING_FOR_AUTHORITATIVE_TERMINAL', symbol };
-      }
-
-      doomsdayAwaitingTerminalOrderIdsBySymbol.delete(symbol);
-    }
-
-    if (pendingOrderIds.length > 0) {
-      if (!canExecuteSignal(signal, 'doomsdayClearance.cancelPendingSells')) {
-        return { kind: 'SKIPPED' };
-      }
-
-      const cancelOutcomes = await settleCancelFanout(
-        pendingOrderIds.map(async (orderId) =>
-          orderMonitor.cancelOrder(orderId, {
-            kind: 'SIGNAL_AUTHORIZED',
-            authorize: authorizeOrderAction,
-          }),
-        ),
-      );
-      if (!authorizeOrderAction('cancelOrder.beforeApi')) return { kind: 'SKIPPED' };
-
-      const nonTerminalOutcome = cancelOutcomes.find(
-        (outcome) => outcome.kind !== 'ALREADY_CLOSED',
-      );
-
-      const awaitingTerminalOrderIdsAfterCancel = pendingOrderIds.filter(
-        (_orderId, index) => cancelOutcomes[index]?.kind === 'CANCEL_CONFIRMED',
-      );
-      if (awaitingTerminalOrderIdsAfterCancel.length > 0) {
-        doomsdayAwaitingTerminalOrderIdsBySymbol.set(
-          symbol,
-          new Set(awaitingTerminalOrderIdsAfterCancel),
-        );
-
-        logger.warn(
-          `[末日清仓] 撤单请求已接受，等待权威终态后重读仓位: ${symbol}, orderIds=${awaitingTerminalOrderIdsAfterCancel.join(',')}`,
-        );
-        return { kind: 'WAITING_FOR_AUTHORITATIVE_TERMINAL', symbol };
-      }
-
-      if (nonTerminalOutcome) {
-        logger.warn(
-          `[末日清仓] 待成交卖单尚未取得权威终态，保留后续重评估: ${symbol}, outcome=${formatCancelOutcomeTag(nonTerminalOutcome)}`,
-        );
-        return { kind: 'SKIPPED' };
-      }
-    }
+    const symbol = command.signal.symbol;
+    const isSellAvailabilityCurrent = orderMonitor.captureSellAvailabilityGuard(symbol);
+    if (!isSellAvailabilityCurrent()) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
 
     const freshSubmittedQuantity = await quantityResolver.resolveDoomsdayClearanceQuantity(
       symbol,
@@ -637,14 +598,15 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     );
     if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
 
-    if (freshSubmittedQuantity === 0) {
-      return { kind: 'SKIPPED' };
-    }
+    if (!isSellAvailabilityCurrent()) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+
+    if (freshSubmittedQuantity === 0) return { kind: 'SKIPPED' };
 
     return submitOrder({
       command,
       authorizeOrderAction,
       submittedQuantity: freshSubmittedQuantity,
+      isSellAvailabilityCurrent,
       orderTypeConfig: globalConfig.tradingOrderType,
       remark: buildOrderRemark(false),
       relatedBuyOrderIds: null,

@@ -820,7 +820,7 @@ pending
 - 新标、不同的旧标、当前双方向相关标的均预检；token 校验、预检、日损重算/提交、方向订单列表及其实际消费覆盖提交为无 await 本地段。日损归属拒绝后不得继续订单重建、账户刷新、风险或 ACTIVE；当前订单方法的同步替换后 `Promise.resolve` 不提供延迟提交保护。
 - 在 P1 关闭 API 已投影成交后同单 WS/query 再投影的独立缺口，完整契约见设计 §9.2。重建/结算共用 broker orderId、累计数量/金额、时间/revision、阶段与冲突规则；已消费输入及覆盖由唯一订单 owner 管理，不以 LOCAL ID 再表示同一成交，不新增第二账或 durable 格式。
 - API 基线与列表同段登记分类/过滤实际消费覆盖，不能把全部 raw 输入、OPEN partial 或日损已合并事实都标为本地经济投影已消费。保留被 SELL 消除的 BUY、已消费 SELL 和空结果证明；清空买单列表不清空该证明，受控 rebuild 也同步建立覆盖。在线结算按共同覆盖防止重复追加/扣减，不能仅依据日损的 `authoritativeFactChanged` / `executionAdvanced` 或幸存列表。
-- 主动 `clearBuyOrders` 不是 SELL 抵扣，也不代表权威持仓为空。保护性、静态、末日及旧标清理仍只在各自原条件下执行；同一订单 owner 在清理本地列表的无 await 段保留其对当时已投影且实际被清理部分的作用范围。历史金额修订重算不得忽略仍有效的清理效果，但权威事实、日损益及适用口径仍按原规则修订；不得永久屏蔽整个 symbol/orderId、吞掉后续新成交、未覆盖增量或 OPEN partial 的首次终态投影。主动清理与被 SELL 规则过滤消除分开表达，后者仍允许合法修订引起原规则允许的过滤变化。受控 rebuild 继续按原语义建立新基线，并同段处理消费覆盖与清理作用范围，不把普通 WS/query 修订当成重建；不伪造成交、不删权威事实、不新增第二账、durable 格式或跨重建清理墓碑。
+- 主动 `clearBuyOrders` 不是 SELL 抵扣，也不代表权威持仓为空。保护性、静态及旧标清理仍只在各自原条件下执行；末日提交不再触发整方向买单清理；同一订单 owner 在清理本地列表的无 await 段保留其对当时已投影且实际被清理部分的作用范围。历史金额修订重算不得忽略仍有效的清理效果，但权威事实、日损益及适用口径仍按原规则修订；不得永久屏蔽整个 symbol/orderId、吞掉后续新成交、未覆盖增量或 OPEN partial 的首次终态投影。主动清理与被 SELL 规则过滤消除分开表达，后者仍允许合法修订引起原规则允许的过滤变化。受控 rebuild 继续按原语义建立新基线，并同段处理消费覆盖与清理作用范围，不把普通 WS/query 修订当成重建；不伪造成交、不删权威事实、不新增第二账、durable 格式或跨重建清理墓碑。
 - 累计量合法推进或同量高 revision 的金额/时间/阶段修订仍更新同一订单，已覆盖部分不再消费；必要时利用 owner 保留的完整已消费输入，按原关联买单、卖单时序及低价优先整笔过滤规则重算。不把修订当新增成交，过滤结果的合法变化不等于成交数量推进，不额外重拉 API。经济去重不跳过 pending 占用释放/移交、routing/hold/tracking 关闭及既有收尾；不得提前填 `closedOrderIds` 或跳过整个 `settleOrder`，tracking 关闭也不屏蔽事实准入/合法修正。覆盖不证明 protective progress 已落盘或 settlement ready，持久化与错误语义保持。
 - 身份仍有效而 generation 推进时，由原 activation owner 追赶当前代次、重读未提交的订单输入；这是本地 supersession，不消耗一次外部 API 重试、不 EMPTY、不重复登记 settlement stale。上述跨入口幂等前提成立后，合法本地提交之后有新事实，才保留提交并按正确更新的当前经济投影重做未提交的后置准备。普通 commitRevision 变化不重拉订单；依赖的后置 revision 改变时，获取当前 receipt 并重算，字段不足才补读。
 - 每个 await 后复核适用 token；R1/N1 与最终 ACTIVE 使用无 await 校验—计算—发布尾段，有异步输入则 prepare 后 compare-and-publish，禁止先写风险缓存再检查。ACTIVE 事件的永久订阅归属先排入串行链，finally 完整 await releaseRetain；释放不是新增 ready 门禁，保留主体/清理错误优先级，内部错误不能被外部清理失败覆盖。
@@ -914,7 +914,7 @@ tests/application/accountPositionSnapshot/accountPositionSnapshot.concurrency.te
 15. r10 settlement commit → subscription await → r11 seat commit → r10 late return：旧风险/旧 completion 不发布，同一 settlement 可在当前 receipt 完成。
 16. 订单事实成功结算与 generation/stale/refresh need 同步登记；保护性 progress 落盘失败不能提前推进这些事实。
 17. 已 ready 后 seat commit 不增加 stale；SELL 旧持仓选单重算，不永久等待或重复 submit。
-18. 普通 BUY/SELL 与末日 submit UNKNOWN 均直接进入 fatal/cleanup，不重提、不启动 UNKNOWN 专属读取或重评估；已确认订单沿既有 tracking/terminal 事实链路防重；全部成功后的账户失效、paired refresh 恢复有效性及部分成功时的买单清理条件不变。
+18. 普通 BUY/SELL 与末日 submit UNKNOWN 均直接进入 fatal/cleanup，不重提、不启动 UNKNOWN 专属读取或重评估；已确认订单沿既有 tracking/terminal 事实链路防重；全部成功后的账户失效与 paired refresh 恢复有效性不变；末日无论全部或部分 accepted 均不清整方向买单，统一成交处理沿原规则更新。
 19. snapshot waiter 在 consumer drain 前取消，day clear/rebuild retry 不重复推进 epoch；TimeWakeup 不等待自己 drain。
 20. 高有效位金融 SDK 输入经 mapper → snapshot → 全部估值/风控/显示消费者保持目标值；账户差额/持仓估值不回转 number，旧 epoch/generation 不改变精度契约。
 21. 数量/版本聚合和递增验证 safe-int，金融显示直接定点输出；指标投影与算法不因 financial fact 类型迁移改变。
@@ -1353,9 +1353,9 @@ submit request attempted
 - UNKNOWN 不创建本地伪 orderId、伪 acceptedQuantity 或 unresolved 持久状态。
 - 已确认返回 orderId 的订单继续由既有 OrderMonitor 和权威终态推进；已接受不代表成交或空仓。
 - canonical positions 只来自 snapshot owner；不因 UNKNOWN 直接修改为 flat。
-- 末日清仓仍先处理旧待成交卖单，取得权威终态后再重新取可卖持仓。
+- 末日清仓不撤销、不修改、不合并任何已有 SELL，只按执行时权威 available 新增 SELL；全部占用时不新增。读仓计划复用原 tracking 生命周期身份防止并发及新增即终态的 ABA；同标的推送身份预检后即撤销旧证明，不因成交流水读与 mutation 共用 FIFO 而延迟到成交发布后，实际成交仍由原异步验证链收口。事实失效或超时转市价跟进占用交接中，只安排窗口内重评估，不消耗缺行情预算，也不建立本地预扣账。已有订单继续由统一盯单处理。
 - 不把末日清仓转为保护性 completion/cooldown。
-- 保留既有成功条件下的 `orderRecorder.clearBuyOrders` 副作用，但不清除权威成交事实。
+- 末日 accepted 不再调用 `orderRecorder.clearBuyOrders` 清空整方向买单；本地记录仅随统一成交处理按原关联买单和低价优先整单规则更新，不拆单、不要求本地买单量等于券商持仓。保留原全部成功/live 条件下的账户失效，不改写权威持仓。
 
 #### 验收
 

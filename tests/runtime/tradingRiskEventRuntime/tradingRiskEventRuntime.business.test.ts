@@ -30,6 +30,7 @@ import { createTradingRiskEventRuntime } from '../../../src/runtime/tradingRiskE
 import { buildTradingRiskRoutingIndex } from '../../../src/runtime/tradingRiskEventRuntime/routingIndex.js';
 import { resolveTradingRiskRoute } from '../../../src/runtime/tradingRiskEventRuntime/routeValidation.js';
 import { createUnrealizedLossMonitor } from '../../../src/application/protectiveLiquidation/unrealizedLossExecutor.js';
+import { createTradeMutationUnknownError } from '../../../src/application/orderExecution/tradeMutationErrors.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { TradingRiskEventRuntimeDeps } from '../../../src/runtime/tradingRiskEventRuntime/types.js';
 import { createProtectiveLiquidationWorkflow } from '../../../src/application/protectiveLiquidation/index.js';
@@ -460,16 +461,20 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     expect(fatalErrors).toEqual([internalError]);
   });
 
-  it('exposes protective liquidation submitOrder uncertainty to fatal handler', async () => {
-    const submitError = await createExternalApiRequestError({
+  it('exposes protective liquidation submit UNKNOWN to fatal handler without retrying', async () => {
+    const submitError = createTradeMutationUnknownError({
+      kind: 'UNKNOWN',
       operation: 'TradeContext.submitOrder',
-      attempts: 1,
+      requestAttempted: true,
+      code: null,
       cause: new Error('submit timeout'),
     });
+    let executionAttempts = 0;
     const fatalErrors: unknown[] = [];
     const { deps } = await createRuntimeDeps({
       unrealizedLossMonitor: createUnrealizedLossMonitorDouble({
         monitorDirectionalUnrealizedLoss: async () => {
+          executionAttempts += 1;
           throw submitError;
         },
       }),
@@ -490,7 +495,9 @@ describe('tradingRiskEventRuntime runtime flow', () => {
     await waitTick();
     await runtime.stopAndDrain();
 
-    expect(fatalErrors).toEqual([submitError]);
+    expect(executionAttempts).toBe(1);
+    expect(fatalErrors).toHaveLength(1);
+    expect(fatalErrors[0]).toBe(submitError);
   });
 
   it('drops non-submit ExternalApiRequestError without entering fatal state', async () => {

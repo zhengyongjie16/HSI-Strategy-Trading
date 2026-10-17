@@ -41,10 +41,7 @@ import {
   isWithinDoomsdayClearanceTakeoverWindow,
 } from '../../domain/liquidation/doomsday/index.js';
 import type { DoomsdayExecutionState } from '../../domain/liquidation/doomsday/types.js';
-import {
-  isExternalApiRequestError,
-  isUnconfirmedOrderSubmissionError,
-} from '../../utils/apiFailure/index.js';
+import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { getHKDateKey } from '../../utils/time/index.js';
 import { isInContinuousHKSession } from '../../domain/tradingSession/index.js';
 import { formatDecimal } from '../../utils/numeric/exact.js';
@@ -240,7 +237,7 @@ export function createDoomsdayClearanceWorkflow(
     clearanceRetryAttempts: 0,
     clearanceRetrySymbols: null,
     clearanceRetryDueAtMs: null,
-    clearanceAwaitingTerminalSymbols: null,
+    clearanceReevaluationSymbols: null,
     clearanceRetryExhaustedSymbols: new Set(),
   };
 
@@ -254,7 +251,7 @@ export function createDoomsdayClearanceWorkflow(
     executedOrderCount: number = 0,
   ): DoomsdayClearanceResult => {
     clearClearanceRetry();
-    state.clearanceAwaitingTerminalSymbols = null;
+    state.clearanceReevaluationSymbols = null;
     state.clearanceRetryExhaustedSymbols.clear();
     return {
       executed: executedOrderCount > 0,
@@ -301,7 +298,7 @@ export function createDoomsdayClearanceWorkflow(
 
     if (!lifecycleState.isTradingEnabled) {
       clearClearanceRetry();
-      state.clearanceAwaitingTerminalSymbols = null;
+      state.clearanceReevaluationSymbols = null;
       state.clearanceRetryExhaustedSymbols.clear();
       logClearanceNotice(
         `gate-closed:${todayKey}`,
@@ -312,7 +309,7 @@ export function createDoomsdayClearanceWorkflow(
 
     if (!isWithinDoomsdayClearanceTakeoverWindow(currentTime, isHalfDay)) {
       clearClearanceRetry();
-      state.clearanceAwaitingTerminalSymbols = null;
+      state.clearanceReevaluationSymbols = null;
       state.clearanceRetryExhaustedSymbols.clear();
       const clearanceWindowRange = getDoomsdayClearanceTakeoverWindowRangeLabel(isHalfDay);
       logClearanceNotice(
@@ -322,7 +319,11 @@ export function createDoomsdayClearanceWorkflow(
       return { executed: false, nextRetryAtMs: null };
     }
 
-    const retrySymbols = state.clearanceAwaitingTerminalSymbols ?? state.clearanceRetrySymbols;
+    const retrySymbols =
+      state.clearanceReevaluationSymbols === null
+        ? state.clearanceRetrySymbols
+        : new Set([...state.clearanceReevaluationSymbols, ...(state.clearanceRetrySymbols ?? [])]);
+    state.clearanceReevaluationSymbols = null;
     const retryPendingPositions =
       retrySymbols === null
         ? positions
@@ -332,7 +333,7 @@ export function createDoomsdayClearanceWorkflow(
     );
     if (processingPositions.length === 0) {
       clearClearanceRetry();
-      state.clearanceAwaitingTerminalSymbols = null;
+      state.clearanceReevaluationSymbols = null;
       logClearanceNotice(`no-positions:${todayKey}`, '[末日保护程序] 清仓跳过：无可处理持仓');
       return { executed: false, nextRetryAtMs: null };
     }
@@ -445,7 +446,6 @@ export function createDoomsdayClearanceWorkflow(
     let executedOrderCount = 0;
     if (uniqueClearanceSignals.length > 0) {
       logger.info(`[末日保护程序] 生成 ${uniqueClearanceSignals.length} 个清仓信号，准备执行`);
-      const submittedSymbols = new Set(uniqueClearanceSignals.map((signal) => signal.symbol));
       if (!isLive()) {
         return abortClearanceForClosedLiveGate();
       }
@@ -459,31 +459,16 @@ export function createDoomsdayClearanceWorkflow(
         return abortClearanceForClosedLiveGate(executedOrderCount);
       }
 
-      const awaitingTerminalSymbols = new Set(executionResult.awaitingAuthoritativeTerminalSymbols);
+      if (executionResult.reevaluationSymbols.length > 0) {
+        state.clearanceReevaluationSymbols = new Set(executionResult.reevaluationSymbols);
+        logger.warn(
+          `[末日保护程序] 可卖量计划失效或卖单跟进交接中，安排系统级重评估: symbols=${executionResult.reevaluationSymbols.join(',')}`,
+        );
+      }
+
       for (const symbol of executionResult.unresolvedQuoteSymbols) {
         unresolvedSymbols.add(symbol);
       }
-
-      if (awaitingTerminalSymbols.size > 0) {
-        state.clearanceAwaitingTerminalSymbols = new Set([
-          ...awaitingTerminalSymbols,
-          ...unresolvedSymbols,
-        ]);
-        const nextRetryAtMs = resolveDoomsdayRetryAtMs(
-          currentTime,
-          isHalfDay,
-          currentTime.getTime() + quoteRetryIntervalMs,
-        );
-        logger.warn(
-          `[末日保护程序] 清仓撤单等待权威终态，安排系统级重评估: symbols=${[...awaitingTerminalSymbols].join(',')} nextRetryAtMs=${String(nextRetryAtMs)}`,
-        );
-        return {
-          executed: executedOrderCount > 0,
-          nextRetryAtMs,
-        };
-      }
-
-      state.clearanceAwaitingTerminalSymbols = null;
 
       if (executedOrderCount === uniqueClearanceSignals.length) {
         if (!isLive()) {
@@ -503,23 +488,6 @@ export function createDoomsdayClearanceWorkflow(
         if (!isLive()) {
           return abortClearanceForClosedLiveGate(executedOrderCount);
         }
-
-        const { orderRecorder } = monitorContext;
-        if (longSymbol && submittedSymbols.has(longSymbol)) {
-          if (!isLive()) {
-            return abortClearanceForClosedLiveGate(executedOrderCount);
-          }
-
-          orderRecorder.clearBuyOrders(longSymbol, true);
-        }
-
-        if (shortSymbol && submittedSymbols.has(shortSymbol)) {
-          if (!isLive()) {
-            return abortClearanceForClosedLiveGate(executedOrderCount);
-          }
-
-          orderRecorder.clearBuyOrders(shortSymbol, false);
-        }
       } else {
         logger.warn(
           `[末日保护程序] 清仓信号仅执行 ${executedOrderCount}/${uniqueClearanceSignals.length} 个，保留 canonical 事实与订单记录等待后续刷新`,
@@ -532,6 +500,17 @@ export function createDoomsdayClearanceWorkflow(
         `[末日保护程序] 清仓跳过：未生成清仓信号（处理持仓=${processingPositions.length}, 可用持仓=${availablePositions.length}）`,
       );
     }
+
+    // 可卖计划重评估与缺行情预算独立；二者同时存在时仅投影最早的下一次系统唤醒。
+    const reevaluationTime = now();
+    const reevaluationRetryAtMs =
+      state.clearanceReevaluationSymbols === null
+        ? null
+        : resolveDoomsdayRetryAtMs(
+            reevaluationTime,
+            isHalfDay,
+            reevaluationTime.getTime() + quoteRetryIntervalMs,
+          );
 
     if (unresolvedSymbols.size > 0) {
       if (!isLive()) {
@@ -550,7 +529,7 @@ export function createDoomsdayClearanceWorkflow(
         if (nextRetryAtMs !== null) {
           return {
             executed: executedOrderCount > 0,
-            nextRetryAtMs,
+            nextRetryAtMs: Math.min(nextRetryAtMs, reevaluationRetryAtMs ?? nextRetryAtMs),
           };
         }
 
@@ -574,7 +553,7 @@ export function createDoomsdayClearanceWorkflow(
         );
         return {
           executed: executedOrderCount > 0,
-          nextRetryAtMs: null,
+          nextRetryAtMs: reevaluationRetryAtMs,
         };
       }
 
@@ -587,7 +566,7 @@ export function createDoomsdayClearanceWorkflow(
         clearClearanceRetry();
         return {
           executed: executedOrderCount > 0,
-          nextRetryAtMs: null,
+          nextRetryAtMs: reevaluationRetryAtMs,
         };
       }
 
@@ -595,14 +574,14 @@ export function createDoomsdayClearanceWorkflow(
       state.clearanceRetryDueAtMs = nextRetryAtMs;
       return {
         executed: executedOrderCount > 0,
-        nextRetryAtMs,
+        nextRetryAtMs: Math.min(nextRetryAtMs, reevaluationRetryAtMs ?? nextRetryAtMs),
       };
     }
 
     clearClearanceRetry();
     return {
       executed: executedOrderCount > 0,
-      nextRetryAtMs: null,
+      nextRetryAtMs: reevaluationRetryAtMs,
     };
   }
 
@@ -843,7 +822,7 @@ export function createDoomsdayClearanceWorkflow(
 
       return { executed: clearanceResult.executed, nextRetryAtMs };
     } catch (error) {
-      if (isUnconfirmedOrderSubmissionError(error) || !isExternalApiRequestError(error)) {
+      if (!isExternalApiRequestError(error)) {
         throw error;
       }
 

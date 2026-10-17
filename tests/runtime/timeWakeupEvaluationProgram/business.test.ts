@@ -13,6 +13,7 @@ import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js'
 import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
 import type { Position } from '../../../src/types/account.js';
 import { timeWakeupEvaluationProgram } from '../../../src/runtime/timeWakeupEvaluationProgram/index.js';
+import { createTradeMutationUnknownError } from '../../../src/application/orderExecution/tradeMutationErrors.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { TimeWakeupEvaluationContext } from '../../../src/runtime/timeWakeupEvaluationProgram/types.js';
 import type { TradingConfig } from '../../../src/types/config.js';
@@ -889,7 +890,7 @@ describe('timeWakeupEvaluationProgram', () => {
             );
             return {
               executedOrderIds: ['ACCEPTED-1'],
-              awaitingAuthoritativeTerminalSymbols: [],
+              reevaluationSymbols: [],
               unresolvedQuoteSymbols: [],
             };
           },
@@ -961,9 +962,11 @@ describe('timeWakeupEvaluationProgram', () => {
   });
 
   it('末日清仓 UNKNOWN 原错误直接上抛，不刷新持仓、不协调订阅、不返回重评估计划', async () => {
-    const submissionError = await createExternalApiRequestError({
+    const submissionError = createTradeMutationUnknownError({
+      kind: 'UNKNOWN',
       operation: 'TradeContext.submitOrder',
-      attempts: 1,
+      requestAttempted: true,
+      code: null,
       cause: new Error('submit outcome unknown'),
     });
     const calls: string[] = [];

@@ -509,14 +509,14 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
       logger.debug('[执行门禁] 门禁关闭，跳过本次下单，不提交任何订单');
       return {
         executedOrderIds: [],
-        awaitingAuthoritativeTerminalSymbols: [],
+        reevaluationSymbols: [],
         unresolvedQuoteSymbols: [],
         quoteFailures: [],
       };
     }
 
     const executedOrderIds: string[] = [];
-    const awaitingAuthoritativeTerminalSymbols = new Set<string>();
+    const reevaluationSymbols = new Set<string>();
     const unresolvedQuoteSymbols = new Set<string>();
     const quoteFailures: {
       readonly commandIndex: number;
@@ -562,8 +562,8 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
       const actionResult = await submitTargetOrder(command, authorizeOrderAction);
       if (actionResult.kind === 'SUBMITTED' || actionResult.kind === 'REPLACED') {
         executedOrderIds.push(actionResult.orderId);
-      } else if (actionResult.kind === 'WAITING_FOR_AUTHORITATIVE_TERMINAL') {
-        awaitingAuthoritativeTerminalSymbols.add(actionResult.symbol);
+      } else if (actionResult.kind === 'SELL_AVAILABILITY_CHANGED') {
+        reevaluationSymbols.add(actionResult.symbol);
       } else if (actionResult.kind === 'QUOTE_MISSING' || actionResult.kind === 'QUOTE_INVALID') {
         quoteFailures.push({ commandIndex, kind: actionResult.kind });
         if (actionResult.kind === 'QUOTE_MISSING') unresolvedQuoteSymbols.add(actionResult.symbol);
@@ -572,7 +572,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
 
     return {
       executedOrderIds,
-      awaitingAuthoritativeTerminalSymbols: [...awaitingAuthoritativeTerminalSymbols],
+      reevaluationSymbols: [...reevaluationSymbols],
       unresolvedQuoteSymbols: [...unresolvedQuoteSymbols],
       quoteFailures,
     };
@@ -620,7 +620,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     const result = await executeSignalsForPurpose(doomsdayCommands, callerAuthorization);
     return {
       executedOrderIds: result.executedOrderIds,
-      awaitingAuthoritativeTerminalSymbols: result.awaitingAuthoritativeTerminalSymbols,
+      reevaluationSymbols: result.reevaluationSymbols,
       unresolvedQuoteSymbols: result.unresolvedQuoteSymbols,
     };
   }

@@ -3,7 +3,7 @@ import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.j
 /**
  * DoomsdayClearanceWorkflow 业务测试
  *
- * 验证唯一 owner 的撤买→清仓顺序、原成功条件、失败分类与 fatal/正常排空，不构造 broker SDK 事实。
+ * 验证唯一 owner 的撤买→清仓顺序、提交不清买单、失败分类与 fatal/正常排空，不构造 broker SDK 事实。
  */
 import { describe, expect, it } from 'bun:test';
 import { createDoomsdayClearanceWorkflow } from '../../../src/application/doomsdayClearance/index.js';
@@ -11,6 +11,7 @@ import type { DoomsdayEvaluationContext } from '../../../src/application/doomsda
 import { createTimeWakeupRuntime } from '../../../src/runtime/timeWakeupRuntime/index.js';
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
+import { createTradeMutationUnknownError } from '../../../src/application/orderExecution/tradeMutationErrors.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { TRADING } from '../../../src/constants/index.js';
 import type { Position } from '../../../src/types/account.js';
@@ -68,11 +69,6 @@ async function createHarness() {
         getSeatVersion: () => 1,
       },
       seatSwitch: { hasPendingSwitch: () => false },
-      orderRecorder: {
-        clearBuyOrders: (symbol) => {
-          calls.push(`clear:${symbol}`);
-        },
-      },
     },
     marketDataClient: {
       getQuotes: async (symbols) => {
@@ -108,7 +104,7 @@ async function createHarness() {
         calls.push('submit');
         return {
           executedOrderIds: commands.map((command) => `ACCEPTED:${command.symbol}`),
-          awaitingAuthoritativeTerminalSymbols: [],
+          reevaluationSymbols: [],
           unresolvedQuoteSymbols: [],
         };
       },
@@ -124,11 +120,11 @@ async function createHarness() {
 }
 
 describe('DoomsdayClearanceWorkflow', () => {
-  it('撤买后清仓，全部 accepted 只失效账户并清本地买单，canonical 持仓与成交链路不变', async () => {
+  it('撤买后清仓，全部 accepted 只失效账户，不清本地买单或修改 canonical 持仓', async () => {
     const { workflow, context, snapshot, calls } = await createHarness();
     const before = snapshot.getView();
     expect(await workflow.evaluate(context)).toEqual({ executed: true, nextRetryAtMs: null });
-    expect(calls).toEqual(['pending-buys', 'quotes', 'submit', 'clear:BULL.HK', 'clear:BEAR.HK']);
+    expect(calls).toEqual(['pending-buys', 'quotes', 'submit']);
     const after = snapshot.getView();
     expect(after.positions).toBe(before.positions);
     expect(after.account).toBe(before.account);
@@ -171,7 +167,7 @@ describe('DoomsdayClearanceWorkflow', () => {
     }
   });
 
-  it('部分 accepted 不扩大账户失效或买单清理条件', async () => {
+  it('部分 accepted 不扩大账户失效条件', async () => {
     const { workflow, context, snapshot, calls } = await createHarness();
     const before = snapshot.getView();
     const result = await workflow.evaluate({
@@ -179,7 +175,7 @@ describe('DoomsdayClearanceWorkflow', () => {
       orderExecutor: {
         executeDoomsdayClearanceSignals: async () => ({
           executedOrderIds: ['ACCEPTED:BULL.HK'],
-          awaitingAuthoritativeTerminalSymbols: [],
+          reevaluationSymbols: [],
           unresolvedQuoteSymbols: [],
         }),
       },
@@ -187,6 +183,42 @@ describe('DoomsdayClearanceWorkflow', () => {
     expect(result).toEqual({ executed: true, nextRetryAtMs: null });
     expect(snapshot.getView()).toEqual(before);
     expect(calls).toEqual(['pending-buys', 'quotes']);
+  });
+
+  it('可卖计划反复失效不消耗缺行情预算；两类标的同时等待时分别保留并按窗口调度', async () => {
+    const { context } = await createHarness();
+    let currentTime = context.currentTime;
+    let round = 0;
+    const workflow = createDoomsdayClearanceWorkflow({
+      now: () => currentTime,
+      logger,
+      quoteRetryIntervalMs: 200,
+      quoteRetryMaxAttempts: 1,
+    });
+    const requested: string[][] = [];
+    const orderExecutor = {
+      executeDoomsdayClearanceSignals: async (
+        commands: Parameters<typeof context.orderExecutor.executeDoomsdayClearanceSignals>[0],
+      ) => {
+        requested.push(commands.map((command) => command.symbol));
+        round += 1;
+        return {
+          executedOrderIds: [],
+          reevaluationSymbols: round < 3 ? ['BULL.HK'] : [],
+          unresolvedQuoteSymbols: round < 3 ? ['BEAR.HK'] : ['BULL.HK'],
+        };
+      },
+    };
+    const first = await workflow.evaluate({ ...context, currentTime, orderExecutor });
+    expect(first.nextRetryAtMs).toBe(currentTime.getTime() + 200);
+    currentTime = new Date(first.nextRetryAtMs!);
+    const second = await workflow.evaluate({ ...context, currentTime, orderExecutor });
+    expect(second.nextRetryAtMs).toBe(currentTime.getTime() + 200);
+    currentTime = new Date(second.nextRetryAtMs!);
+    const third = await workflow.evaluate({ ...context, currentTime, orderExecutor });
+    // BEAR 缺价已耗尽，BULL 此前只有事实失效，第一次缺价仍有完整预算。
+    expect(third.nextRetryAtMs).toBe(currentTime.getTime() + 200);
+    expect(requested).toEqual([['BULL.HK', 'BEAR.HK'], ['BULL.HK', 'BEAR.HK'], ['BULL.HK']]);
   });
 
   it('明确行情读取失败保留系统级重评估，不把内部契约错误转换为重试', async () => {
@@ -241,9 +273,11 @@ describe('DoomsdayClearanceWorkflow', () => {
 
   it('submit UNKNOWN 原错关闭准入，由既有 runtime/fatal 及正常 cleanup 排空；不查询、不重提', async () => {
     const { workflow, context, snapshot, calls, stateFixtures } = await createHarness();
-    const unknownError = await createExternalApiRequestError({
+    const unknownError = createTradeMutationUnknownError({
+      kind: 'UNKNOWN',
       operation: 'TradeContext.submitOrder',
-      attempts: 1,
+      requestAttempted: true,
+      code: null,
       cause: new Error('submit outcome unknown'),
     });
     let evaluations = 0;
@@ -290,7 +324,8 @@ describe('DoomsdayClearanceWorkflow', () => {
       clearTimer: () => {},
     });
     await runtime.start();
-    expect(termination.getFatalState()).toEqual({ hasFatalError: true, error: unknownError });
+    const fatalState = termination.getFatalState();
+    expect(fatalState.hasFatalError && fatalState.error).toBe(unknownError);
     expect(stateFixtures.lifecycleState.isTradingEnabled).toBe(false);
     expect(snapshot.getView()).toEqual(before);
     expect(calls).toEqual(['pending-buys', 'quotes', 'submit', 'gate-closed', 'admission-closed']);
