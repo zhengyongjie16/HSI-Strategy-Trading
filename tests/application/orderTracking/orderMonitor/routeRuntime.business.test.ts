@@ -244,7 +244,7 @@ function attachTrackedOrder(
   order: OrderMonitorTrackedOrder,
 ): void {
   runtime.trackedOrders.set(order.orderId, order);
-  runtime.trackedOrderLifecycles.set(order.orderId, 'OPEN');
+  runtime.trackedOrderLifecycles.set(order.orderId, { state: 'OPEN' });
   runtime.trackedOrderIdsBySymbol.set(order.symbol, new Set([order.orderId]));
   if (!runtime.latestRouteGenerationBySymbol.has(order.symbol)) {
     runtime.latestRouteGenerationBySymbol.set(order.symbol, 1);

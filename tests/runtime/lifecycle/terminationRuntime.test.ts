@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createLoggerDouble } from '../../helpers/testDoubles.js';
 
 /** 终止入口同步顺序、原始首错及队列终态回归。 */
@@ -41,10 +42,15 @@ describe('RuntimeTermination', () => {
   });
 
   test('正常退出不制造 fatal，退出后的真实错误仍可锁存', async () => {
-    const queue = createBuyTaskQueue();
-    const monitorQueue = createMonitorTaskQueue<{ CHECK: { readonly value: number } }>(
-      createLoggerDouble(),
-    );
+    const queue = createBuyTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
+    const monitorQueue = createMonitorTaskQueue<{ CHECK: { readonly value: number } }>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     let trading = true;
     let notifications = 0;
     const runtime = createTerminationRuntime({

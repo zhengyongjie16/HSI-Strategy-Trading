@@ -131,6 +131,8 @@ function createPostTradeHarness(deps: {
   readonly onPositionsCommitted: (token: SnapshotToken) => Promise<void>;
 }): { readonly runtime: PostTradeSettlementWorkflow; readonly snapshot: AccountPositionSnapshot } {
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date(0) },
+    diagnostics: { record: () => {} },
     readPort: {
       getAccountSnapshot: () => deps.getTradeRuntime().accountService.getAccountSnapshot(),
       getStockPositions: () => deps.getTradeRuntime().accountService.getStockPositions(),
@@ -142,6 +144,8 @@ function createPostTradeHarness(deps: {
   return {
     snapshot,
     runtime: createPostTradeSettlementWorkflow({
+      clock: { now: () => new Date(0) },
+      diagnostics: { record: () => {} },
       hasPendingProtectiveOrders: (direction) =>
         deps.getTradeRuntime().orderMonitor.hasPendingProtectiveLiquidationOrders(direction),
       onPositionsCommitted: deps.onPositionsCommitted,

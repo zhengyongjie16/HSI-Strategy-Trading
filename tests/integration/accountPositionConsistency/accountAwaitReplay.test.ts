@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createLoggerDouble } from '../../helpers/testDoubles.js';
 
 /**
@@ -69,6 +70,8 @@ it('does not double a projected BUY during a real account wait and preserves tot
     },
   ];
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort: {

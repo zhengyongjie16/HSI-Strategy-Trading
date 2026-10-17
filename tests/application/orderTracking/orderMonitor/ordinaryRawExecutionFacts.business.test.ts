@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { spyOn, describe, expect, it } from 'bun:test';
 import { wait } from '../../../../src/infrastructure/time/index.js';
 import {
@@ -161,6 +162,8 @@ async function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
   ]);
   const account = native.createAccountService({ rateLimiter: createRateLimiter() });
   const snapshot = createAccountPositionSnapshot({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     dayEpoch: 1,
     readPort: account,
     scheduler: { schedule: queueMicrotask },
@@ -180,6 +183,8 @@ async function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
   dailyLossTracker.resetAll(new Date(KNOWN_FACT_TIME_MS));
   let tradeRuntime: ReturnType<typeof createTradeRuntimeDouble> | null = null;
   const postTrade = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination: createTerminationDouble(),
@@ -232,6 +237,8 @@ async function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
     return originalMark(orderId, quantity);
   });
   const settlementFlow = createSettlementFlow({
+    diagnostics: createDiagnosticObserverDouble(),
+    now: () => new Date('2031-01-02T03:04:05.000Z'),
     runtime,
     orderRecorder,
     dailyLossTracker,
@@ -244,6 +251,7 @@ async function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
     emitOrderStateChanged: () => {},
   });
   const eventFlow = createEventFlow({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     runtime,
     monitorConfig: createTradingConfig().monitor,
@@ -662,6 +670,7 @@ describe('orderMonitor 普通 OPEN state-check 原始成交事实准入', () => 
     const dailyLossInputs: OrderCumulativeExecutionParams[] = [];
     const routeWakeups: Array<Readonly<{ symbol: string; kind: string }>> = [];
     const orderOps = native.createOperations({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       captureWorkGuard: () => () =>

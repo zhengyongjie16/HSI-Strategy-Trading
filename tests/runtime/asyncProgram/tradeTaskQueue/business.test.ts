@@ -7,6 +7,8 @@
 import { describe, expect, it } from 'bun:test';
 
 import { createBuyTaskQueue } from '../../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
+
 import type {
   BuyTaskType,
   TaskQueue,
@@ -35,7 +37,10 @@ function pushBuyTask(params: {
 
 describe('tradeTaskQueue business behavior', () => {
   it('pops buy tasks in FIFO order', () => {
-    const queue = createBuyTaskQueue();
+    const queue = createBuyTaskQueue({
+      clock: { now: () => new Date(0) },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
 
     pushBuyTask({
       queue,
@@ -64,7 +69,10 @@ describe('tradeTaskQueue business behavior', () => {
   });
 
   it('removeTasks removes only matched active tasks', () => {
-    const queue = createBuyTaskQueue();
+    const queue = createBuyTaskQueue({
+      clock: { now: () => new Date(0) },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
 
     pushBuyTask({
       queue,
@@ -94,7 +102,10 @@ describe('tradeTaskQueue business behavior', () => {
   });
 
   it('clearAll only clears tasks that have not been popped', () => {
-    const queue = createBuyTaskQueue();
+    const queue = createBuyTaskQueue({
+      clock: { now: () => new Date(0) },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
 
     pushBuyTask({
       queue,
@@ -117,7 +128,10 @@ describe('tradeTaskQueue business behavior', () => {
   });
 
   it('notifies onTaskAdded callbacks and supports unregister', () => {
-    const queue = createBuyTaskQueue();
+    const queue = createBuyTaskQueue({
+      clock: { now: () => new Date(0) },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     let calls = 0;
     const unregister = queue.onTaskAdded(() => {
       calls += 1;

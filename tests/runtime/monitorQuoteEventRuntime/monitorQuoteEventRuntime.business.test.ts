@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import type { RuntimeStateFixtures } from '../../helpers/types.js';
 import {
   createLoggerDouble,
@@ -101,6 +102,8 @@ async function createDefaultMonitorQuoteEventRuntime(
     },
   };
   const settlement = createSettlementRuntimeFixture({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot: deps.snapshot,
     termination,

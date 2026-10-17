@@ -19,6 +19,7 @@ import { createSnapshotFixture } from '../../../helpers/accountPositionSnapshot.
 import { createTerminationRuntime } from '../../../../src/runtime/lifecycle/terminationRuntime.js';
 
 import { createMonitorTaskQueue } from '../../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 
 import type { MonitorTaskDataMap } from '../../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 
@@ -91,7 +92,11 @@ async function createAutoSymbolTickTask(params: {
 
 describe('monitorTaskQueue business behavior', () => {
   it('scheduleLatest keeps only the latest task for the same dedupeKey', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date(0) },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
 
     queue.scheduleLatest(
       await createAutoSymbolTickTask({
@@ -117,7 +122,11 @@ describe('monitorTaskQueue business behavior', () => {
   });
 
   it('keeps FIFO order for different dedupe keys', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date(0) },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
 
     queue.scheduleLatest(
       await createAutoSymbolTickTask({
@@ -150,7 +159,11 @@ describe('monitorTaskQueue business behavior', () => {
   });
 
   it('notifies onTaskAdded callbacks for replacement tasks and supports unregister', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date(0) },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
 
     let calls = 0;
     const unregister = queue.onTaskAdded(() => {
@@ -205,7 +218,11 @@ describe('monitorTaskQueue business behavior', () => {
   });
 
   it('removeTasks and clearAll return removed count', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date(0) },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
 
     queue.scheduleLatest(
       await createAutoSymbolTickTask({
@@ -233,7 +250,11 @@ describe('monitorTaskQueue business behavior', () => {
   });
 
   it('removeTasks prevents removed tasks from being popped', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date(0) },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
 
     queue.scheduleLatest(
       await createAutoSymbolTickTask({
@@ -260,7 +281,11 @@ describe('monitorTaskQueue business behavior', () => {
   });
 
   it('clearAll clears active tasks after earlier pops', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date(0) },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
 
     queue.scheduleLatest(
       await createAutoSymbolTickTask({

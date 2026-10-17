@@ -135,6 +135,7 @@ function createPostGateRuntimeFactory(
       strategy,
     } = params;
     const {
+      diagnostics,
       brokerClientFactory,
       tradingConfig,
       symbolRegistry,
@@ -228,6 +229,8 @@ function createPostGateRuntimeFactory(
     );
     const snapshot = createAccountPositionSnapshot({
       dayEpoch: 0,
+      diagnostics,
+      clock,
       scheduler: {
         schedule: (callback) => {
           scheduler.scheduleTimer(callback, 0);
@@ -267,6 +270,8 @@ function createPostGateRuntimeFactory(
     const postTradeConsistencyRuntime = createPostTradeConsistencyRuntime({
       termination,
       logger,
+      diagnostics,
+      clock,
       getProtectiveOrderReader: () => tradeRuntimeBinding.get().orderMonitor,
       snapshot,
       onPositionsCommitted: async (token) => {
@@ -299,6 +304,7 @@ function createPostGateRuntimeFactory(
       nowMonotonicMs,
       scheduleBoundedOneShotAt,
       logger,
+      diagnostics,
       requestExternalApi: wrapExternalApiRequest,
       brokerAccess: () => brokerClientFactory.createBrokerAccess(orderEconomics),
       tradingConfig,
@@ -343,9 +349,13 @@ function createPostGateRuntimeFactory(
       liquidationCooldownTracker,
       mixedTradeLogRepository,
     });
-    const buyTaskQueue = createBuyTaskQueue();
-    const sellTaskQueue = createSellTaskQueue();
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(logger);
+    const buyTaskQueue = createBuyTaskQueue({ clock, diagnostics });
+    const sellTaskQueue = createSellTaskQueue({ clock, diagnostics });
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      clock,
+      diagnostics,
+      logger,
+    });
     resources.buyTaskQueue = buyTaskQueue;
     resources.sellTaskQueue = sellTaskQueue;
     resources.monitorTaskQueue = monitorTaskQueue;
@@ -462,6 +472,7 @@ function createPostGateRuntimeFactory(
     });
     const seatActivation = createSeatActivationWorkflow({
       clock,
+      diagnostics,
       config: monitorContext.config,
       symbolRegistry,
       orders: monitorContext.orderRecorder,

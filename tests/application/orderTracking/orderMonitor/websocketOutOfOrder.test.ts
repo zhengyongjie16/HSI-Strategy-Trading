@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
 import { wait } from '../../../../src/infrastructure/time/index.js';
@@ -90,6 +91,7 @@ describe('chaos: websocket out-of-order and duplicate pushes', () => {
       frame('WS-CHAOS-001', 'BULL.HK', '0', 'New', economic.now),
     );
     const monitor = native.createMonitor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       requestExternalApi: wrapExternalApiRequest,

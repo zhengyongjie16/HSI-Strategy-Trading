@@ -45,6 +45,8 @@ import type {
 } from '../../../domain/order/types.js';
 import type { Quote } from '../../../types/quote.js';
 import { exactCompare } from '../../../utils/numeric/exact.js';
+import { DIAGNOSTIC_OPERATIONS } from '../../../constants/diagnostics.js';
+import { recordOrderTerminalConfirmation } from './orderObservation.js';
 import { resolveNextQuoteRetry } from '../../quoteRetry.js';
 import { resolveQuoteReadinessForRequirement } from '../../../domain/order/quoteReadiness.js';
 import {
@@ -108,6 +110,12 @@ function resolveTerminalSettlementInput(
     );
   }
 
+  recordOrderTerminalConfirmation(deps, {
+    orderId,
+    closedReason: resolvedClosedReason,
+    source: 'API',
+    orderUpdatedAtMs: normalizedTerminalState.orderUpdatedAtMs,
+  });
   return {
     settlementInput: {
       params: {
@@ -206,7 +214,7 @@ function isTrackedOrderStillAttachedToRoute(
     return false;
   }
 
-  if (runtime.trackedOrderLifecycles.get(order.orderId) !== 'OPEN') {
+  if (runtime.trackedOrderLifecycles.get(order.orderId)?.state !== 'OPEN') {
     return false;
   }
 
@@ -245,6 +253,12 @@ function settlePendingReplaceTerminal(
   assertProtectiveSellRawTerminalStateFactsReady(order, rawTerminalState);
   const isProtectiveSell = order.side === 'SELL' && order.isProtectiveLiquidation;
   const terminal = normalizeTerminalStateSnapshot(order, rawTerminalState, isProtectiveSell);
+  recordOrderTerminalConfirmation(deps, {
+    orderId: order.orderId,
+    closedReason: terminal.closedReason,
+    source: 'STATE_CHECK',
+    orderUpdatedAtMs: terminal.orderUpdatedAtMs,
+  });
   const settlementResult = deps.settleOrder({
     orderId: order.orderId,
     closedReason: terminal.closedReason,
@@ -462,6 +476,20 @@ async function submitTimeoutMarketOrder(
   }
 
   if (submitOutcome.kind === 'BROKER_REQUEST_STARTED_UNKNOWN') {
+    try {
+      deps.diagnostics.record(DIAGNOSTIC_OPERATIONS.ORDER_SUBMIT_UNKNOWN_FATAL, {
+        symbol: order.symbol,
+        side: order.executionSide,
+        orderType: 'MO',
+        sdkOperation: 'TradeContext.submitOrder',
+        requestAttempted: true,
+        originalOrderId: order.orderId,
+        count: 1,
+      });
+    } catch {
+      // 真实 submit UNKNOWN 仅记录一次；仍由原分支保留占用并抛出原 fatal。
+    }
+
     logger.error(
       `[订单监控] 卖出订单 ${order.orderId} 转市价单提交结果不可确认，保留旧占用等待订单事实收敛`,
       submitOutcome.error,
@@ -601,6 +629,7 @@ async function handleSellOrderTimeout(
     }
   }
 
+  recordOrderTerminalConfirmation(deps, settlementInput.params);
   const timeoutResolution = resolveSellTimeoutResolution(order, settlementInput);
   if (timeoutResolution.kind === 'WAIT_RETRY') {
     applyCancelRetryBackoff(order, deps.now().getTime());

@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { spyOn, describe, expect, it } from 'bun:test';
 import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
 
@@ -80,6 +81,7 @@ async function fixture() {
   const hold = createOrderHoldRegistry();
   const config = createTradingConfig();
   const ops = native.createOperations({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     runtime,
@@ -123,6 +125,8 @@ async function fixture() {
   if (tracked === undefined) throw new Error('actual tracking missing');
 
   const flow = createSettlementFlow({
+    diagnostics: createDiagnosticObserverDouble(),
+    now: () => new Date(),
     postTradeConsistencyRuntime: {
       recordSettlementRefreshNeed: () => {
         staleCalls++;
@@ -193,7 +197,7 @@ describe('zero execution actual shared resource settlement', () => {
       expect(f.flow.settleOrder(params)).toEqual({ handled: false, relatedBuyOrderIds: null });
       expect(f.recorder.getPendingSellSnapshot()).toEqual([]);
       expect(f.runtime.trackedOrders.has('RESOURCE')).toBe(false);
-      expect(f.runtime.trackedOrderLifecycles.get('RESOURCE')).toBe('CLOSED');
+      expect(f.runtime.trackedOrderLifecycles.get('RESOURCE')?.state).toBe('CLOSED');
       expect(f.runtime.closedOrderIds.has('RESOURCE')).toBe(true);
       expect(f.hold.getHoldSymbols().has('BULL.HK')).toBe(false);
       expect(f.recorder.getExecutionFact('RESOURCE')).toBeNull();

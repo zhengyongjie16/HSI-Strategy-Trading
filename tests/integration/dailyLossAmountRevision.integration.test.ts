@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createLiquidationCooldownTrackerDouble,
@@ -164,6 +165,8 @@ async function createAmountActors(
   );
   const account = native.createAccountService({ rateLimiter: createRateLimiterDouble() });
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     readPort: account,
     scheduler: { schedule: queueMicrotask },
@@ -181,6 +184,8 @@ async function createAmountActors(
 
   let boundTrader: ReturnType<typeof createTradeRuntimeDouble> | null = null;
   const postTrade = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination: createTerminationDouble(),
@@ -334,6 +339,8 @@ describe('DailyLoss protective amount revision integration', () => {
     );
     const progress: Array<{ readonly phase: 'OPEN' | 'TERMINAL'; readonly amount: string }> = [];
     const flow = createSettlementFlow({
+      diagnostics: createDiagnosticObserverDouble(),
+      now: () => new Date(),
       runtime: createRuntime(),
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: actors.orderRecorder,
@@ -450,6 +457,8 @@ describe('DailyLoss protective amount revision integration', () => {
     );
     refreshCount = 0;
     const settlementFlow = createSettlementFlow({
+      diagnostics: createDiagnosticObserverDouble(),
+      now: () => new Date(),
       runtime,
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder: actors.orderRecorder,
@@ -474,6 +483,7 @@ describe('DailyLoss protective amount revision integration', () => {
     const trackedOrder = createProtectiveTrackedOrder(firstRevisionMs, actors.newSell);
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const eventFlow = createEventFlow({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       runtime,
       orderRecorder: actors.orderRecorder,
@@ -635,6 +645,8 @@ describe('DailyLoss protective amount revision integration', () => {
     );
     const { orderRecorder, postTrade: postTradeConsistencyRuntime } = actors;
     const settlementFlow = createSettlementFlow({
+      diagnostics: createDiagnosticObserverDouble(),
+      now: () => new Date(),
       runtime: createRuntime(),
       orderHoldRegistry: createOrderHoldRegistry(),
       orderRecorder,

@@ -10,6 +10,7 @@ import { timeWakeupEvaluationProgram } from '../runtime/timeWakeupEvaluationProg
 import { createTerminationRuntime } from '../runtime/lifecycle/terminationRuntime.js';
 import { startRuntimeAfterStartupRebuild } from '../runtime/lifecycle/startupRuntime.js';
 import { createSelectedStrategy } from './startup/createSelectedStrategy.js';
+import { createDiagnosticObserver } from '../infrastructure/diagnostics/index.js';
 import { syncMonitorContextSymbolNames } from './context/createMonitorContext.js';
 import { DEFAULT_RUN_APP_DEPS } from './runAppDeps.js';
 import type { AppEnvironmentParams, RunAppDeps, RuntimeAssemblyResources } from './types.js';
@@ -70,6 +71,7 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
 
   return async function runApp(params: AppEnvironmentParams): Promise<void> {
     const runtimeEnv = buildAppRuntimeEnv(params.env);
+    const diagnostics = createDiagnosticObserver({ logger: appLogger });
     const cleanup = buildCleanup();
     const resources: RuntimeAssemblyResources = {};
     const termination = createTerminationRuntime({
@@ -132,7 +134,13 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
       resources.strategy = strategy;
       if (termination.isTerminated()) return;
 
-      const preGateRuntime = await buildPreGateRuntime({ env: runtimeEnv, cleanup, termination });
+      const preGateRuntime = await buildPreGateRuntime({
+        env: runtimeEnv,
+        cleanup,
+        termination,
+        diagnostics,
+        clock: SYSTEM_RUNTIME_CLOCK,
+      });
       if (preGateRuntime === null || termination.isTerminated()) return;
 
       const startupNow = SYSTEM_RUNTIME_CLOCK.now();
@@ -299,6 +307,7 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
 
       const startupRebuild = await runStartupRebuild({
         now: startupNow,
+        diagnostics,
         startupSnapshot,
         termination,
         snapshot: postGateRuntime.snapshot,

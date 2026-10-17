@@ -1,5 +1,6 @@
 import type { RuntimeStateFixtures } from '../../helpers/types.js';
 import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 
 /** D-event 局部离线 fixture：真实 registry、trade queues、termination，无旧策略替身。 */
 import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
@@ -93,8 +94,12 @@ export function createEventHarness(options: EventHarnessOptions = {}): EventHarn
     tradingCalendarState: {},
     quoteSubscriptionState: {},
   });
-  const buyTaskQueue = (options.createBuyTaskQueue ?? createBuyTaskQueue)();
-  const sellTaskQueue = (options.createSellTaskQueue ?? createSellTaskQueue)();
+  const queueDeps = {
+    clock: { now: () => new Date(mutable.nowMs) },
+    diagnostics: createDiagnosticObserverDouble(),
+  };
+  const buyTaskQueue = (options.createBuyTaskQueue ?? createBuyTaskQueue)(queueDeps);
+  const sellTaskQueue = (options.createSellTaskQueue ?? createSellTaskQueue)(queueDeps);
   const symbolRegistry = (options.createSymbolRegistry ?? createSymbolRegistry)(monitorConfig());
   const contexts: StrategyMarketContext[] = [];
   const emitters: StrategyEmitter[] = [];

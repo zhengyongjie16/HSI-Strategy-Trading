@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { createRuntimeStateFixtures } from '../helpers/runtimeStateFixtures.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
@@ -171,6 +172,7 @@ async function createRealDoomsdayTrader(params: {
   readonly isExecutionAllowed?: () => boolean;
 }): Promise<TradeRuntime> {
   return createTradeRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     nowMonotonicMs: nowMonotonicMs,
@@ -250,6 +252,8 @@ async function createRuntimeStates(): Promise<RuntimeStateFixtures> {
     createPositionDouble({ symbol: 'BEAR.HK', quantity: 300, availableQuantity: 300 }),
   ];
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort: {
@@ -572,6 +576,7 @@ describe('doomsday integration', () => {
     });
 
     const orderExecutor = createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       tradeMutationPort: broker.ports.createTradeMutationPort(),
       readSellPositions: broker.ports.createSellPositionReader(),
@@ -663,6 +668,7 @@ describe('doomsday integration', () => {
     let pendingSellVisible = true;
     const pendingOrder = await createPendingDoomsdayOrder('SELL-WAITING-WS', currentTime.getTime());
     const orderExecutor = createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       tradeMutationPort: broker.ports.createTradeMutationPort(),
       readSellPositions: broker.ports.createSellPositionReader(),
@@ -831,6 +837,7 @@ describe('doomsday integration', () => {
       let outcomeIndex = 0;
       const closedOrderIds = new Set<string>();
       const orderExecutor = createOrderExecutor({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         tradeMutationPort: broker.ports.createTradeMutationPort(),
         readSellPositions: broker.ports.createSellPositionReader(),

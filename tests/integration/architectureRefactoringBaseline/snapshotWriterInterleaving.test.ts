@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
 import type { RuntimeStateFixtures } from '../../helpers/types.js';
 
@@ -65,6 +66,8 @@ describe('P1 snapshot cross-source targets', () => {
     });
     let reads = 0;
     const owner = createAccountPositionSnapshot({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
       dayEpoch: 1,
       scheduler,
       reportFatalError: (error) => {
@@ -95,6 +98,8 @@ describe('P1 snapshot cross-source targets', () => {
     const accounts = Promise.withResolvers<AccountSnapshot>();
     const positions = Promise.withResolvers<ReadonlyArray<Position>>();
     const owner = createAccountPositionSnapshot({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
       dayEpoch: 1,
       scheduler,
       reportFatalError: (error) => {
@@ -152,6 +157,8 @@ describe('P1 snapshot cross-source targets', () => {
     const calls: string[] = [];
     let batches = 0;
     const owner = createAccountPositionSnapshot({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
       dayEpoch: 1,
       scheduler,
       reportFatalError: (error) => {

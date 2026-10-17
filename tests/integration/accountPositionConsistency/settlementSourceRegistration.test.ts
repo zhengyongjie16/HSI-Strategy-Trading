@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createLoggerDouble } from '../../helpers/testDoubles.js';
 
 /**
@@ -18,6 +19,8 @@ import { createOfflineBrokerPort } from './offlinePorts.js';
 it('distinguishes initial controlled coverage from online changed facts at the real global stale sink', () => {
   const io = createOfflineBrokerPort();
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort: {
@@ -41,6 +44,8 @@ it('distinguishes initial controlled coverage from online changed facts at the r
     },
   });
   const settlement = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination,

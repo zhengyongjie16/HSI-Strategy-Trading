@@ -4,6 +4,7 @@
  * 外部失败仅一次延迟重试，内部错误与 release 错误保持原分类和身份；不维护第二订单账或 settlement ready。
  */
 import { API } from '../../constants/index.js';
+import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import {
   createExternalApiAggregateRequestError,
   isExternalApiRequestError,
@@ -195,6 +196,17 @@ export function createSeatActivationWorkflow(
   deps: SeatActivationWorkflowDeps,
 ): SeatActivationWorkflow {
   const { clock, snapshot, subscriptions: quoteSubscriptionRuntime } = deps;
+
+  /** release 计时仅用于诊断；时钟故障保留未知，不改变激活/清理结果。 */
+  function sampleDiagnosticTime(): number | null {
+    try {
+      const nowMs = clock.now().getTime();
+      return Number.isFinite(nowMs) ? nowMs : null;
+    } catch {
+      return null;
+    }
+  }
+
   function isCurrent(data: SeatActivationRequest): boolean {
     return (
       snapshot.getView().token.dayEpoch === data.dayEpoch &&
@@ -479,10 +491,47 @@ export function createSeatActivationWorkflow(
       bodyFailure = error;
       throw error;
     } finally {
+      let releaseStartedAtMs: number | null = null;
+      let afterActive = false;
+      let released = false;
+      try {
+        const releaseSeat = context.symbolRegistry.getSeatState(data.direction);
+        afterActive =
+          releaseSeat.status === 'ACTIVE' &&
+          releaseSeat.symbol === data.nextSymbol &&
+          context.symbolRegistry.getSeatVersion(data.direction) === data.seatVersion;
+        releaseStartedAtMs = sampleDiagnosticTime();
+      } catch {
+        // 私有诊断采样失败不影响必须执行的 retain release。
+      }
+
       try {
         await quoteSubscriptionRuntime.releaseRetain(retainOwner);
+        released = true;
       } catch (releaseFailure) {
         resolveRefreshReleaseFailure({ context, hasBodyFailure, bodyFailure, releaseFailure });
+      } finally {
+        // activation 总周期已由 registry 的 ACTIVE/退出事件结束；release 的成功/失败与耗时独立记录。
+        try {
+          const releaseCompletedAtMs = sampleDiagnosticTime();
+          deps.diagnostics.record(DIAGNOSTIC_OPERATIONS.SEAT_ACTIVATION_RETAIN_RELEASED, {
+            source: 'SEAT_ACTIVATION',
+            phase: 'RETAIN_RELEASE',
+            dayEpoch: data.dayEpoch,
+            seatDirection: data.direction,
+            seatVersion: data.seatVersion,
+            symbol: data.nextSymbol,
+            afterActive,
+            outcome: released ? 'RELEASED' : 'FAILED',
+            apiRetryAttempt: data.apiRetryAttempt ?? 0,
+            durationMs:
+              releaseStartedAtMs === null || releaseCompletedAtMs === null
+                ? null
+                : Math.max(0, releaseCompletedAtMs - releaseStartedAtMs),
+          });
+        } catch {
+          // 诊断失败不能覆盖主体或 release 失败，更不能触发额外 activation 重试。
+        }
       }
     }
   }

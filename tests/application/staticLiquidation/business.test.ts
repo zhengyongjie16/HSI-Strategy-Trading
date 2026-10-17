@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createAccountSnapshotDouble,
@@ -261,6 +262,8 @@ async function createExecutorHarness(
     },
   });
   const settlement = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination,

@@ -1,6 +1,7 @@
 /**
  * 交易日重建测试夹具：真实 canonical H、S 与订阅 owner，仅控制外部 IO。
  */
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
@@ -54,6 +55,8 @@ export async function createRebuildHarness(): Promise<RebuildHarness> {
     },
   });
   const postTradeConsistencyRuntime = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination,

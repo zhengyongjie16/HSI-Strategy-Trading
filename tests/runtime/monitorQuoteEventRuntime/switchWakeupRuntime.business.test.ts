@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
 import type { RuntimeStateFixtures } from '../../helpers/types.js';
 import {
@@ -80,6 +81,8 @@ async function createConsistencyHarness(
 ) {
   let deliveryGate: ReturnType<typeof createDeferred<void>> | null = null;
   const owner = createSettlementRuntimeFixture({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot: params.snapshot,
     monitorContext: params.monitorContext,

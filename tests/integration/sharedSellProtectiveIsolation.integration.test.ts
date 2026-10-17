@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
 import { nowMonotonicMs, wait } from '../../src/infrastructure/time/index.js';
@@ -112,6 +113,8 @@ async function createHarness(
     rateLimiter: limiter,
   });
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     readPort: account,
     scheduler: { schedule: queueMicrotask },
@@ -144,6 +147,8 @@ async function createHarness(
   };
   let monitor: ReturnType<typeof createOrderMonitor> | null = null;
   const settlement = createPostTradeSettlementWorkflow({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     snapshot,
     hasPendingProtectiveOrders: (direction) => {
       if (monitor === null) throw new Error('tracking not assembled');
@@ -219,6 +224,7 @@ async function createHarness(
     },
   });
   const tracking = createOrderMonitor({
+    diagnostics: createDiagnosticObserverDouble(),
     wait: wait,
     requestExternalApi: wrapExternalApiRequest,
     scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
@@ -257,6 +263,7 @@ async function createHarness(
   await tracking.recoverOrderTrackingFromSnapshot([native.queryObservation]);
   const cancelOutcomes: Awaited<ReturnType<typeof tracking.cancelOrder>>[] = [];
   const executor = createOrderExecutor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     readSellPositions: native.ports.createSellPositionReader(),
     tradeMutationPort: native.ports.createTradeMutationPort(),

@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
 
 import {
@@ -43,6 +44,7 @@ test('actual BUY/ELO native entry observations precede reply failure and retain 
     throw cause;
   });
   const executor = f.createExecutor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     rateLimiter: createRateLimiter({
       wait: wait,

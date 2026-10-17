@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { createRuntimeStateFixtures } from '../helpers/runtimeStateFixtures.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
@@ -345,6 +346,8 @@ function createSimulationSettlement(
   },
 ) {
   const runtime = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot: params.snapshot,
     termination: params.termination,
@@ -388,6 +391,7 @@ async function createSimulationExecutor(params: {
   const rateLimiter = createRateLimiterDouble();
   const cacheManager = { clearCache: () => {}, getPendingOrders: async () => [] };
   const orderMonitor = params.ingress.createMonitor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     requestExternalApi: wrapExternalApiRequest,
@@ -422,6 +426,7 @@ async function createSimulationExecutor(params: {
 
   settlementCleanups.push(orderMonitor.stopRuntimeAndDrain);
   return params.ingress.createExecutor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     rateLimiter,
     cacheManager,
@@ -557,8 +562,14 @@ describe('full business simulation integration', () => {
       shortVersion: 1,
     });
 
-    const buyTaskQueue = createBuyTaskQueue();
-    const sellTaskQueue = createSellTaskQueue();
+    const buyTaskQueue = createBuyTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
+    const sellTaskQueue = createSellTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const positions = [
       createPositionDouble({ symbol: 'BULL.HK', quantity: 300, availableQuantity: 300 }),
     ];
@@ -874,9 +885,19 @@ describe('full business simulation integration', () => {
       shortVersion: 1,
     });
 
-    const buyTaskQueue = createBuyTaskQueue();
-    const sellTaskQueue = createSellTaskQueue();
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const buyTaskQueue = createBuyTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
+    const sellTaskQueue = createSellTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const stateFixtures = createSimulationLastState({
       monitorConfig,
       positions: [],
@@ -1400,9 +1421,19 @@ describe('full business simulation integration', () => {
       shortVersion: 1,
     });
 
-    const buyTaskQueue = createBuyTaskQueue();
-    const sellTaskQueue = createSellTaskQueue();
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const buyTaskQueue = createBuyTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
+    const sellTaskQueue = createSellTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const longPosition = createPositionDouble({
       symbol: 'BULL.HK',
       quantity: 200,
@@ -1703,6 +1734,7 @@ describe('full business simulation integration', () => {
     });
 
     const dayLifecycleManager = createDayLifecycleManager({
+      diagnostics: createDiagnosticObserverDouble(),
       snapshot,
       termination: createTerminationDouble(),
       mutableState: stateFixtures.lifecycleState,

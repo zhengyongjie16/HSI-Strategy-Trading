@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { createLoggerDouble, createSignalDouble } from '../../../helpers/testDoubles.js';
 
 /** 普通 BUY runtime 镜像：FIFO 串行、入队门禁、独立 stop/drain 只调度 application。 */
@@ -16,7 +17,10 @@ const termination = {
 
 describe('BUY FIFO worker', () => {
   it('processes one task at a time in original FIFO order and drains the in-flight owner', async () => {
-    const queue = createBuyTaskQueue();
+    const queue = createBuyTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const calls: string[] = [];
     let release: (() => void) | undefined;
     const pending = new Promise<void>((resolve) => {
@@ -50,7 +54,10 @@ describe('BUY FIFO worker', () => {
   });
 
   it('does not enter the application when the queue admission gate is closed', async () => {
-    const queue = createBuyTaskQueue();
+    const queue = createBuyTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     let calls = 0;
     const worker = createBuyProcessor({
       logger: createLoggerDouble(),

@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import type { RuntimeStateFixtures } from '../helpers/types.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
@@ -128,6 +129,8 @@ describe('delayed strategy sell integration', () => {
       let blockPositions = false;
       let waiting = false;
       const snapshot = createAccountPositionSnapshot({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
         dayEpoch: 1,
         scheduler: { schedule: queueMicrotask },
         reportFatalError: termination.reportFatalError,
@@ -172,8 +175,14 @@ describe('delayed strategy sell integration', () => {
 
       daily.publishRecalculation(prepared);
       expect(recorder.getCostBasis('BULL.HK', true)).toEqual({ costAmount: '100', quantity: 100 });
-      const buyTaskQueue = createBuyTaskQueue();
-      const sellTaskQueue = createSellTaskQueue();
+      const buyTaskQueue = createBuyTaskQueue({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      });
+      const sellTaskQueue = createSellTaskQueue({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      });
       const tradingConfig = createTradingConfig({ monitor: config });
       const emitter = createStrategyEmitter(
         {
@@ -240,6 +249,7 @@ describe('delayed strategy sell integration', () => {
       });
       const episode = createProtectiveLiquidationEpisodeTracker();
       const monitor = native.createMonitor({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         wait: wait,
         requestExternalApi: wrapExternalApiRequest,
@@ -265,6 +275,7 @@ describe('delayed strategy sell integration', () => {
       await monitor.recoverOrderTrackingFromSnapshot([]);
       let coordinationReads = 0;
       const executor = native.createExecutor({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         now: h.deps.clock.now,
         readCurrentTradingDayInfo: () => ({
@@ -301,6 +312,8 @@ describe('delayed strategy sell integration', () => {
         },
       });
       const postTrade = createPostTradeConsistencyRuntime({
+        diagnostics: createDiagnosticObserverDouble(),
+        clock: { now: () => new Date() },
         logger: createLoggerDouble(),
         termination,
         getProtectiveOrderReader: () => tradeRuntime.orderMonitor,

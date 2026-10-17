@@ -2,6 +2,7 @@
  * P1 镜像测试的中性快照 fixture。
  * 通过真实 canonical owner 发布事实，不把账户持仓重新挂回 RuntimeStateFixtures，也不构造 SDK 对象。
  */
+import { createDiagnosticObserverDouble } from './diagnostics.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import type { AccountSnapshot, Position } from '../../src/types/account.js';
 import type {
@@ -25,6 +26,8 @@ export function createEmptySnapshotFixture(
   } = {},
 ): AccountPositionSnapshot {
   return createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     readPort: params.readPort ?? {
       getAccountSnapshot: async () => {
         if (params.account === undefined) {

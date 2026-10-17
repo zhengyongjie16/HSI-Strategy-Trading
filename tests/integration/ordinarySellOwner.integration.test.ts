@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createMarketDataClientDouble,
@@ -74,6 +75,7 @@ describe('ordinary SELL real owner integration', () => {
       });
       let tracked = 0;
       const executor = ingress.createExecutor({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         rateLimiter: createRateLimiterDouble(),
         marketDataClient: market,
@@ -105,7 +107,10 @@ describe('ordinary SELL real owner integration', () => {
         orderExecutor: executor,
         marketDataClient: market,
       });
-      const queue = createSellTaskQueue();
+      const queue = createSellTaskQueue({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      });
       const retries: Array<() => void> = [];
       const worker = createSellProcessor({
         logger: createLoggerDouble(),

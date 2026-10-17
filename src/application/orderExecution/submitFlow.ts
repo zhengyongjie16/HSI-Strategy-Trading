@@ -6,6 +6,7 @@
  * - 构造订单载荷并提交到 Trade API
  * - 在提交成功后注册 orderMonitor 追踪与卖单防重占用
  */
+import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import {
   compareRatios,
@@ -484,7 +485,24 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           return { kind: 'SKIPPED' };
         }
 
-        if (response.kind === 'UNKNOWN') throw createTradeMutationUnknownError(response);
+        if (response.kind === 'UNKNOWN') {
+          try {
+            deps.diagnostics.record(DIAGNOSTIC_OPERATIONS.ORDER_SUBMIT_UNKNOWN_FATAL, {
+              symbol,
+              side,
+              purpose: orderPayload.purpose,
+              orderType: orderPayload.orderType,
+              sdkOperation: response.operation,
+              requestAttempted: response.requestAttempted,
+              code: response.code,
+              count: 1,
+            });
+          } catch {
+            // 诊断不得覆盖原 UNKNOWN fatal，也不得触发重提或猜测 broker orderId。
+          }
+
+          throw createTradeMutationUnknownError(response);
+        }
 
         const { orderId } = response;
         if (typeof orderId !== 'string' || orderId.length === 0)

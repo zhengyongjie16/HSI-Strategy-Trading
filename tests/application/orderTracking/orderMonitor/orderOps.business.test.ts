@@ -15,6 +15,7 @@ import {
  */
 
 import { describe, expect, it } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
 import { createTerminationRuntime } from '../../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createRateLimiter as createTradeRuntimeRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
@@ -103,8 +104,11 @@ const nativeRejectedZero = await nativeObservation('Rejected', '0', '0', null, 3
 const nativePendingCancel = await nativeObservation('PendingCancel', '0', '0', null, 300);
 const nativeWaitToCancel = await nativeObservation('WaitToCancel', '0', '0', null, 300);
 
-type TestOrderOpsDeps = Omit<OrderOpsDeps, 'now' | 'termination' | 'captureWorkGuard'> &
-  Partial<Pick<OrderOpsDeps, 'now' | 'termination' | 'captureWorkGuard'>>;
+type TestOrderOpsDeps = Omit<
+  OrderOpsDeps,
+  'now' | 'termination' | 'captureWorkGuard' | 'diagnostics'
+> &
+  Partial<Pick<OrderOpsDeps, 'now' | 'termination' | 'captureWorkGuard' | 'diagnostics'>>;
 
 /** Unit work-owner follows actual stop generation; it is not an account readiness or native Monitor proof. */
 function createOrderOps(deps: TestOrderOpsDeps) {
@@ -141,6 +145,7 @@ function createOrderOps(deps: TestOrderOpsDeps) {
       return () => captured === generation && state !== 'STOPPED' && !termination.isTerminated();
     });
   return createProductionOrderOps({
+    diagnostics: createDiagnosticObserverDouble(),
     ...deps,
     termination,
     now: deps.now ?? (() => new Date(Date.now())),
@@ -1145,7 +1150,7 @@ describe('orderMonitor orderOps', () => {
     });
     await replaceStarted.promise;
     runtime.trackedOrders.delete('ORDER-STALE-REPLACE-1');
-    runtime.trackedOrderLifecycles.set('ORDER-STALE-REPLACE-1', 'CLOSED');
+    runtime.trackedOrderLifecycles.set('ORDER-STALE-REPLACE-1', { state: 'CLOSED' });
     runtime.trackedOrderIdsBySymbol.delete('BULL.HK');
     runtime.routeStatesBySymbol.delete('BULL.HK');
     runtime.closedOrderIds.add('ORDER-STALE-REPLACE-1');
@@ -1351,6 +1356,7 @@ describe('orderMonitor orderOps', () => {
     runtime.runtimeState = 'ACTIVE';
     runtime.running = true;
     const orderOps = native.createOperations({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       termination: f.termination,
@@ -2820,7 +2826,7 @@ describe('orderOps neutral mutation boundary', () => {
       const detach = () => {
         calls += 1;
         runtime.trackedOrders.delete('NEUTRAL-ORDER');
-        runtime.trackedOrderLifecycles.set('NEUTRAL-ORDER', 'CLOSED');
+        runtime.trackedOrderLifecycles.set('NEUTRAL-ORDER', { state: 'CLOSED' });
         runtime.runtimeState = 'STOPPED';
       };
       const fixture = createNeutralHarness(
@@ -2900,7 +2906,7 @@ describe('orderOps neutral mutation boundary', () => {
       kind: 'CANCEL_CONFIRMED',
       relatedBuyOrderIds: null,
     });
-    expect(fixture.runtime.trackedOrderLifecycles.get('NEUTRAL-ORDER')).toBe('OPEN');
+    expect(fixture.runtime.trackedOrderLifecycles.get('NEUTRAL-ORDER')?.state).toBe('OPEN');
     expect(fixture.runtime.trackedOrders.get('NEUTRAL-ORDER')?.isProtectiveLiquidation).toBe(true);
     expect(fixture.runtime.queriedTerminalStateByOrderId.size).toBe(0);
     expect(fixture.queryCalls()).toBe(0);

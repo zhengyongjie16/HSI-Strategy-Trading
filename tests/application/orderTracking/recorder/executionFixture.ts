@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
 
 import type { TradeRuntime } from '../../../../src/app/runtime/types.js';
@@ -92,6 +93,8 @@ export function createExecutionFixture(
       onSecondaryError: rejectUnexpected,
     });
   const snapshot = createAccountPositionSnapshot({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort: params.readPort ?? {
@@ -101,6 +104,8 @@ export function createExecutionFixture(
     reportFatalError: termination.reportFatalError,
   });
   const sinkOwner = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination,
@@ -167,6 +172,8 @@ export function createExecutionFixture(
   const holds = createOrderHoldRegistry();
   const episode = createProtectiveLiquidationEpisodeTracker();
   const flow = createSettlementFlow({
+    diagnostics: createDiagnosticObserverDouble(),
+    now: () => new Date(),
     runtime,
     orderRecorder: recorder,
     dailyLossTracker: daily,

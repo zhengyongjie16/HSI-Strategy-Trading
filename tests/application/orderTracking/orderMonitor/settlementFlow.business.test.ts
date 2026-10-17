@@ -1,3 +1,5 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
+
 /**
  * settlementFlow 业务测试：保留原20项终态、durable失败、归属与资源 oracle。
  * 使用真实 recorder/DailyLoss 的同步准入，不以 LOCAL 或空 callback mock 代替经济事实。
@@ -191,6 +193,8 @@ function createHarness(failPersistence = false) {
     },
   };
   const flow = createSettlementFlow({
+    diagnostics: createDiagnosticObserverDouble(),
+    now: () => new Date('2031-01-02T03:04:05.000Z'),
     runtime,
     orderRecorder: recorder,
     dailyLossTracker: daily,
@@ -800,6 +804,8 @@ it('真实旧 boundary 准入抑制同量45→46高 revision：Daily/O/durable/b
   });
   daily.resetAll(now);
   const snapshot = createAccountPositionSnapshot({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     reportFatalError: (error) => {
@@ -819,7 +825,11 @@ it('真实旧 boundary 准入抑制同量45→46高 revision：Daily/O/durable/b
   expect(refreshed.status).toBe('COMMITTED');
   if (refreshed.status !== 'COMMITTED') throw new Error('snapshot not committed');
 
-  const gate = createSettlementReadinessGate({ snapshot });
+  const gate = createSettlementReadinessGate({
+    snapshot,
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
+  });
   expect(gate.markFresh(0, refreshed.snapshotToken)).toBe(true);
   const recorder = createSettlementRecorder(
     {
@@ -893,6 +903,8 @@ it('真实旧 boundary 准入抑制同量45→46高 revision：Daily/O/durable/b
     closed: string[] = [],
     events: OrderStateChangedEvent[] = [];
   const flow = createSettlementFlow({
+    diagnostics: createDiagnosticObserverDouble(),
+    now: () => new Date('2031-01-02T03:04:05.000Z'),
     runtime,
     orderRecorder: recorder,
     dailyLossTracker: daily,

@@ -7,6 +7,8 @@ import {
   isExternalApiRequestError,
 } from '../../utils/apiFailure/index.js';
 import { exactCompare } from '../../utils/numeric/exact.js';
+import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
+import type { DiagnosticFields } from '../../types/diagnostics.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
 import type {
   AccountPositionSnapshot,
@@ -62,11 +64,22 @@ function immutablePositions(positions: ReadonlyArray<Position>): ReadonlyArray<P
   );
 }
 
+/** 离开 pending 时停止当前区间；issued IO 及其 drain 永不计入 pending wait。 */
+function stopPendingWait(participant: SnapshotParticipant, atMs: number | null): void {
+  if (participant.pendingSinceMs !== null) {
+    participant.pendingWaitDurationMs =
+      atMs === null || participant.pendingWaitDurationMs === null
+        ? null
+        : participant.pendingWaitDurationMs + Math.max(0, atMs - participant.pendingSinceMs);
+    participant.pendingSinceMs = null;
+  }
+}
+
 /** 创建唯一事实提交者；同步 commit 不执行业务回调，不等待 settlement ready。 */
 export function createAccountPositionSnapshot(
   deps: AccountPositionSnapshotDeps,
 ): AccountPositionSnapshot {
-  const { readPort, scheduler, reportFatalError } = deps;
+  const { readPort, scheduler, clock, diagnostics, reportFatalError } = deps;
   if (!Number.isSafeInteger(deps.dayEpoch) || deps.dayEpoch < 0) {
     throw new RangeError('Invalid snapshot day epoch');
   }
@@ -99,6 +112,64 @@ export function createAccountPositionSnapshot(
   let clearDrain: Promise<void> | null = null;
   let fatalFailure: Readonly<{ error: unknown }> | null = null;
 
+  /** 诊断依赖失效仅使采样缺失，不进入 fatal、取消或 commit 协议。 */
+  function diagnosticTime(): number | null {
+    try {
+      const nowMs = clock.now().getTime();
+      return Number.isFinite(nowMs) ? nowMs : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function record(operation: string, fields: DiagnosticFields): void {
+    try {
+      diagnostics.record(operation, Object.freeze(fields));
+    } catch {
+      // 即使注入的 observer 违反不抛出契约，诊断也不能覆盖业务结果。
+    }
+  }
+
+  function recordBatch(
+    operation: string,
+    batch: SnapshotBatch,
+    fields: DiagnosticFields = {},
+    snapshotToken: SnapshotToken = batch.token,
+  ): void {
+    record(operation, {
+      sources: batch.sources,
+      participantCount: batch.participants.length,
+      refreshAccount: batch.refreshAccount,
+      refreshPositions: batch.refreshPositions,
+      dayEpoch: snapshotToken.dayEpoch,
+      snapshotGeneration: snapshotToken.snapshotGeneration,
+      snapshotCommitRevision: snapshotToken.commitRevision,
+      accountRevision: snapshotToken.accountRevision,
+      positionRevision: snapshotToken.positionRevision,
+      pairedCommitRevision: snapshotToken.pairedRevision,
+      ...fields,
+    });
+  }
+
+  function enqueue(participant: SnapshotParticipant): void {
+    participant.pendingSinceMs = diagnosticTime();
+    if (participant.pendingSinceMs === null) participant.pendingWaitDurationMs = null;
+
+    pending = [...pending, participant];
+  }
+
+  /** 每个参与者只在最终完成/失败/取消时汇总一次，重排队不重置累计值。 */
+  function completePendingWait(participant: SnapshotParticipant, outcome: string): void {
+    if (participant.pendingSinceMs !== null) stopPendingWait(participant, diagnosticTime());
+
+    record(DIAGNOSTIC_OPERATIONS.SNAPSHOT_PENDING_WAIT_COMPLETED, {
+      source: participant.request.source,
+      dayEpoch: participant.request.dayEpoch,
+      outcome,
+      pendingWaitDurationMs: participant.pendingWaitDurationMs,
+    });
+  }
+
   /** 已issued内部错误独立于waiter取消；首错立即报告，drain仍等整个issued批settled。 */
   function reportFatalOnce(error: unknown): void {
     if (fatalFailure === null) {
@@ -118,6 +189,7 @@ export function createAccountPositionSnapshot(
     if (!participant.settled) {
       participant.settled = true;
       participant.resolve({ status: 'ABORTED' });
+      completePendingWait(participant, 'aborted');
     }
   }
 
@@ -145,137 +217,181 @@ export function createAccountPositionSnapshot(
 
   /** 全批 preflight 后无 await 提交；paired 任一失败绝不提交半边。 */
   async function execute(batch: SnapshotBatch): Promise<void> {
-    const [accountResult, positionsResult] = await Promise.allSettled([
+    const issuedAtMs = diagnosticTime();
+    for (const participant of batch.participants) stopPendingWait(participant, issuedAtMs);
+
+    const reads = [
       batch.refreshAccount
         ? observed(async () => immutableAccount(await readPort.getAccountSnapshot()))
         : Promise.resolve(null),
       batch.refreshPositions
         ? observed(async () => immutablePositions(await readPort.getStockPositions()))
         : Promise.resolve(null),
-    ]);
-    const failures = [accountResult, positionsResult].filter(
-      (result) => result.status === 'rejected',
-    );
-    const internal = failures.find((result) => !isExternalApiRequestError(result.reason));
-    if (internal) {
-      for (const participant of batch.participants) {
-        if (!participant.settled) {
-          participant.settled = true;
-          participant.reject(internal.reason);
+    ] as const;
+    recordBatch(DIAGNOSTIC_OPERATIONS.SNAPSHOT_REQUEST_STARTED, batch);
+    const [accountResult, positionsResult] = await Promise.allSettled(reads);
+    const settledAtMs = diagnosticTime();
+    const refreshDurationMs =
+      issuedAtMs === null || settledAtMs === null ? null : Math.max(0, settledAtMs - issuedAtMs);
+    let completionFields: DiagnosticFields = { outcome: 'failure', failureKind: 'internal' };
+    try {
+      const failures = [accountResult, positionsResult].filter(
+        (result) => result.status === 'rejected',
+      );
+      const internal = failures.find((result) => !isExternalApiRequestError(result.reason));
+      if (internal) {
+        for (const participant of batch.participants) {
+          if (!participant.settled) {
+            participant.settled = true;
+            participant.reject(internal.reason);
+            completePendingWait(participant, 'failure');
+          }
+        }
+
+        throw internal.reason;
+      }
+
+      // 同日仍有效的外部失败归原refresh owner重试，generation失效不吞掉其失败/退避政策。
+      const failure = failures[0];
+      if (failure) {
+        completionFields = { outcome: 'failure', failureKind: 'external' };
+        const error: unknown =
+          failures.length === 1
+            ? failure.reason
+            : createExternalApiAggregateRequestError({
+                operation: 'AccountPositionSnapshot.pairedRead',
+                attempts: 1,
+                causes: failures
+                  .map((result): unknown => result.reason)
+                  .filter(isExternalApiRequestError),
+              });
+        for (const participant of batch.participants) {
+          if (
+            !participant.settled &&
+            isAdmitted(participant.request) &&
+            participant.request.dayEpoch === token.dayEpoch
+          ) {
+            participant.settled = true;
+            participant.reject(error);
+            completePendingWait(participant, 'failure');
+          } else if (!participant.settled) {
+            finish(participant);
+          }
+        }
+
+        return;
+      }
+
+      const current =
+        batch.participants.some((participant) => isAdmitted(participant.request)) &&
+        batch.token.dayEpoch === token.dayEpoch &&
+        batch.token.snapshotGeneration === token.snapshotGeneration;
+      if (!current) {
+        let discardReason = 'admission_closed';
+        if (batch.token.dayEpoch !== token.dayEpoch) {
+          discardReason = 'stale_epoch';
+        } else if (batch.token.snapshotGeneration !== token.snapshotGeneration) {
+          discardReason = 'stale_generation';
+        }
+
+        recordBatch(DIAGNOSTIC_OPERATIONS.SNAPSHOT_RESPONSE_DISCARDED, batch, {
+          discardReason,
+          discardCount: 1,
+          currentDayEpoch: token.dayEpoch,
+          currentSnapshotGeneration: token.snapshotGeneration,
+        });
+
+        completionFields = { outcome: 'discarded', discardReason };
+
+        for (const participant of batch.participants) {
+          if (participant.settled) {
+            continue;
+          }
+
+          if (isAdmitted(participant.request) && participant.request.dayEpoch === token.dayEpoch) {
+            enqueue(participant);
+          } else {
+            finish(participant);
+          }
+        }
+
+        return;
+      }
+
+      if (!batch.participants.some((participant) => !participant.settled)) {
+        completionFields = { outcome: 'aborted' };
+        return;
+      }
+
+      if (accountResult.status !== 'fulfilled' || positionsResult.status !== 'fulfilled') {
+        throw new TypeError('Snapshot read result invariant violated');
+      }
+
+      const account =
+        batch.refreshAccount && accountResult.value !== null ? accountResult.value : view.account;
+      const positions =
+        batch.refreshPositions && positionsResult.value !== null
+          ? positionsResult.value
+          : view.positions;
+      const commitRevision = increment(token.commitRevision);
+      const nextToken = Object.freeze({
+        ...token,
+        commitRevision,
+        accountRevision: batch.refreshAccount
+          ? increment(token.accountRevision)
+          : token.accountRevision,
+        positionRevision: batch.refreshPositions
+          ? increment(token.positionRevision)
+          : token.positionRevision,
+        pairedRevision:
+          batch.refreshAccount && batch.refreshPositions ? commitRevision : token.pairedRevision,
+      });
+      const nextAvailable = new Map<string, Position>();
+      for (const position of positions) {
+        if (position.symbol.length > 0 && position.availableQuantity > 0) {
+          nextAvailable.set(position.symbol, position);
         }
       }
 
-      throw internal.reason;
-    }
+      token = nextToken;
+      if (batch.refreshAccount && batch.refreshPositions) pairedToken = nextToken;
 
-    // 同日仍有效的外部失败归原refresh owner重试，generation失效不吞掉其失败/退避政策。
-    const failure = failures[0];
-    if (failure) {
-      const error: unknown =
-        failures.length === 1
-          ? failure.reason
-          : createExternalApiAggregateRequestError({
-              operation: 'AccountPositionSnapshot.pairedRead',
-              attempts: 1,
-              causes: failures
-                .map((result): unknown => result.reason)
-                .filter(isExternalApiRequestError),
-            });
-      for (const participant of batch.participants) {
-        if (
-          !participant.settled &&
-          isAdmitted(participant.request) &&
-          participant.request.dayEpoch === token.dayEpoch
-        ) {
-          participant.settled = true;
-          participant.reject(error);
-        } else if (!participant.settled) {
-          finish(participant);
-        }
-      }
-
-      return;
-    }
-
-    const current =
-      batch.participants.some((participant) => isAdmitted(participant.request)) &&
-      batch.token.dayEpoch === token.dayEpoch &&
-      batch.token.snapshotGeneration === token.snapshotGeneration;
-    if (!current) {
-      for (const participant of batch.participants) {
-        if (participant.settled) {
-          continue;
-        }
-
-        if (isAdmitted(participant.request) && participant.request.dayEpoch === token.dayEpoch) {
-          pending = [...pending, participant];
-        } else {
-          finish(participant);
-        }
-      }
-
-      return;
-    }
-
-    if (!batch.participants.some((participant) => !participant.settled)) {
-      return;
-    }
-
-    if (accountResult.status !== 'fulfilled' || positionsResult.status !== 'fulfilled') {
-      throw new TypeError('Snapshot read result invariant violated');
-    }
-
-    const account =
-      batch.refreshAccount && accountResult.value !== null ? accountResult.value : view.account;
-    const positions =
-      batch.refreshPositions && positionsResult.value !== null
-        ? positionsResult.value
-        : view.positions;
-    const commitRevision = increment(token.commitRevision);
-    const nextToken = Object.freeze({
-      ...token,
-      commitRevision,
-      accountRevision: batch.refreshAccount
-        ? increment(token.accountRevision)
-        : token.accountRevision,
-      positionRevision: batch.refreshPositions
-        ? increment(token.positionRevision)
-        : token.positionRevision,
-      pairedRevision:
-        batch.refreshAccount && batch.refreshPositions ? commitRevision : token.pairedRevision,
-    });
-    const nextAvailable = new Map<string, Position>();
-    for (const position of positions) {
-      if (position.symbol.length > 0 && position.availableQuantity > 0) {
-        nextAvailable.set(position.symbol, position);
-      }
-    }
-
-    token = nextToken;
-    if (batch.refreshAccount && batch.refreshPositions) pairedToken = nextToken;
-
-    view = Object.freeze({
-      token,
-      account,
-      positions,
-      accountInitialized: batch.refreshAccount || view.accountInitialized,
-      positionsInitialized: batch.refreshPositions || view.positionsInitialized,
-      accountValid: batch.refreshAccount || view.accountValid,
-      positionsValid: batch.refreshPositions || view.positionsValid,
-    });
-    availablePositions = nextAvailable;
-    const receipt = Object.freeze({
-      status: 'COMMITTED' as const,
-      snapshotToken: token,
-      refreshedAccount: batch.refreshAccount,
-      refreshedPositions: batch.refreshPositions,
-      view,
-    });
-    for (const participant of batch.participants) {
-      if (!participant.settled) {
+      view = Object.freeze({
+        token,
+        account,
+        positions,
+        accountInitialized: batch.refreshAccount || view.accountInitialized,
+        positionsInitialized: batch.refreshPositions || view.positionsInitialized,
+        accountValid: batch.refreshAccount || view.accountValid,
+        positionsValid: batch.refreshPositions || view.positionsValid,
+      });
+      availablePositions = nextAvailable;
+      const receipt = Object.freeze({
+        status: 'COMMITTED' as const,
+        snapshotToken: token,
+        refreshedAccount: batch.refreshAccount,
+        refreshedPositions: batch.refreshPositions,
+        view,
+      });
+      const committedParticipants = batch.participants.filter(
+        (participant) => !participant.settled,
+      );
+      for (const participant of committedParticipants) {
         participant.settled = true;
         participant.resolve(receipt);
       }
+
+      // 诊断只在同步事实/receipt 事务完成后发出，不穿插 store、索引与参与者结算。
+      completionFields = { outcome: 'success' };
+      recordBatch(DIAGNOSTIC_OPERATIONS.SNAPSHOT_RESPONSE_ACCEPTED, batch);
+      recordBatch(DIAGNOSTIC_OPERATIONS.SNAPSHOT_COMMITTED, batch, {}, nextToken);
+      for (const participant of committedParticipants)
+        completePendingWait(participant, 'committed');
+    } finally {
+      recordBatch(DIAGNOSTIC_OPERATIONS.SNAPSHOT_REFRESH_COMPLETED, batch, {
+        ...completionFields,
+        refreshDurationMs,
+      });
     }
   }
 
@@ -295,6 +411,9 @@ export function createAccountPositionSnapshot(
         refreshAccount: participants.some((participant) => participant.request.refreshAccount),
         refreshPositions: participants.some((participant) => participant.request.refreshPositions),
         token,
+        sources: Object.freeze([
+          ...new Set(participants.map((participant) => participant.request.source)),
+        ]),
       };
       inFlight = batch;
       let finishIssued!: () => void;
@@ -318,6 +437,7 @@ export function createAccountPositionSnapshot(
           if (!participant.settled) {
             participant.settled = true;
             participant.reject(error);
+            completePendingWait(participant, 'failure');
           }
         }
       } finally {
@@ -352,13 +472,21 @@ export function createAccountPositionSnapshot(
 
     let participant: SnapshotParticipant;
     const result = new Promise<Awaited<SnapshotRefreshHandle['result']>>((resolve, reject) => {
-      participant = { request: Object.freeze({ ...request }), resolve, reject, settled: false };
+      participant = {
+        request: Object.freeze({ ...request }),
+        resolve,
+        reject,
+        settled: false,
+        pendingSinceMs: null,
+        pendingWaitDurationMs: 0,
+      };
+
       if (!isAdmitted(request) || request.dayEpoch !== token.dayEpoch) {
         finish(participant);
         return;
       }
 
-      pending = [...pending, participant];
+      enqueue(participant);
       schedule();
     });
     return {

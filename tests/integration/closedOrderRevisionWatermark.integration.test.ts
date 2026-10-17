@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
 import { wait } from '../../src/infrastructure/time/index.js';
@@ -61,6 +62,7 @@ for (const conflictingRevision of [20, 15])
     });
     const closed: string[] = [];
     const monitor = native.createMonitor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       requestExternalApi: wrapExternalApiRequest,

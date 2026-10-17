@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { createRuntimeStateFixtures } from '../helpers/runtimeStateFixtures.js';
 
 /**
@@ -118,6 +119,8 @@ describe('terminal switch finalization integration', () => {
     ]);
     const account = native.createAccountService({ rateLimiter: createRateLimiterDouble() });
     const snapshot = createAccountPositionSnapshot({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
       dayEpoch: 1,
       readPort: account,
       scheduler: { schedule: queueMicrotask },
@@ -169,6 +172,8 @@ describe('terminal switch finalization integration', () => {
     );
     dailyLossTracker.publishRecalculation(prepared);
     const postTradeConsistencyRuntime = createPostTradeConsistencyRuntime({
+      diagnostics: createDiagnosticObserverDouble(),
+      clock: { now: () => new Date() },
       logger: createLoggerDouble(),
       snapshot,
       termination: createTerminationDouble(),

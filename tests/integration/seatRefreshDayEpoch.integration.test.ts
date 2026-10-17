@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createAccountSnapshotDouble,
@@ -49,6 +50,8 @@ async function createHarness(
     onSecondaryError: () => {},
   });
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 7,
     scheduler: { schedule: queueMicrotask },
     readPort: {
@@ -59,7 +62,11 @@ async function createHarness(
   });
   const config = createMonitorConfigDouble({ monitorSymbol: 'HSI.HK', longSymbol: 'BULL.HK' });
   const registry = createSymbolRegistry(config);
-  const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+  const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+    logger: createLoggerDouble(),
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
+  });
   const timerCallbacks = new Map<ReturnType<typeof setTimeout>, () => void>();
   const scheduler: RuntimeScheduler = {
     scheduleTimer: (callback) => {

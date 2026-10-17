@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createAccountSnapshotDouble,
@@ -245,6 +246,8 @@ async function createHarness(
     positions: [],
   });
   const settlement = createSettlementRuntimeFixture({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination,

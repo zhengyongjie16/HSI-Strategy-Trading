@@ -5,6 +5,8 @@
  * snapshot owner 独立提交 canonical 事实；本模块只消费中性窄能力，不拥有 broker 或订单账本。
  * 生命周期受控 baseline 和 crash-gap 恢复共用完成事务，保留停止排空与 late binding 约束。
  */
+import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
+import type { DiagnosticObserver } from '../../types/diagnostics.js';
 import type {
   AccountPositionSnapshotView,
   SnapshotRefreshHandle,
@@ -131,6 +133,8 @@ function settleProtectiveLiquidationEpisodes(
   hasPendingProtectiveOrders: (direction: 'LONG' | 'SHORT') => boolean,
   isCurrent: () => boolean,
   cooldownProjection: 'LIVE_TRIGGER' | 'LOG_HYDRATION',
+  diagnostics: DiagnosticObserver,
+  settlementVersion: number,
 ): boolean {
   for (const episode of businessDeps.episodes.getInProgressEpisodes()) {
     if (!isCurrent()) return false;
@@ -193,6 +197,26 @@ function settleProtectiveLiquidationEpisodes(
       });
 
     businessDeps.episodes.commitCompletion(preparedEpisode);
+    // committed 仅指本同步事务的全部投影成功；恢复冷却仍由随后 durable log hydration 负责。
+    try {
+      diagnostics.record(DIAGNOSTIC_OPERATIONS.LIQUIDATION_COMPLETION_COMMITTED, {
+        source: 'POST_TRADE_SETTLEMENT',
+        monitorSymbol: businessDeps.monitorSymbol,
+        symbol: episode.symbol,
+        seatDirection: preparedEpisode.direction,
+        boundaryExecutedTimeMs: preparedEpisode.boundaryExecutedTimeMs,
+        cooldownProjection,
+        settlementVersion,
+        dayEpoch: view.token.dayEpoch,
+        snapshotGeneration: view.token.snapshotGeneration,
+        snapshotCommitRevision: view.token.commitRevision,
+        accountRevision: view.token.accountRevision,
+        positionRevision: view.token.positionRevision,
+        pairedCommitRevision: view.token.pairedRevision,
+      });
+    } catch {
+      // 诊断失败不回滚已提交事务，也不覆盖随后可能发生的业务 fatal。
+    }
   }
 
   return isCurrent();
@@ -229,7 +253,11 @@ export function createPostTradeSettlementWorkflow(
     logger,
     isExternalFailure,
   } = deps;
-  const refreshGate = createSettlementReadinessGate({ snapshot });
+  const refreshGate = createSettlementReadinessGate({
+    snapshot,
+    clock: deps.clock,
+    diagnostics: deps.diagnostics,
+  });
 
   let businessDeps: PostTradeSettlementBusinessDeps | null = null;
   let started = false;
@@ -439,6 +467,8 @@ export function createPostTradeSettlementWorkflow(
             hasPendingProtectiveOrders,
             current,
             'LIVE_TRIGGER',
+            deps.diagnostics,
+            targetVersion,
           ) && refreshAttributedUnrealizedLossData(resolvedBusinessDeps, current);
 
         if (refreshOk && current()) {
@@ -765,6 +795,8 @@ export function createPostTradeSettlementWorkflow(
       (direction) => request.pendingProtectiveDirections.has(direction),
       current,
       'LOG_HYDRATION',
+      deps.diagnostics,
+      targetVersion,
     );
   }
 

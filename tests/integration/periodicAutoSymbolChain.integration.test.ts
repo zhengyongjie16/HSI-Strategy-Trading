@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import type { RuntimeStateFixtures } from '../helpers/types.js';
 
 /**
@@ -253,7 +254,11 @@ describe('periodic auto-symbol full chain integration', () => {
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
 
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const dailyLossTracker = createDailyLossTrackerDouble();
     const preparedDaily = dailyLossTracker.prepareRecalculationFromAllOrders(
       [],
@@ -281,6 +286,8 @@ describe('periodic auto-symbol full chain integration', () => {
     };
     const stateFixtures = createRuntimeStates();
     const snapshot = createAccountPositionSnapshot({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
       dayEpoch: 1,
       scheduler: { schedule: queueMicrotask },
       readPort: {
@@ -298,6 +305,8 @@ describe('periodic auto-symbol full chain integration', () => {
     if (baseline.status !== 'COMMITTED') throw new Error('expected real canonical paired commit');
 
     const settlement = createPostTradeConsistencyRuntime({
+      diagnostics: createDiagnosticObserverDouble(),
+      clock: { now: () => new Date() },
       logger: createLoggerDouble(),
       snapshot,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
@@ -535,7 +544,11 @@ describe('periodic auto-symbol full chain integration', () => {
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
 
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const dailyLossTracker = createDailyLossTrackerDouble();
     const preparedDaily = dailyLossTracker.prepareRecalculationFromAllOrders(
       [],
@@ -563,6 +576,8 @@ describe('periodic auto-symbol full chain integration', () => {
     };
     const stateFixtures = createRuntimeStates();
     const snapshot = createAccountPositionSnapshot({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
       dayEpoch: 1,
       scheduler: { schedule: queueMicrotask },
       readPort: {
@@ -580,6 +595,8 @@ describe('periodic auto-symbol full chain integration', () => {
     if (baseline.status !== 'COMMITTED') throw new Error('expected real canonical paired commit');
 
     const settlement = createPostTradeConsistencyRuntime({
+      diagnostics: createDiagnosticObserverDouble(),
+      clock: { now: () => new Date() },
       logger: createLoggerDouble(),
       snapshot,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
@@ -798,7 +815,11 @@ describe('periodic auto-symbol full chain integration', () => {
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
 
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const dailyLossTracker = createDailyLossTrackerDouble();
     const preparedDaily = dailyLossTracker.prepareRecalculationFromAllOrders(
       [],
@@ -826,6 +847,8 @@ describe('periodic auto-symbol full chain integration', () => {
     };
     const stateFixtures = createRuntimeStates();
     const snapshot = createAccountPositionSnapshot({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
       dayEpoch: 1,
       scheduler: { schedule: queueMicrotask },
       readPort: {
@@ -843,6 +866,8 @@ describe('periodic auto-symbol full chain integration', () => {
     if (baseline.status !== 'COMMITTED') throw new Error('expected real canonical paired commit');
 
     const settlement = createPostTradeConsistencyRuntime({
+      diagnostics: createDiagnosticObserverDouble(),
+      clock: { now: () => new Date() },
       logger: createLoggerDouble(),
       snapshot,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
@@ -1061,7 +1086,11 @@ describe('periodic auto-symbol full chain integration', () => {
       getTradingCalendarSnapshot: () => tradingCalendarSnapshot,
     });
 
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const dailyLossTracker = createDailyLossTrackerDouble();
     const preparedDaily = dailyLossTracker.prepareRecalculationFromAllOrders(
       [],
@@ -1089,6 +1118,8 @@ describe('periodic auto-symbol full chain integration', () => {
     };
     const stateFixtures = createRuntimeStates();
     const snapshot = createAccountPositionSnapshot({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
       dayEpoch: 1,
       scheduler: { schedule: queueMicrotask },
       readPort: {
@@ -1106,6 +1137,8 @@ describe('periodic auto-symbol full chain integration', () => {
     if (baseline.status !== 'COMMITTED') throw new Error('expected real canonical paired commit');
 
     const settlement = createPostTradeConsistencyRuntime({
+      diagnostics: createDiagnosticObserverDouble(),
+      clock: { now: () => new Date() },
       logger: createLoggerDouble(),
       snapshot,
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),

@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createMarketDataClientDouble,
@@ -354,6 +355,8 @@ describe('auto-symbol-switch integration', () => {
       const rateLimiter = createRateLimiterDouble();
       const accountService = native.createAccountService({ rateLimiter });
       const snapshot = createAccountPositionSnapshot({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
         dayEpoch: 1,
         scheduler: { schedule: queueMicrotask },
         readPort: accountService,
@@ -380,6 +383,8 @@ describe('auto-symbol-switch integration', () => {
       dailyLossTracker.publishRecalculation(prepared);
       let boundTrader: ReturnType<typeof createTradeRuntimeDouble> | null = null;
       const settlement = createPostTradeConsistencyRuntime({
+        diagnostics: createDiagnosticObserverDouble(),
+        clock: { now: () => new Date() },
         logger: createLoggerDouble(),
         snapshot,
         termination: createTerminationDouble(),
@@ -430,6 +435,7 @@ describe('auto-symbol-switch integration', () => {
       const trackedOrders: Array<{ orderId: string; side: string; quantity: number }> = [];
       const executionGate = { open: true };
       const orderExecutor = native.createExecutor({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         rateLimiter: createRateLimiterDouble(),
         marketDataClient,

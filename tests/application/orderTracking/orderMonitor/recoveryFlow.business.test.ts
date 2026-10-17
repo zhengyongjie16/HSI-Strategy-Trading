@@ -14,14 +14,16 @@ import {
  */
 
 import { describe, expect, it } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
 import { createTerminationRuntime } from '../../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createEventFlow as createProductionEventFlow } from '../../../../src/application/orderTracking/orderMonitor/eventFlow.js';
-import { createRecoveryFlow } from '../../../../src/application/orderTracking/orderMonitor/recoveryFlow.js';
+import { createRecoveryFlow as createProductionRecoveryFlow } from '../../../../src/application/orderTracking/orderMonitor/recoveryFlow.js';
 import { attachTrackedOrder } from '../../../../src/application/orderTracking/orderMonitor/routingIndex.js';
 import type {
   EventFlowDeps,
   OrderMonitorRuntimeStore,
+  RecoveryFlowDeps,
 } from '../../../../src/application/orderTracking/orderMonitor/types.js';
 import type { OrderHoldRegistry } from '../../../../src/application/orderTracking/types.js';
 import type {
@@ -37,11 +39,23 @@ import { createExternalApiRequestError } from '../../../helpers/createExternalAp
 
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
-type TestEventFlowDeps = Omit<EventFlowDeps, 'now' | 'monitorConfig'> &
-  Partial<Pick<EventFlowDeps, 'now' | 'monitorConfig'>>;
+type TestEventFlowDeps = Omit<EventFlowDeps, 'now' | 'monitorConfig' | 'diagnostics'> &
+  Partial<Pick<EventFlowDeps, 'now' | 'monitorConfig' | 'diagnostics'>>;
+
+type TestRecoveryFlowDeps = Omit<RecoveryFlowDeps, 'now' | 'diagnostics'> &
+  Partial<Pick<RecoveryFlowDeps, 'now' | 'diagnostics'>>;
+
+function createRecoveryFlow(deps: TestRecoveryFlowDeps) {
+  return createProductionRecoveryFlow({
+    diagnostics: createDiagnosticObserverDouble(),
+    now: () => new Date('2031-01-02T03:04:05.000Z'),
+    ...deps,
+  });
+}
 
 function createEventFlow(deps: TestEventFlowDeps) {
   return createProductionEventFlow({
+    diagnostics: createDiagnosticObserverDouble(),
     now: () => new Date('2031-01-02T03:04:05.000Z'),
     ...deps,
     monitorConfig: deps.monitorConfig ?? createMonitorConfigWithOwnership(),

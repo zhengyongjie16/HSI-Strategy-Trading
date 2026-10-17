@@ -10,6 +10,8 @@ import { loadStartupSnapshot } from '../../../src/application/tradingDayRebuild/
 import { applyStartupSnapshotFailureState } from '../../../src/application/tradingDayRebuild/startupFailureState.js';
 import type { ExecuteStartupRebuildParams } from '../../../src/application/tradingDayRebuild/types.js';
 import type { Quote } from '../../../src/types/quote.js';
+import type { DiagnosticFields } from '../../../src/types/diagnostics.js';
+import { DIAGNOSTIC_OPERATIONS } from '../../../src/constants/diagnostics.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { createLoggerDouble } from '../../helpers/testDoubles.js';
 import { createRebuildHarness } from './fixtures.js';
@@ -31,8 +33,14 @@ async function createStartupHarness() {
     tradingCalendarState: { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() },
     quoteSubscriptionState: { allTradingSymbols: new Set() },
   };
+  const diagnostics: DiagnosticFields[] = [];
   const params: ExecuteStartupRebuildParams = {
     ...harness,
+    diagnostics: {
+      record: (operation, fields) => {
+        diagnostics.push({ ...fields, operation });
+      },
+    },
     now,
     ...stateFixtures,
     startupSnapshot: { kind: 'READY', snapshotToken: token, allOrders: [], quotesMap, now },
@@ -50,7 +58,7 @@ async function createStartupHarness() {
     logger: createLoggerDouble(),
     formatError: String,
   };
-  return { ...harness, params, token, quotesMap };
+  return { ...harness, params, token, quotesMap, diagnostics };
 }
 
 describe('startup rebuild', () => {
@@ -66,6 +74,18 @@ describe('startup rebuild', () => {
       },
     });
     expect(result).toEqual({ status: 'COMMITTED', snapshotToken: harness.token });
+    expect(harness.diagnostics).toEqual([
+      expect.objectContaining({
+        operation: DIAGNOSTIC_OPERATIONS.TRADING_DAY_REBUILT,
+        source: 'STARTUP',
+        gate: 'STARTUP_REBUILD_COMMITTED',
+        dayEpoch: harness.token.dayEpoch,
+        snapshotGeneration: harness.token.snapshotGeneration,
+        snapshotCommitRevision: harness.token.commitRevision,
+        pairedCommitRevision: harness.token.pairedRevision,
+        isTradingEnabled: false,
+      }),
+    ]);
     expect(rebuildInputs).toEqual([harness.params.now]);
     expect(harness.subscribed.flat()).toContain('HSI.HK');
     const fresh = await harness.postTradeConsistencyRuntime.waitForFresh();
@@ -151,6 +171,7 @@ describe('startup rebuild', () => {
     expect(rebuilds).toBe(0);
     expect(harness.postTradeConsistencyRuntime.getStatus().started).toBe(false);
     expect(harness.subscribed).toEqual([]);
+    expect(harness.diagnostics).toEqual([]);
   });
 
   it('keeps the original external failure policy but rethrows internal failure identity', async () => {
@@ -171,6 +192,7 @@ describe('startup rebuild', () => {
     expect(harness.params.lifecycleState.lifecycleState).toBe('OPEN_REBUILD_FAILED');
     expect(harness.params.lifecycleState.isTradingEnabled).toBe(false);
     expect(harness.postTradeConsistencyRuntime.getStatus().started).toBe(false);
+    expect(harness.diagnostics).toEqual([]);
 
     const internal = new TypeError('invalid financial state');
     const caught = await executeStartupRebuild({
@@ -181,6 +203,54 @@ describe('startup rebuild', () => {
     }).catch((error: unknown) => error);
     expect(caught).toBe(internal);
     expect(harness.subscribed).toEqual([]);
+  });
+
+  it('does not record rebuilt until the real settlement freshness gate returns', async () => {
+    const harness = await createStartupHarness();
+    let resume = () => {};
+    const freshGate = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    let signalFresh = () => {};
+    const reachedFresh = new Promise<void>((resolve) => {
+      signalFresh = resolve;
+    });
+    const running = executeStartupRebuild({
+      ...harness.params,
+      postTradeConsistencyRuntime: {
+        ...harness.postTradeConsistencyRuntime,
+        waitForFresh: async () => {
+          signalFresh();
+          await freshGate;
+          return harness.postTradeConsistencyRuntime.waitForFresh();
+        },
+      },
+    });
+    await reachedFresh;
+    expect(harness.diagnostics).toEqual([]);
+    expect(harness.params.lifecycleState.isTradingEnabled).toBe(false);
+    resume();
+    const completed = await running;
+    expect(completed.status).toBe('COMMITTED');
+    expect(harness.diagnostics).toHaveLength(1);
+    await harness.postTradeConsistencyRuntime.stopAndDrain();
+    await harness.quoteSubscriptionRuntime.stopAndDrain();
+  });
+
+  it('does not turn observer failure into a pending rebuild after the success gate', async () => {
+    const harness = await createStartupHarness();
+    const result = await executeStartupRebuild({
+      ...harness.params,
+      diagnostics: {
+        record: () => {
+          throw new Error('diagnostic failed');
+        },
+      },
+    });
+    expect(result).toEqual({ status: 'COMMITTED', snapshotToken: harness.token });
+    expect(harness.params.lifecycleState.pendingOpenRebuild).toBe(false);
+    await harness.postTradeConsistencyRuntime.stopAndDrain();
+    await harness.quoteSubscriptionRuntime.stopAndDrain();
   });
 
   it('does not accept a rebuild that replaces the captured token or finishes after termination', async () => {
@@ -194,6 +264,7 @@ describe('startup rebuild', () => {
     }).catch((error: unknown) => error);
     expect(mismatch).toBeInstanceOf(TypeError);
     expect(harness.subscribed).toEqual([]);
+    expect(harness.diagnostics).toEqual([]);
 
     const aborted = await executeStartupRebuild({
       ...harness.params,
@@ -203,6 +274,7 @@ describe('startup rebuild', () => {
       },
     });
     expect(aborted).toEqual({ status: 'ABORTED' });
+    expect(harness.diagnostics).toEqual([]);
     expect(harness.postTradeConsistencyRuntime.getStatus().started).toBe(false);
     expect(harness.subscribed).toEqual([]);
   });

@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { createSnapshotFixture } from '../../../helpers/accountPositionSnapshot.js';
 import { createSettlementRuntimeFixture } from '../../../helpers/settlementRuntime.js';
 
@@ -106,7 +107,11 @@ async function createLunchBreakHarness(): Promise<
     symbolRegistry,
     seatSwitch,
   });
-  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+    logger: createLoggerDouble(),
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
+  });
   const tradingGateEventRuntime = createTradingGateEventRuntime({ logger: createLoggerDouble() });
   const tradeRuntime = createTradeRuntimeDouble();
 
@@ -120,6 +125,8 @@ async function createLunchBreakHarness(): Promise<
     },
   });
   const settlement = createSettlementRuntimeFixture({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     monitorContext,

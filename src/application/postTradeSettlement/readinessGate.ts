@@ -2,7 +2,9 @@
  * 成交后业务就绪门禁
  * pending settlement 按当前 canonical token 签发完成水位；完成凭据不是未来 snapshot revision 的租约。
  */
+import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import type { SnapshotToken } from '../../types/accountPosition.js';
+import type { DiagnosticFields } from '../../types/diagnostics.js';
 import type {
   SettlementReadinessAbortReason,
   SettlementReadinessReceipt,
@@ -11,6 +13,7 @@ import type {
   ReadinessWaiter,
   SettlementReadinessGate,
   SettlementReadinessGateDeps,
+  SettlementReadinessSpan,
 } from './types.js';
 
 /** 为所有等待中断入口统一构造原因，避免消费者依赖旧门禁实现。 */
@@ -45,6 +48,43 @@ export function createSettlementReadinessGate(
   let abortReason: SettlementReadinessAbortReason | null = null;
   let receipt: SettlementReadinessReceipt | null = null;
   let waiters: ReadinessWaiter[] = [];
+  let readinessSpan: SettlementReadinessSpan | null = null;
+
+  /** 诊断协作者异常只丢弃本次记录，不参与 gate、waiter 或 fatal 的业务结果。 */
+  function recordDiagnostic(operation: string, fields: DiagnosticFields): void {
+    try {
+      deps.diagnostics.record(operation, fields);
+    } catch {
+      // 不经业务日志或 fatal 通道重报诊断失败。
+    }
+  }
+
+  /** 时钟只服务诊断；失败时省略耗时，不用另一个时间源伪造起点。 */
+  function sampleDiagnosticTime(): number | null {
+    try {
+      const nowMs = deps.clock.now().getTime();
+      return Number.isFinite(nowMs) ? nowMs : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 连续 stale 仅在真实 ready 或 abort 时结算；版本推进不会重置首次未就绪时间。 */
+  function completeReadinessSpan(fields: DiagnosticFields, completedAtMs: number | null): void {
+    const completed = readinessSpan;
+    readinessSpan = null;
+    if (completed === null) return;
+
+    recordDiagnostic(DIAGNOSTIC_OPERATIONS.SETTLEMENT_READINESS_COMPLETED, {
+      source: 'POST_TRADE_SETTLEMENT',
+      firstSettlementVersion: completed.firstSettlementVersion,
+      settlementVersion: staleVersion,
+      ...(completed.startedAtMs !== null && completedAtMs !== null
+        ? { durationMs: completedAtMs - completed.startedAtMs }
+        : {}),
+      ...fields,
+    });
+  }
 
   /** 完成凭据只随 epoch/generation 或 settlement 水位失效；消费 owner 独立复核选单 snapshot。 */
   function isCurrent(candidate: SettlementReadinessReceipt): boolean {
@@ -71,6 +111,15 @@ export function createSettlementReadinessGate(
 
     staleVersion += 1;
     receipt = null;
+    readinessSpan ??= {
+      firstSettlementVersion: staleVersion,
+      startedAtMs: sampleDiagnosticTime(),
+    };
+
+    recordDiagnostic(DIAGNOSTIC_OPERATIONS.SETTLEMENT_STALE, {
+      source: 'POST_TRADE_SETTLEMENT',
+      settlementVersion: staleVersion,
+    });
     return staleVersion;
   }
 
@@ -102,6 +151,19 @@ export function createSettlementReadinessGate(
     waiters = [];
     for (const waiter of pending) waiter.resolve(receipt);
 
+    const fields = {
+      source: 'POST_TRADE_SETTLEMENT',
+      settlementVersion: receipt.settlementVersion,
+      dayEpoch: receipt.snapshotToken.dayEpoch,
+      snapshotGeneration: receipt.snapshotToken.snapshotGeneration,
+      snapshotCommitRevision: receipt.snapshotToken.commitRevision,
+      accountRevision: receipt.snapshotToken.accountRevision,
+      positionRevision: receipt.snapshotToken.positionRevision,
+      pairedCommitRevision: receipt.snapshotToken.pairedRevision,
+    };
+    const completedAtMs = readinessSpan === null ? null : sampleDiagnosticTime();
+    recordDiagnostic(DIAGNOSTIC_OPERATIONS.SETTLEMENT_READY, fields);
+    completeReadinessSpan({ ...fields, outcome: 'READY' }, completedAtMs);
     return true;
   }
 
@@ -122,6 +184,11 @@ export function createSettlementReadinessGate(
     const pending = waiters;
     waiters = [];
     for (const waiter of pending) waiter.reject(createAbortError(reason));
+
+    completeReadinessSpan(
+      { outcome: 'ABORTED', reason },
+      readinessSpan === null ? null : sampleDiagnosticTime(),
+    );
   }
 
   return {

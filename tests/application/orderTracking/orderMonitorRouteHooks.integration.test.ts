@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { wrapExternalApiRequest } from '../../../src/infrastructure/externalApi/index.js';
 import { wait } from '../../../src/infrastructure/time/index.js';
 import { scheduleBoundedOneShotAt } from '../../../src/runtime/timer/index.js';
@@ -200,6 +201,7 @@ async function createDeps(): Promise<{
   const baseMonitor = baseConfig.monitor;
 
   const deps: NativeMonitorDeps = {
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     requestExternalApi: wrapExternalApiRequest,

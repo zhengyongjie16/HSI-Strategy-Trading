@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import {
   createOrderRecorderDouble,
   createLoggerDouble,
@@ -234,7 +235,10 @@ describe('ordinaryBuy owner', () => {
         attempts: 1,
         cause: new Error('network'),
       });
-      const queue = createBuyTaskQueue();
+      const queue = createBuyTaskQueue({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      });
       const termination = createTerminationRuntime({
         closeTradingGate: () => {},
         closeProducerAdmission: queue.close,

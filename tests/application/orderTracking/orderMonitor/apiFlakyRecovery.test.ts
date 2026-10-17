@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
 import { wait } from '../../../../src/infrastructure/time/index.js';
@@ -180,6 +181,8 @@ describe('chaos: api flaky recovery', () => {
     ]);
     const account = fixture.createAccountService({ rateLimiter: createRateLimiterDouble() });
     const snapshot = createAccountPositionSnapshot({
+      diagnostics: createDiagnosticObserverDouble(),
+      clock: { now: () => new Date() },
       dayEpoch: 1,
       readPort: account,
       scheduler: { schedule: queueMicrotask },
@@ -197,6 +200,8 @@ describe('chaos: api flaky recovery', () => {
 
     let tradeRuntime: ReturnType<typeof createTradeRuntimeDouble> | null = null;
     const postTrade = createPostTradeConsistencyRuntime({
+      diagnostics: createDiagnosticObserverDouble(),
+      clock: { now: () => new Date() },
       logger: createLoggerDouble(),
       snapshot,
       termination: createTerminationDouble(),
@@ -295,6 +300,7 @@ describe('chaos: api flaky recovery', () => {
     const runtimeTimers = createRuntimeTimerHarness(nowMs);
     const originalWork = { live: true };
     const monitor = fixture.createMonitor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       requestExternalApi: wrapExternalApiRequest,

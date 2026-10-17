@@ -14,6 +14,7 @@ import { createTerminationRuntime } from '../../../src/runtime/lifecycle/termina
  * - createLifecycleRuntime 将固定顺序的 cache domains 交给 dayLifecycleManager
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createLifecycleRuntime } from '../../../src/app/lifecycle/createLifecycleRuntime.js';
 import type {
   LifecycleRuntimeFactories,
@@ -169,6 +170,8 @@ async function createLifecycleDeps(): Promise<LifecycleRuntimeFactoryDeps> {
     onSecondaryError: () => {},
   });
   const settlement = createSettlementRuntimeFixture({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     monitorContext,
@@ -193,6 +196,7 @@ async function createLifecycleDeps(): Promise<LifecycleRuntimeFactoryDeps> {
     termination,
 
     preGateRuntime: {
+      diagnostics: createDiagnosticObserverDouble(),
       brokerClientFactory: createBrokerClientFactoryDouble(),
       tradingConfig,
       symbolRegistry: createSymbolRegistryDouble(),

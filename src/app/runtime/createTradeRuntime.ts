@@ -21,6 +21,7 @@ export function createTradeRuntime(deps: CreateTradeRuntimeDeps): Promise<TradeR
   try {
     const {
       logger,
+      diagnostics,
       wait,
       nowMonotonicMs,
       tradingConfig,
@@ -91,6 +92,7 @@ export function createTradeRuntime(deps: CreateTradeRuntimeDeps): Promise<TradeR
       scheduleBoundedOneShotAt: deps.scheduleBoundedOneShotAt,
       requestExternalApi: deps.requestExternalApi,
       logger: logger,
+      diagnostics,
       orderDetailReadPort: brokerAccess.createOrderDetailReadPort(),
       executionLedgerPort,
       orderPushPort,
@@ -116,6 +118,7 @@ export function createTradeRuntime(deps: CreateTradeRuntimeDeps): Promise<TradeR
     // 同一同步装配段创建唯一 executor，绑定上述真实 tracking/cache/recorder。
     const orderExecutor = createOrderExecutor({
       logger: logger,
+      diagnostics,
       readSellPositions: brokerAccess.createSellPositionReader(),
       tradeMutationPort,
       rateLimiter,

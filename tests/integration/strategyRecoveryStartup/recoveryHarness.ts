@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { nowMonotonicMs, wait } from '../../../src/infrastructure/time/index.js';
 
 import { createLoggerDouble, createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
@@ -95,6 +96,8 @@ export async function createRecoveryHarness(
     },
   ]);
   const settlement = createSettlementFlow({
+    diagnostics: createDiagnosticObserverDouble(),
+    now: () => new Date(),
     runtime,
     orderRecorder,
     orderHoldRegistry,
@@ -118,6 +121,7 @@ export async function createRecoveryHarness(
   const tradingConfig = createTradingConfig();
   const termination = f.termination;
   const orderOps = broker.createOperations({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     runtime,
@@ -149,6 +153,8 @@ export async function createRecoveryHarness(
     termination,
   });
   const recovery = createRecoveryFlow({
+    diagnostics: createDiagnosticObserverDouble(),
+    now: () => now,
     logger: createLoggerDouble(),
     runtime,
     orderRecorder,

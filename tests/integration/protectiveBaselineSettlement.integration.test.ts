@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
 import { wait } from '../../src/infrastructure/time/index.js';
@@ -182,6 +183,7 @@ function terminal(order: OrderFact) {
 function track(h: Awaited<ReturnType<typeof harness>>, timeout: boolean) {
   const { f, native } = h;
   const ops = native.createOperations({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     runtime: f.runtime,
@@ -224,6 +226,7 @@ function track(h: Awaited<ReturnType<typeof harness>>, timeout: boolean) {
 
 function eventFlow(f: ReturnType<typeof createExecutionFixture>) {
   return createEventFlow({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     runtime: f.runtime,
     monitorConfig,
@@ -274,6 +277,7 @@ for (const mode of ['direct', 'timeout'] as const)
       const closed: string[] = [];
       if (mode === 'direct') {
         monitor = native.createMonitor({
+          diagnostics: createDiagnosticObserverDouble(),
           logger: createLoggerDouble(),
           wait: wait,
           requestExternalApi: wrapExternalApiRequest,

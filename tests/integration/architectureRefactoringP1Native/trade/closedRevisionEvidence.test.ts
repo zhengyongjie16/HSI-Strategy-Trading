@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { createLoggerDouble } from '../../../helpers/testDoubles.js';
 
 /** closed 观察仍保存权威 revision 水位；经济投影、S stale 与资源收尾单独幂等。 */
@@ -64,6 +65,7 @@ test('closed terminal pure revision stores O/Daily watermark without economic/S/
   const stale = f.sink.getStatus().staleVersion;
   const events = f.events.length;
   const flow = createEventFlow({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     runtime: f.runtime,
     monitorConfig: monitor,

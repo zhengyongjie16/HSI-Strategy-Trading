@@ -3,6 +3,7 @@
  * 独占 captured 输入的重建、订阅对账、S baseline/fresh 完成条件与同日失效后的本地重载。
  * 保留启动外部 API 失败转 pendingOpenRebuild 的策略，不执行普通 runtime 的启停接线。
  */
+import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import type { ExecuteStartupRebuildParams, StartupRebuildResult } from './types.js';
 
@@ -29,6 +30,7 @@ export async function executeStartupRebuild(
     syncMonitorContextSymbolNames,
     logger,
     formatError,
+    diagnostics,
   } = params;
   let startupSnapshot = params.startupSnapshot;
   if (startupSnapshot.kind === 'ABORTED') return { status: 'ABORTED' };
@@ -85,6 +87,25 @@ export async function executeStartupRebuild(
               fresh.snapshotToken[key as keyof typeof capturedToken],
           )
         ) {
+          // 初次重建的真实完成门禁：captured 输入、完整订阅与同一 S fresh 全部通过；不冒称 runtime 已开门。
+          try {
+            diagnostics.record(DIAGNOSTIC_OPERATIONS.TRADING_DAY_REBUILT, {
+              source: 'STARTUP',
+              dayKey: lifecycleState.currentDayKey,
+              dayEpoch: capturedToken.dayEpoch,
+              snapshotGeneration: capturedToken.snapshotGeneration,
+              snapshotCommitRevision: capturedToken.commitRevision,
+              accountRevision: capturedToken.accountRevision,
+              positionRevision: capturedToken.positionRevision,
+              pairedCommitRevision: capturedToken.pairedRevision,
+              settlementVersion: fresh.settlementVersion,
+              gate: 'STARTUP_REBUILD_COMMITTED',
+              isTradingEnabled: lifecycleState.isTradingEnabled,
+            });
+          } catch {
+            // 不能让诊断失败把真实 COMMITTED 改写为 pending 或覆盖启动失败策略。
+          }
+
           return { status: 'COMMITTED', snapshotToken: capturedToken };
         }
       }

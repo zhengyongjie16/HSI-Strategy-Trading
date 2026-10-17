@@ -62,6 +62,8 @@ test('superseded r10 subscription acknowledgement cannot publish risk or ready; 
     acknowledge = resolve;
   });
   const owner = createAccountPositionSnapshot({
+    clock: { now: () => new Date(0) },
+    diagnostics: { record: () => {} },
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort: {
@@ -94,6 +96,8 @@ test('superseded r10 subscription acknowledgement cannot publish risk or ready; 
     retryDelayMs: API.DEFAULT_RETRY_DELAY_MS,
     isExternalFailure: isExternalApiRequestError,
     snapshot: owner,
+    clock: { now: () => new Date(0) },
+    diagnostics: { record: () => {} },
     scheduler: clock.scheduler,
     onPositionsCommitted: async (token) => {
       acknowledged.push(token);
@@ -158,6 +162,8 @@ test('ready settlement survives ordinary pair and position commits without globa
   let publications = 0;
   let completions = 0;
   const owner = createAccountPositionSnapshot({
+    clock: { now: () => new Date(0) },
+    diagnostics: { record: () => {} },
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort: {
@@ -188,6 +194,8 @@ test('ready settlement survives ordinary pair and position commits without globa
     retryDelayMs: API.DEFAULT_RETRY_DELAY_MS,
     isExternalFailure: isExternalApiRequestError,
     snapshot: owner,
+    clock: { now: () => new Date(0) },
+    diagnostics: { record: () => {} },
     scheduler: clock.scheduler,
     onPositionsCommitted: async () => {
       subscriptions += 1;
@@ -265,6 +273,8 @@ test('cancelled refresh participant does not let settlement drain finish before 
   const clock = manual();
   const positions = deferred<ReadonlyArray<never>>();
   const owner = createAccountPositionSnapshot({
+    clock: { now: () => new Date(0) },
+    diagnostics: { record: () => {} },
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort: {
@@ -282,6 +292,8 @@ test('cancelled refresh participant does not let settlement drain finish before 
     retryDelayMs: API.DEFAULT_RETRY_DELAY_MS,
     isExternalFailure: isExternalApiRequestError,
     snapshot: owner,
+    clock: { now: () => new Date(0) },
+    diagnostics: { record: () => {} },
     scheduler: clock.scheduler,
     onPositionsCommitted: async () => {},
   });
@@ -316,6 +328,8 @@ test('multiple waiters follow latest fill and old day waiters abort before a new
   const firstAck = deferred<null>();
   let acknowledgements = 0;
   const owner = createAccountPositionSnapshot({
+    clock: { now: () => new Date(0) },
+    diagnostics: { record: () => {} },
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     reportFatalError: () => {},
@@ -326,6 +340,8 @@ test('multiple waiters follow latest fill and old day waiters abort before a new
   });
   const runtime = createPostTradeSettlementWorkflow({
     snapshot: owner,
+    clock: { now: () => new Date(0) },
+    diagnostics: { record: () => {} },
     scheduler: clock.scheduler,
     termination: createTerminationDouble(),
     hasPendingProtectiveOrders: () => false,

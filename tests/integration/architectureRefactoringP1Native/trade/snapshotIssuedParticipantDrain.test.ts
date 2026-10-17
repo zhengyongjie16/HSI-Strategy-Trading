@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { expect, test } from 'bun:test';
 import { createAccountPositionSnapshot } from '../../../../src/application/accountPositionSnapshot/index.js';
 import type { Position } from '../../../../src/types/account.js';
@@ -7,6 +8,8 @@ function fixture() {
   let reads = 0;
   const scheduled: Array<() => void> = [];
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     scheduler: {
       schedule: (callback) => {

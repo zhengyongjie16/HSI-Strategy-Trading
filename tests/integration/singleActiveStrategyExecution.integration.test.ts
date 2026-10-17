@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
 import { wait } from '../../src/infrastructure/time/index.js';
@@ -118,6 +119,8 @@ async function createExecutionFixture(smartCloseEnabled = false) {
   let positionsRequested = false;
   let blockRefresh = false;
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     readPort: {
       getAccountSnapshot: accountService.getAccountSnapshot,
@@ -147,6 +150,8 @@ async function createExecutionFixture(smartCloseEnabled = false) {
   const dailyLossTracker = createDailyLossTrackerDouble();
   let boundTrader: TradeRuntime | null = null;
   const postTrade = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination: createTerminationDouble(),
@@ -218,6 +223,7 @@ async function createExecutionFixture(smartCloseEnabled = false) {
   const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTrackerDouble();
   const cacheManager = { clearCache: () => {}, getPendingOrders: async () => [] };
   const orderMonitor = native.createMonitor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     requestExternalApi: wrapExternalApiRequest,
@@ -242,6 +248,7 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     termination,
   });
   const executor = native.createExecutor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     rateLimiter,
     cacheManager,
@@ -294,8 +301,14 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     protectiveLiquidationEpisodeTracker,
     mixedTradeLogRepository: { appendCompletionIdempotent: () => {} },
   });
-  const buyTaskQueue = createBuyTaskQueue();
-  const sellTaskQueue = createSellTaskQueue();
+  const buyTaskQueue = createBuyTaskQueue({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
+  });
+  const sellTaskQueue = createSellTaskQueue({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
+  });
   const sellWorkflow = createOrdinarySellWorkflow({
     logger: createLoggerDouble(),
     clock: h.deps.clock,

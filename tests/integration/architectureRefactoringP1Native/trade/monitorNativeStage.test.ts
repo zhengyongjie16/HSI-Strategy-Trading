@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
 
 import { createLoggerDouble, createOrderRecorderDouble } from '../../../helpers/testDoubles.js';
@@ -56,6 +57,7 @@ async function fixture() {
   let live = true;
   const hold = createOrderHoldRegistry();
   const ops = native.createOperations({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     runtime,
@@ -237,6 +239,7 @@ describe('monitor actual native mutation stages', () => {
     };
     const acceptedContinuations: Array<readonly [string, string]> = [];
     const route = f.native.createRoute({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       runtime: f.runtime,
       rateLimiter: f.rateLimiter,

@@ -11,8 +11,9 @@ import type {
   SettlementReadinessReceipt,
   SettlementRefreshNeedRecorder,
 } from '../../types/settlement.js';
-import type { RuntimeScheduler, RuntimeTermination } from '../../types/runtime.js';
+import type { RuntimeClock, RuntimeScheduler, RuntimeTermination } from '../../types/runtime.js';
 import type { Logger } from '../../types/logger.js';
+import type { DiagnosticObserver } from '../../types/diagnostics.js';
 
 /** settlement owner 私有等待者；只在当前 snapshot 与水位共同有效时签发凭据。 */
 export type ReadinessWaiter = {
@@ -36,9 +37,17 @@ export interface SettlementReadinessGate {
   };
 }
 
-/** gate 仅读取 canonical owner，不持有第二份账户或持仓事实。 */
+/** gate 仅读取 canonical owner；时钟与 observer 仅用于真实水位迁移的旁路诊断。 */
 export type SettlementReadinessGateDeps = {
   readonly snapshot: Pick<AccountPositionSnapshotReader, 'getView' | 'isCurrent'>;
+  readonly clock: Pick<RuntimeClock, 'now'>;
+  readonly diagnostics: DiagnosticObserver;
+};
+
+/** 首次真实 stale 推进开启的连续未就绪区间；采样失败保留空时间，不另起或伪造耗时。 */
+export type SettlementReadinessSpan = {
+  readonly firstSettlementVersion: number;
+  readonly startedAtMs: number | null;
 };
 
 /** tracking 提供的进行中保护性事实；symbol 保留实际成交归属，不随席位换标改写。 */
@@ -169,6 +178,8 @@ export interface PostTradeSettlementWorkflowDeps {
   readonly scheduler: RuntimeScheduler;
   readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   readonly logger: Pick<Logger, 'warn' | 'error'>;
+  readonly clock: Pick<RuntimeClock, 'now'>;
+  readonly diagnostics: DiagnosticObserver;
   readonly retryDelayMs: number;
   readonly isExternalFailure: (error: unknown) => boolean;
 }

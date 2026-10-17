@@ -18,6 +18,8 @@ export function createPostTradeConsistencyRuntime(
     scheduler: deps.scheduler,
     termination: deps.termination,
     logger: deps.logger,
+    diagnostics: deps.diagnostics,
+    clock: deps.clock,
     retryDelayMs: API.DEFAULT_RETRY_DELAY_MS,
     isExternalFailure: isExternalApiRequestError,
     onPositionsCommitted: deps.onPositionsCommitted,

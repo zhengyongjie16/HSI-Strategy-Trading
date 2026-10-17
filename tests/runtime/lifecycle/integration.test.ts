@@ -4,6 +4,7 @@
  * 验证：dayKey 变化 → 午夜清理按域顺序执行 → MIDNIGHT_CLEANED →
  * 待开盘重建且交易日可交易 → 开盘重建按域逆序执行 → ACTIVE，交易门禁恢复
  */
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createAccountSnapshotDouble } from '../../helpers/testDoubles.js';
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
@@ -74,6 +75,7 @@ describe('跨日清理与开盘重建全链路', () => {
       },
     ];
     const manager = createDayLifecycleManager({
+      diagnostics: createDiagnosticObserverDouble(),
       snapshot,
       termination: createTerminationRuntime({
         closeTradingGate: () => {},
@@ -118,6 +120,7 @@ describe('跨日清理与开盘重建全链路', () => {
       },
     ];
     const manager = createDayLifecycleManager({
+      diagnostics: createDiagnosticObserverDouble(),
       snapshot,
       termination: createTerminationRuntime({
         closeTradingGate: () => {},

@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createAccountSnapshotDouble,
@@ -39,7 +40,11 @@ describe('SeatActivationDispatcher', () => {
       longSymbol: 'OLD_BULL.HK',
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const dispatcher = createSeatActivationDispatcher({
       logger: createLoggerDouble(),
       termination,
@@ -92,7 +97,11 @@ describe('SeatActivationDispatcher', () => {
       longSymbol: 'OLD_BULL.HK',
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const dispatcher = createSeatActivationDispatcher({
       logger: createLoggerDouble(),
       termination,
@@ -124,7 +133,11 @@ describe('SeatActivationDispatcher', () => {
       longSymbol: 'OLD_BULL.HK',
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const dispatcher = createSeatActivationDispatcher({
       logger: createLoggerDouble(),
       termination,
@@ -178,7 +191,11 @@ describe('SeatActivationDispatcher', () => {
       longSymbol: 'OLD_BULL.HK',
     });
     const symbolRegistry = createSymbolRegistry(monitorConfig);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const dispatcher = createSeatActivationDispatcher({
       logger: createLoggerDouble(),
       termination,

@@ -34,13 +34,17 @@ import { createExternalApiRequestError } from '../../helpers/createExternalApiRe
 
 import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
 import { createRuntimeStates } from '../../helpers/asyncProgram.js';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 
 const domainOwners = new WeakMap<OpenRebuildContext, AccountPositionSnapshot>();
 function createDayLifecycleManager(
-  deps: Omit<DayLifecycleManagerDeps, 'snapshot'> & { readonly snapshot: AccountPositionSnapshot },
+  deps: Omit<DayLifecycleManagerDeps, 'snapshot' | 'diagnostics'> & {
+    readonly snapshot: AccountPositionSnapshot;
+  },
 ) {
   return createDayLifecycleManagerImpl({
     ...deps,
+    diagnostics: createDiagnosticObserverDouble(),
     cacheDomains: deps.cacheDomains.map((domain) => ({
       midnightClear: domain.midnightClear,
       openRebuild: (ctx) => {

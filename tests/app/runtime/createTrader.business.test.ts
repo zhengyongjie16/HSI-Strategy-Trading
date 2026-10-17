@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../../src/infrastructure/externalApi/index.js';
 import { nowMonotonicMs, wait } from '../../../src/infrastructure/time/index.js';
@@ -76,6 +77,8 @@ async function createFacadeFixture() {
   });
   const readPort = native.createAccountService({ rateLimiter: createRateLimiterDouble() });
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort,
@@ -83,6 +86,8 @@ async function createFacadeFixture() {
   });
   let tradeRuntime: TradeRuntime | null = null;
   const settlement = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination,
@@ -97,6 +102,7 @@ async function createFacadeFixture() {
   const createTradeRuntime = (): Promise<TradeRuntime> =>
     native
       .createTradeRuntime({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         wait: wait,
         nowMonotonicMs: nowMonotonicMs,

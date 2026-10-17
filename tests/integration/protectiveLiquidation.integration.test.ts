@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
 import { wait } from '../../src/infrastructure/time/index.js';
@@ -126,6 +127,7 @@ describe('protective-liquidation integration', () => {
     if (paired.status !== 'COMMITTED') throw new Error('Protective paired H refresh aborted');
 
     const monitor = native.createMonitor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       requestExternalApi: wrapExternalApiRequest,

@@ -35,6 +35,7 @@ import type { RuntimeTermination } from '../../src/types/runtime.js';
  * - 启动初始重建失败时仍启动系统级时间唤醒，并保持稳态实时链路静止
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
@@ -205,6 +206,7 @@ function createMockPreGateRuntime(): PreGateRuntime {
   const warrantListCache = createWarrantListCache();
 
   return {
+    diagnostics: createDiagnosticObserverDouble(),
     brokerClientFactory: createBrokerClientFactoryDouble(),
     tradingConfig: createTradingConfig({
       global: {
@@ -258,6 +260,8 @@ async function createMockPostGateRuntime(
   const liquidationCooldownTracker = createLiquidationCooldownTrackerDouble();
   const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTrackerDouble();
   const settlement = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     termination,
     getProtectiveOrderReader: () => tradeRuntime.orderMonitor,

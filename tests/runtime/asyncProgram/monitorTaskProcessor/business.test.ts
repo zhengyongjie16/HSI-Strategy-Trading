@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { spyOn, afterEach, describe, expect, it } from 'bun:test';
 
 /**
@@ -404,7 +405,11 @@ function createDeferred<T>(): {
 
 describe('monitorTaskProcessor business flow', () => {
   it('hands AUTO_SYMBOL_TICK WAIT result to switchWakeupRuntime', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const handoffCalls: Array<{
       direction: 'LONG' | 'SHORT';
       seatVersion: number;
@@ -515,7 +520,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('API 错误标记为普通任务失败且不进入 fatal 通道', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const fatalErrors: unknown[] = [];
     const context = createPeriodicMonitorContext({
       seatSwitch: {
@@ -595,7 +604,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('非 API 程序错误进入 fatal 通道后停止调度并保留后续任务', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const fatalErrors: unknown[] = [];
     let periodicEvaluationCalls = 0;
     const context = createPeriodicMonitorContext({
@@ -683,7 +696,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('processes AUTO_SYMBOL_TICK with valid seat snapshot', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const intervalCallArgs: Array<{
       direction: 'LONG' | 'SHORT';
       currentTime: Date;
@@ -750,7 +767,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('blocks AUTO_SYMBOL_TICK switch flow outside ordinary trade gate', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const intervalCallArgs: Array<{
       direction: 'LONG' | 'SHORT';
       currentTime: Date;
@@ -824,7 +845,11 @@ describe('monitorTaskProcessor business flow', () => {
     const releasePeriodicEvaluation = createDeferred<null>();
     const handoffCalls: string[] = [];
     const periodicWakeupCalls: Array<{ kind: string; status?: PeriodicSwitchTaskStatus }> = [];
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const publication = createRealPeriodicPublicationContext({
       now: () => new Date(currentNowMs),
       afterPublication: async () => {
@@ -899,7 +924,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('marks periodic route waiting-empty when AUTO_SYMBOL_TICK leaves periodic pending state', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const markCalls: Array<{
       direction: 'LONG' | 'SHORT';
       symbol: string;
@@ -973,7 +1002,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('clears periodic waiting-empty and replans route after processed AUTO_SYMBOL_TICK without pending state', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const clearCalls: Array<{
       direction: 'LONG' | 'SHORT';
       symbol: string;
@@ -1069,7 +1102,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('reports blocked outcome to periodic route outside ordinary trade gate so gate reopen can recover', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const replanCalls: Array<{
       direction: 'LONG' | 'SHORT';
       symbol: string;
@@ -1160,7 +1197,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips AUTO_SYMBOL_TICK when seat snapshot is stale', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
 
     const context = createPeriodicMonitorContext({
       seatSwitch: {
@@ -1221,7 +1262,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips AUTO_SYMBOL_TICK when seat activation baseline is stale', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     let periodicDueCalls = 0;
 
     const context = createPeriodicMonitorContext({
@@ -1284,7 +1329,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips stale SEAT_REFRESH when seatVersion no longer matches', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     let getQuotesCalls = 0;
     let clearLongWarrantCalls = 0;
 
@@ -1333,7 +1382,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips AUTO_SYMBOL_TICK when lifecycle gate denies processing', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
 
     const context = createPeriodicMonitorContext({
       seatSwitch: {
@@ -1386,7 +1439,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('processes SEAT_REFRESH and rebuilds long-side runtime caches', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const allOrders: ReadonlyArray<OrderFact> = [];
     const expectedRelatedTradingSymbols: ReadonlyArray<string> = [
       'BULL.HK',
@@ -1555,7 +1612,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('fails SEAT_REFRESH fatally before cache, account, risk, or activation writes when the actual query mapper rejects updatedAt', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const fatalErrors: unknown[] = [];
     let refreshOrdersCalls = 0;
     let accountSnapshotCalls = 0;
@@ -1695,7 +1756,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('preflights SEAT_REFRESH before DailyLoss rejects a relevant unowned execution', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const fatalErrors: unknown[] = [];
     const now = new Date(MONITOR_TASK_NOW_MS);
     const ingress = await createBrokerIngressFixture({
@@ -1835,7 +1900,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('fails SEAT_REFRESH fatally before post-refresh writes when a positive execution fact is malformed', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const fatalErrors: unknown[] = [];
     let refreshOrdersCalls = 0;
     let accountSnapshotCalls = 0;
@@ -1974,7 +2043,11 @@ describe('monitorTaskProcessor business flow', () => {
     },
   ] as const) {
     it(`fails SEAT_REFRESH fatally before post-refresh writes for Unknown-side ${unknownSideCase.label}`, async () => {
-      const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+      const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+        logger: createLoggerDouble(),
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      });
       const fatalErrors: unknown[] = [];
       let preflightCalls = 0;
       let refreshOrdersCalls = 0;
@@ -2171,7 +2244,11 @@ describe('monitorTaskProcessor business flow', () => {
     },
   ] as const) {
     it(`fails SEAT_REFRESH before DailyLoss writes for non-target related ${relatedOrderCase.label}`, async () => {
-      const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+      const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+        logger: createLoggerDouble(),
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      });
       const fatalErrors: unknown[] = [];
       const now = new Date(MONITOR_TASK_NOW_MS);
       const ingress = await createBrokerIngressFixture({
@@ -2317,7 +2394,11 @@ describe('monitorTaskProcessor business flow', () => {
   }
 
   it('processes SHORT SEAT_REFRESH and updates short-side symbol name', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     let refreshOrdersCalls = 0;
     const context = createMonitorContext({
       orderRecorder: createOrderRecorderDouble({
@@ -2374,7 +2455,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('marks SHORT SEAT_REFRESH business failure as EMPTY and clears short-side symbol name', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const context = createMonitorContext({
       shortSymbolName: 'OLD_BEAR',
     });
@@ -2416,7 +2501,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('waits for quote admission to resolve before rebuilding SEAT_REFRESH caches', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const admissionDeferred = createDeferred<null>();
     const admissionStartedDeferred = createDeferred<null>();
     let getQuotesCalls = 0;
@@ -2491,7 +2580,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('does not leave stale warrant risk cache after SEAT_REFRESH skips on changed seat', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const baseRiskChecker = createRiskChecker({
       warrantRiskChecker: createWarrantRiskChecker({
         onInvalidCallPrice: () => {},
@@ -2564,7 +2657,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('does not write shared refresh state when SEAT_REFRESH becomes stale before cache rebuild starts', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     let dailyLossPrepareCalls = 0;
     let dailyLossPublishCalls = 0;
     const dailyLossOwner = createDailyLossTrackerDouble();
@@ -2674,7 +2771,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('marks activating seat EMPTY after SEAT_REFRESH API retry is exhausted', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const fatalErrors: unknown[] = [];
     const retryCallbacks: Array<() => void> = [];
     let getQuotesCalls = 0;
@@ -2743,7 +2844,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('sends SEAT_REFRESH non API order refresh errors to fatal channel', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const fatalErrors: unknown[] = [];
     let getQuotesCalls = 0;
 
@@ -2805,7 +2910,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips SEAT_REFRESH seat-owned work when the seat changes while order rebuild is pending', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const rebuildStarted = createDeferred<null>();
     const releaseRebuild = createDeferred<null>();
     let dailyLossPrepareCalls = 0;
@@ -2917,7 +3026,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips SEAT_REFRESH risk and seat-owned writes when the seat changes during account cache refresh', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const accountRefreshStarted = createDeferred<null>();
     const releaseAccountRefresh = createDeferred<null>();
     let riskRefreshCalls = 0;
@@ -3009,7 +3122,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips SEAT_REFRESH post-risk writes when the seat changes during risk refresh', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const riskRefreshStarted = createDeferred<null>();
     const releaseRiskRefresh = createDeferred<null>();
     let clearBuyOrdersCalls = 0;
@@ -3102,7 +3219,11 @@ describe('monitorTaskProcessor business flow', () => {
   });
 
   it('skips SEAT_REFRESH final activation when seat snapshot changes during refresh', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const context = createMonitorContext();
     context.symbolRegistry.updateSeatState('LONG', {
       ...context.symbolRegistry.getSeatState('LONG'),
@@ -3156,7 +3277,11 @@ describe('monitorTaskProcessor business flow', () => {
 
 describe('SEAT_REFRESH retry identity', () => {
   it('stop 后同 key 新激活重试不会被旧取消 callback 删除或消费', async () => {
-    const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const context = createMonitorContext();
     const callbacks: Array<() => void> = [];
     const failure = await createExternalApiRequestError({

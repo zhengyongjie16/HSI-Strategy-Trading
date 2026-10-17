@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
 import type { RuntimeStateFixtures } from '../../helpers/types.js';
 
@@ -84,6 +85,8 @@ function lifecycleHarness(
     termination,
   });
   const postTrade = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     termination,
     getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
@@ -119,12 +122,23 @@ function lifecycleHarness(
     orderMonitor: tradeRuntime.orderMonitor,
     postTradeConsistencyRuntime: postTrade,
     quoteSubscriptionRuntime: quotes,
-    buyTaskQueue: createBuyTaskQueue(),
-    sellTaskQueue: createSellTaskQueue(),
-    monitorTaskQueue: createMonitorTaskQueue(createLoggerDouble()),
+    buyTaskQueue: createBuyTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    }),
+    sellTaskQueue: createSellTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    }),
+    monitorTaskQueue: createMonitorTaskQueue({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    }),
   };
   const domain = createSignalRuntimeDomain(deps);
   const manager = createDayLifecycleManager({
+    diagnostics: createDiagnosticObserverDouble(),
     snapshot,
     termination,
     mutableState: state.lifecycleState,

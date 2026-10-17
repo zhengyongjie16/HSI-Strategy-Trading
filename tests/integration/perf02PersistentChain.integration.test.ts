@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
 import { nowMonotonicMs, wait } from '../../src/infrastructure/time/index.js';
@@ -365,6 +366,8 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
   let boundQuotes: QuoteSubscriptionRuntime | null = null;
   const account = native.createAccountService({ rateLimiter: createRateLimiterDouble() });
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort: account,
@@ -372,6 +375,8 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
   });
   let traderOwner: TradeRuntime | null = null;
   const settlement = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination,
@@ -389,6 +394,7 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
   });
   const tradingConfig = createTradingConfig({ monitor: monitorConfig() });
   const tradeRuntime = await native.createTradeRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     nowMonotonicMs: nowMonotonicMs,
@@ -515,7 +521,11 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
     postTradeConsistencyRuntime: settlement,
     buyTaskQueue: chain.eventHarness.buyTaskQueue,
     sellTaskQueue: chain.eventHarness.sellTaskQueue,
-    monitorTaskQueue: createMonitorTaskQueue(createLoggerDouble()),
+    monitorTaskQueue: createMonitorTaskQueue({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    }),
   });
   const marketDataDomain = createMarketDataDomain({
     logger: createLoggerDouble(),
@@ -523,6 +533,7 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
   });
   const state: LifecycleMutableState = appState.lifecycleState;
   const manager = createDayLifecycleManager({
+    diagnostics: createDiagnosticObserverDouble(),
     termination: chain.eventHarness.termination,
     mutableState: state,
     cacheDomains: [signalRuntime, marketDataDomain, globalState],

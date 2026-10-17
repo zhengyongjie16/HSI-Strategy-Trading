@@ -4,6 +4,8 @@
 
 `baseline.stage` 为 **P6**；`src` 与 `tests` 同范围扫描，原 occurrence、计数、cutoff 与 sourcePhysical 截止不变，所有到期债务必须归零。宽契约与旧根目录不得通过重命名、转发或测试目录豁免保活。`numericProbe` 保留历史 `core/trader`、`types/trader` 的真实审计身份；新增测试同时校验原多重集合额度、原截止与当前 `TradeRuntime`/窄能力的金融投影。离线 fixture 的动态加载只允许固定模块 query 隔离，或先经 realpath、source/dist 布局与具名入口校验的测试 loader；不授权任意动态路径。
 
+本轮起点为原始 HEAD `cf54399`、stage P6，已补齐 §14 观测与独立全链路复核，**唯一验证者的五项最终离线门禁通过：3019 pass / 0 fail**。下文 P4.5 的命令、数字、日志及“P5/P6 未执行”均保留为历史时点事实，不替换成本轮结果；当前真实测试索引及本轮证据另见文末。冻结 baseline/unresolved 与 HEAD 哈希一致，未修改或重采；最终文档补证后的两文件 scoped check 交同一验证者执行。本轮不发布、不开门、不连接实盘。
+
 ## P4.5 离线验收记录（历史，不作为 P6 完成证明）
 
 `baseline.stage` 为 **P4.5**。截至 P4.5 的能力与物理到期 occurrence 按原冻结记录评估；扫描失败表示源/测试仍有债，定向绿灯不替代最终全量验收。此次仅将 `baseline.json` 顶层 stage 从 P3F 推进为 P4.5，历史 rows/count/cutoff/sourcePhysical* 与全部 allowance 保持原样，不重采 `baseline.json`、`unresolved.json` 或 P0 原始审计数据。单一验证执行者已完成 P4/P4.5 最终离线验收：完整测试 **2881 pass / 0 fail**，九类债务全为 **0**，详见下文与实施计划 §20。P5/P6 未执行且不在本轮范围；本轮不发布、不开门、不连接实盘。
@@ -31,7 +33,9 @@
 
 失败输出按维度列计数与少量 occurrence 示例；完整结果可由 scanner 返回值离线汇总，避免打印整段 fixture/数百 KB 日志。
 
-## 离线验证
+## P4.5 离线验证（历史命令与结果）
+
+以下命令、stage 描述和结果为 P4/P4.5 历史记录，不代表当前 P6 或本轮新增观测已运行通过。
 
 以显式干净进程环境执行，禁止读取 `.env`、凭证、真实交易日志或求值静态 fixture 中的 SDK；不启动 app、不联网。
 
@@ -65,3 +69,70 @@ bun --no-env-file test tests/architecture/refactoring tests/architecture/longbri
 文档补证后，`bun --no-env-file node_modules/prettier/bin/prettier.cjs --check docs/architecture/architecture-refactoring-implementation-plan.md tests/architecture/refactoring/README.md` 与 `git diff --check` 均 exit 0，日志为 `09-doc-format-check.log`、`10-diff-check.log`。
 
 本机临时日志位于 `C:/WINDOWS/TEMP/p4-final-verification-3IJh3L/`：`01-format` 至 `05-test` 保留首轮 `.log/.result.json`，`06-test-default-log-root.log/.result.json` 保留完整复跑，`07-debts.log` 保留九类汇总；这些临时文件不是仓库长期审计归档。
+
+## P6 后剩余工作与当前验收边界
+
+本轮唯一交付文档为本 README 与[实施计划](../../../docs/architecture/architecture-refactoring-implementation-plan.md)。P0–P4/P4.5 历史事实保持原义，P5/P6 现有实现与当前 stage 按当前源码、测试和本轮最终证据核对，不用改写历史“未执行”掩盖阶段差异。
+
+### 已确认观测口径（已补审并通过离线动态验证）
+
+- 复用现有 logger 的结构化事件供聚合，不新增 exporter、指标服务、额外 timer 或第二业务 owner；诊断失败不得覆盖主体错误或改变业务结果。
+- snapshot 按实际已发 batch 统计，保留实际来源 `sources` 集合；同时旧 epoch / generation 时 epoch 优先，只计一次丢弃；participant superseded 后重新入队，累计各段 pending 等待，不混入 IO 时长。
+- settlement 连续 stale 从首次起计，包含重试等待；滞后是未 ready 耗时及 readiness receipt 消费 token 与当前 snapshot token 是否不同，不对 commitRevision / settlementVersion 等不同序列作减法。
+- terminal 在首次权威确认时记录；首个先到 ACK 仅配对一次，无 ACK 或 terminal 先到不造 duration。
+- activation 按完整 ACTIVATING → ACTIVE/退出周期计时，包含重试等待；retain/release 阶段分别记录，不把 ACTIVE 后 release 混入激活完成耗时。
+- 覆盖 BUY、SELL、MONITOR 三队列，以及 startup/open rebuilt 和原开盘重试边界；单次 snapshot commit、开始或重试中间态不冒充完整 rebuilt。
+
+完整口径与非干扰约束见实施计划 §14。原独立 `fullchain-coverage-review` 的结论仍为关键链无已证实缺陷，且**未覆盖当时并行观测、未动态运行**；不倒改其范围。本轮另完成 snapshot、settlement、order、seat/queue/lifecycle、diagnostics wiring 五组独立补审：snapshot 的唯一 sources 集合去重 finding 已修并复核关闭，其余未发现已确认缺陷。动态通过另由唯一验证者完整执行证明，不以 review 代替。
+
+### §13 / §17 当前真实测试索引
+
+下列实际职责镜像已纳入唯一验证者通过的本轮完整测试；逐条矩阵与当前观测断言见实施计划 §13.7，历史精度证据仍保留于 §20.1，实际执行依据统一见 §21。旧阶段列出的来源路径/建议文件名不按当前可执行命令使用，也不把历史数字改写成本轮结果。
+
+| 条款 | 当前职责镜像入口 |
+| --- | --- |
+| §13.2 / §17.1 snapshot 与消费覆盖 | `tests/application/accountPositionSnapshot/{index,componentAuthorization}.test.ts`；`tests/integration/accountPositionConsistency/{orderEconomicCoverage,accountAwaitReplay,settlementSourceRegistration,sealedBoundarySettlementAdmission}.test.ts`。 |
+| §13.3 / §17.2 readiness、派生防旧写与 completion | `tests/application/postTradeSettlement/{postTradeSettlement.business,postTradeSettlement.concurrency,readinessGate}.test.ts`；`tests/integration/postTradeSettlementOwner.integration.test.ts`。 |
+| §13.4 / §17.3 mutation、query/push/recovery | `tests/infrastructure/longbridge/trade/{tradeMutationAdapter,orderFactMapper}.test.ts`；`tests/application/orderExecution/submitFlow.errorClassification.business.test.ts`；`tests/application/orderTracking/orderMonitor/{orderOps.business,recoveryFlow.business,terminalSnapshotFacts.business,openStateAmountRevision.business}.test.ts`。 |
+| §13.4.1 / §17.3 目的隔离 | `tests/integration/{staticSellProtectiveIsolation,sharedSellProtectiveIsolation}.integration.test.ts`；`tests/application/orderExecution/finalQuoteMutationPermit.business.test.ts`。 |
+| §13.4.2 / §17.3、§17.5 金融/V1/离线恢复 | §20.1 原精度矩阵；`tests/integration/architectureRefactoringRecovery/recovery.integration.test.ts`；`tests/application/tradingDayRebuild/loadTradingDayRuntimeSnapshot.test.ts`；`tests/application/postTradeSettlement/postTradeSettlement.financial.test.ts`。 |
+| §13.5 / §17.3 activation 与 startup/open rebuild | `tests/application/seatActivation/{orderReadFence.business,seatRefreshCatchUp.business,seatRefreshRelease.business,rebuiltSeats}.test.ts`；`tests/application/tradingDayRebuild/{startupRebuild,openRebuild}.test.ts`；`tests/integration/{seatRefreshDayEpoch,startupSettlementReadiness,rebuildSettlementReadiness,strategyRecoveryStartup}.integration.test.ts`。 |
+| §13.5 / §17.4 lifecycle、cleanup、self-drain | `tests/app/lifecycle/{lifecycleChecklist,lifecycleChecklist.wiring}.test.ts`；`tests/runtime/lifecycle/dayLifecycleManager.test.ts`；`tests/runtime/lifecycle/cacheDomains/signalRuntimeTermination.test.ts`；`tests/app/shutdown/createCleanup.business.test.ts`；`tests/app/runAppTerminationMatrix.business.test.ts`；`tests/integration/postTradeDrainLifecycle.integration.test.ts`。 |
+| §17.3 / §17.5 交易、策略、寻标、换标与末日 | `tests/integration/{buyFlow,sellFlow,protectiveLiquidation,doomsday,singleActiveStrategyExecution,periodicAutoSymbolChain,autoSearchPolicyConsistency,terminalSwitchFinalization}.integration.test.ts`；`tests/runtime/timeWakeupEvaluationProgram/business.test.ts`。 |
+| §13.6 / §17.4 静态边界与 P6 截止债务 | `tests/architecture/refactoring/{freeze,helperExecution,numericBoundary,strategyDynamicBoundary}.test.ts`；`tests/architecture/{longbridgeBoundary,importBoundary,typeOrganization}.test.ts`；本节门禁不替代业务行为验证。 |
+| §14 / §17.6 logger / snapshot | `tests/infrastructure/diagnostics/index.test.ts`；`tests/application/accountPositionSnapshot/observability.test.ts`；真实 batch、sources 集合、epoch 优先、participant 累计 pending、IO settled 与失败非干扰。 |
+| §14 / §17.6 settlement / order | `tests/application/postTradeSettlement/{readinessGate,protectionRecovery}.test.ts`；`tests/application/orderTracking/orderMonitor/orderObservation.business.test.ts`；`tests/integration/architectureRefactoringP1Native/trade/nativeSubmitObservation.test.ts`；连续 stale/token、同步 completion、首次权威 terminal/ACK 与原错误身份。 |
+| §14 / §17.6 seat / queue / lifecycle | `tests/runtime/seatDiagnosticRuntime/business.test.ts`；`tests/application/seatActivation/seatRefreshRelease.business.test.ts`；`tests/runtime/asyncProgram/{tradeTaskQueue,monitorTaskQueue}/diagnostics.test.ts`；`tests/application/tradingDayRebuild/startupRebuild.test.ts`；`tests/runtime/lifecycle/dayLifecycleDiagnostics.test.ts`；完整 activation、retain/release、三队列和实际 startup/open rebuilt / 原重试。 |
+
+### 本轮最终离线验收证据（五项门禁通过）
+
+已读取并核实唯一验证者 `offline-final-verifier` 的 `FINAL-VALIDATION-REPORT.md` 与 `architecture-evidence.json`。证据根为 `C:/WINDOWS/TEMP/hsi-p6-final-validation-20261016-180854/`；原始 HEAD `cf543994945b8351d2ce5e848ab3a2159ce0af9c`，Bun 1.4.2，所有实现/文档 owner 显式停写后各门禁仅串行执行一次，无失败复跑：
+
+| 顺序 | 实际命令                           | 退出码 | Wall 耗时 |
+| ---- | ---------------------------------- | ------ | --------- |
+| 1    | `bun --no-env-file run format`     | 0      | 79.631s   |
+| 2    | `bun --no-env-file run lint`       | 0      | 64.639s   |
+| 3    | `bun --no-env-file run type-check` | 0      | 6.396s    |
+| 4    | `bun --no-env-file run test`       | 0      | 268.934s  |
+| 5    | `bun --no-env-file run build`      | 0      | 3.096s    |
+
+完整顶层测试为 **3019 pass / 0 fail，311 files，18455 expect() calls**，Bun 测试时长 268.50s；嵌套 fixture 数字不累加或替代顶层汇总。精确命令/参数/时间/退出码见 `summaries/*.json`，直接写入的 stdout/stderr 见 `raw/`；逐项原始日志路径和安全边界见实施计划 §21。
+
+| 闭合项 | 已核实证据 |
+| --- | --- |
+| §14 观测与非干扰 | 新增独立补审已完成，sources 去重 finding 已关闭；真实 owner 的当前断言通过，不再借旧 fullchain review 证明并行改动。 |
+| format 精确快照 | format 前复制 815 files / 18,365,055 bytes，覆盖 tracked 与非忽略 untracked，停写工作树共 175 个修改/新增文件；环境文件、凭据、日志不读取。Prettier write＋ESLint fix 的 `format-delta.json` 为 0 byte 变化、0 个需还原文件；五门禁/scan 后、最终文档补证前的 815 文件仍与快照相同，Git status 未变。 |
+| P6 九类债务与最终边界 | 只读 scanner 覆盖 750 source/test TS，imports / uses / origins / legacy / owners / snapshot / snapshotExposures / violations / helperCalls 全为 0；完整测试中最终 Longbridge runtime/type/dynamic/NONLITERAL 边界通过，唯一观察到的 TradeContext source 为 `src/infrastructure/longbridge/trade/brokerAccessAdapter.ts`。 |
+| 冻结与物理残留 | stage 仍为 P6，baseline/unresolved 的初始快照、门禁后 current 与 HEAD SHA-256 一致，原 occurrence/额度/截止未改未重采；178 个冻结到期旧源路径及直接镜像均无残留，`src/{core,main,services}` / `tests/{core,main,services}` 六个旧根物理不存在。 |
+| 离线环境 | 系统变量白名单＋隔离 HOME/TEMP 等目录，所有 Bun 使用 `--no-env-file` 且保留 `BUN_OPTIONS=--no-env-file`；launcher 无 `APP_LOG_ROOT_DIR`，使用 preload 默认 `tests/logs`。既有 SDK guard 拒绝 `TradeContext.new` / `QuoteContext.new` / `OAuth.build`，不是 OS 网络隔离；未启动 app/start/dev、构建产物或真实 SDK 会话，未读业务 `.env`、生产日志或真实凭据。 |
+| §17 收口 | 离线项按当前证据闭合；未来生产阻断保留未勾选。本轮补齐 P0–P6 剩余离线任务，不虚构 P7，不改写历史 P4.5 数字或历史 P5/P6 未执行事实。 |
+| 最终文档检查 | 门禁后、最终补证前的 `git diff --check` 已 exit 0；本次补证后交同一唯一验证者仅执行两文件 scoped prettier check 与 `git diff --check`，此处不提前宣称后续结果，不无故重跑全量门禁。 |
+
+本机临时证据根保留原始执行依据，但不是仓库长期审计归档。最终文档 owner 停写后交验证者执行：
+
+```text
+bun --no-env-file node_modules/prettier/bin/prettier.cjs --check docs/architecture/architecture-refactoring-implementation-plan.md tests/architecture/refactoring/README.md
+git diff --check
+```
+
+**离线实施与最终门禁已通过，不等于生产发布许可。未来生产发布阻断仍未验证：**真实原始 V1＋权威订单逐条对账，以及精度迁移后候选版/指定回退版完整恢复。mock/脱敏 fixtures、静态 review、完整离线测试或 V1 schema 可读均不替代这两项；本轮不发布、不开门、不连接实盘。

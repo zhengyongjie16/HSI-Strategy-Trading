@@ -478,6 +478,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
 
   const submitTargetOrder = createSubmitTargetOrder({
     logger: logger,
+    diagnostics: deps.diagnostics,
     readSellPositions,
     tradeMutationPort,
     rateLimiter,

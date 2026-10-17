@@ -1,4 +1,5 @@
 import { wait } from '../../../src/infrastructure/time/index.js';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createAccountSnapshotDouble,
@@ -134,6 +135,7 @@ async function createBuyExecutionFixture(params: {
     };
   const executorDeps = {
     logger: createLoggerDouble(),
+    diagnostics: createDiagnosticObserverDouble(),
     rateLimiter: createMutationRateLimiter(events),
     marketDataClient: createMarketDataClientDouble({
       getQuotes: async (symbols) => {
@@ -232,6 +234,7 @@ async function createSellExecutionFixture(params: {
 
   const operations = native.createOperations({
     logger: createLoggerDouble(),
+    diagnostics: createDiagnosticObserverDouble(),
     wait: wait,
     runtime: authority.economic.runtime,
     rateLimiter: createMutationRateLimiter(events),
@@ -341,6 +344,7 @@ async function createSellExecutionFixture(params: {
   const orderMonitor = createBaseOrderMonitorDouble(orderMonitorOverrides);
   const executor = native.createExecutor({
     logger: createLoggerDouble(),
+    diagnostics: createDiagnosticObserverDouble(),
     rateLimiter: createMutationRateLimiter(events),
     marketDataClient: createMarketDataClientDouble({
       getQuotes: async (symbols) => {

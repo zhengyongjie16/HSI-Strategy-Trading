@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
 import type { RuntimeStateFixtures } from '../../helpers/types.js';
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
@@ -78,6 +79,7 @@ describe('Quote drain 午夜重试', () => {
       });
       const completedDomains: string[] = [];
       const manager = createDayLifecycleManager({
+        diagnostics: createDiagnosticObserverDouble(),
         snapshot,
         mutableState: state.lifecycleState,
         termination,

@@ -11,6 +11,7 @@ import { validateAllConfig } from '../../config/validator/index.js';
 import { createTradingConfig } from '../../config/trading/index.js';
 import { createWarrantListCache } from '../../infrastructure/longbridge/market/warrantListCache/index.js';
 import { createSymbolRegistry } from '../../domain/seat/symbolRegistry.js';
+import { createSeatDiagnosticRuntime } from '../../runtime/seatDiagnosticRuntime/index.js';
 import { logger } from '../../infrastructure/logger/index.js';
 import { getHKDateKey, getRequiredHKDateKey } from '../../utils/time/index.js';
 import { formatError } from '../../utils/error/index.js';
@@ -33,12 +34,26 @@ function createPreGateRuntimeFactory(
   return async function createPreGateRuntime(
     params: CreatePreGateRuntimeParams,
   ): Promise<PreGateRuntime | null> {
-    const { env, cleanup, termination } = params;
+    const { env, cleanup, termination, diagnostics, clock } = params;
     const tradingConfig = createTradingConfig({ logger: logger, env });
     await validateAllConfig({ logger: logger, env, tradingConfig });
     if (termination.isTerminated()) return null;
 
     const symbolRegistry = createSymbolRegistry(tradingConfig.monitor);
+    const seatDiagnosticRuntime = createSeatDiagnosticRuntime({
+      symbolRegistry,
+      diagnostics,
+      clock,
+    });
+    cleanup.register({
+      phase: 'STOP_SEAT_DIAGNOSTIC_RUNTIME',
+      step: '注销席位被动诊断订阅',
+      handler: () => {
+        seatDiagnosticRuntime.stop();
+      },
+    });
+    // 仅订阅诊断，在首个启动席位 mutation 前开始；不启动业务清理或激活 dispatcher。
+    seatDiagnosticRuntime.start();
     const warrantListCache = createWarrantListCache();
     const warrantListCacheConfig = {
       cache: warrantListCache,
@@ -90,6 +105,7 @@ function createPreGateRuntimeFactory(
     if (termination.isTerminated()) return null;
 
     return {
+      diagnostics,
       brokerClientFactory,
       tradingConfig,
       symbolRegistry,

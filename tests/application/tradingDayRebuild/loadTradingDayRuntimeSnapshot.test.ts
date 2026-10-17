@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import type { AccountService } from '../../../src/types/accountReadPorts.js';
 import type { RuntimeStateFixtures } from '../../helpers/types.js';
 
@@ -120,6 +121,8 @@ function createBaseDeps(
   const mixedTradeLogRepository =
     overrides.mixedTradeLogRepository ?? createMixedTradeLogRepositoryDouble();
   const postTrade = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination,
@@ -957,7 +960,11 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       info: { isTradingDay: true, isHalfDay: false },
     };
     const symbolRegistry = createSymbolRegistry(tradingConfig.monitor);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const snapshot = createEmptySnapshotFixture({ readPort: createReadyTrader().accountService });
     const seatActivationDispatcher = createSeatActivationDispatcher({
       logger: createLoggerDouble(),

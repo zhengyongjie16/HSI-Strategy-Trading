@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { createLoggerDouble, createSignalDouble } from '../../../helpers/testDoubles.js';
 
 /** 普通 SELL runtime 镜像：application 重试指令回流 FIFO，取消句柄与迟到结果不恢复旧任务。 */
@@ -55,7 +56,10 @@ function retry(signalValue: ExecutableSellSignal, attempts: number): SellQuoteRe
 
 describe('SELL FIFO retry scheduling', () => {
   it('keeps FIFO moving while quote retry waits and passes the original instruction back to owner', async () => {
-    const queue = createSellTaskQueue();
+    const queue = createSellTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const timers = schedulerFixture();
     const calls: string[] = [];
     const first = signal();
@@ -94,7 +98,10 @@ describe('SELL FIFO retry scheduling', () => {
   });
 
   it('schedules every unresolved round using application-issued attempts instead of losing the second retry', async () => {
-    const queue = createSellTaskQueue();
+    const queue = createSellTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const timers = schedulerFixture();
     const attempts: number[] = [];
     const worker = createSellProcessor({
@@ -133,7 +140,10 @@ describe('SELL FIFO retry scheduling', () => {
   it.each(['stop', 'stopAndDrain', 'restart'] as const)(
     '%s removes an already re-enqueued retry by exact signal identity and preserves ordinary FIFO tasks',
     async (operation) => {
-      const queue = createSellTaskQueue();
+      const queue = createSellTaskQueue({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      });
       const timers = schedulerFixture();
       const original = signal();
       const retrySignal = { ...original, triggerTime: new Date(original.triggerTime) };
@@ -181,7 +191,10 @@ describe('SELL FIFO retry scheduling', () => {
   );
 
   it('cancels timer on stopAndDrain and an already-dispatched callback cannot enqueue after restart', async () => {
-    const queue = createSellTaskQueue();
+    const queue = createSellTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const timers = schedulerFixture();
     let calls = 0;
     const worker = createSellProcessor({

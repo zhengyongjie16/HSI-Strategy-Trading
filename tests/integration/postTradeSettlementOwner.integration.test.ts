@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { createRuntimeStateFixtures } from '../helpers/runtimeStateFixtures.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
@@ -199,6 +200,7 @@ test('same native tracking owners wait for real position subscription ack before
   });
 
   monitor = native.createMonitor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     requestExternalApi: wrapExternalApiRequest,

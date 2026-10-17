@@ -1,6 +1,7 @@
 import type { ScheduleBoundedOneShotAt } from '../../types/timer.js';
 import type { ExternalApiRequest } from '../../types/apiFailure.js';
 import type { Logger } from '../../types/logger.js';
+import type { DiagnosticObserver } from '../../types/diagnostics.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../../domain/liquidation/episode/types.js';
 import type {
   OrderMutationRequest,
@@ -222,6 +223,7 @@ export interface OrderHoldRegistry {
  * 使用范围：仅在 trader 模块内部使用。
  */
 export type OrderMonitorDeps = {
+  readonly diagnostics: DiagnosticObserver;
   readonly wait: (delayMs: number) => Promise<void>;
   readonly scheduleBoundedOneShotAt: ScheduleBoundedOneShotAt;
   readonly requestExternalApi: ExternalApiRequest;

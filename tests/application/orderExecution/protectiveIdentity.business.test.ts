@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createMarketDataClientDouble,
@@ -79,6 +80,7 @@ function createHarness(params: {
     },
   };
   const executor = createOrderExecutor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     readSellPositions: async () => {
       reads++;

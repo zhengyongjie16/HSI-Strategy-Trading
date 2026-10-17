@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import type { RuntimeStateFixtures } from '../helpers/types.js';
 
 /**
@@ -148,7 +149,11 @@ async function createActivationHarness(params: {
     snapshot,
     termination,
   });
-  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+    logger: createLoggerDouble(),
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
+  });
   const seatActivationDispatcher = createSeatActivationDispatcher({
     logger: createLoggerDouble(),
     termination,

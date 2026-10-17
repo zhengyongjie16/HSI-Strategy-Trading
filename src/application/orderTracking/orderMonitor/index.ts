@@ -8,6 +8,7 @@
  */
 
 import { withTrustedOrderExecutionTimes } from '../../../domain/order/executionFact.js';
+import { recordOrderTerminalConfirmation } from './orderObservation.js';
 import {
   assertProtectiveSellRawTerminalStateFactsReady,
   normalizeTerminalStateSnapshot,
@@ -174,6 +175,8 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
   const settlementFlow = createSettlementFlow({
     runtime,
+    diagnostics: deps.diagnostics,
+    now,
     orderHoldRegistry,
     orderRecorder,
     dailyLossTracker,
@@ -198,6 +201,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   const orderOps = createOrderOps({
     wait: deps.wait,
     logger: logger,
+    diagnostics: deps.diagnostics,
     captureWorkGuard,
     tradeMutationPort: deps.tradeMutationPort,
     termination,
@@ -218,6 +222,8 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   let activeHandler: ((event: OrderFact) => void) | null = null;
   const recoveryFlow = createRecoveryFlow({
     logger: logger,
+    diagnostics: deps.diagnostics,
+    now,
     termination,
     runtime,
     orderHoldRegistry,
@@ -239,6 +245,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
   const eventFlow = createEventFlow({
     logger: logger,
+    diagnostics: deps.diagnostics,
     now,
     monitorConfig: tradingConfig.monitor,
     runtime,
@@ -285,6 +292,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
   const routeProcessor = createRouteProcessor({
     logger: logger,
+    diagnostics: deps.diagnostics,
     tradeMutationPort: deps.tradeMutationPort,
     now,
     runtime,
@@ -348,6 +356,15 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       trackedOrder,
       terminalState,
       isProtectiveSell,
+    );
+    recordOrderTerminalConfirmation(
+      { runtime, diagnostics: deps.diagnostics, now },
+      {
+        orderId,
+        closedReason: normalizedTerminalState.closedReason,
+        source: 'STATE_CHECK',
+        orderUpdatedAtMs: normalizedTerminalState.orderUpdatedAtMs,
+      },
     );
     const alreadySettled = runtime.closedOrderIds.has(orderId);
     const settlementResult = settlementFlow.settleOrder({

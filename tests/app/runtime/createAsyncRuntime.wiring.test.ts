@@ -15,6 +15,7 @@ import type { RuntimeTermination } from '../../../src/types/runtime.js';
  * - 外部 API 失败时以 failed 状态回写 owner；非 API 错误进入异步 fatal 通道且不回写 periodic route
  */
 import { afterEach, describe, expect, it } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createAsyncRuntime as buildAsyncRuntime } from '../../../src/app/runtime/createAsyncRuntime.js';
 import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
@@ -147,6 +148,7 @@ async function createDeps(
       },
     },
     preGateRuntime: {
+      diagnostics: createDiagnosticObserverDouble(),
       brokerClientFactory: createBrokerClientFactoryDouble(),
       tradingConfig: createTradingConfig(),
       symbolRegistry: createSymbolRegistryDouble(),
@@ -232,8 +234,14 @@ async function createDeps(
       doomsdayClearanceWorkflow: createDoomsdayClearanceWorkflowDouble(),
       ordinaryBuy: createOrdinaryBuyWorkflowDouble(),
       ordinarySell: createOrdinarySellWorkflowDouble(),
-      buyTaskQueue: createBuyTaskQueue(),
-      sellTaskQueue: createSellTaskQueue(),
+      buyTaskQueue: createBuyTaskQueue({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      }),
+      sellTaskQueue: createSellTaskQueue({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      }),
       monitorTaskQueue,
     },
   };
@@ -241,7 +249,11 @@ async function createDeps(
 
 describe('app createAsyncRuntime wiring', () => {
   it('reports skipped outcome to periodic route when lifecycle gate skips AUTO_SYMBOL_TICK', async () => {
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     const runtime = createAsyncRuntime(
       await createDeps({
@@ -277,7 +289,11 @@ describe('app createAsyncRuntime wiring', () => {
     const injectedNow = new Date(Date.UTC(2026, 1, 16, 7, 56));
     Date.now = () => Date.UTC(2026, 1, 16, 2, 0);
     try {
-      const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+      const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+        logger: createLoggerDouble(),
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      });
       const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
       let periodicDueCalls = 0;
       const context = createMonitorContext({
@@ -348,7 +364,11 @@ describe('app createAsyncRuntime wiring', () => {
   it('marks AUTO_SYMBOL_TICK API failures as failed without entering async fatal channel', async () => {
     const originalNow = Date.now;
     Date.now = () => Date.UTC(2026, 1, 16, 2, 0);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     try {
       const context = createMonitorContext({
@@ -419,7 +439,11 @@ describe('app createAsyncRuntime wiring', () => {
   it('sends non API AUTO_SYMBOL_TICK processing errors to async fatal channel', async () => {
     const originalNow = Date.now;
     Date.now = () => Date.UTC(2026, 1, 16, 2, 0);
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const replanCalls: Parameters<PeriodicSwitchWakeupRuntime['replanRouteAfterTask']>[0][] = [];
     try {
       const context = createMonitorContext({

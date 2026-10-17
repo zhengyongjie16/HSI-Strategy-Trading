@@ -8,6 +8,20 @@ import type { LifecycleChecklist } from './types.js';
 export const LIFECYCLE_CHECKLIST: LifecycleChecklist = {
   resources: [
     {
+      resource: 'seatDiagnosticRuntime',
+      createdBy: 'createPreGateRuntime',
+      runsWhileTradingClosed: true,
+      retainedBy: 'pre-gate 创建后立即订阅；跨午夜和重建保留，仅最终 cleanup 注销',
+      finalDrainAndDispose: [['STOP_SEAT_DIAGNOSTIC_RUNTIME', 'stop']],
+    },
+    {
+      resource: 'diagnostics',
+      createdBy: 'runApp',
+      runsWhileTradingClosed: true,
+      retainedBy: '无状态 logger adapter，不持有订阅、调度或独立 disposer',
+      finalDrainAndDispose: [],
+    },
+    {
       resource: 'lifecycleState',
       createdBy: 'createPostGateRuntime',
       runsWhileTradingClosed: true,

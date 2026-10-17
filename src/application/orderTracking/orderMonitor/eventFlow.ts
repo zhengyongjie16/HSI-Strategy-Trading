@@ -8,6 +8,7 @@
  */
 
 import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../constants/index.js';
+import { recordOrderTerminalConfirmation } from './orderObservation.js';
 import {
   assertProtectiveSellRawObservationFactsReady,
   mergeMonotonicOrderFact,
@@ -112,6 +113,18 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
         )
           throw new Error('[订单监控] 已有broker事实的新观察缺少完整价格依据');
 
+        const closedReason = resolveOrderClosedReasonFromStatus(event.status);
+        if (closedReason !== null) {
+          recordOrderTerminalConfirmation(deps, {
+            orderId,
+            symbol: event.symbol,
+            side: event.executionSide,
+            closedReason,
+            source: 'WS',
+            orderUpdatedAtMs: event.updatedAtMs,
+          });
+        }
+
         // tracking 已关闭不关闭事实准入；revision-only 也交给同一 owner 保存水位。
         recordCumulativeExecution({
           orderId,
@@ -154,6 +167,15 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
     }
 
     const closedReason = resolveOrderClosedReasonFromStatus(mergedFact.status);
+    if (closedReason !== null) {
+      recordOrderTerminalConfirmation(deps, {
+        orderId,
+        closedReason,
+        source: 'WS',
+        orderUpdatedAtMs: mergedFact.updatedAtMs,
+      });
+    }
+
     const requiresDurableProtectiveSettlementBeforeTrackedFact =
       closedReason !== null &&
       trackedOrder.side === 'SELL' &&

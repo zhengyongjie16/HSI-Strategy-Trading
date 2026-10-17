@@ -1,4 +1,5 @@
 /** 有状态替代策略验收：验证宿主 delayed emitter 与策略生命周期公共契约。 */
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { describe, expect, it } from 'bun:test';
 import { createOpenRebuildContextFixture } from '../lifecycle/fixtures/openRebuildContext.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
@@ -109,7 +110,11 @@ function createSignalDomain(h: EventHarness) {
     quoteSubscriptionRuntime: quoteSubscriptionOwner,
     buyTaskQueue: h.buyTaskQueue,
     sellTaskQueue: h.sellTaskQueue,
-    monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
+    monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    }),
   };
   return { domain: createSignalRuntimeDomain(deps), monitorContext };
 }
@@ -128,7 +133,11 @@ describe('stateful replacement strategy public contract', () => {
       },
       buyTaskQueue: h.buyTaskQueue,
       sellTaskQueue: h.sellTaskQueue,
-      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
+      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>({
+        logger: createLoggerDouble(),
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      }),
     });
 
     const originTime = h.mutable.nowMs;

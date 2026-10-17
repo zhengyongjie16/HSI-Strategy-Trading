@@ -13,6 +13,9 @@ import {
  */
 
 import { describe, expect, it } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
+import { DIAGNOSTIC_OPERATIONS } from '../../../../src/constants/diagnostics.js';
+import type { DiagnosticFields } from '../../../../src/types/diagnostics.js';
 import type { createSettlementFlow } from '../../../../src/application/orderTracking/orderMonitor/settlementFlow.js';
 import type {
   FinalizeOrderSettlementParams,
@@ -179,7 +182,7 @@ function attachTrackedOrders(
   const orderIds = new Set<string>();
   for (const order of orders) {
     runtime.trackedOrders.set(order.orderId, order);
-    runtime.trackedOrderLifecycles.set(order.orderId, 'OPEN');
+    runtime.trackedOrderLifecycles.set(order.orderId, { state: 'OPEN' });
     orderIds.add(order.orderId);
   }
 
@@ -328,10 +331,11 @@ async function createTimeoutSellHandoffHarness(orderId: string): Promise<{
   };
 }
 
-type TestRouteDeps = Omit<RouteProcessorDeps, 'ctx' | 'tradeMutationPort'> &
+type TestRouteDeps = Omit<RouteProcessorDeps, 'ctx' | 'tradeMutationPort' | 'diagnostics'> &
+  Partial<Pick<RouteProcessorDeps, 'diagnostics'>> &
   Readonly<{ native: Awaited<ReturnType<typeof createBrokerIngressFixture>> }>;
 function createRouteProcessor(deps: TestRouteDeps) {
-  return deps.native.createRoute(deps);
+  return deps.native.createRoute({ diagnostics: createDiagnosticObserverDouble(), ...deps });
 }
 
 async function readTerminalExecutionStatus(
@@ -382,6 +386,7 @@ async function createNativeFixture() {
 
 async function createDeps(params?: {
   readonly runtime?: OrderMonitorRuntimeStore;
+  readonly diagnostics?: RouteProcessorDeps['diagnostics'];
   readonly config?: OrderMonitorConfig;
   readonly cancelOrder?: RouteProcessorDeps['cancelOrder'];
   readonly replaceOrderPrice?: RouteProcessorDeps['replaceOrderPrice'];
@@ -403,6 +408,7 @@ async function createDeps(params?: {
   const native = params?.native ?? (await createNativeFixture());
   const deps: TestRouteDeps = {
     logger: createLoggerDouble(),
+    diagnostics: params?.diagnostics ?? createDiagnosticObserverDouble(),
     native,
     now: params?.now ?? (() => new Date(Date.now())),
     runtime,
@@ -902,7 +908,7 @@ describe('orderMonitor routeProcessor', () => {
       }),
       settleOrder: () => {
         runtime.trackedOrders.delete('SELL-TIMEOUT-NO-REMAINDER');
-        runtime.trackedOrderLifecycles.set('SELL-TIMEOUT-NO-REMAINDER', 'CLOSED');
+        runtime.trackedOrderLifecycles.set('SELL-TIMEOUT-NO-REMAINDER', { state: 'CLOSED' });
         runtime.closedOrderIds.add('SELL-TIMEOUT-NO-REMAINDER');
         runtime.trackedOrderIdsBySymbol.get('BULL.HK')?.delete('SELL-TIMEOUT-NO-REMAINDER');
         return {
@@ -1286,6 +1292,10 @@ describe('orderMonitor routeProcessor', () => {
   it('卖单 timeout 转市价在 submitOrder 已发起后 reject 时保留 follow-up placeholder', async () => {
     const { runtime, storage, orderRecorder, settlementFlow } =
       await createTimeoutSellHandoffHarness('SELL-TIMEOUT-SUBMIT-RESULT-UNKNOWN');
+    const diagnosticRecords: Array<{
+      readonly operation: string;
+      readonly fields: DiagnosticFields;
+    }> = [];
     const acceptedContinuations: Array<readonly [string, string]> = [];
     const native = await createNativeFixture();
     const submitStarted = createDeferredValue<null>();
@@ -1300,6 +1310,12 @@ describe('orderMonitor routeProcessor', () => {
       orderRecorder,
       settleOrder: settlementFlow.settleOrder,
       native,
+      diagnostics: {
+        record: (operation, fields) => {
+          diagnosticRecords.push({ operation, fields });
+          throw new Error('observer failure cannot alter timeout submit fatal');
+        },
+      },
       recordAcceptedSellContinuation: (originalId, marketId) => {
         acceptedContinuations.push([originalId, marketId]);
       },
@@ -1332,6 +1348,17 @@ describe('orderMonitor routeProcessor', () => {
       code: null,
     });
     expect(receivedError).toHaveProperty('cause', requestFailure);
+    expect(diagnosticRecords.map((record) => record.operation)).toEqual([
+      DIAGNOSTIC_OPERATIONS.ORDER_TERMINAL_CONFIRMED,
+      DIAGNOSTIC_OPERATIONS.ORDER_SUBMIT_UNKNOWN_FATAL,
+    ]);
+
+    expect(diagnosticRecords[1]?.fields).toMatchObject({
+      count: 1,
+      originalOrderId: 'SELL-TIMEOUT-SUBMIT-RESULT-UNKNOWN',
+      sdkOperation: 'TradeContext.submitOrder',
+    });
+    expect(diagnosticRecords[1]?.fields['orderId']).toBeUndefined();
     expect(acceptedContinuations).toEqual([]);
     expect(native.nativeMutations().filter((entry) => entry.kind === 'SUBMIT')).toHaveLength(1);
 
@@ -2768,13 +2795,13 @@ describe('orderMonitor routeProcessor', () => {
       },
       settleOrder: () => {
         runtime.trackedOrders.delete('SELL-STALE-CONVERT');
-        runtime.trackedOrderLifecycles.set('SELL-STALE-CONVERT', 'CLOSED');
+        runtime.trackedOrderLifecycles.set('SELL-STALE-CONVERT', { state: 'CLOSED' });
         runtime.closedOrderIds.add('SELL-STALE-CONVERT');
         runtime.trackedOrderIdsBySymbol.delete('BULL.HK');
         runtime.routeStatesBySymbol.delete('BULL.HK');
 
         runtime.trackedOrders.set(nextOrder.orderId, nextOrder);
-        runtime.trackedOrderLifecycles.set(nextOrder.orderId, 'OPEN');
+        runtime.trackedOrderLifecycles.set(nextOrder.orderId, { state: 'OPEN' });
         runtime.trackedOrderIdsBySymbol.set('BULL.HK', new Set([nextOrder.orderId]));
         runtime.routeStatesBySymbol.set('BULL.HK', {
           symbol: 'BULL.HK',

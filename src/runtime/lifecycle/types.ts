@@ -3,6 +3,7 @@ import type { AccountPositionSnapshot, SnapshotToken } from '../../types/account
 import type { Logger } from '../../types/logger.js';
 import type { LifecycleMutableState } from '../../types/lifecycle.js';
 import type { LifecycleRuntimeFlags } from '../../types/timeControlPlane.js';
+import type { DiagnosticObserver } from '../../types/diagnostics.js';
 
 /**
  * 传递给各 CacheDomain 回调的上下文（midnightClear / openRebuild 的入参）。
@@ -54,6 +55,7 @@ export interface CacheDomain {
  * 使用范围：仅 lifecycle 及启动流程使用，内部使用。
  */
 export interface DayLifecycleManagerDeps {
+  readonly diagnostics: DiagnosticObserver;
   readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   readonly mutableState: LifecycleMutableState;
   readonly cacheDomains: ReadonlyArray<CacheDomain>;

@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createAccountSnapshotDouble,
@@ -29,6 +30,10 @@ import { createMonitorContext, waitUntil } from '../../helpers/asyncProgram.js';
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessor } from '../../runtime/asyncProgram/monitorTaskProcessor/fixtures.js';
 import { createSeatActivationFixture } from './fixtures.js';
+import { createSeatActivationWorkflow } from '../../../src/application/seatActivation/index.js';
+import { createSeatDiagnosticRuntime } from '../../../src/runtime/seatDiagnosticRuntime/index.js';
+import { DIAGNOSTIC_OPERATIONS } from '../../../src/constants/diagnostics.js';
+import type { DiagnosticFields } from '../../../src/types/diagnostics.js';
 
 type SeatRefreshTask = Parameters<ReturnType<typeof createSeatActivationFixture>['activate']>[0];
 
@@ -267,6 +272,126 @@ async function captureHandlerFailure(
   expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
   return thrown;
 }
+
+describe('SEAT_REFRESH diagnostics distinguish activation from retain release', () => {
+  it('counts the real API retry wait in activation, ends at ACTIVE before awaited release, and isolates observer failure', async () => {
+    const protocol = await createActivationProtocolFixture();
+    const context = protocol.context;
+    const activating = context.symbolRegistry.getSeatState('LONG');
+    if (activating.status !== 'ACTIVATING') throw new Error('expected ACTIVATING fixture');
+
+    context.symbolRegistry.updateSeatState('LONG', {
+      ...activating,
+      status: 'EMPTY',
+      symbol: null,
+    });
+    let nowMs = 100;
+    const events: DiagnosticFields[] = [];
+    const diagnostics = {
+      record: (operation: string, fields: DiagnosticFields) => {
+        events.push({ ...fields, operation });
+        throw new Error('diagnostic observer unavailable');
+      },
+    };
+    const clock = { now: () => new Date(nowMs) };
+    const runtime = createSeatDiagnosticRuntime({
+      symbolRegistry: context.symbolRegistry,
+      clock,
+      diagnostics,
+    });
+    runtime.start();
+    context.symbolRegistry.updateSeatState('LONG', activating);
+    nowMs = 200;
+    const releaseGate = createDeferred<boolean>();
+    let releaseCalls = 0;
+    let releasing = false;
+    const subscriptions = createObservedQuoteRuntime(protocol, async () => {
+      releaseCalls += 1;
+      if (releaseCalls === 1) return;
+
+      releasing = true;
+      await releaseGate.promise;
+    });
+    const externalFailure = await createExternalApiRequestError({
+      operation: 'QuoteContext.realtimeQuote',
+      attempts: 1,
+      cause: new Error('offline failure'),
+    });
+    let quoteCalls = 0;
+    const successfulClient = createSuccessMarketDataClient(protocol);
+    const workflow = createSeatActivationWorkflow({
+      diagnostics,
+      clock,
+      config: context.config,
+      symbolRegistry: context.symbolRegistry,
+      orders: context.orderRecorder,
+      dailyLoss: context.dailyLossTracker,
+      risk: {
+        prepareUnrealizedLossData: (symbol, isLong, lossOffset) =>
+          context.riskChecker.prepareUnrealizedLossData(
+            context.orderRecorder,
+            symbol,
+            isLong,
+            lossOffset,
+          ),
+        publishUnrealizedLossData: context.riskChecker.publishUnrealizedLossData,
+        setWarrantInfoFromCallPrice: context.riskChecker.setWarrantInfoFromCallPrice,
+      },
+      snapshot: protocol.snapshot,
+      subscriptions,
+      getQuotes: async (symbols) => {
+        quoteCalls += 1;
+        if (quoteCalls === 1) throw externalFailure;
+
+        return successfulClient.getQuotes(symbols);
+      },
+      setDirectionSymbolName: () => {},
+      logger: createLoggerDouble(),
+    });
+    const first = await workflow.activate(createSeatRefreshTask(), () => true);
+    expect(first.status).toBe('retry');
+    if (first.status !== 'retry') throw new Error('expected the existing single retry');
+
+    expect(first.error).toBe(externalFailure);
+    expect(context.symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
+    expect(events).toEqual([
+      expect.objectContaining({
+        operation: DIAGNOSTIC_OPERATIONS.SEAT_ACTIVATION_RETAIN_RELEASED,
+        afterActive: false,
+        outcome: 'RELEASED',
+        apiRetryAttempt: 0,
+      }),
+    ]);
+    nowMs += first.delayMs + 300;
+    const completeActivationDurationMs = nowMs - 100;
+    const running = workflow.activate(first.request, () => true);
+    await waitUntil(() => releasing);
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({
+      operation: DIAGNOSTIC_OPERATIONS.SEAT_ACTIVATION_COMPLETED,
+      outcome: 'ACTIVE',
+      durationMs: completeActivationDurationMs,
+    });
+    nowMs += 5_000;
+    releaseGate.resolve(true);
+    const completed = await running;
+    expect(completed.status).toBe('processed');
+    expect(events).toHaveLength(3);
+    expect(events[2]).toMatchObject({
+      operation: DIAGNOSTIC_OPERATIONS.SEAT_ACTIVATION_RETAIN_RELEASED,
+      phase: 'RETAIN_RELEASE',
+      afterActive: true,
+      outcome: 'RELEASED',
+      durationMs: 5_000,
+      apiRetryAttempt: 1,
+    });
+    expect(events[1]).toMatchObject({ durationMs: completeActivationDurationMs });
+    expect(quoteCalls).toBe(2);
+    expect(releaseCalls).toBe(2);
+    runtime.stop();
+    await protocol.snapshot.waitForIssuedDrain();
+  });
+});
 
 describe('SEAT_REFRESH release error precedence', () => {
   it('保留主体内部错误的 fatal 身份，releaseRetain 外部失败不得替换内部错误', async () => {
@@ -529,7 +654,11 @@ async function createLateFailureHarness(params: {
   readonly isTerminated?: () => boolean;
   readonly releaseFailure?: Error;
 }): Promise<ProcessorHarness> {
-  const queue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+  const queue = createMonitorTaskQueue<MonitorTaskDataMap>({
+    logger: createLoggerDouble(),
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
+  });
   const protocol = await createActivationProtocolFixture();
   const context = protocol.context;
   const quotesStarted = createDeferred<null>();

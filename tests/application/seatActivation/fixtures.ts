@@ -1,4 +1,5 @@
 /** 席位激活测试装配：绑定同一 Context 的真实事实 owner，不复制激活规则或重试决定。 */
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createSeatActivationWorkflow } from '../../../src/application/seatActivation/index.js';
 import { logger } from '../../../src/infrastructure/logger/index.js';
 import type { SeatActivationWorkflow } from '../../../src/application/seatActivation/types.js';
@@ -14,6 +15,7 @@ export function createSeatActivationFixture(deps: ActivationFixtureDeps): SeatAc
     quoteSubscriptionRuntime,
   } = deps;
   return createSeatActivationWorkflow({
+    diagnostics: createDiagnosticObserverDouble(),
     clock,
     config: context.config,
     symbolRegistry: context.symbolRegistry,

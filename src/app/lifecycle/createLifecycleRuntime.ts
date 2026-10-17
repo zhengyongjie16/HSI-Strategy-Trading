@@ -178,6 +178,7 @@ export function createLifecycleRuntime(
     snapshot: postGateRuntime.snapshot,
     cacheDomains,
     logger,
+    diagnostics: params.preGateRuntime.diagnostics,
     termination: params.termination,
   });
 }

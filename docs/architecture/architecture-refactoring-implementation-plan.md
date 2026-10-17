@@ -2,7 +2,7 @@
 
 > 本文是 `docs/architecture/architecture-refactoring-design.md` 的可执行实施计划；两份文档以同一组最终顶层目录和职责边界为目标。
 >
-> 本文定义实施顺序、任务拆分、依赖关系、代码影响、验证方式、发布与回退要求，不表示重构已经完成。目标目录、迁移来源和阶段验收在本文保持一致；实施时按 design §4、§13、附录 A 与本计划的对应条款执行。
+> 本文定义实施顺序、任务拆分、依赖关系、代码影响、验证方式、发布与回退要求；计划条文本身不作为完成证明，本轮离线实施与验证结果以 §21 为准，不授权生产运行。目标目录、迁移来源和阶段验收在本文保持一致；实施时按 design §4、§13、附录 A 与本计划的对应条款执行。
 >
 > **范围更新：金融精度重构已纳入同次架构重构。**设计文档 §8.4 及相关条款中“保留旧 number 转换位置”“精度升级另立需求”的要求，以及 `OrderCommand.price: number` 示例，现在仅作为迁移前基线，不再是数值终态；数值表示、迁移与验收以本计划 §4.4、P0.4、§13.4.2 和 §15 为准。其余目录、owner、事件与事务边界仍沿用设计。本次只更新实施文档，未选择或安装十进制库，未修改代码、依赖或测试。
 >
@@ -15,6 +15,8 @@
 > **已确认精度口径（后续实施唯一依据）：**“金融结果至少准确到小数点后三位；金额配置的整数部分最多 10 位、小数部分最多 3 位，超出直接拒绝，不截断或舍入。该限制不套用于 SDK 权威金融事实、历史文本或派生金额；中间状态不统一量化到三位，基础加减乘及比较保持精确。整手买量直接求精确整数商，成本与日损益保留金额/数量依据，比率判断不使用近似商或显示舍入；显示从精确计算依据按字段既定位数一次 half-even。V1 历史文本/schema 保真、不改写，技术指标不全量升级。P0 按实际支持的输入和业务公式验证库版本、精确接口与计算容量，不以固定 80 位或更多位数承诺无限输入范围下的精度，也不擅自另选业务量化/舍入政策。”例如成交金额 `1000`、数量 `3000` 的均价不能先量化为 `0.333` 再乘回数量而把成本变成 `999`；后续成本计算应保留原金额依据。
 >
 > 实施计划中上述已确认条款优先于相关设计文档中的示意；例如 design §7.4 若示意 protective 自行核对空仓、持久化 completion 并提交内存状态，应按本文 settlement 独占边界理解。本轮只修改本目标文档，不改 design 或其他文件。下列验收项均为未来实施要求，不表示本次文档修改已通过交易测试或实际恢复演练。
+>
+> **当前交付状态（覆盖上文历史“本轮/本次”的时态）：**本轮从原始 HEAD `cf54399`、stage P6 补齐 P0–P6 后剩余离线工作，包含 §14 观测及独立全链路复核；唯一验证者已完成五项串行门禁，完整测试 **3019 pass / 0 fail**，P6 九类债务为零，冻结文件与原始 HEAD 一致。最终文档补证后的两文件 scoped check 交同一验证者执行。早期计划措辞、P0–P4/P4.5 历史事实与测试数字保留原时点含义；当前真实测试索引见 §13.7，本轮证据见 §21。不发布、不开门、不连接实盘，§15 的真实历史对账与候选/指定回退完整恢复仍为未验证的未来生产阻断。
 >
 > 阅读顺序：先看第 4 节终态归属和第 5 节依赖，再按 Phase 0–6 执行；第 7 节列出不可拆分纵切，各阶段给出代码影响、实施任务和验收条件，第 17 节汇总最终验收清单。
 >
@@ -1877,32 +1879,71 @@ bun build
 
 数值保护须有正反例：金融mapper先toNumber、已迁移财务状态改回number、金融格式器回转number应失败；保真文本mapper、经验证的整数数量、时间/计数和既有指标number投影应通过。结合 §13.4.2 的真实值/链路检查，不能仅凭类型名或关键词扫描宣称金融精度通过。
 
+### 13.7 当前真实测试索引（映射 §13 / §17，执行证据见 §21）
+
+前文阶段清单中的旧路径和建议测试名保留为迁移来源/原计划记录；以下以当前实际职责镜像为准，均纳入唯一验证者通过的本轮完整测试。通过依据是 §21 的实际命令与原始输出，不是“文件存在”、历史绿灯或静态 review。§13.4.2 的 P4 历史精度证据另见 §20.1，不将其数字改写成本轮结果。
+
+| 验收条款 | 当前真实入口 | 重点核对 |
+| --- | --- | --- |
+| §13.2 / §17.1：唯一 canonical owner、batch 与版本 | `tests/application/accountPositionSnapshot/index.test.ts`；`tests/application/accountPositionSnapshot/componentAuthorization.test.ts`；`tests/helpers/accountPositionSnapshot.test.ts` | 不附着已发 batch、generation superseded 后重入、waiter 独立取消、双读不半提交、内部错误即时上报但 drain 等全部 IO；component/paired token 与不可变 view。 |
+| §13.2 / §17.1、§17.3：跨入口经济投影与事实失效 | `tests/integration/accountPositionConsistency/orderEconomicCoverage.test.ts`；`tests/integration/accountPositionConsistency/accountAwaitReplay.test.ts`；`tests/integration/accountPositionConsistency/settlementSourceRegistration.test.ts`；`tests/integration/accountPositionConsistency/sealedBoundarySettlementAdmission.test.ts` | API/WS/query 消费覆盖、BUY/SELL 清理与新增量、同量金额修订/终态收尾；已知成交同步登记 generation 与 settlement need，不新增第二账。 |
+| §13.3 / §17.2、§17.3：readiness 与唯一 completion owner | `tests/application/postTradeSettlement/postTradeSettlement.business.test.ts`；`tests/application/postTradeSettlement/postTradeSettlement.concurrency.test.ts`；`tests/application/postTradeSettlement/readinessGate.test.ts`；`tests/integration/postTradeSettlementOwner.integration.test.ts` | subscription/R1/N1 前不 ready、r10/r11 防旧写、普通 snapshot commit 不制造新 stale、多 waiter/跨日取消；durable 失败不推进 boundary/cooldown/episode。 |
+| §13.4 / §17.3：SDK 映射、mutation 与错误身份 | `tests/infrastructure/longbridge/trade/tradeMutationAdapter.test.ts`；`tests/infrastructure/longbridge/trade/orderFactMapper.test.ts`；`tests/application/orderExecution/submitFlow.errorClassification.business.test.ts`；`tests/application/orderTracking/orderMonitor/orderOps.business.test.ts` | UNKNOWN / 明确拒绝 / 未发送 / accepted 后本地失败分离；ACK 非终态、内部错误不包装 UNKNOWN、602013 与 WAIT_WS_ONLY 原策略。 |
+| §13.4 / §17.1、§17.3：query/push/recovery | `tests/application/orderTracking/orderMonitor/recoveryFlow.business.test.ts`；`tests/application/orderTracking/orderMonitor/terminalSnapshotFacts.business.test.ts`；`tests/application/orderTracking/orderMonitor/openStateAmountRevision.business.test.ts`；`tests/integration/closedOrderRevisionWatermark.integration.test.ts` | BOOTSTRAPPING 缓冲、累计事实/金额 revision、终态资源收尾、pending-sell 归属；不以经济去重屏蔽真实新增事实。 |
+| §13.4.1 / §17.3：静态新增量与既有 protective episode | `tests/integration/staticSellProtectiveIsolation.integration.test.ts`；`tests/integration/sharedSellProtectiveIsolation.integration.test.ts`；`tests/application/orderExecution/finalQuoteMutationPermit.business.test.ts` | 旧 protective 订单不被非 protective 扩量 REPLACE；cancel-window partial 先结算，可信终态后新鲜数量重规划；静态新单不推进旧 progress，合法旧 completion 仅由 settlement 提交。 |
+| §13.4.2 / §17.3、§17.5：金融目标、V1 与离线恢复 | §20.1 的精度矩阵；`tests/integration/architectureRefactoringRecovery/recovery.integration.test.ts`；`tests/application/tradingDayRebuild/loadTradingDayRuntimeSnapshot.test.ts`；`tests/application/postTradeSettlement/postTradeSettlement.financial.test.ts` | 精确金额/整数商/显示、完整 loader/rebuild、crash-gap、冷却、原 V1 文本/ID 与冲突阻断；不替代 §15 的真实历史对账或候选/回退版本生产恢复。 |
+| §13.5 / §17.3：activation barrier 与受控 rebuilt seats | `tests/application/seatActivation/orderReadFence.business.test.ts`；`tests/application/seatActivation/seatRefreshCatchUp.business.test.ts`；`tests/application/seatActivation/seatRefreshRelease.business.test.ts`；`tests/application/seatActivation/rebuiltSeats.test.ts`；`tests/integration/seatRefreshDayEpoch.integration.test.ts` | order-read fence、订阅/当前 token 校验后 ACTIVE、retain/release 与主体错误身份、跨日重试取消；受控 rebuilt 仅在完整基线和全局关闭下发布。 |
+| §13.5 / §17.3、§17.5：启动与开盘完整恢复 | `tests/application/tradingDayRebuild/startupRebuild.test.ts`；`tests/application/tradingDayRebuild/openRebuild.test.ts`；`tests/integration/startupSettlementReadiness.integration.test.ts`；`tests/integration/rebuildSettlementReadiness.integration.test.ts`；`tests/integration/strategyRecoveryStartup.integration.test.ts` | captured token、完整订阅 reconcile 与 S freshness；supersession/失败不提前开门，同日重试保留 epoch，旧日结果不恢复事实。 |
+| §13.5 / §17.3、§17.4：lifecycle、cleanup 与 self-drain | `tests/app/lifecycle/lifecycleChecklist.test.ts`；`tests/app/lifecycle/lifecycleChecklist.wiring.test.ts`；`tests/runtime/lifecycle/dayLifecycleManager.test.ts`；`tests/runtime/lifecycle/cacheDomains/signalRuntimeTermination.test.ts`；`tests/app/shutdown/createCleanup.business.test.ts`；`tests/app/runAppTerminationMatrix.business.test.ts`；`tests/integration/postTradeDrainLifecycle.integration.test.ts` | 静态清单不变执行器、实际取得资源即登记、具名启停/排空顺序、TimeWakeup 持续运行且不 self-drain、cleanup 失败继续并锁存首错。 |
+| §17.3 / §17.5：普通 BUY/SELL、保护性与末日 | `tests/integration/buyFlow.integration.test.ts`；`tests/integration/sellFlow.integration.test.ts`；`tests/integration/protectiveLiquidation.integration.test.ts`；`tests/integration/doomsday.integration.test.ts`；`tests/application/ordinaryBuy/accountPositionsRead.business.test.ts`；`tests/application/doomsdayClearance/business.test.ts` | 目的/执行前权威量/readiness 分离、BUY 临时读不写 canonical；末日 UNKNOWN fatal 与 accepted 账户失效，不伪造空仓或专属恢复协议。 |
+| §17.3 / §17.4、§17.5：策略、寻标与换标 | `tests/integration/singleActiveStrategyExecution.integration.test.ts`；`tests/integration/periodicAutoSymbolChain.integration.test.ts`；`tests/integration/autoSearchPolicyConsistency.integration.test.ts`；`tests/integration/terminalSwitchFinalization.integration.test.ts`；`tests/runtime/timeWakeupEvaluationProgram/business.test.ts` | 唯一选中策略、真实唤醒/寻标/换标链和原门禁；不新增 registry、兼容 owner 或统一交易策略。 |
+| §13.6 / §17.4、§17.5：最终静态边界与冻结债务 | `tests/architecture/refactoring/freeze.test.ts`；`tests/architecture/refactoring/helperExecution.test.ts`；`tests/architecture/refactoring/numericBoundary.test.ts`；`tests/architecture/refactoring/strategyDynamicBoundary.test.ts`；`tests/architecture/longbridgeBoundary.test.ts`；`tests/architecture/importBoundary.test.ts`；`tests/architecture/typeOrganization.test.ts` | P6 截止的 occurrence 与旧根目录、SDK 最终边界、数值/窄契约及真实 loader；不重采或放宽 baseline/unresolved。 |
+| §14 / §17.6：logger 与 snapshot 观测 | `tests/infrastructure/diagnostics/index.test.ts`；`tests/application/accountPositionSnapshot/observability.test.ts` | logger 失败隔离；真实 batch 的唯一 sources 集合、issued 后取消仍保留来源、epoch 优先单计、重入 pending 累计与全部 IO settled 后的耗时，observer/clock 失败不改原业务结果。 |
+| §14 / §17.6：settlement 与 completion 观测 | `tests/application/postTradeSettlement/readinessGate.test.ts`；`tests/application/postTradeSettlement/protectionRecovery.test.ts` | 连续 stale 首次起点、receipt/current snapshot token 与成功 ready；abort 后新周期不继承旧时长；诊断失败不阻断同步 completion、risk、ready 或掩盖后续原始 fatal。 |
+| §14 / §17.6：订单首次权威确认 | `tests/application/orderTracking/orderMonitor/orderObservation.business.test.ts`；`tests/integration/architectureRefactoringP1Native/trade/nativeSubmitObservation.test.ts` | 首次 terminal 与结算成功分离、ACK 先到只配一次；无 ACK、逆序或非法时钟不造 duration，重放/恢复重试不重复确认；native 提交观察保持原失败身份。 |
+| §14 / §17.6：activation 全周期与 retain/release | `tests/runtime/seatDiagnosticRuntime/business.test.ts`；`tests/application/seatActivation/seatRefreshRelease.business.test.ts`；`tests/app/lifecycle/lifecycleChecklist.wiring.test.ts` | 首次启动版本变更、完整 ACTIVATING 周期包含重试等待，失效身份退出独立计时；retain/release 分开且 ACTIVE 后 release 不回滚成功；观测 runtime 取得即登记、broker 工作前启动，跨 rebuild 保留。 |
+| §14 / §17.6：三队列 | `tests/runtime/asyncProgram/tradeTaskQueue/diagnostics.test.ts`；`tests/runtime/asyncProgram/monitorTaskQueue/diagnostics.test.ts` | BUY/SELL FIFO 深度、最早年龄和 compaction，MONITOR 取消占位排除/替换年龄；同步消费前 push 采样，observer/clock/logger 故障不改队列、callback 或任务身份。 |
+| §14 / §17.6：startup/open rebuilt 与原重试 | `tests/application/tradingDayRebuild/startupRebuild.test.ts`；`tests/runtime/lifecycle/dayLifecycleDiagnostics.test.ts` | 实际完整 readiness、captured domain 完成与 gate/admission 恢复后才 rebuilt；原开盘重试单独记录，等待中不新增重试，ABORTED/内部失败不记成功，诊断失败不改变原门禁或 fatal。 |
+
 ---
 
 ## 14. 观测、日志与故障诊断
 
+**本轮已确认并经离线验收的口径：复用现有 logger 的结构化事件供聚合，不新增 exporter、指标服务或额外 timer。**真实 owner 在已有请求、状态变更、队列操作和生命周期边界采集；日志观察不驱动重试、readiness、订单结算、ACTIVE、durable commit 或 fatal。当前观测行为测试索引见 §13.7，独立补审与唯一验证者完整执行证据统一登记于 §21；离线通过不授权生产运行。
+
 ### 14.1 必须可区分的事件
 
+固定 operation 标签由 `src/constants/diagnostics.ts` 登记；不同 owner 复用同一被动诊断能力，不再维护第二套业务状态机。必须可区分：
+
 ```text
-snapshot request started
-snapshot response accepted
-snapshot response discarded: stale generation
-snapshot response discarded: stale epoch
-snapshot commit revision
-settlement stale version
-settlement ready version
-seat version invalidated
-order submit unknown fatal
-order terminal confirmed
-liquidation completion committed
-trading day rebuilt
+snapshot_request_started
+snapshot_response_accepted
+snapshot_response_discarded
+snapshot_committed
+snapshot_refresh_completed
+snapshot_pending_wait_completed
+settlement_stale
+settlement_ready
+seat_version_invalidated
+seat_activation_completed
+order_submit_unknown_fatal
+order_terminal_confirmed
+cancel_acknowledgement_to_terminal
+liquidation_completion_committed
+queue_state
+open_rebuild_retry
+trading_day_rebuilt
 ```
 
-### 14.2 建议统一字段
+`operation` 区分事件，`outcome` / 丢弃原因等字段区分结果；不得把重复通知当成新的权威事实。`liquidation_completion_committed` 必须在 settlement owner 的既有提交边界观察，不把排队通知或 tracking 的候选完成当成 durable completion。
+
+### 14.2 结构化字段与版本身份
+
+按事件适用性记录以下字段，不要求每个事件伪造所有字段：
 
 ```text
 operation
-source
+source / sources
 purpose
 symbol
 seatDirection
@@ -1916,34 +1957,48 @@ pairedCommitRevision
 settlementVersion
 orderId
 requestAttempted
+outcome
 ```
 
-字段只用于诊断、审计和测试，不自动改变交易策略。结构化日志若附带金融值，使用保真的十进制字符串；人类可读字段使用显示定点字符串，不直接记录库对象、回转number或把显示文本作为事实比较依据。
+- snapshot batch 的 `sources` 是实际已发 batch 参与来源的去重集合，不能任取一个 `source` 代表合并批次；单个 participant 的等待事件保留自身来源。
+- epoch、generation、各 component/paired revision 和 settlementVersion 各自保留身份；readiness receipt 消费的 snapshot token 与当前 token 分别记录，不能跨版本序列相减。
+- duration、pending wait、queue depth / oldest age、重试次数与 retain/release 等阶段耗时由真实边界采集；字段只用于诊断、审计和测试，不自动改变交易策略。
+- 结构化日志若附带金融值，使用保真的十进制字符串；人类可读字段使用显示定点字符串，不直接记录库对象、回转 number 或把显示文本作为事实比较依据。诊断适配层隔离 logger 失败，不覆盖既有主体错误或改变原失败分类。
 
-### 14.3 必须监控的指标
+### 14.3 必须监控的指标与计量边界
 
-- snapshot response discard count。
-- snapshot refresh duration。
-- snapshot pending wait duration。
-- settlement readiness duration。
-- queue depth / oldest task age。
-- seat activation duration。
-- unknown submit count。
-- cancel acknowledgement-to-terminal duration。
-- open rebuild retry count。
-- snapshot commit revision 与 settlement ready version 的推进滞后。
+| 指标 | 已确认口径 |
+| --- | --- |
+| snapshot response discard count | 按实际已发 batch 计数，不按 API component、waiter 或 source 重复计数；同一响应同时旧 epoch / generation 时优先归为 epoch 丢弃，只计一次。 |
+| snapshot refresh duration | 一次实际 batch 发起至全部已发 API settled 的耗时，带字段集合、`sources` 和结果；双读不拆成两个 refresh，首个失败不提前结束统计或 drain。 |
+| snapshot pending wait duration | 按 participant 累计其每段 pending 排队等待；superseded 后重新入队继续累加，不把在途 IO 时间计为排队时间，也不在重入时重置累计等待。 |
+| settlement readiness duration | 连续 stale 周期从首次 stale 起计，后续 settlementVersion 更新和原 owner 的重试等待均不重置起点；仅真实 business ready 记成功完成，snapshot commit 不等于 ready。生命周期 abort 清除旧周期，下一次真实 stale 重新起计，不把取消记成 ready。 |
+| snapshot 与 readiness 推进滞后 | 表达为尚未 ready 的持续耗时，以及 readiness receipt 消费的 snapshot token 与当前 token 是否不同；不计算 `commitRevision - settlementVersion` 或其他无共同序列的版本差。 |
+| queue depth / oldest task age | 覆盖 BUY、SELL、MONITOR 三队列，在已有队列操作边界观察实际队列长度及最早待处理任务年龄；空队列明确为空/零，不通过新增采样 timer 维持指标。 |
+| seat activation duration | 同一 epoch / symbol / direction / seatVersion 从进入 ACTIVATING 到首次 ACTIVE 或退出的完整周期，包含重试与等待；retain 和 release 的阶段耗时分别记录，ACTIVE 后的 release 不混入激活完成耗时。 |
+| unknown submit count | 在原 submit owner 已判为 UNKNOWN 并进入 fatal 的事实边界计数；明确拒绝、未发送及 accepted 后本地落账失败不得混记为 UNKNOWN。 |
+| cancel acknowledgement-to-terminal duration | 首个先到的 ACK 只与该订单首次权威 terminal 配对；重复 ACK / terminal 不重复采样，无 ACK 或 terminal 先到均不造 duration；terminal 事件仍按首次权威确认记录。 |
+| open rebuild retry count | 在既有开盘重建 owner 的真实重试边界计数，不新增重试器或改变其等待与失败策略。 |
+| trading day rebuilt | 同时覆盖 startup 与 open rebuild，仅在各自完整基线、订阅和 readiness 条件成立后记录成功，不把开始、单次 snapshot commit 或重试中间态记成 rebuilt。 |
 
 ### 14.4 故障排查顺序
 
 出现交易异常时按以下顺序定位：
 
-1. 确认当前 `dayEpoch` 和 lifecycle gate。
-2. 确认 seatVersion、当前 symbol 和 seat status。
+1. 确认当前 `dayEpoch`、lifecycle gate 及 startup/open rebuild 的完成/重试记录。
+2. 确认 seatVersion、当前 symbol、seat status 和完整 activation 周期；retain/release 分开排查。
 3. 确认 command purpose、已知 orderId；submit UNKNOWN 检查原错误与 fatal/cleanup 记录，不猜测订单身份。
-4. 确认 snapshot generation/commit revision 是否被丢弃。
-5. 确认 settlementVersion 是否 stale、是否 ready。
-6. 确认订单事实是否已达权威终态。
-7. 最后检查行情、价格和数量裁剪，并区分十进制源文本/计算值、显示舍入值及合法整数/指标投影；历史金额冲突检查 revision/阶段和 §15 对账证据，不以显示文本判定事实相等。
+4. 按实际 batch 的字段集合与 `sources` 确认 snapshot generation/commit revision 是否被丢弃，区分 IO 耗时与 participant 累计排队等待。
+5. 确认 settlementVersion 是否 stale、是否 ready，检查连续未 ready 耗时和 receipt/current token 差异，不对不同版本序列作减法。
+6. 确认订单事实是否首次达到权威终态；ACK 未先到时不从缺失的配对 duration 推断异常。
+7. 检查 BUY/SELL/MONITOR 队列，再检查行情、价格和数量裁剪，并区分十进制源文本/计算值、显示舍入值及合法整数/指标投影；历史金额冲突检查 revision/阶段和 §15 对账证据，不以显示文本判定事实相等。
+
+### 14.5 接线与验收约束
+
+- app factory 只创建/注入诊断能力；真实 snapshot、settlement、order、activation、queue 和 rebuild owner 在事实边界采集，infrastructure 仅负责既有 logger 的安全输出。
+- 不为观测增加第二 canonical store、订单账、settlement/activation/lifecycle owner、全局 registry、通用事件总线、独立 exporter 或额外 timer。
+- 测试必须检查口径和业务非干扰性，不能只检查日志出现：包含合并 batch、多来源集合、epoch 优先丢弃、participant 重入等待、连续 stale、异序 ACK/terminal、跨重试 activation、三队列及 startup/open rebuilt。
+- 业务/架构与新增观测测试入口见 §13.7；本轮并行改动已独立补审，动态结果由 §21 的唯一验证者完整执行确认，不能用历史 P4.5 绿灯或静态 review 替代。
 
 ---
 
@@ -2035,66 +2090,68 @@ submit UNKNOWN 仍直接 fatal，不新增 unresolved intent、overlay 或其字
 
 ## 17. 最终验收清单
 
+**本轮状态：离线实施与五项最终门禁通过。**原始 HEAD 为 `cf54399`，保护网 stage 保持 P6；以下离线项目依据 §13.7 的当前测试映射、独立 review 和 §21 唯一验证者实际输出闭合。历史 P0–P4/P4.5 记录不回写成本轮结果；未来生产发布阻断继续未勾选。最终补证后的两文件 scoped check 仍交同一验证者执行，不在此提前宣称其结果。
+
 ### 17.1 事实一致性
 
-- [ ] canonical account/position 唯一 owner 是 `application/accountPositionSnapshot`；coordinator/pump/generation/private store 不在 domain，也无第二 store。
-- [ ] P1 已闭合全部 writer 与 reader；LastState snapshot mirror 和 `positionCache.update()` 直接写入为零。
-- [ ] 旧 epoch 结果不能提交。
-- [ ] 旧 generation 结果不能覆盖新事实。
-- [ ] 双读不会提交成功的一半。
-- [ ] `commitRevision` 只在合法 commit 后递增。
-- [ ] account/position/paired revision 分开表达。
-- [ ] 本地 projection 不冒充 broker fact。
-- [ ] API 重建与在线结算共享订单经济投影消费基线，列表/实际覆盖同段提交；覆盖不是全部 raw 输入或日损去重结果，主动 clear 保留当时实际清理范围及消费证明，历史修订不复活该部分，不吞新成交/未覆盖增量/首次终态；SELL 过滤合法变化及受控 rebuild 基线语义保持，不新增第二账/durable 格式。
-- [ ] submit UNKNOWN 直接 fatal，不重提，不伪造订单或持仓事实。
+- [x] canonical account/position 唯一 owner 是 `application/accountPositionSnapshot`；coordinator/pump/generation/private store 不在 domain，也无第二 store。
+- [x] P1 已闭合全部 writer 与 reader；LastState snapshot mirror 和 `positionCache.update()` 直接写入为零。
+- [x] 旧 epoch 结果不能提交。
+- [x] 旧 generation 结果不能覆盖新事实。
+- [x] 双读不会提交成功的一半。
+- [x] `commitRevision` 只在合法 commit 后递增。
+- [x] account/position/paired revision 分开表达。
+- [x] 本地 projection 不冒充 broker fact。
+- [x] API 重建与在线结算共享订单经济投影消费基线，列表/实际覆盖同段提交；覆盖不是全部 raw 输入或日损去重结果，主动 clear 保留当时实际清理范围及消费证明，历史修订不复活该部分，不吞新成交/未覆盖增量/首次终态；SELL 过滤合法变化及受控 rebuild 基线语义保持，不新增第二账/durable 格式。
+- [x] submit UNKNOWN 直接 fatal，不重提，不伪造订单或持仓事实。
 
 ### 17.2 Settlement readiness
 
-- [ ] `waitForFresh()` 仍表示 post-trade business ready。
-- [ ] snapshot commit 不直接 resolve readiness。
-- [ ] protective 最终完成判定、同步 durable append、daily-loss/cooldown/episode 内存提交及 ready 只由 `PostTradeSettlementWorkflow` 拥有；tracking 提供事实，domain 纯规则不形成第二判定/提交者。
-- [ ] completion persistence 成功后才推进 cooldown/daily loss/episode。
-- [ ] 新 settlement 使旧 token 失效。
-- [ ] 普通 seat commit 不无故制造 settlement stale。
-- [ ] 不存在 snapshot owner self-await。
+- [x] `waitForFresh()` 仍表示 post-trade business ready。
+- [x] snapshot commit 不直接 resolve readiness。
+- [x] protective 最终完成判定、同步 durable append、daily-loss/cooldown/episode 内存提交及 ready 只由 `PostTradeSettlementWorkflow` 拥有；tracking 提供事实，domain 纯规则不形成第二判定/提交者。
+- [x] completion persistence 成功后才推进 cooldown/daily loss/episode。
+- [x] 新 settlement 使旧 token 失效。
+- [x] 普通 seat commit 不无故制造 settlement stale。
+- [x] 不存在 snapshot owner self-await。
 
 ### 17.3 业务安全
 
-- [ ] 普通 BUY、SELL、换标回补、保护性、静态距回收价、末日 policy 仍分离。
-- [ ] BUY 临时账户/持仓读取未被错误纳入 canonical settlement。
-- [ ] SELL 仍在 readiness 和最终 position revision 复核后执行。
-- [ ] UNKNOWN submit 直接 fatal、不重提，不新增 UNKNOWN 查询接管或重启恢复协议。
-- [ ] cancel acknowledged 不等于 terminal。
-- [ ] pending-sell 保留旧 protective 身份，非 protective 新量不扩量 `REPLACE` protective 旧单；可信终态结算后按新鲜可卖量重新提交，§13.4.1 跨模块场景通过。
-- [ ] 静态成交不推进 protective progress/episode；旧真实 episode 由 settlement owner 按最后保护性执行时间独占判定/完成，并保留原 durable commit / cooldown 计数顺序。
-- [ ] 恢复 protective tracking 与精确 episode 区分，空/非空关联买单不替代目的隔离；完整 loader / hydration 单独验收。
-- [ ] 累计成交和金额 revision 语义不变。
-- [ ] P1.7 的 API → 同单 WS/query、已消除 BUY、已消费 SELL、空结果、OPEN partial → 同量终态及同量金额修正回归通过；经济去重不虚构成交数量推进、不跳过 pending/hold/routing/tracking 收尾，最终日损与 R1/N1 正确。
-- [ ] P0.4 / §13.4.2 金融目标与差分通过：输入/状态/运算/显示无未授权number投影，买量、距离、成本/盈亏、日损益与progress/baseline符合十进制目标，旧浮点修正明确登记。
-- [ ] 安全整数数量/时间/版本/计数契约通过，技术指标算法/投影/信号与延迟验证语义保持，未一刀切全量Decimal。
-- [ ] V1 结构/文本校验/ID/冲突规则和择新顺序保持；离线 mock/脱敏 fixtures 恢复演练通过，新数值不要求等于旧 number 文本，历史冲突不伪装权威修正。
-- [ ] 金融显示直接定点字符串，显示维持既有位数并 half-even，不影响交易判断，补零显示文本不写 durable。
+- [x] 普通 BUY、SELL、换标回补、保护性、静态距回收价、末日 policy 仍分离。
+- [x] BUY 临时账户/持仓读取未被错误纳入 canonical settlement。
+- [x] SELL 仍在 readiness 和最终 position revision 复核后执行。
+- [x] UNKNOWN submit 直接 fatal、不重提，不新增 UNKNOWN 查询接管或重启恢复协议。
+- [x] cancel acknowledged 不等于 terminal。
+- [x] pending-sell 保留旧 protective 身份，非 protective 新量不扩量 `REPLACE` protective 旧单；可信终态结算后按新鲜可卖量重新提交，§13.4.1 跨模块场景通过。
+- [x] 静态成交不推进 protective progress/episode；旧真实 episode 由 settlement owner 按最后保护性执行时间独占判定/完成，并保留原 durable commit / cooldown 计数顺序。
+- [x] 恢复 protective tracking 与精确 episode 区分，空/非空关联买单不替代目的隔离；完整 loader / hydration 单独验收。
+- [x] 累计成交和金额 revision 语义不变。
+- [x] P1.7 的 API → 同单 WS/query、已消除 BUY、已消费 SELL、空结果、OPEN partial → 同量终态及同量金额修正回归通过；经济去重不虚构成交数量推进、不跳过 pending/hold/routing/tracking 收尾，最终日损与 R1/N1 正确。
+- [x] P0.4 / §13.4.2 金融目标与差分通过：输入/状态/运算/显示无未授权number投影，买量、距离、成本/盈亏、日损益与progress/baseline符合十进制目标，旧浮点修正明确登记。
+- [x] 安全整数数量/时间/版本/计数契约通过，技术指标算法/投影/信号与延迟验证语义保持，未一刀切全量Decimal。
+- [x] V1 结构/文本校验/ID/冲突规则和择新顺序保持；离线 mock/脱敏 fixtures 恢复演练通过，新数值不要求等于旧 number 文本，历史冲突不伪装权威修正。
+- [x] 金融显示直接定点字符串，显示维持既有位数并 half-even，不影响交易判断，补零显示文本不写 durable。
 - [ ] 未来生产发布阻断：真实原始 V1 + 权威订单逐条对账，以及精度迁移后候选/指定回退版本完整恢复演练；当前未验证，fixtures 不替代，不计作本轮离线完成。
-- [ ] 运行期 ACTIVE 只在 §9.3 完整 activation barrier 后出现；受控 rebuild/static bootstrap 例外独立审计，完整基线完成前不得打开全局交易门禁。
-- [ ] 末日窗口和跨日门禁不提前放行。
-- [ ] 已知成交事实结算、generation 同步失效、settlement stale/refresh-need 登记位于同一同步段；保护性 progress 持久化失败不提前发布成交事实。
-- [ ] r10/r11 compare-and-publish 覆盖 subscription/R1/N1/completion，旧派生不写；`PostTradeSettlementWorkflow` 独占最终 completion 判定，token/order/seat 校验→同步 durable append→daily-loss/cooldown/episode 内存提交无 await；tracking 仅提供事实。
-- [ ] doomsday submit UNKNOWN 直接 fatal、不自动重提，旧特殊刷新/重评估分支已删除；已确认订单沿既有事实链路防重且不使 positions flat；原条件下 account invalidation 同步推进 generation，旧 paired read 不能恢复 valid，失效本身不增加 settlementVersion/专属重评估，后续当前代次 paired commit 才恢复有效性。
+- [x] 运行期 ACTIVE 只在 §9.3 完整 activation barrier 后出现；受控 rebuild/static bootstrap 例外独立审计，完整基线完成前不得打开全局交易门禁。
+- [x] 末日窗口和跨日门禁不提前放行。
+- [x] 已知成交事实结算、generation 同步失效、settlement stale/refresh-need 登记位于同一同步段；保护性 progress 持久化失败不提前发布成交事实。
+- [x] r10/r11 compare-and-publish 覆盖 subscription/R1/N1/completion，旧派生不写；`PostTradeSettlementWorkflow` 独占最终 completion 判定，token/order/seat 校验→同步 durable append→daily-loss/cooldown/episode 内存提交无 await；tracking 仅提供事实。
+- [x] doomsday submit UNKNOWN 直接 fatal、不自动重提，旧特殊刷新/重评估分支已删除；已确认订单沿既有事实链路防重且不使 positions flat；原条件下 account invalidation 同步推进 generation，旧 paired read 不能恢复 valid，失效本身不增加 settlementVersion/专属重评估，后续当前代次 paired commit 才恢复有效性。
 
 ### 17.4 可维护性与边界
 
-- [ ] 最终顶层结构为 `app/domain/application/runtime/infrastructure/config/constants/types/utils`。
-- [ ] `src/core/`、`src/main/`、`src/services/` 无生产实现、混合职责、旧 façade、转发层或兼容目录。
-- [ ] `app/runtime/create*.ts` 仅 factory/assembly；独立queue/listener/唤醒与stop-drain归具名runtime，底层clock/timer适配归infrastructure，业务内聚pump不另拆owner；app仅一个cleanup executor。
-- [ ] domain 可封装状态/规则但无IO/调度；应用用例唯一拥有失败策略/完成条件。
-- [ ] P3F 已闭合现存策略私有执行至 `runtime/strategy/`，未因名称把纯指标 runtime 搬走；definition/config 动态加载布局与路径校验同步迁移，只创建选中策略一个实例，无新增 runner/registry 或旧路径回退。
-- [ ] domain/application 新增代码无 Longbridge import；P4.5 后 SDK imports 仅在 `infrastructure/longbridge/{trade,market}`。
-- [ ] SDK mapping 只有 adapter 负责；独立Decimal不透传SDK类型，领域公式/财务状态与恢复编排不下沉mapper。
-- [ ] 新 runtime 在静态 lifecycle checklist 中声明。
-- [ ] checklist 不取代现有 stop/drain 执行器。
-- [ ] 无全局 service locator。
-- [ ] 无旧 facade、旧名委托链、无关 re-export。
-- [ ] 宽 `Trader`/`LastState` 契约已按职责收窄。
+- [x] 最终顶层结构为 `app/domain/application/runtime/infrastructure/config/constants/types/utils`。
+- [x] `src/core/`、`src/main/`、`src/services/` 无生产实现、混合职责、旧 façade、转发层或兼容目录。
+- [x] `app/runtime/create*.ts` 仅 factory/assembly；独立queue/listener/唤醒与stop-drain归具名runtime，底层clock/timer适配归infrastructure，业务内聚pump不另拆owner；app仅一个cleanup executor。
+- [x] domain 可封装状态/规则但无IO/调度；应用用例唯一拥有失败策略/完成条件。
+- [x] P3F 已闭合现存策略私有执行至 `runtime/strategy/`，未因名称把纯指标 runtime 搬走；definition/config 动态加载布局与路径校验同步迁移，只创建选中策略一个实例，无新增 runner/registry 或旧路径回退。
+- [x] domain/application 新增代码无 Longbridge import；P4.5 后 SDK imports 仅在 `infrastructure/longbridge/{trade,market}`。
+- [x] SDK mapping 只有 adapter 负责；独立Decimal不透传SDK类型，领域公式/财务状态与恢复编排不下沉mapper。
+- [x] 新 runtime 在静态 lifecycle checklist 中声明。
+- [x] checklist 不取代现有 stop/drain 执行器。
+- [x] 无全局 service locator。
+- [x] 无旧 facade、旧名委托链、无关 re-export。
+- [x] 宽 `Trader`/`LastState` 契约已按职责收窄。
 
 ### 17.5 验证与交付
 
@@ -2102,20 +2159,30 @@ submit UNKNOWN 仍直接 fatal，不新增 unresolved intent、overlay 或其字
 
 **离线实施完成门槛：**静态/动态全链路验收及 mock/脱敏 fixtures 恢复演练必须通过；fixtures 不替代真实历史、候选或回退版本的生产发布验证。
 
-- [ ] 按文首已确认精度口径完成离线工程验证；P0 不自行决定业务量化/舍入政策。
-- [ ] `bun format` 通过。
-- [ ] `bun lint` 通过。
-- [ ] `bun type-check` 通过。
-- [ ] `bun test` 通过。
-- [ ] `bun build` 通过。
-- [ ] 相关架构测试通过，`tests/` 按最终 `src/` 职责镜像；基线旧测试路径均已迁移，新增测试没有旧路径。
-- [ ] 启动恢复、订单恢复、保护性清仓、末日清仓、autoSearch、静态清仓、普通BUY/SELL、换标、跨日和终止集成的离线静态/动态全链路测试通过。
-- [ ] mock/脱敏 fixtures 覆盖恢复链路并演练通过。
+- [x] 按文首已确认精度口径完成离线工程验证；P0 不自行决定业务量化/舍入政策。
+- [x] `bun format` 通过。
+- [x] `bun lint` 通过。
+- [x] `bun type-check` 通过。
+- [x] `bun test` 通过。
+- [x] `bun build` 通过。
+- [x] 相关架构测试通过，`tests/` 按最终 `src/` 职责镜像；基线旧测试路径均已迁移，新增测试没有旧路径。
+- [x] 启动恢复、订单恢复、保护性清仓、末日清仓、autoSearch、静态清仓、普通BUY/SELL、换标、跨日和终止集成的离线静态/动态全链路测试通过。
+- [x] mock/脱敏 fixtures 覆盖恢复链路并演练通过。
 
 **未来生产发布阻断（不属于本轮离线实施完成，当前未验证）：**
 
 - [ ] 生产发布前完成旧版本 drain、原始 V1 日志与权威订单事实逐条精度对账、完整候选版本恢复及指定回退版本演练，无未解决的精度恢复冲突；不得以 fixtures 替代。
 - [ ] 按文首已确认精度口径记录实际库版本/输入范围/内部容量验证、字段级数值边界、受控误差修正、回退步骤和未解决风险；未证明安全时不发布/不开门。
+
+### 17.6 观测与诊断（本轮补齐并通过离线验收）
+
+- [x] 复用既有 logger 的结构化事件供聚合；无 exporter、额外 timer、第二业务 owner，诊断失败不改变业务结果/错误分类。
+- [x] snapshot 按真实已发 batch 统计字段和 sources 集合；epoch 优先单计丢弃，participant 重入累计 pending 等待。
+- [x] settlement 连续 stale 从首次起计且包含重试等待；滞后是未 ready 耗时与 receipt/current snapshot token 差异，不对不同版本相减。
+- [x] terminal 按首次权威确认记录；首个先到 ACK 配对一次，无 ACK 或 terminal 先到不造 duration。
+- [x] activation 覆盖完整 ACTIVATING → ACTIVE/退出周期并包含重试等待；retain/release 阶段分别记录。
+- [x] BUY、SELL、MONITOR 三队列及 startup/open rebuilt、open retry 均在真实边界覆盖，事件不提前宣称业务完成。
+- [x] 本轮并行观测改动已补审，并由唯一验证者完成相关断言及最终全链路执行；历史静态 review 不冒充此项证据。
 
 ---
 
@@ -2197,3 +2264,74 @@ src/config/constants/types/utils
 - 文档补证后执行 `bun --no-env-file node_modules/prettier/bin/prettier.cjs --check docs/architecture/architecture-refactoring-implementation-plan.md tests/architecture/refactoring/README.md` 与 `git diff --check`，均 exit 0；对应 `09-doc-format-check.log`、`10-diff-check.log`。相对本轮验证前内容，仅两份本节相关文档和 `src/application/seatActivation/types.ts`、`tests/infrastructure/longbridge/trade/orderFactMapper.test.ts` 的纯排版有变化，无关文件保持原副本内容。
 - 本机临时证据目录：`C:/WINDOWS/TEMP/p4-final-verification-3IJh3L/`。`01-format` 至 `05-test` 的 `.log/.result.json` 保留首轮结果，`06-test-default-log-root.log/.result.json` 为完整复跑，`07-debts.log` 为九类债务汇总；临时日志不是仓库长期审计归档。
 - 本轮仅为 P4 离线实现与门禁推进，**不发布、不开门、不连接实盘**；**P5/P6 未执行且不在本轮范围**，不提前关闭其 lifecycle/rebuild、最终目录或宽契约清理事项。
+
+---
+
+## 21. P6 后剩余工作与本轮最终离线验收证据（离线通过）
+
+### 21.1 范围、历史与冻结边界
+
+- 起点：原始 HEAD `cf543994945b8351d2ce5e848ab3a2159ce0af9c`，保护网 `baseline.stage` 已为 **P6**。本轮补齐 P0–P6 后剩余离线任务，不另立 P7，也不重写 P0–P4/P4.5 的实施史；§8.5、§9 和 §20 的历史命令/数字/日志继续只证明对应时点。
+- 本轮完成 §14 被动结构化观测、并行改动独立补审、§13/§17 当前真实测试映射，以及全部 owner 停写后唯一验证者的串行全量门禁。最终通过以本节实际执行输出为依据，不以测试索引、定向检查、静态 review 或历史绿灯替代。
+- 未修改或重采 `tests/architecture/refactoring/baseline.json`、`unresolved.json`，未放宽历史 allowance、rows/count/cutoff/sourcePhysical* 或 HEAD-only helper 原冻结身份；唯一验证者确认其初始快照、门禁后文件与 HEAD 哈希一致。
+- 本轮唯一交付文档为本计划与 `tests/architecture/refactoring/README.md`，未扩散至设计文档或其他文档。本次补证根据主 agent 提供且已核实的唯一验证者输出更新；最终补证后的两文件 scoped check 仍由同一验证者执行。
+- 始终**不发布、不开门、不连接实盘**。§15 的真实原始 V1＋权威订单逐条对账、精度迁移后候选版和指定回退版完整恢复当前未验证，继续阻断未来生产发布；mock/脱敏 fixtures 与 V1 schema 可读性不能替代。
+
+### 21.2 剩余工作闭合与独立 review
+
+| 工作项 | 本轮闭合证据与边界 |
+| --- | --- |
+| §14 owner 观测与非干扰性 | 按用户确认口径完成，§13.7 所列新增观测断言纳入本轮完整测试；复用 logger，无 exporter 或额外 timer，不产生第二业务 owner。 |
+| §13/§17 当前测试索引 | 已定位到真实职责镜像，并与唯一验证者完整执行及架构证据对应；§17 离线项据此勾选，生产阻断项不勾选。 |
+| owner 停写与最终验证 | 报告确认所有实现/文档 owner 显式停写后，唯一验证者执行五项串行门禁；验证者未改实现、断言、冻结证据或文档。 |
+| 最终门禁、P6 扫描与冻结完整性 | 五项门禁均 exit 0；750 个 TS 文件的九类债务均为零，冻结文件不变，178 个到期旧源路径及直接镜像无残留，旧六根物理不存在。 |
+| 文档补证与最终检查 | 仅两份指定文档收口；补证后唯一验证者仅执行两文件 scoped prettier check 与 `git diff --check`，不提前记录这两项的后续结果。 |
+
+主 agent 已确认以下五组本轮新增独立 review 完成；这是 review 结论来源，不冒充动态执行证据：
+
+| 独立 review 范围 | 结论 |
+| --- | --- |
+| snapshot | 唯一 finding 为 batch `sources` 未按集合去重；已修复并独立复核关闭。当前完整测试中的 `coalesces pending sources into a unique set, retains issued sources after cancellation, and publishes exact revisions` 通过，见 `architecture-evidence.json`。 |
+| settlement | 未发现已确认缺陷；覆盖 readiness / completion 的唯一 owner、版本与失败非干扰边界。 |
+| order | 未发现已确认缺陷；首次权威 terminal、首个 ACK 配对、UNKNOWN 和恢复重放边界保持。 |
+| seat / queue / lifecycle | 未发现已确认缺陷；activation 全周期、三队列和 startup/open rebuilt / 原重试边界保持。 |
+| diagnostics wiring | 未发现已确认缺陷；被动 observer、app 注入及 lifecycle 登记未建立第二 owner 或新增调度。 |
+
+此前 `fullchain-coverage-review` 也未发现已确认缺陷，但其原有边界仍保留：未覆盖当时并行观测改动、未动态运行。当前观测由上述新增补审与本轮唯一验证者动态结果覆盖，不倒改旧 review 的范围。
+
+### 21.3 唯一验证者执行记录（2026-10-16）
+
+执行者：`offline-final-verifier`，Bun **1.4.2**。已核实证据根 `C:/WINDOWS/TEMP/hsi-p6-final-validation-20261016-180854/` 下的 `FINAL-VALIDATION-REPORT.md` 与 `architecture-evidence.json`。每项门禁仅串行执行一次，无失败复跑；架构 scan 是只读静态重扫，不是重复 test。
+
+| 顺序 | 实际命令 | 退出码 | Wall 耗时 | 原始日志（相对证据根） |
+| --- | --- | --- | --- | --- |
+| 1 | `bun --no-env-file run format` | 0 | 79.631s | `raw/2026-10-16T10-47-11-352Z-format.log` |
+| 2 | `bun --no-env-file run lint` | 0 | 64.639s | `raw/2026-10-16T10-49-12-980Z-lint.log` |
+| 3 | `bun --no-env-file run type-check` | 0 | 6.396s | `raw/2026-10-16T10-50-26-919Z-type-check.log` |
+| 4 | `bun --no-env-file run test` | 0 | 268.934s | `raw/2026-10-16T10-50-42-143Z-test.log` |
+| 5 | `bun --no-env-file run build` | 0 | 3.096s | `raw/2026-10-16T10-55-20-621Z-build.log` |
+
+- 完整顶层测试汇总：**3019 pass / 0 fail，311 files，18455 expect() calls**；Bun 报告测试时长 268.50s，wall 为上表 268.934s。嵌套 fixture 的局部 totals 不累加、不替代顶层数字；未启动构建产物。
+- format 前对全部 tracked 与非忽略 untracked 建立 **815 files / 18,365,055 bytes** 精确副本及逐文件哈希；停写工作树为 **175 个修改/新增文件**，不是只备份 113 文件的 integration 清单。环境文件、凭据和日志排除读取，manifest、精确副本、状态与 patch 在 `snapshot/`。
+- `format` 包含 Prettier write 与 ESLint fix；`format-delta.json` 确认 **0 byte 变化、0 个需还原文件**。在本次文档最终补证前，五项门禁及架构 scan 后的 815 文件仍与停写快照逐字节一致，Git status 未变；验证者未借格式化改实现或测试。
+- `architecture-evidence.json` 确认扫描 **750 个 source/test TS 文件**，`imports / uses / origins / legacy / owners / snapshot / snapshotExposures / violations / helperCalls` 九类债务全为 **0**；唯一观察到的 TradeContext source 是 `src/infrastructure/longbridge/trade/brokerAccessAdapter.ts`。完整测试通过最终 Longbridge runtime/type-only/dynamic/re-export/require/NONLITERAL 边界及合法 selected-strategy loader 检查。
+- **178** 个冻结到期旧源物理路径及其直接镜像均不存在；`src/{core,main,services}` 和 `tests/{core,main,services}` 六个旧根全部物理不存在，不靠转发、兼容目录或重新采样消债。
+- 冻结完整性：`baseline.json` SHA-256 为 `6b21944b7a9248837b1ff5b3a9b774422fdcb3210b7c0a224f963814a9f26259`，`unresolved.json` SHA-256 为 `513daa1c4f7f7f0428f15d6bb3ff9b54d08668b27a0b5688f77eddd68cc6db68`；两者初始快照、门禁后 current 与原始 HEAD 均相同，stage 仍为 P6。
+- 只读架构命令 `bun --no-env-file C:/WINDOWS/TEMP/hsi-p6-final-validation-20261016-180854/architecture-evidence.mjs` exit 0 / 78.597s，原始日志 `raw/2026-10-16T13-26-31-176Z-architecture.log`；门禁后、最终文档补证前的 `git diff --check` exit 0 / 0.322s，日志 `raw/2026-10-16T13-28-01-434Z-diff-check.log`。这不是最终补证后检查的冒名记录。
+
+**离线环境与证据限制：**实际 child environment 与精确命令/参数/时间/退出码在 `environment-and-commands.json`、`summaries/*.json` 和 `raw/`。仅继承 `SystemRoot/WINDIR/PATHEXT/ComSpec/NUMBER_OF_PROCESSORS/PATH` 系统白名单，另显式设置隔离 HOME/USERPROFILE/APPDATA/LOCALAPPDATA/XDG_CONFIG_HOME/XDG_CACHE_HOME/TEMP/TMP/TMPDIR 及测试 profile。所有 Bun 入口使用 `--no-env-file`，嵌套入口受 `BUN_OPTIONS=--no-env-file` 约束；launcher 未设置 `APP_LOG_ROOT_DIR`，保留 preload 默认 `tests/logs`，不重演历史 P4.5 launcher 冲突。
+
+既有 `tests/setup/testRuntime.ts` SDK guard 拒绝 `TradeContext.new`、`QuoteContext.new`、`OAuth.build`；这是 SDK factory/session 阻断，**不是 OS 网络隔离**。未启动 app/start/dev、构建产物或真实 SDK 会话，未读取业务 `.env`、生产日志或真实凭据。上述本机临时证据保留原始执行依据，但不是仓库长期审计归档。
+
+### 21.4 本轮结论与最终文档检查交接
+
+**P0–P6 计划内剩余离线实施、§14 观测、独立全链路补审及五项最终门禁已完成并通过。**本轮结果是 3019 pass / 0 fail、P6 九类债务为零、冻结证据不变；§17 的离线项按当前证据闭合，不把 P4.5 的 2881 pass 或历史 P5/P6 未执行改写为当前事实。
+
+两份交付文档最终补证后，文档 owner 停写，交唯一验证者执行：
+
+```text
+bun --no-env-file node_modules/prettier/bin/prettier.cjs --check docs/architecture/architecture-refactoring-implementation-plan.md tests/architecture/refactoring/README.md
+git diff --check
+```
+
+该收尾检查沿用同一安全环境并保留原始/summary 证据；本节不提前宣称其结果，且无相关代码变化时不重跑已完成的全量门禁。**离线完成不等于生产发布许可：**§15 的真实历史 V1＋权威订单逐条对账及候选/指定回退版完整恢复仍未验证，继续阻断发布/开门；本轮不发布、不开门、不连接实盘。

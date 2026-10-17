@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createAccountSnapshotDouble,
@@ -65,7 +66,11 @@ async function createHarness(
     positions: [],
   });
   const handoffs: SwitchWakeupHandoffParams[] = [];
-  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+    logger: createLoggerDouble(),
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
+  });
   const tasks: Array<MonitorTaskInput<MonitorTaskDataMap, 'AUTO_SYMBOL_TICK'>> = [];
   const timers: Array<{
     handle: ReturnType<typeof setTimeout>;
@@ -124,6 +129,8 @@ async function createHarness(
     },
   };
   const settlement = createSettlementRuntimeFixture({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     monitorContext,

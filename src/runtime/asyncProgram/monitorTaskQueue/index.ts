@@ -1,5 +1,3 @@
-import type { Logger } from '../../../types/logger.js';
-
 /**
  * 监控任务队列模块
  *
@@ -17,10 +15,18 @@ import type { Logger } from '../../../types/logger.js';
  * - SEAT_REFRESH（调用方按 task type + direction 生成 dedupeKey，并用新 seatVersion 覆盖旧任务）
  */
 import { randomUUID } from 'node:crypto';
+import { DIAGNOSTIC_OPERATIONS } from '../../../constants/diagnostics.js';
+import type { Logger } from '../../../types/logger.js';
 
 import type { TaskAddedCallback } from '../tradeTaskQueue/types.js';
 import { notifyTaskAddedCallbacks, registerTaskAddedCallback } from '../taskNotifications.js';
-import type { MonitorTask, MonitorTaskInput, MonitorTaskQueue } from './types.js';
+import type {
+  MonitorTask,
+  MonitorTaskInput,
+  MonitorTaskQueue,
+  MonitorTaskQueueDeps,
+  QueuedMonitorTask,
+} from './types.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -45,9 +51,13 @@ function logSeatRefreshReplaced<TDataMap extends Readonly<Record<string, unknown
     return;
   }
 
-  logger.debug(
-    `[SEAT_REFRESH replaced] direction=${readStringField(task.data, 'direction')} seatVersion=${readNumberField(task.data, 'seatVersion')} nextSymbol=${readStringField(task.data, 'nextSymbol')} dedupeKey=${task.dedupeKey} replacedCount=${removedCount}`,
-  );
+  try {
+    logger.debug(
+      `[SEAT_REFRESH replaced] direction=${readStringField(task.data, 'direction')} seatVersion=${readNumberField(task.data, 'seatVersion')} nextSymbol=${readStringField(task.data, 'nextSymbol')} dedupeKey=${task.dedupeKey} replacedCount=${removedCount}`,
+    );
+  } catch {
+    // 旧明细日志同样属于诊断旁路，不能阻断已接受的新任务替换。
+  }
 }
 
 /**
@@ -57,14 +67,53 @@ function logSeatRefreshReplaced<TDataMap extends Readonly<Record<string, unknown
  * @returns 监控任务队列实例，含 scheduleLatest、pop、isEmpty、removeTasks、clearAll、onTaskAdded
  */
 export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, unknown>>>(
-  logger: Logger,
+  deps: MonitorTaskQueueDeps,
 ): MonitorTaskQueue<TDataMap> {
+  const { logger, clock, diagnostics } = deps;
   let items: Array<MonitorTask<TDataMap>> = [];
   let headIndex = 0;
   let closed = false;
-  const taskByDedupeKey = new Map<string, MonitorTask<TDataMap>>();
+  const taskByDedupeKey = new Map<string, QueuedMonitorTask<TDataMap>>();
   const cancelledTaskIds = new Set<string>();
   const callbacks: TaskAddedCallback[] = [];
+
+  /** 时间仅服务诊断；失败时保留未知，不增加另一个时钟或业务失败分支。 */
+  function sampleDiagnosticTime(): number | null {
+    try {
+      const nowMs = clock.now().getTime();
+      return Number.isFinite(nowMs) ? nowMs : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Map 只保留有效任务；替换先删后插，保持与有效 FIFO 相同的入队顺序。 */
+  function recordState(
+    mutation: 'push' | 'replace' | 'pop' | 'remove' | 'clear',
+    changedTaskCount: number,
+  ): void {
+    try {
+      const oldest = taskByDedupeKey.values().next().value;
+      const nowMs = sampleDiagnosticTime();
+      let oldestTaskAgeMs: number | null = 0;
+      if (oldest !== undefined) {
+        oldestTaskAgeMs =
+          oldest.enqueuedAtMs === null || nowMs === null
+            ? null
+            : Math.max(0, nowMs - oldest.enqueuedAtMs);
+      }
+
+      diagnostics.record(DIAGNOSTIC_OPERATIONS.QUEUE_STATE, {
+        queue: 'MONITOR',
+        mutation,
+        changedTaskCount,
+        depth: taskByDedupeKey.size,
+        oldestTaskAgeMs,
+      });
+    } catch {
+      // 诊断不能影响有效任务替换、出队或消费者通知。
+    }
+  }
 
   /**
    * 按已出队游标压缩底层数组，避免长期保留已消费任务。
@@ -89,7 +138,7 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
    * @returns 任务仍有效时返回 true
    */
   function isEffectiveTask(task: MonitorTask<TDataMap>): boolean {
-    return !cancelledTaskIds.has(task.id) && taskByDedupeKey.get(task.dedupeKey) === task;
+    return !cancelledTaskIds.has(task.id) && taskByDedupeKey.get(task.dedupeKey)?.task === task;
   }
 
   /**
@@ -123,7 +172,8 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
     const previousTask = taskByDedupeKey.get(task.dedupeKey);
     const removedCount = previousTask === undefined ? 0 : 1;
     if (previousTask !== undefined) {
-      cancelledTaskIds.add(previousTask.id);
+      cancelledTaskIds.add(previousTask.task.id);
+      taskByDedupeKey.delete(task.dedupeKey);
     }
 
     logSeatRefreshReplaced(logger, task, removedCount);
@@ -135,8 +185,12 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
       data: task.data,
     } as MonitorTask<TDataMap, TType>;
 
-    taskByDedupeKey.set(task.dedupeKey, fullTask);
+    taskByDedupeKey.set(task.dedupeKey, {
+      task: fullTask,
+      enqueuedAtMs: sampleDiagnosticTime(),
+    });
     items.push(fullTask);
+    recordState(previousTask === undefined ? 'push' : 'replace', 1);
     notifyTaskAddedCallbacks(callbacks);
     return true;
   }
@@ -156,12 +210,14 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
 
       taskByDedupeKey.delete(task.dedupeKey);
       compactQueue();
+      recordState('pop', 1);
       return task;
     }
 
     items = [];
     headIndex = 0;
     cancelledTaskIds.clear();
+    recordState('pop', 0);
     return null;
   }
 
@@ -189,6 +245,7 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
       compactQueue();
     }
 
+    recordState('remove', removedTasks.length);
     return removedTasks.length;
   }
 
@@ -205,6 +262,7 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
     headIndex = 0;
     taskByDedupeKey.clear();
     cancelledTaskIds.clear();
+    recordState('clear', activeTasks.length);
     return activeTasks.length;
   }
 

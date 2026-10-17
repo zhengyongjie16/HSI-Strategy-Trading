@@ -1,4 +1,20 @@
+import type { Logger } from '../../../types/logger.js';
+import type { RuntimeClock } from '../../../types/runtime.js';
+import type { DiagnosticObserver } from '../../../types/diagnostics.js';
 import type { TaskAddedCallback } from '../tradeTaskQueue/types.js';
+
+/** 监控队列的显式时间、结构化诊断与既有明细日志能力。 */
+export interface MonitorTaskQueueDeps {
+  readonly logger: Logger;
+  readonly clock: RuntimeClock;
+  readonly diagnostics: DiagnosticObserver;
+}
+
+/** 有效监控任务的私有时间元数据；不写入 task/data，也不为失效占位保留计数。 */
+export type QueuedMonitorTask<TDataMap extends Readonly<Record<string, unknown>>> = {
+  readonly task: MonitorTask<TDataMap>;
+  readonly enqueuedAtMs: number | null;
+};
 
 /**
  * 监控任务数据映射基类（内部类型）。

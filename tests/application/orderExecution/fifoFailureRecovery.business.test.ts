@@ -1,4 +1,5 @@
 import { nowMonotonicMs, wait } from '../../../src/infrastructure/time/index.js';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 
 import {
   createLoggerDouble,
@@ -88,6 +89,7 @@ async function createFixture() {
   const recorder = createOrderRecorderDouble();
   const ops = native.createOperations({
     logger: createLoggerDouble(),
+    diagnostics: createDiagnosticObserverDouble(),
     wait: wait,
     runtime,
     rateLimiter: limiter,
@@ -126,6 +128,7 @@ async function createFixture() {
 
   const executor = createOrderExecutor({
     logger: createLoggerDouble(),
+    diagnostics: createDiagnosticObserverDouble(),
     readSellPositions: async () => [
       createPositionDouble({ symbol: 'BULL.HK', quantity: 500, availableQuantity: 500 }),
     ],

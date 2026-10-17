@@ -21,7 +21,9 @@ import type { LifecycleMutableState } from '../../types/lifecycle.js';
  */
 import type { RuntimeTermination } from '../../types/runtime.js';
 import type { SnapshotToken } from '../../types/accountPosition.js';
+import type { DiagnosticFields } from '../../types/diagnostics.js';
 import { LIFECYCLE } from '../../constants/index.js';
+import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import type {
@@ -166,6 +168,7 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
     cacheDomains,
     snapshot,
     logger,
+    diagnostics,
     rebuildRetryDelayMs = LIFECYCLE.DEFAULT_REBUILD_RETRY_DELAY_MS,
   } = deps;
   let rebuildFailureCount = 0;
@@ -176,6 +179,15 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
   let invalidatedDayKey: string | null = null;
   let dayCutDrain: Promise<void> | null = null;
   let openOwner: object | null = null;
+
+  /** 诊断失败不能把已经完成的开门误归为重建失败，也不能阻断既有重试安排。 */
+  function recordDiagnostic(operation: string, fields: DiagnosticFields): void {
+    try {
+      diagnostics.record(operation, fields);
+    } catch {
+      // 旁路失败直接丢弃，不进入 lifecycle 重试或 fatal。
+    }
+  }
 
   function buildTickResult(): DayLifecycleTickResult {
     return {
@@ -331,9 +343,25 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
       mutableState.pendingOpenRebuild = false;
       mutableState.lifecycleState = 'ACTIVE';
       mutableState.isTradingEnabled = true;
+      const completedRetryCount = rebuildFailureCount;
       rebuildFailureCount = 0;
       nextRetryAtMs = null;
       openOwner = null;
+      // 仅在所有域 captured COMMITTED/current 且 admission 与交易门禁已恢复后记录成功。
+      recordDiagnostic(DIAGNOSTIC_OPERATIONS.TRADING_DAY_REBUILT, {
+        source: 'OPEN_REBUILD',
+        dayKey,
+        dayEpoch: result.snapshotToken.dayEpoch,
+        snapshotGeneration: result.snapshotToken.snapshotGeneration,
+        snapshotCommitRevision: result.snapshotToken.commitRevision,
+        accountRevision: result.snapshotToken.accountRevision,
+        positionRevision: result.snapshotToken.positionRevision,
+        pairedCommitRevision: result.snapshotToken.pairedRevision,
+        retryCount: completedRetryCount,
+        lifecycleState: mutableState.lifecycleState,
+        isTradingEnabled: mutableState.isTradingEnabled,
+        pendingOpenRebuild: mutableState.pendingOpenRebuild,
+      });
       logger.info('[Lifecycle] 开盘重建完成，交易门禁已恢复');
     } catch (err) {
       if (!isExternalApiRequestError(err)) {
@@ -347,8 +375,25 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
       rebuildFailureCount += 1;
       mutableState.lifecycleState = 'OPEN_REBUILD_FAILED';
       mutableState.isTradingEnabled = false;
+      recordDiagnostic(DIAGNOSTIC_OPERATIONS.OPEN_REBUILD_RETRY, {
+        source: 'OPEN_REBUILD',
+        phase: 'FAILED',
+        dayKey,
+        dayEpoch,
+        retryCount: rebuildFailureCount,
+      });
       const retryDelayMs = resolveRetryDelayMs(rebuildRetryDelayMs, rebuildFailureCount);
       nextRetryAtMs = nowMs + retryDelayMs;
+      recordDiagnostic(DIAGNOSTIC_OPERATIONS.OPEN_REBUILD_RETRY, {
+        source: 'OPEN_REBUILD',
+        phase: 'SCHEDULED',
+        dayKey,
+        dayEpoch,
+        retryCount: rebuildFailureCount,
+        retryDelayMs,
+        nextRetryAtMs,
+      });
+
       logger.error(
         `[Lifecycle] 开盘重建失败，第 ${rebuildFailureCount} 次重试将在 ${Math.round(retryDelayMs / 1000)} 秒后触发`,
         formatError(err),

@@ -4,6 +4,7 @@ import type {
 } from '../../../types/timer.js';
 import type { ExternalApiRequest } from '../../../types/apiFailure.js';
 import type { Logger } from '../../../types/logger.js';
+import type { DiagnosticObserver } from '../../../types/diagnostics.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../../../domain/liquidation/episode/types.js';
 import type {
   OrderMonitorConfig,
@@ -243,7 +244,7 @@ export type OrderCumulativeExecutionParams = Readonly<{
  */
 export type OrderMonitorRuntimeStore = {
   readonly trackedOrders: Map<string, OrderMonitorTrackedOrder>;
-  readonly trackedOrderLifecycles: Map<string, TrackedOrderLifecycleState>;
+  readonly trackedOrderLifecycles: Map<string, TrackedOrderLifecycle>;
   readonly bootstrappingOrderEvents: Map<string, OrderFact>;
   readonly closedOrderIds: Set<string>;
   readonly queriedTerminalStateByOrderId: Map<string, TerminalStateSnapshot>;
@@ -267,6 +268,8 @@ export type OrderMonitorRuntimeStore = {
  */
 export type RecoveryFlowDeps = {
   readonly logger: Logger;
+  readonly diagnostics: DiagnosticObserver;
+  readonly now: () => Date;
   readonly termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   readonly runtime: OrderMonitorRuntimeStore;
   readonly orderHoldRegistry: OrderHoldRegistry;
@@ -300,6 +303,7 @@ export interface RecoveryFlow {
  */
 export type EventFlowDeps = {
   readonly logger: Logger;
+  readonly diagnostics: DiagnosticObserver;
   readonly now: () => Date;
   readonly monitorConfig: MonitorConfig;
   readonly runtime: OrderMonitorRuntimeStore;
@@ -362,6 +366,7 @@ export interface OrderStatusQuery {
 export type OrderOpsDeps = {
   readonly wait: (delayMs: number) => Promise<void>;
   readonly logger: Logger;
+  readonly diagnostics: DiagnosticObserver;
 
   /** 每operation捕获原 ingress generation；停止后不能发后继query或发布旧事实。 */
   readonly captureWorkGuard: () => () => boolean;
@@ -431,6 +436,7 @@ export interface OrderOps {
  */
 export type RouteProcessorDeps = {
   readonly logger: Logger;
+  readonly diagnostics: DiagnosticObserver;
   readonly tradeMutationPort: TradeMutationPort;
   readonly now: () => Date;
   readonly runtime: OrderMonitorRuntimeStore;
@@ -524,6 +530,8 @@ export type FinalizeOrderSettlementResult = {
  */
 export type SettlementFlowDeps = {
   readonly runtime: OrderMonitorRuntimeStore;
+  readonly diagnostics: DiagnosticObserver;
+  readonly now: () => Date;
   readonly orderHoldRegistry: OrderHoldRegistry;
   readonly orderRecorder: OrderRecorder;
   readonly dailyLossTracker: DailyLossTracker;
@@ -552,10 +560,34 @@ export interface SettlementFlow {
   settleOrder: (params: FinalizeOrderSettlementParams) => FinalizeOrderSettlementResult;
 }
 
+/** 首次权威终态确认元数据；在资源结算之前保存，跨重复观察与恢复重试保持幂等。 */
+type OrderTerminalConfirmation = {
+  readonly source: FinalizeOrderSettlementParams['source'];
+  readonly closedReason: OrderClosedReason;
+  readonly confirmedAtMs: number | null;
+  readonly orderUpdatedAtMs: number | null;
+};
+
 /**
- * 追踪订单生命周期状态。
- * 类型用途：用于统一 OPEN/CLOSED 生命周期流转控制。
- * 数据来源：orderMonitor 运行态维护。
- * 使用范围：orderMonitor 目录内部。
+ * tracking owner 的生命周期与观测元数据。
+ * state 为 null 表示尚未追踪或恢复重置；ACK 与确认元数据仅随全量运行态重置清除。
+ * 首个 ACK 的 null 时间表示诊断时钟无效，不得拿后续 ACK 补造 duration。
  */
-type TrackedOrderLifecycleState = 'OPEN' | 'CLOSED';
+export type TrackedOrderLifecycle = {
+  readonly state: 'OPEN' | 'CLOSED' | null;
+  readonly firstCancelAcknowledgedAtMs?: number | null;
+  readonly terminalConfirmation?: OrderTerminalConfirmation;
+};
+
+/** 真实订单事实 owner 的被动观测依赖，不持有独立订单表或改变推进结果。 */
+export type OrderObservationDeps = {
+  readonly runtime: OrderMonitorRuntimeStore;
+  readonly diagnostics: DiagnosticObserver;
+  readonly now: () => Date;
+};
+
+/** 权威 terminal 事实的最小诊断上下文，不包含本地结算成功或资源释放承诺。 */
+export type OrderTerminalConfirmationParams = Pick<
+  FinalizeOrderSettlementParams,
+  'orderId' | 'closedReason' | 'source' | 'orderUpdatedAtMs' | 'symbol' | 'side'
+>;

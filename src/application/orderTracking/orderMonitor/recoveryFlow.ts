@@ -26,6 +26,7 @@ import { isSeatActive } from '../../../domain/seat/seatPolicy.js';
 import type { OrderSeatOwnership, RecoverySnapshotReconciliationParams } from '../types.js';
 import { acknowledgeQueriedTerminalState, peekQueriedTerminalState } from './orderOps.js';
 import { resetRoutingIndex } from './routingIndex.js';
+import { recordOrderTerminalConfirmation } from './orderObservation.js';
 import type { RecoveryFlow, RecoveryFlowDeps } from './types.js';
 
 /**
@@ -107,7 +108,18 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     }
 
     runtime.trackedOrders.clear();
-    runtime.trackedOrderLifecycles.clear();
+    // 恢复回滚只重置 tracking，不重置已发生的首个 ACK/终态确认；全量运行态清理由 index 负责。
+    for (const [orderId, lifecycle] of runtime.trackedOrderLifecycles) {
+      if (
+        lifecycle.firstCancelAcknowledgedAtMs === undefined &&
+        lifecycle.terminalConfirmation === undefined
+      ) {
+        runtime.trackedOrderLifecycles.delete(orderId);
+      } else {
+        runtime.trackedOrderLifecycles.set(orderId, { ...lifecycle, state: null });
+      }
+    }
+
     runtime.closedOrderIds.clear();
     runtime.latestReplaceTerminalByOrderId.clear();
     runtime.queriedTerminalStateByOrderId.clear();
@@ -468,6 +480,15 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
               },
               queriedTerminalState,
             );
+            recordOrderTerminalConfirmation(deps, {
+              orderId: order.orderId,
+              symbol: order.symbol,
+              side: 'BUY',
+              source: 'RECOVERY',
+              closedReason: normalizedTerminalState.closedReason,
+              orderUpdatedAtMs: normalizedTerminalState.orderUpdatedAtMs,
+            });
+
             if (isValidPositiveNumber(normalizedTerminalState.executedQuantity)) {
               throw new Error(
                 `[订单监控] 买单 ${order.orderId} 不匹配但启动快照或权威终态存在成交事实，阻断恢复`,

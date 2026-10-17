@@ -55,6 +55,7 @@ import type { TradingRiskEventRuntime } from '../runtime/tradingRiskEventRuntime
 import type { AccountPositionSnapshot } from '../types/accountPosition.js';
 import type { BrokerClientFactory } from '../types/brokerClientFactory.js';
 import type { TradingConfig } from '../types/config.js';
+import type { DiagnosticObserver } from '../types/diagnostics.js';
 import type { DisplayAccountAndPositionsParams } from '../types/display.js';
 import type { Unsubscribe } from '../types/events.js';
 import type { LifecycleMutableState } from '../types/lifecycle.js';
@@ -144,6 +145,8 @@ export type CreatePreGateRuntimeParams = AppEnvironmentParams &
   Readonly<{
     cleanup: CleanupController;
     termination: RuntimeTermination;
+    diagnostics: DiagnosticObserver;
+    clock: RuntimeClock;
   }>;
 
 /**
@@ -153,6 +156,7 @@ export type CreatePreGateRuntimeParams = AppEnvironmentParams &
  * 使用范围：仅 app 顶层装配与后续 runtime 工厂使用。
  */
 export type PreGateRuntime = Readonly<{
+  diagnostics: DiagnosticObserver;
   brokerClientFactory: Pick<BrokerClientFactory, 'createBrokerAccess'>;
   tradingConfig: TradingConfig;
   symbolRegistry: SymbolRegistry;

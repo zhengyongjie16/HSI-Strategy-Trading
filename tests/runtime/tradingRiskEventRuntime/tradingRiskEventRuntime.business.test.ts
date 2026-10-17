@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import type { RuntimeStateFixtures } from '../../helpers/types.js';
 import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
 
@@ -280,6 +281,8 @@ describe('tradingRiskEventRuntime runtime flow', () => {
       },
     });
     const settlement = createSettlementRuntimeFixture({
+      diagnostics: createDiagnosticObserverDouble(),
+      clock: { now: () => new Date() },
       logger: createLoggerDouble(),
       snapshot,
       termination,

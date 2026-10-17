@@ -1,5 +1,6 @@
 /** M1 bootstrap 实际 runApp → 同 H/S 的 ready 顺序：quote await 与 dirty 业务不能并行绕过启动放行。 */
 
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { describe, expect, it, spyOn } from 'bun:test';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { executeTradingDayOpenRebuild } from '../../src/application/tradingDayRebuild/openRebuild.js';
@@ -146,6 +147,7 @@ describe('startup runApp settlement readiness', () => {
       expect(app.starts).not.toContain('buyProcessor.start');
       const now = new Date('2026-04-29T01:31:00Z');
       const manager = createDayLifecycleManager({
+        diagnostics: createDiagnosticObserverDouble(),
         mutableState: app.stateFixtures.lifecycleState,
         snapshot: owner.snapshot,
         termination: owner.termination,

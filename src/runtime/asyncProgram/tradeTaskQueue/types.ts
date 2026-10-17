@@ -1,4 +1,18 @@
 import type { BuySignal, ExecutableSellSignal, Signal } from '../../../types/signal.js';
+import type { RuntimeClock } from '../../../types/runtime.js';
+import type { DiagnosticObserver } from '../../../types/diagnostics.js';
+
+/** 买卖队列的显式诊断依赖；私有入队时钟不写入任务或信号。 */
+export interface TaskQueueDeps {
+  readonly clock: RuntimeClock;
+  readonly diagnostics: DiagnosticObserver;
+}
+
+/** 交易队列私有 FIFO 元数据；task/data 保持原业务身份，不向消费者暴露入队时间。 */
+export type QueuedTradeTask<TType extends string> = {
+  readonly task: Task<TType>;
+  readonly enqueuedAtMs: number | null;
+};
 
 /**
  * 任务添加回调函数类型。

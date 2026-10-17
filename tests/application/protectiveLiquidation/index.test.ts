@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
 
 /**
@@ -77,6 +78,8 @@ async function createScenario() {
   });
   const tradeRuntime = createTradeRuntimeDouble();
   const settlement = createSettlementRuntimeFixture({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination,

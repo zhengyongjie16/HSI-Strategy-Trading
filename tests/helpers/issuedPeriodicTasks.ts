@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from './diagnostics.js';
 import { createLoggerDouble } from './testDoubles.js';
 import type { TradeRuntime, PostTradeConsistencyRuntime } from '../../src/app/runtime/types.js';
 import { createPeriodicSwitchWakeupRuntime } from '../../src/runtime/periodicSwitchWakeupRuntime/index.js';
@@ -32,6 +33,8 @@ export async function createIssuedPeriodicTasksFixture(
     },
   };
   const settlement = createSettlementRuntimeFixture({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot: params.snapshot,
     termination: params.termination,

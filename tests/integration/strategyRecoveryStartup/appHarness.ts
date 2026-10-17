@@ -21,6 +21,7 @@ import type { RuntimeTermination } from '../../../src/types/runtime.js';
 
 /** T28 独立 app 装配 helper：替换离线外围 owners，保留真实 runApp 启动和错误分类。 */
 import { mock } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
@@ -112,6 +113,7 @@ function createMockPreGateRuntime(): PreGateRuntime {
   const warrantListCache = createWarrantListCache();
 
   return {
+    diagnostics: createDiagnosticObserverDouble(),
     brokerClientFactory: createBrokerClientFactoryDouble(),
     tradingConfig: createTradingConfig({
       global: {
@@ -243,8 +245,14 @@ function createMockPostGateRuntime(
     doomsdayClearanceWorkflow: createDoomsdayClearanceWorkflowDouble(),
     ordinaryBuy: createOrdinaryBuyWorkflowDouble(),
     ordinarySell: createOrdinarySellWorkflowDouble(),
-    buyTaskQueue: createBuyTaskQueue(),
-    sellTaskQueue: createSellTaskQueue(),
+    buyTaskQueue: createBuyTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    }),
+    sellTaskQueue: createSellTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    }),
     monitorTaskQueue: createMonitorTaskQueueDouble(),
   };
 }

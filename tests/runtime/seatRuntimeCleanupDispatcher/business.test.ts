@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createAccountSnapshotDouble,
@@ -75,7 +76,11 @@ describe('seatRuntimeCleanupDispatcher 同步方向取消', () => {
       issuedFixtures.push(issued);
       const pending = new Set(['LONG', 'SHORT']);
       const order: string[] = [];
-      const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+      const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+        logger: createLoggerDouble(),
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      });
       const dispatcher = createSeatRuntimeCleanupDispatcher({
         logger: createLoggerDouble(),
         symbolRegistry: h.symbolRegistry,
@@ -185,7 +190,11 @@ describe('seatRuntimeCleanupDispatcher 同步方向取消', () => {
       },
       buyTaskQueue: h.buyTaskQueue,
       sellTaskQueue: h.sellTaskQueue,
-      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
+      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>({
+        logger: createLoggerDouble(),
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      }),
     });
     dispatcher.start();
     h.symbolRegistry.updateSeatState('LONG', activeSeat('BULL.HK'));

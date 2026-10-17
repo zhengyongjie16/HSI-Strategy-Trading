@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
 import { wait } from '../../src/infrastructure/time/index.js';
@@ -132,6 +133,8 @@ async function createOrderExecutor(deps: OrderExecutorTestDeps) {
     },
   });
   const settlement = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination,
@@ -428,6 +431,7 @@ describe('sell-flow integration', () => {
     const positionFailure = new Error('service unavailable');
 
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
@@ -549,6 +553,7 @@ describe('sell-flow integration', () => {
       executionSide: 'BUY' | 'SELL';
     }> = [];
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
@@ -673,6 +678,7 @@ describe('sell-flow integration', () => {
       }),
     );
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
@@ -723,6 +729,7 @@ describe('sell-flow integration', () => {
       }),
     );
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
@@ -871,6 +878,7 @@ describe('sell-flow integration', () => {
       executionSide: 'BUY' | 'SELL';
     }> = [];
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
@@ -1009,6 +1017,7 @@ describe('sell-flow integration', () => {
       executionSide: 'BUY' | 'SELL';
     }> = [];
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
@@ -1092,6 +1101,7 @@ describe('sell-flow integration', () => {
     const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
 
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
@@ -1290,6 +1300,7 @@ describe('sell-flow integration', () => {
     const ingressFatalErrors: unknown[] = [];
     const ledgerIssuedBaseline = tradeCtx.readCounts();
     const orderMonitor = await createSellMonitor(tradeCtx, {
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       requestExternalApi: wrapExternalApiRequest,
@@ -1349,6 +1360,7 @@ describe('sell-flow integration', () => {
     });
     isExistingPendingSellTracked = true;
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter,
@@ -1477,6 +1489,7 @@ describe('sell-flow integration', () => {
     }> = [];
     const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
@@ -1584,6 +1597,7 @@ describe('sell-flow integration', () => {
     }> = [];
     const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
@@ -1675,6 +1689,7 @@ describe('sell-flow integration', () => {
     let updatePendingSellCallCount = 0;
     const submittedAt = Date.parse('2026-02-25T03:00:00.000Z');
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
@@ -1783,6 +1798,7 @@ describe('sell-flow integration', () => {
 
     const cancelCalls: string[] = [];
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
@@ -1870,6 +1886,7 @@ describe('sell-flow integration', () => {
     }> = [];
 
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble(),
@@ -2034,6 +2051,7 @@ describe('sell-flow integration', () => {
       },
     });
     const orderMonitorDeps: Parameters<NativeSellIngress['createMonitor']>[0] = {
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       requestExternalApi: wrapExternalApiRequest,
@@ -2092,6 +2110,7 @@ describe('sell-flow integration', () => {
     });
 
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter,
@@ -2182,6 +2201,7 @@ describe('sell-flow integration', () => {
       },
     });
     const orderMonitor = await createSellMonitor(tradeCtx, {
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       requestExternalApi: wrapExternalApiRequest,
@@ -2238,6 +2258,7 @@ describe('sell-flow integration', () => {
       orderType: marketFact.orderType,
     });
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter,

@@ -1,4 +1,7 @@
 import { spyOn, describe, expect, it } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
+import { DIAGNOSTIC_OPERATIONS } from '../../../src/constants/diagnostics.js';
+import type { DiagnosticFields, DiagnosticObserver } from '../../../src/types/diagnostics.js';
 import {
   createLoggerDouble,
   createMarketDataClientDouble,
@@ -38,6 +41,7 @@ const EXECUTION_NOW_MS = Date.parse('2026-07-10T02:00:00.000Z');
 
 type SubmitFlowFixtureParams = {
   readonly logger?: Logger;
+  readonly diagnostics?: DiagnosticObserver;
   readonly submitOrder?: Parameters<typeof createSubmitFlowFailureFixture>[0];
   readonly getQuote?: () => Promise<ReturnType<typeof createQuoteDouble>>;
   readonly clearCache?: () => void;
@@ -74,6 +78,7 @@ function createSubmitFlowFixture(params: SubmitFlowFixtureParams = {}) {
     });
   const executor = createOrderExecutor({
     logger: params.logger ?? createLoggerDouble(),
+    diagnostics: params.diagnostics ?? createDiagnosticObserverDouble(),
     tradeMutationPort: {
       ...native.tradeMutationPort,
       submitOrder: async (command, onRemoteIssued) => {
@@ -472,7 +477,14 @@ describe('submitFlow neutral mutation boundary', () => {
     let current = true;
     let attempts = 0;
     const cause = Object.assign(new Error('openapi error: code=601011'), { code: 601011 });
+    const records: Array<{ readonly operation: string; readonly fields: DiagnosticFields }> = [];
     const fixture = createSubmitFlowFixture({
+      diagnostics: {
+        record: (operation, fields) => {
+          records.push({ operation, fields });
+          throw new Error('diagnostic failure must not replace UNKNOWN fatal');
+        },
+      },
       submitMutation: async (_command, onRemoteIssued) => {
         onRemoteIssued();
         attempts += 1;
@@ -499,6 +511,22 @@ describe('submitFlow neutral mutation boundary', () => {
     expect(isExternalApiRequestError(error)).toBe(false);
     expect(attempts).toBe(1);
     expect(fixture.trackedOrders).toEqual([]);
+    expect(records).toEqual([
+      {
+        operation: DIAGNOSTIC_OPERATIONS.ORDER_SUBMIT_UNKNOWN_FATAL,
+        fields: {
+          symbol: 'BULL.HK',
+          side: 'BUY',
+          purpose: 'ORDINARY_BUY',
+          orderType: 'ELO',
+          sdkOperation: 'TradeContext.submitOrder',
+          requestAttempted: true,
+          code: '601011',
+          count: 1,
+        },
+      },
+    ]);
+    expect(records[0]?.fields['orderId']).toBeUndefined();
   });
 
   it('skips an explicit REJECTED label without parsing its cause or tracking a nonexistent order', async () => {

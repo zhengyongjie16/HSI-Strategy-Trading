@@ -15,6 +15,7 @@ import {
  */
 
 import { describe, expect, it, mock } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { createEventFlow as createProductionEventFlow } from '../../../../src/application/orderTracking/orderMonitor/eventFlow.js';
 import type {
   EventFlowDeps,
@@ -29,8 +30,8 @@ import { exactMultiply } from '../../../../src/utils/numeric/exact.js';
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../recorder/executionFixture.js';
 
-type TestEventFlowDeps = Omit<EventFlowDeps, 'now' | 'monitorConfig'> &
-  Partial<Pick<EventFlowDeps, 'now' | 'monitorConfig'>>;
+type TestEventFlowDeps = Omit<EventFlowDeps, 'now' | 'monitorConfig' | 'diagnostics'> &
+  Partial<Pick<EventFlowDeps, 'now' | 'monitorConfig' | 'diagnostics'>>;
 
 type NativePushFixture = Awaited<ReturnType<typeof createBrokerIngressFixture>>;
 type NativePushFrame = Readonly<{
@@ -112,6 +113,7 @@ async function createNativePushFrame(
 
 function createEventFlow(deps: TestEventFlowDeps) {
   const production = createProductionEventFlow({
+    diagnostics: createDiagnosticObserverDouble(),
     now: () => new Date(Date.now()),
     monitorConfig: createMonitorConfigDouble(),
     ...deps,
@@ -1621,7 +1623,7 @@ describe('orderMonitor eventFlow', () => {
           source: params.source,
         });
         runtime.trackedOrders.delete(params.orderId);
-        runtime.trackedOrderLifecycles.set(params.orderId, 'CLOSED');
+        runtime.trackedOrderLifecycles.set(params.orderId, { state: 'CLOSED' });
         runtime.trackedOrderIdsBySymbol.delete('BULL.HK');
         runtime.routeStatesBySymbol.delete('BULL.HK');
         return { handled: true, relatedBuyOrderIds: null };
@@ -1696,7 +1698,7 @@ describe('orderMonitor eventFlow', () => {
       prepareProtectiveTerminalExecution: () => null,
       settleOrder: (params) => {
         runtime.trackedOrders.delete(params.orderId);
-        runtime.trackedOrderLifecycles.set(params.orderId, 'CLOSED');
+        runtime.trackedOrderLifecycles.set(params.orderId, { state: 'CLOSED' });
         const bucket = runtime.trackedOrderIdsBySymbol.get('BULL.HK');
         if (bucket) {
           bucket.delete(params.orderId);

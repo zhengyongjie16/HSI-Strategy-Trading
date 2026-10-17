@@ -10,6 +10,7 @@ import type { RuntimeTermination } from '../../../src/types/runtime.js';
  * - 验证保护性 FILLED 订单不会提前写入 episode 完成语义
  */
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -112,6 +113,7 @@ function createRuntimeParams(
     },
     cleanup: createCleanup(),
     preGateRuntime: {
+      diagnostics: createDiagnosticObserverDouble(),
       brokerClientFactory: createBrokerClientFactoryDouble(),
       tradingConfig: createTradingConfig({ monitor: monitorConfig }),
       symbolRegistry: createSymbolRegistryDouble(),

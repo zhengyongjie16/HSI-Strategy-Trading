@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import type { TradeRuntimeOverrides } from '../../helpers/types.js';
 
 import {
@@ -394,9 +395,19 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         seatSwitch: autoSymbolManager,
         riskChecker,
       }),
-      buyTaskQueue: createBuyTaskQueue(),
-      sellTaskQueue: createSellTaskQueue(),
-      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
+      buyTaskQueue: createBuyTaskQueue({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      }),
+      sellTaskQueue: createSellTaskQueue({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      }),
+      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>({
+        logger: createLoggerDouble(),
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      }),
     });
     const observedListeners: string[] = [];
 

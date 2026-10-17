@@ -1,4 +1,5 @@
 /** 跨日排空与终态防重开回归，直接调用真实 signal runtime cache domain。 */
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { describe, expect, it } from 'bun:test';
 import { createOpenRebuildContextFixture } from '../fixtures/openRebuildContext.js';
 import { createSignalRuntimeDomain } from '../../../../src/runtime/lifecycle/cacheDomains/signalRuntimeDomain.js';
@@ -85,9 +86,19 @@ function harness() {
         calls.push('postTrade.clear');
       },
     },
-    buyTaskQueue: createBuyTaskQueue(),
-    sellTaskQueue: createSellTaskQueue(),
-    monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
+    buyTaskQueue: createBuyTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    }),
+    sellTaskQueue: createSellTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    }),
+    monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    }),
   };
   const context = {
     now: new Date('2026-05-01T00:00:00+08:00'),
@@ -182,6 +193,7 @@ describe('signal runtime cross-day safety', () => {
       isTradingEnabled: true,
     };
     const manager = createDayLifecycleManager({
+      diagnostics: createDiagnosticObserverDouble(),
       termination: h.termination,
       mutableState,
       cacheDomains: [domain],

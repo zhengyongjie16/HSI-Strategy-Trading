@@ -39,6 +39,10 @@ import { canonicalDecimal } from '../../../utils/numeric/exact.js';
 import { createTradeMutationUnknownError } from '../../orderExecution/tradeMutationErrors.js';
 import type { CancelOrderMutationRequest } from '../types.js';
 import { attachTrackedOrder } from './routingIndex.js';
+import {
+  recordCancelAcknowledgement,
+  recordOrderTerminalConfirmation,
+} from './orderObservation.js';
 import type {
   CancelOrderBeforeBrokerMutation,
   CancelOrderPreflightOutcome,
@@ -122,6 +126,12 @@ function mapStateCheckResultToCancelOutcome(
 ): CancelOrderOutcome {
   const { runtime } = deps;
   if (queryResult.kind === 'TERMINAL') {
+    recordOrderTerminalConfirmation(deps, {
+      orderId,
+      source: 'STATE_CHECK',
+      closedReason: queryResult.closedReason,
+      orderUpdatedAtMs: queryResult.orderUpdatedAtMs,
+    });
     runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
 
     return {
@@ -218,11 +228,17 @@ function applyOpenStateCheckFact(
 
 /** 写入改单后确认的终态，供 route owner 在后续结算时消费。 */
 function setReplaceTerminal(
-  runtime: OrderMonitorRuntimeStore,
+  deps: OrderOpsDeps,
   orderId: string,
   terminalState: TerminalStateSnapshot,
 ): void {
-  runtime.latestReplaceTerminalByOrderId.set(orderId, terminalState);
+  recordOrderTerminalConfirmation(deps, {
+    orderId,
+    source: 'STATE_CHECK',
+    closedReason: terminalState.closedReason,
+    orderUpdatedAtMs: terminalState.orderUpdatedAtMs,
+  });
+  deps.runtime.latestReplaceTerminalByOrderId.set(orderId, terminalState);
 }
 
 /** 未覆盖的 mutation 请求来源必须立即暴露，不能降级为默认授权。 */
@@ -339,7 +355,7 @@ function resolveAttachedTrackedOrder(
     return null;
   }
 
-  if (runtime.trackedOrderLifecycles.get(orderId) !== 'OPEN') {
+  if (runtime.trackedOrderLifecycles.get(orderId)?.state !== 'OPEN') {
     return null;
   }
 
@@ -462,7 +478,10 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       timeoutMarketConversionTerminalState: null,
     };
     runtime.trackedOrders.set(orderId, order);
-    runtime.trackedOrderLifecycles.set(orderId, 'OPEN');
+    runtime.trackedOrderLifecycles.set(orderId, {
+      ...runtime.trackedOrderLifecycles.get(orderId),
+      state: 'OPEN',
+    });
     attachTrackedOrder(runtime, symbol, orderId);
     if (runtime.runtimeState === 'ACTIVE') {
       triggerRoute(symbol, 'TRACKED');
@@ -520,7 +539,10 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
           if (beforeBrokerCancel !== undefined && !beforeBrokerCancel())
             return { kind: 'CANCEL_NOT_STARTED' } as const;
 
-          return invokeCancelOrderWithPermit(permit, deps.tradeMutationPort, orderId);
+          const result = await invokeCancelOrderWithPermit(permit, deps.tradeMutationPort, orderId);
+          if (result.kind === 'ACKNOWLEDGED') recordCancelAcknowledgement(deps, orderId);
+
+          return result;
         }),
       API.DEFAULT_RETRY_COUNT + 1,
     );
@@ -618,7 +640,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       attachedTrackedOrder.lastPriceUpdateAt = now;
       clearReplaceState(attachedTrackedOrder);
       runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
-      setReplaceTerminal(runtime, orderId, queryResult);
+      setReplaceTerminal(deps, orderId, queryResult);
       logger.warn(`[订单修改] 订单 ${orderId} 连续 602013 后确认已终态，停止改单`);
       return;
     }
@@ -772,7 +794,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       if (queryResult.kind === 'TERMINAL') {
         clearReplaceState(latestAttachedTrackedOrder);
         runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
-        setReplaceTerminal(runtime, orderId, queryResult);
+        setReplaceTerminal(deps, orderId, queryResult);
         logger.warn(`[订单修改] 订单 ${orderId} 业务失败后确认已终态，停止改单流程`);
       }
 

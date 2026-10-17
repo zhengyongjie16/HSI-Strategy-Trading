@@ -23,6 +23,8 @@ test('high-revision same-quantity authoritative corrections preserve exact cost/
   const now = Date.parse('2026-07-11T03:00:00.000Z');
   const boundaryTime = now + 200;
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date(0) },
+    diagnostics: { record: () => {} },
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     reportFatalError: () => {},
@@ -34,6 +36,8 @@ test('high-revision same-quantity authoritative corrections preserve exact cost/
   let run!: () => void;
   let pendingProtective = true;
   const workflow = createPostTradeSettlementWorkflow({
+    clock: { now: () => new Date(now) },
+    diagnostics: { record: () => {} },
     snapshot,
     termination: createTerminationDouble(),
     logger: createLoggerDouble(),

@@ -19,6 +19,7 @@ import {
  * - 名称从席位与行情派生，不复制策略或席位状态
  */
 import { describe, expect, it } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import type { PreGateRuntime } from '../../../src/app/types.js';
 import type { CreateMonitorContextParams } from '../../../src/app/context/types.js';
 import { createMonitorContext as createMonitorContextImpl } from '../../../src/app/context/createMonitorContext.js';
@@ -81,6 +82,7 @@ function createRuntime(
   const marketDataClient = createMarketDataClientDouble();
 
   const preGateRuntime: PreGateRuntime = {
+    diagnostics: createDiagnosticObserverDouble(),
     brokerClientFactory: createBrokerClientFactoryDouble(),
     tradingConfig: createTradingConfig(monitor),
     symbolRegistry,

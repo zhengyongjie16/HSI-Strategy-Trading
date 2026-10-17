@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createAccountSnapshotDouble,
@@ -46,6 +47,8 @@ function createFixture(onPositionsCommitted: () => Promise<void> = async () => {
   };
   const tradeRuntime = createTradeRuntimeDouble();
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     reportFatalError: () => {},
@@ -55,6 +58,8 @@ function createFixture(onPositionsCommitted: () => Promise<void> = async () => {
     },
   });
   const runtime = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     termination: createTerminationDouble(),
     getProtectiveOrderReader: () => tradeRuntime.orderMonitor,

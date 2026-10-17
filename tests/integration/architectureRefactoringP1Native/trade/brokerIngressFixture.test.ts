@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
 import { scheduleBoundedOneShotAt } from '../../../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
@@ -66,6 +67,7 @@ describe('broker ingress fixture production mapping', () => {
     expect(fixture.readCounts()).toEqual({ today: 1, history: 1 });
     const fatalErrors: unknown[] = [];
     const monitor = fixture.createMonitor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       requestExternalApi: wrapExternalApiRequest,

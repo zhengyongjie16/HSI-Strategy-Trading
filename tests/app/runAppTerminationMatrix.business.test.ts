@@ -136,9 +136,10 @@ async function harness(
         },
       };
     },
-    createPreGateRuntime: async ({ termination: owner }) => {
+    createPreGateRuntime: async ({ termination: owner, diagnostics }) => {
       termination.current = owner;
       return {
+        diagnostics,
         brokerClientFactory: createBrokerClientFactoryDouble(),
         tradingConfig: createTradingConfig(),
         symbolRegistry: createSymbolRegistryDouble(),

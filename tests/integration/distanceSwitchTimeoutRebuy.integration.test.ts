@@ -2,6 +2,7 @@
  * 距离换标超时转换回补集成：真实 executor 提交 S1，SDK 入站经 monitor/settlement 落入唯一 recorder。
  * 回补只消费同一移仓操作的权威金额，并等待真实 snapshot/settlement fresh，不以读取替身代替成交。
  */
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { describe, expect, it } from 'bun:test';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
@@ -196,6 +197,7 @@ describe('distance switch timeout market conversion rebuy', () => {
         now: h.deps.clock.now,
       });
       monitor = native.createMonitor({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         wait,
         requestExternalApi: wrapExternalApiRequest,
@@ -224,6 +226,7 @@ describe('distance switch timeout market conversion rebuy', () => {
         closedCounts.set(event.orderId, (closedCounts.get(event.orderId) ?? 0) + 1);
       });
       const executor = native.createExecutor({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         rateLimiter,
         cacheManager: cache,

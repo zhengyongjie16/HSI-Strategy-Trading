@@ -2,6 +2,7 @@
  * 生命周期清单接线验证。
  * 从实际 factory 取得 cleanup phase/创建资源，从真实日切域取得 trace；不另抄一份执行清单。
  */
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { describe, expect, it, spyOn } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
@@ -191,6 +192,8 @@ async function dayHarness() {
   };
   const marketDataClient = recorded('marketDataClient', createMarketDataClientDouble(), trace);
   const settlement = createSettlementRuntimeFixture({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     monitorContext,
@@ -246,11 +249,29 @@ async function dayHarness() {
     orderMonitor: tradeRuntime.orderMonitor,
     postTradeConsistencyRuntime,
     quoteSubscriptionRuntime,
-    buyTaskQueue: recorded('buyTaskQueue', createBuyTaskQueue(), trace),
-    sellTaskQueue: recorded('sellTaskQueue', createSellTaskQueue(), trace),
+    buyTaskQueue: recorded(
+      'buyTaskQueue',
+      createBuyTaskQueue({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      }),
+      trace,
+    ),
+    sellTaskQueue: recorded(
+      'sellTaskQueue',
+      createSellTaskQueue({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      }),
+      trace,
+    ),
     monitorTaskQueue: recorded(
       'monitorTaskQueue',
-      createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
+      createMonitorTaskQueue<MonitorTaskDataMap>({
+        logger: createLoggerDouble(),
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      }),
       trace,
     ),
   });
@@ -265,6 +286,7 @@ async function dayHarness() {
   });
   stateFixtures.lifecycleState.currentDayKey = '2026-04-30';
   const manager = createDayLifecycleManager({
+    diagnostics: createDiagnosticObserverDouble(),
     termination,
     logger,
     mutableState: stateFixtures.lifecycleState,
@@ -430,6 +452,45 @@ describe('lifecycle checklist actual wiring', () => {
       'unlisted cleanup registration: createPostGateRuntime:STOP_MONITOR_QUOTE_EVENT_RUNTIME:tradingRiskEventRuntime.stopAndDrain',
       'missing cleanup registration: createPostGateRuntime:STOP_MONITOR_QUOTE_EVENT_RUNTIME:monitorQuoteEventRuntime.stopAndDrain (1)',
     ]);
+  });
+
+  it('starts passive seat diagnostics after acquisition but before broker work and retains it across rebuild', () => {
+    const nodes = sourceNodes('app/runtime/createPreGateRuntime.ts');
+    const seatObserverStart = nodes.find(
+      (node) =>
+        ts.isCallExpression(node) && node.expression.getText() === 'seatDiagnosticRuntime.start',
+    );
+    const registryCreation = nodes.find(
+      (node) => ts.isCallExpression(node) && node.expression.getText() === 'createSymbolRegistry',
+    );
+    const brokerCreation = nodes.find(
+      (node) => ts.isCallExpression(node) && node.expression.getText() === 'buildClientFactory',
+    );
+    if (
+      seatObserverStart === undefined ||
+      registryCreation === undefined ||
+      brokerCreation === undefined
+    ) {
+      throw new Error('missing passive seat diagnostics acquisition wiring');
+    }
+
+    expect(registryCreation.getStart()).toBeLessThan(seatObserverStart.getStart());
+    expect(seatObserverStart.getStart()).toBeLessThan(brokerCreation.getStart());
+    expect(
+      nodes.some(
+        (node) =>
+          ts.isCallExpression(node) &&
+          node.expression.getText() === 'seatRuntimeCleanupDispatcher.start',
+      ),
+    ).toBe(false);
+
+    expect(
+      LIFECYCLE_CHECKLIST.resources.find(({ resource }) => resource === 'seatDiagnosticRuntime'),
+    ).toMatchObject({
+      createdBy: 'createPreGateRuntime',
+      runsWhileTradingClosed: true,
+      finalDrainAndDispose: [['STOP_SEAT_DIAGNOSTIC_RUNTIME', 'stop']],
+    });
   });
 
   it('checks actual startup and synchronous termination call sites against declared actions/order', () => {
@@ -646,7 +707,11 @@ describe('lifecycle checklist actual wiring', () => {
       } as Parameters<typeof createAsyncRuntime>[0]['preGateRuntime'],
       postGateRuntime: {
         monitorContext: createMonitorContextDouble(),
-        monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
+        monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>({
+          logger: createLoggerDouble(),
+          clock: { now: () => new Date() },
+          diagnostics: createDiagnosticObserverDouble(),
+        }),
       } as Parameters<typeof createAsyncRuntime>[0]['postGateRuntime'],
       scheduler: {
         scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),

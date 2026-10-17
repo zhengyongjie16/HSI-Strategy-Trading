@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { wait } from '../../../../src/infrastructure/time/index.js';
 import { createLoggerDouble, createMonitorConfigDouble } from '../../../helpers/testDoubles.js';
 
@@ -32,6 +33,7 @@ async function setup(status: 'Canceled' | 'Rejected' | 'Filled') {
   f.runtime.runtimeState = 'ACTIVE';
   f.runtime.running = true;
   const ops = native.createOperations({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     runtime: f.runtime,
@@ -122,7 +124,7 @@ for (const [status, reason] of [
     };
     expect(f.flow.settleOrder(input).handled).toBe(true);
     expect(f.runtime.trackedOrders.has('ZERO-RESOURCE')).toBe(false);
-    expect(f.runtime.trackedOrderLifecycles.get('ZERO-RESOURCE')).toBe('CLOSED');
+    expect(f.runtime.trackedOrderLifecycles.get('ZERO-RESOURCE')?.state).toBe('CLOSED');
     expect(f.runtime.trackedOrderIdsBySymbol.get('BULL.HK')?.has('ZERO-RESOURCE') ?? false).toBe(
       false,
     );

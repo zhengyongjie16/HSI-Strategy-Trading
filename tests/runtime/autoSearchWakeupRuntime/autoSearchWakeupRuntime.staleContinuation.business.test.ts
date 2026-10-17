@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import type { RuntimeStateFixtures } from '../../helpers/types.js';
 import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
 
@@ -151,7 +152,11 @@ function createRuntimeHarness(params: {
     frozenTradingDayKey: null,
   });
 
-  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+  const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+    logger: createLoggerDouble(),
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
+  });
   const seatActivationDispatcher = createSeatActivationDispatcher({
     logger: createLoggerDouble(),
     termination,
@@ -240,7 +245,11 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       frozenTradingDayKey: null,
     });
 
-    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble());
+    const monitorTaskQueue = createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const seatActivationDispatcher = createSeatActivationDispatcher({
       logger: createLoggerDouble(),
       termination,

@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import type { RuntimeStateFixtures } from '../helpers/types.js';
 
 /**
@@ -85,6 +86,8 @@ describe('PostTrade drain and Quote lifetime integration', () => {
       });
       let delayedRead = false;
       const snapshot = createAccountPositionSnapshot({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
         dayEpoch: 1,
         scheduler: { schedule: queueMicrotask },
         reportFatalError: termination.reportFatalError,
@@ -156,6 +159,8 @@ describe('PostTrade drain and Quote lifetime integration', () => {
       await quotes.reconcileFromCurrentTruth();
       quotes.start();
       const postTrade = createPostTradeConsistencyRuntime({
+        diagnostics: createDiagnosticObserverDouble(),
+        clock: { now: () => new Date() },
         logger: createLoggerDouble(),
         termination,
         getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
@@ -225,9 +230,19 @@ describe('PostTrade drain and Quote lifetime integration', () => {
           quoteSubscriptionRuntime: { ...quotes, stopAndDrain: drainQuotes },
           orderMonitor: tradeRuntime.orderMonitor,
           postTradeConsistencyRuntime: { ...postTrade, stopAndDrain: drainPostTrade },
-          buyTaskQueue: createBuyTaskQueue(),
-          sellTaskQueue: createSellTaskQueue(),
-          monitorTaskQueue: createMonitorTaskQueue(createLoggerDouble()),
+          buyTaskQueue: createBuyTaskQueue({
+            clock: { now: () => new Date() },
+            diagnostics: createDiagnosticObserverDouble(),
+          }),
+          sellTaskQueue: createSellTaskQueue({
+            clock: { now: () => new Date() },
+            diagnostics: createDiagnosticObserverDouble(),
+          }),
+          monitorTaskQueue: createMonitorTaskQueue({
+            logger: createLoggerDouble(),
+            clock: { now: () => new Date() },
+            diagnostics: createDiagnosticObserverDouble(),
+          }),
         });
         cleanupPromise = Promise.resolve(
           domain.midnightClear({

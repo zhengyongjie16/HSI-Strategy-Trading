@@ -6,6 +6,7 @@ import { createTerminationRuntime } from '../../../src/runtime/lifecycle/termina
  * 功能：验证解析阶段的 fail-fast 配置错误会直接以 ConfigValidationError 契约抛出，避免绕过既有配置错误出口。
  */
 import { describe, expect, it } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 
 import { createPreGateRuntime } from '../../../src/app/runtime/createPreGateRuntime.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
@@ -29,6 +30,8 @@ describe('app createPreGateRuntime config error contract', () => {
     let caughtError: unknown = null;
     try {
       await createPreGateRuntime({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
         env,
         cleanup: createCleanup(),
         termination: createTerminationRuntime({

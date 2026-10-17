@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
 
 import {
@@ -40,6 +41,7 @@ function fixture(
   let live = true;
   const config = createTradingConfig();
   const executor = createOrderExecutor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     tradeMutationPort: native.port,
     readSellPositions: async () => [],

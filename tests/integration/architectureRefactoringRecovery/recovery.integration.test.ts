@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import type { RuntimeStateFixtures } from '../../helpers/types.js';
 import { scheduleBoundedOneShotAt } from '../../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../../src/infrastructure/externalApi/index.js';
@@ -262,6 +263,7 @@ async function createOfflineRecovery(
     },
   });
   const monitor = native.createMonitor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     requestExternalApi: wrapExternalApiRequest,
@@ -336,12 +338,16 @@ async function createOfflineRecovery(
     riskChecker: risk,
   });
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort: tradeRuntime.accountService,
     reportFatalError: termination.reportFatalError,
   });
   postTrade = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     termination,
     getProtectiveOrderReader: () => tradeRuntime.orderMonitor,
@@ -361,7 +367,11 @@ async function createOfflineRecovery(
     logger: createLoggerDouble(),
     snapshot,
     symbolRegistry,
-    monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
+    monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>({
+      logger: createLoggerDouble(),
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    }),
     termination,
   });
   const hydrate = createTradeLogHydrator({

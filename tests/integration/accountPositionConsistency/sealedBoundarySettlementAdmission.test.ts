@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createLoggerDouble } from '../../helpers/testDoubles.js';
 
 /**
@@ -63,6 +64,8 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
       },
     });
     const snapshot = createAccountPositionSnapshot({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
       dayEpoch: 1,
       scheduler: { schedule: queueMicrotask },
       readPort: {
@@ -76,6 +79,8 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
       reportFatalError: termination.reportFatalError,
     });
     const sink = createPostTradeConsistencyRuntime({
+      diagnostics: createDiagnosticObserverDouble(),
+      clock: { now: () => new Date() },
       logger: createLoggerDouble(),
       snapshot,
       termination,
@@ -118,6 +123,8 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
     };
     const events: OrderStateChangedEvent[] = [];
     const flow = createSettlementFlow({
+      diagnostics: createDiagnosticObserverDouble(),
+      now: () => new Date(),
       runtime,
       orderRecorder: owner,
       dailyLossTracker: daily,
@@ -250,7 +257,7 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
     expect(owner.getPendingSellSnapshot()).toEqual([]);
     expect(holds.getHoldSymbols().size).toBe(0);
     expect(runtime.closedOrderIds.has('OFFLINE-SELL')).toBe(true);
-    expect(runtime.trackedOrderLifecycles.get('OFFLINE-SELL')).toBe('CLOSED');
+    expect(runtime.trackedOrderLifecycles.get('OFFLINE-SELL')?.state).toBe('CLOSED');
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       orderId: 'OFFLINE-SELL',

@@ -15,6 +15,7 @@ import type { AccountPositionSnapshot, SnapshotToken } from '../../types/account
 import type { AccountService } from '../../types/accountReadPorts.js';
 import type { BrokerAccess } from '../../types/brokerAccessPorts.js';
 import type { MonitorConfig, TradingConfig } from '../../types/config.js';
+import type { DiagnosticObserver } from '../../types/diagnostics.js';
 import type { Logger } from '../../types/logger.js';
 import type { MarketDataClient } from '../../types/marketPorts.js';
 import type { OrderExecutor } from '../../types/orderExecutionPorts.js';
@@ -62,6 +63,7 @@ export type CreateTradeRuntimeDeps = {
   readonly scheduleBoundedOneShotAt: ScheduleBoundedOneShotAt;
   readonly requestExternalApi: ExternalApiRequest;
   readonly logger: Logger;
+  readonly diagnostics: DiagnosticObserver;
 
   /** 同步延迟创建唯一 broker 访问能力；装配错误仍转换为 rejected Promise。 */
   readonly brokerAccess: () => BrokerAccess;
@@ -140,6 +142,8 @@ export type AsyncRuntimeFactoryDeps = Readonly<{
  */
 export type PostTradeConsistencyRuntimeDeps = Readonly<{
   logger: Logger;
+  diagnostics: DiagnosticObserver;
+  clock: Pick<RuntimeClock, 'now'>;
   termination: Pick<RuntimeTermination, 'isTerminated' | 'reportFatalError'>;
   getProtectiveOrderReader: () => ProtectiveOrderReader;
   snapshot: Pick<

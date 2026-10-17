@@ -4,6 +4,7 @@ import { createAccountPositionSnapshot } from '../../../src/application/accountP
 import type { AccountSnapshot, Position } from '../../../src/types/account.js';
 import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 
 function deferred<T>() {
   const { promise, resolve, reject } = Promise.withResolvers<T>();
@@ -32,6 +33,8 @@ const scheduler = {
     queueMicrotask(callback);
   },
 };
+const clock = { now: () => new Date(0) };
+const diagnostics = createDiagnosticObserverDouble();
 const request = { source: 'TEST', dayEpoch: 1, refreshAccount: true, refreshPositions: true };
 
 async function tick() {
@@ -56,6 +59,8 @@ describe('canonical snapshot', () => {
     const owner = createAccountPositionSnapshot({
       dayEpoch: 1,
       scheduler,
+      clock,
+      diagnostics,
       reportFatalError: (error) => {
         fatal.push(error);
       },
@@ -92,6 +97,8 @@ describe('canonical snapshot', () => {
     const owner = createAccountPositionSnapshot({
       dayEpoch: 1,
       scheduler,
+      clock,
+      diagnostics,
       reportFatalError: () => {},
       readPort: {
         getAccountSnapshot: async () => account,
@@ -124,6 +131,8 @@ describe('canonical snapshot', () => {
     const owner = createAccountPositionSnapshot({
       dayEpoch: 1,
       scheduler,
+      clock,
+      diagnostics,
       reportFatalError: () => {},
       readPort: {
         getAccountSnapshot: () => {
@@ -157,6 +166,8 @@ describe('canonical snapshot', () => {
     const owner = createAccountPositionSnapshot({
       dayEpoch: 1,
       scheduler,
+      clock,
+      diagnostics,
       reportFatalError: () => {},
       readPort: {
         getAccountSnapshot: () => {
@@ -183,6 +194,8 @@ describe('canonical snapshot', () => {
     const owner = createAccountPositionSnapshot({
       dayEpoch: 1,
       scheduler,
+      clock,
+      diagnostics,
       reportFatalError: () => {},
       readPort: {
         getAccountSnapshot: () => first.promise,
@@ -208,6 +221,8 @@ describe('canonical snapshot', () => {
     const owner = createAccountPositionSnapshot({
       dayEpoch: 1,
       scheduler,
+      clock,
+      diagnostics,
       reportFatalError: (error) => {
         fatal.push(error);
       },
@@ -256,6 +271,8 @@ describe('canonical snapshot', () => {
     const owner = createAccountPositionSnapshot({
       dayEpoch: 1,
       scheduler,
+      clock,
+      diagnostics,
       reportFatalError: () => {},
       readPort: {
         getAccountSnapshot: async () => account,

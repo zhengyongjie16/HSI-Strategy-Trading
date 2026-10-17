@@ -6,6 +6,9 @@ import { createTerminationRuntime } from '../../../src/runtime/lifecycle/termina
  * 功能：验证启动阶段只初始化可靠交易日状态，不因非交易日或交易日接口异常阻断 pre-gate runtime 创建。
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
+import { DIAGNOSTIC_OPERATIONS } from '../../../src/constants/diagnostics.js';
+import type { DiagnosticFields } from '../../../src/types/diagnostics.js';
 
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import type { CreatePreGateRuntimeParams } from '../../../src/app/types.js';
@@ -52,6 +55,8 @@ const { createPreGateRuntime } = await import('../../../src/app/runtime/createPr
 
 function createRuntimeParams(): CreatePreGateRuntimeParams {
   return {
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     cleanup: createCleanup(),
     termination: createTerminationRuntime({
       closeTradingGate: () => {},
@@ -85,6 +90,8 @@ describe('app createPreGateRuntime minimal startup gate', () => {
 
   it('returns pre-gate runtime even when current day is not a trading day', async () => {
     const runtime = await createPreGateRuntime({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
       cleanup: createCleanup(),
       termination: createTerminationRuntime({
         closeTradingGate: () => {},
@@ -121,6 +128,8 @@ describe('app createPreGateRuntime minimal startup gate', () => {
       cause: new Error('trading day service unavailable'),
     });
     const runtime = await createPreGateRuntime({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
       cleanup: createCleanup(),
       termination: createTerminationRuntime({
         closeTradingGate: () => {},
@@ -152,6 +161,8 @@ describe('app createPreGateRuntime minimal startup gate', () => {
     let caught: unknown = null;
     try {
       await createPreGateRuntime({
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
         cleanup: createCleanup(),
         termination: createTerminationRuntime({
           closeTradingGate: () => {},
@@ -184,6 +195,56 @@ describe('app createPreGateRuntime minimal startup gate', () => {
     expect(await createPreGateRuntime(params)).toBeNull();
     expect(marketCreateCalls).toBe(0);
     expect(isTradingDayCalls).toBe(0);
+    await params.cleanup.execute();
+  });
+
+  it('observes complete seat activation before final cleanup and unsubscribes without business cleanup', async () => {
+    const records: { readonly operation: string; readonly fields: DiagnosticFields }[] = [];
+    let nowMs = 100;
+    const params: CreatePreGateRuntimeParams = {
+      ...createRuntimeParams(),
+      clock: { now: () => new Date(nowMs) },
+      diagnostics: {
+        record: (operation, fields) => {
+          records.push({ operation, fields });
+        },
+      },
+    };
+    const runtime = await createPreGateRuntime(params);
+    if (runtime === null) throw new Error('unexpected terminated runtime');
+
+    runtime.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      ...runtime.symbolRegistry.getSeatState('LONG'),
+      status: 'ACTIVATING',
+      symbol: 'NEXT.HK',
+    });
+    nowMs = 175;
+
+    runtime.symbolRegistry.updateSeatState('LONG', {
+      ...runtime.symbolRegistry.getSeatState('LONG'),
+      status: 'ACTIVE',
+      symbol: 'NEXT.HK',
+      lastSeatActivatedAt: nowMs,
+    });
+
+    expect(records.map(({ operation }) => operation)).toEqual([
+      DIAGNOSTIC_OPERATIONS.SEAT_VERSION_INVALIDATED,
+      DIAGNOSTIC_OPERATIONS.SEAT_ACTIVATION_COMPLETED,
+    ]);
+
+    expect(records.at(-1)?.fields).toMatchObject({
+      symbol: 'NEXT.HK',
+      outcome: 'ACTIVE',
+      durationMs: 75,
+    });
+
+    await params.cleanup.execute();
+    runtime.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+      ...runtime.symbolRegistry.getSeatState('LONG'),
+      status: 'ACTIVATING',
+      symbol: 'AFTER-CLEANUP.HK',
+    });
+    expect(records).toHaveLength(2);
   });
 
   it('registers market cleanup before returning after a terminated acquisition', async () => {

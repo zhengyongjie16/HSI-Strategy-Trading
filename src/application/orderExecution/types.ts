@@ -1,4 +1,5 @@
 import type { Logger } from '../../types/logger.js';
+import type { DiagnosticObserver } from '../../types/diagnostics.js';
 import type {
   OrderActionAuthorization,
   OrderMutationRequest,
@@ -180,6 +181,7 @@ export type RelatedBuyOrderQuantityValidationParams = {
  */
 export type SubmitTargetOrderDeps = {
   readonly logger: Logger;
+  readonly diagnostics: DiagnosticObserver;
   readonly readSellPositions: (symbol: string) => Promise<ReadonlyArray<Position>>;
   readonly tradeMutationPort: TradeMutationPort;
   readonly rateLimiter: RateLimiter;
@@ -295,6 +297,7 @@ export interface OrderExecutor {
 /** 共享订单执行依赖；仅注入中性 port/事实，无 SDK 或旧混合 owner 类型。 */
 export type OrderExecutorDeps = {
   readonly logger: Logger;
+  readonly diagnostics: DiagnosticObserver;
   readonly readSellPositions: (symbol: string) => Promise<ReadonlyArray<Position>>;
   readonly tradeMutationPort: TradeMutationPort;
   readonly rateLimiter: RateLimiter;

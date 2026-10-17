@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createLoggerDouble } from '../../helpers/testDoubles.js';
 
 /** 真实策略 + 宿主 emitter + 席位取消：验证私有 pending 跨异步回流而不是旧 verifier mock。 */
@@ -117,7 +118,11 @@ describe('真实策略 pending 集成', () => {
       },
       buyTaskQueue: h.buyTaskQueue,
       sellTaskQueue: h.sellTaskQueue,
-      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>(createLoggerDouble()),
+      monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>({
+        logger: createLoggerDouble(),
+        clock: { now: () => new Date() },
+        diagnostics: createDiagnosticObserverDouble(),
+      }),
     });
     dispatcher.start();
     h.program.start();

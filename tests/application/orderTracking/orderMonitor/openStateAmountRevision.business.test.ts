@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { wait } from '../../../../src/infrastructure/time/index.js';
 import { createLoggerDouble, createMonitorConfigDouble } from '../../../helpers/testDoubles.js';
 
@@ -76,6 +77,7 @@ describe('orderMonitor OPEN state-check amount revision', () => {
         f.runtime.runtimeState !== 'STOPPED';
     };
     const orderOps = native.createOperations({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       captureWorkGuard: workGuard,
@@ -115,6 +117,7 @@ describe('orderMonitor OPEN state-check amount revision', () => {
       orderType: native.queryObservation.orderType,
     });
     const eventFlow = createEventFlow({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       monitorConfig: createMonitorConfigDouble({
         monitorSymbol: 'HSI.HK',

@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createLiquidationCooldownTrackerDouble,
@@ -124,6 +125,8 @@ async function createOrderExecutor(deps: OrderExecutorTestDeps) {
     orderRecorder: deps.orderRecorder,
   });
   const settlement = createSettlementRuntimeFixture({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     monitorContext,
@@ -244,6 +247,7 @@ describe('buy-flow integration', () => {
       },
     });
     const executor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress,
       rateLimiter: createRateLimiterDouble(),
@@ -260,7 +264,10 @@ describe('buy-flow integration', () => {
         info: { isTradingDay: true, isHalfDay: false },
       }),
     });
-    const queue = createBuyTaskQueue();
+    const queue = createBuyTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const termination = createTerminationRuntime({
       closeTradingGate: () => {},
       closeProducerAdmission: queue.close,
@@ -330,6 +337,7 @@ describe('buy-flow integration', () => {
     const tradeCtx = await createNativeBuyIngress();
     let currentTime = new Date(scenario.beforeCutoff);
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble({
@@ -410,6 +418,7 @@ describe('buy-flow integration', () => {
     const tradeCtx = await createNativeBuyIngress();
     let currentTime = new Date('2026-07-12T03:30:00.000Z');
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble({
@@ -486,6 +495,7 @@ describe('buy-flow integration', () => {
     const tradeCtx = await createNativeBuyIngress();
     const currentTime = new Date('2026-07-12T06:30:00.000Z');
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -539,6 +549,7 @@ describe('buy-flow integration', () => {
     const tradeCtx = await createNativeBuyIngress();
     const currentTimeMs = Date.parse('2026-07-12T02:00:00.000Z');
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -606,6 +617,7 @@ describe('buy-flow integration', () => {
       return '';
     });
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -676,6 +688,7 @@ describe('buy-flow integration', () => {
     tradeCtx.setSubmitBehavior(async () => 'LOCAL-SYNC-ACCEPTED');
     const localTrackingFailure = new Error('track failed after submit');
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -754,6 +767,7 @@ describe('buy-flow integration', () => {
     const currentTime = new Date('2026-07-10T02:00:00.000Z');
     let trackedOrderCount = 0;
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -823,6 +837,7 @@ describe('buy-flow integration', () => {
     const initialSeatVersion = symbolRegistry.getSeatVersion('LONG');
     let mutationPermitAcquisitions = 0;
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createRateLimiterDouble({
@@ -890,6 +905,7 @@ describe('buy-flow integration', () => {
     const currentTime = new Date('2026-07-10T02:00:00.000Z');
     let trackedOrderCount = 0;
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -958,6 +974,7 @@ describe('buy-flow integration', () => {
     const currentTime = new Date('2026-07-10T02:00:00.000Z');
     let trackedOrderCount = 0;
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -1032,6 +1049,7 @@ describe('buy-flow integration', () => {
       executionSide: 'BUY' | 'SELL';
     }> = [];
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -1123,6 +1141,7 @@ describe('buy-flow integration', () => {
       executionSide: 'BUY' | 'SELL';
     }> = [];
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -1201,6 +1220,7 @@ describe('buy-flow integration', () => {
       executionSide: 'BUY' | 'SELL';
     }> = [];
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -1261,6 +1281,7 @@ describe('buy-flow integration', () => {
     const tradingConfig = createTradingConfig();
     const tradeCtx = await createNativeBuyIngress();
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -1355,6 +1376,7 @@ describe('buy-flow integration', () => {
     });
 
     const orderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: tradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -1440,6 +1462,7 @@ describe('buy-flow integration', () => {
     let successClockMs = successAuthorizationMs;
     const successTradeCtx = await createNativeBuyIngress();
     const successOrderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: successTradeCtx,
       rateLimiter: createMutationRateLimiter(),
@@ -1537,6 +1560,7 @@ describe('buy-flow integration', () => {
     });
 
     const failedOrderExecutor = await createOrderExecutor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       ingress: failedTradeCtx,
       rateLimiter: createMutationRateLimiter(),

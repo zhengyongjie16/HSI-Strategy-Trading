@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import type { RuntimeStateFixtures } from '../helpers/types.js';
 
 /**
@@ -100,6 +101,8 @@ async function createOwnershipHarness(params: {
   const secondaryErrors: unknown[] = [];
   const snapshotDrains: Promise<void>[] = [];
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     reportFatalError: reportSnapshotFatalError,
@@ -181,6 +184,8 @@ async function createOwnershipHarness(params: {
     }),
   });
   const postTrade = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     termination,
     snapshot,

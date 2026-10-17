@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
 import { wait } from '../../src/infrastructure/time/index.js';
@@ -76,6 +77,7 @@ async function realEventChain(
   f.runtime.running = true;
   const monitorConfig = createMonitorConfigDouble();
   const ops = native.createOperations({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     runtime: f.runtime,
@@ -114,6 +116,7 @@ async function realEventChain(
   });
   f.recorder.submitSellOrder(orderId, 'BULL.HK', 'LONG', 100, [], true, revisionMs - 10);
   return createProductionEventFlow({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     runtime: f.runtime,
     monitorConfig,
@@ -158,6 +161,7 @@ describe('order monitor cumulative execution integration', () => {
 
     const stateChanges: string[] = [];
     const monitor = native.createMonitor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       requestExternalApi: wrapExternalApiRequest,

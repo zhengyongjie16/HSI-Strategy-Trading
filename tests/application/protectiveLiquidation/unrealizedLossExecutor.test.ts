@@ -3,6 +3,7 @@
  *
  * 验证 purpose/seat 授权、UNKNOWN 与内部失败穿透、明确外部失败及 accepted 后失效不重提或发布旧风险。
  */
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createSettlementRuntimeFixture } from '../../helpers/settlementRuntime.js';
@@ -432,6 +433,8 @@ describe('unrealizedLossMonitor directional execution', () => {
       onSecondaryError: () => {},
     });
     const settlement = createSettlementRuntimeFixture({
+      diagnostics: createDiagnosticObserverDouble(),
+      clock: { now: () => new Date() },
       logger: createLoggerDouble(),
       snapshot,
       termination,

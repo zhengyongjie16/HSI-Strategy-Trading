@@ -3,6 +3,7 @@ import { expect, test } from 'bun:test';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
 import type { Position } from '../../../src/types/account.js';
 import { createAccountSnapshotDouble } from '../../helpers/testDoubles.js';
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -20,6 +21,8 @@ test('pair then positions-only rejects paired authorization even for the new cur
   const owner = createAccountPositionSnapshot({
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
+    clock: { now: () => new Date(0) },
+    diagnostics: createDiagnosticObserverDouble(),
     reportFatalError: (error) => {
       throw error;
     },
@@ -70,6 +73,8 @@ test('captured issued A drain waits both A siblings, never later pending B IO', 
   const owner = createAccountPositionSnapshot({
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
+    clock: { now: () => new Date(0) },
+    diagnostics: createDiagnosticObserverDouble(),
     reportFatalError: (error) => {
       throw error;
     },

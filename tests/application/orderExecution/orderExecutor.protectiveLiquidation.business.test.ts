@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createMarketDataClientDouble,
@@ -136,6 +137,7 @@ async function createDoomsdayAuthorizationHarness(params: {
   const native = await createNativeIngress();
 
   const orderExecutor = createOrderExecutor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     tradeMutationPort: native.ports.createTradeMutationPort(),
     readSellPositions: native.ports.createSellPositionReader(),
@@ -382,6 +384,7 @@ describe('orderExecutor protective-liquidation contract', () => {
     let trackedOrderCount = 0;
     let localRecordCount = 0;
     const orderExecutorDeps = {
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       tradeMutationPort: native.ports.createTradeMutationPort(),
       readSellPositions: native.ports.createSellPositionReader(),
@@ -463,6 +466,7 @@ describe('orderExecutor protective-liquidation contract', () => {
     let cacheClearCalls = 0;
     let trackedOrderCount = 0;
     const orderExecutorDeps = {
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       tradeMutationPort: native.ports.createTradeMutationPort(),
       readSellPositions: native.ports.createSellPositionReader(),
@@ -543,6 +547,7 @@ describe('orderExecutor protective-liquidation contract', () => {
     let cacheClearCalls = 0;
     let trackedOrderCount = 0;
     const orderExecutorDeps = {
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       tradeMutationPort: native.ports.createTradeMutationPort(),
       readSellPositions: native.ports.createSellPositionReader(),
@@ -632,6 +637,7 @@ describe('orderExecutor protective-liquidation contract', () => {
     const executionTime = new Date('2026-07-10T07:56:00.000Z');
     const native = await createNativeIngress();
     const orderExecutorDeps = {
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       tradeMutationPort: native.ports.createTradeMutationPort(),
       readSellPositions: native.ports.createSellPositionReader(),
@@ -714,6 +720,7 @@ describe('orderExecutor protective-liquidation contract', () => {
     let rateLimiterCalls = 0;
     const trackedOrders: TrackOrderParams[] = [];
     const orderExecutorDeps = {
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       tradeMutationPort: native.ports.createTradeMutationPort(),
       readSellPositions: native.ports.createSellPositionReader(),

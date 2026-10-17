@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import {
   createLoggerDouble,
   createAccountSnapshotDouble,
@@ -23,6 +24,8 @@ test('real app capability mapping follows r11 after r10 subscription returns wit
     acknowledge = resolve;
   });
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort: {
@@ -41,6 +44,8 @@ test('real app capability mapping follows r11 after r10 subscription returns wit
     }),
   });
   const runtime = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     termination: createTerminationDouble(),
     getProtectiveOrderReader: () => createTradeRuntimeDouble().orderMonitor,

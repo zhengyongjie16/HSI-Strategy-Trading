@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import type { RuntimeStateFixtures } from '../helpers/types.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
@@ -168,6 +169,8 @@ async function createHarness(
   const episode = createProtectiveLiquidationEpisodeTracker();
   const rateLimiter = createRateLimiterDouble();
   const snapshot = createAccountPositionSnapshot({
+    clock: { now: () => new Date() },
+    diagnostics: createDiagnosticObserverDouble(),
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort: native.createAccountService({ rateLimiter }),
@@ -197,6 +200,8 @@ async function createHarness(
   let tradeRuntime: TradeRuntime | null = null;
   let quote: QuoteSubscriptionRuntime | null = null;
   const postTrade = createPostTradeConsistencyRuntime({
+    diagnostics: createDiagnosticObserverDouble(),
+    clock: { now: () => new Date() },
     logger: createLoggerDouble(),
     snapshot,
     termination,
@@ -221,6 +226,7 @@ async function createHarness(
   });
   const holds = createOrderHoldRegistry();
   const monitor = native.createMonitor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     wait: wait,
     requestExternalApi: wrapExternalApiRequest,
@@ -357,6 +363,7 @@ async function createHarness(
   });
   let loads = 0;
   const manager = createDayLifecycleManager({
+    diagnostics: createDiagnosticObserverDouble(),
     snapshot,
     termination,
     mutableState: stateFixtures.lifecycleState,

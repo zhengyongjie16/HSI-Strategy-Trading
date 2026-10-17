@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createLoggerDouble, createSignalDouble } from '../../helpers/testDoubles.js';
 
 /** FIFO processor 终态与可恢复 stop/restart；不会重新打开最终 admission。 */
@@ -20,7 +21,10 @@ async function flushImmediate(): Promise<void> {
 
 describe('processor termination', () => {
   test('普通 stop/restart 可恢复；最终 close 后 restart 不重新订阅或消费', async () => {
-    const queue = createBuyTaskQueue();
+    const queue = createBuyTaskQueue({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
+    });
     const calls: string[] = [];
     let subscriptions = 0;
     const termination = createTerminationRuntime({

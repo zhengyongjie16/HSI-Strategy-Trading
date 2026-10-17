@@ -1,6 +1,7 @@
 /** 订单终态结算：唯一 recorder 累计经济事实，durable 成功先于提交，资源关闭与经济幂等分离。 */
 
 import { compareBuyOrdersBySellPriority } from '../../../domain/order/sellDeductionPolicy.js';
+import { recordOrderTerminalConfirmation } from './orderObservation.js';
 import type {
   DailyLossAuthoritativeFactSnapshot,
   DailyLossCumulativeExecutionResult,
@@ -336,6 +337,8 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       }
     }
 
+    recordOrderTerminalConfirmation(deps, params);
+
     // 关联身份来自可信 submission 与提交前精确覆盖，不可在经济过滤后由 survivor 反向合成。
     // 无执行的非FILLED终态只走下方原资源关闭链，不制造O/Daily/durable/S经济完成事实。
     let exactEconomicAssociation: ReadonlyArray<string> | null = null;
@@ -422,7 +425,10 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     if (tracked !== undefined) detachTrackedOrder(runtime, tracked.symbol, params.orderId);
 
     runtime.trackedOrders.delete(params.orderId);
-    runtime.trackedOrderLifecycles.set(params.orderId, 'CLOSED');
+    runtime.trackedOrderLifecycles.set(params.orderId, {
+      ...runtime.trackedOrderLifecycles.get(params.orderId),
+      state: 'CLOSED',
+    });
     orderHoldRegistry.markOrderClosed(params.orderId);
     emitOrderStateChanged({
       orderId: params.orderId,

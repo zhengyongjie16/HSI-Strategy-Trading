@@ -11,6 +11,7 @@ import type { PreparedUnrealizedLossData } from '../../types/unrealizedLoss.js';
 import type { WarrantRefreshResult } from '../../types/warrantRisk.js';
 import type { OrderFact } from '../../types/trade.js';
 import type { Logger } from '../../types/logger.js';
+import type { DiagnosticObserver } from '../../types/diagnostics.js';
 
 /** 入队时固定的激活身份；重试保留 epoch、方向、版本与真实 previousSymbol，不改用当前身份。 */
 export type SeatActivationRequest = Readonly<{
@@ -82,6 +83,7 @@ export interface SeatActivationRisk {
 
 /** 激活用例的窄依赖；调度、停止和致命错误上报由实际 runtime 持有。 */
 export interface SeatActivationWorkflowDeps {
+  readonly diagnostics: DiagnosticObserver;
   readonly clock: RuntimeClock;
   readonly config: DailyLossMonitorScope;
   readonly symbolRegistry: SymbolRegistry;

@@ -12,6 +12,7 @@ import type { LifecycleMutableState } from '../../types/lifecycle.js';
 import type { RuntimeTermination } from '../../types/runtime.js';
 import type { AccountPositionSnapshot, SnapshotToken } from '../../types/accountPosition.js';
 import type { Logger } from '../../types/logger.js';
+import type { DiagnosticObserver } from '../../types/diagnostics.js';
 import type { DailyLossTracker } from '../../types/risk.js';
 import type { SettlementProtectionRecovery } from '../../types/settlement.js';
 import type { TradeLogHydrator } from '../protectiveLiquidation/types.js';
@@ -323,6 +324,7 @@ export interface LoadStartupSnapshotParams {
 
 /** 启动初次重建的完整依赖；复用原 loader 与验证调用，不接管 runtime 启停。 */
 export interface ExecuteStartupRebuildParams extends LoadStartupSnapshotParams {
+  readonly diagnostics: DiagnosticObserver;
   readonly startupSnapshot: StartupSnapshotResult;
   readonly snapshot: Pick<AccountPositionSnapshot, 'getStatus' | 'getView' | 'isCurrent'>;
   readonly loadStartupSnapshot: (

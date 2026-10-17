@@ -1,3 +1,4 @@
+import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../../../src/runtime/timer/index.js';
 import { nowMonotonicMs, wait } from '../../../../src/infrastructure/time/index.js';
 import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
@@ -73,6 +74,7 @@ describe('additional private broker controls', () => {
     };
     const origin = { live: true };
     const operations = f.createOperations({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       runtime,
@@ -159,6 +161,7 @@ describe('additional private broker controls', () => {
   it('composes actual Trader on one private native context and preserves constructor/retry/symbol observations', async () => {
     const fixture = await createBrokerIngressFixture(originalFrame());
     const deps: Parameters<typeof fixture.createTradeRuntime>[0] = {
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       wait: wait,
       nowMonotonicMs: nowMonotonicMs,
@@ -625,6 +628,8 @@ describe('additional private broker controls', () => {
     });
     const account = fixture.createAccountService({ rateLimiter: createRateLimiterDouble() });
     const snapshot = createAccountPositionSnapshot({
+      clock: { now: () => new Date() },
+      diagnostics: createDiagnosticObserverDouble(),
       dayEpoch: 1,
       readPort: account,
       scheduler: { schedule: queueMicrotask },
@@ -641,7 +646,11 @@ describe('additional private broker controls', () => {
       }).result;
       if (commit.status !== 'COMMITTED') throw new Error('expected actual baseline commit');
 
-      const readiness = createSettlementReadinessGate({ snapshot });
+      const readiness = createSettlementReadinessGate({
+        diagnostics: createDiagnosticObserverDouble(),
+        clock: { now: () => new Date() },
+        snapshot,
+      });
       const version = readiness.markStale();
       expect(readiness.markFresh(version, commit.snapshotToken)).toBeTrue();
       const receipt = await readiness.waitForFresh();
