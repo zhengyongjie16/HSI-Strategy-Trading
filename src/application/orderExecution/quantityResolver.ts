@@ -178,7 +178,7 @@ export function createQuantityResolver(deps: {
     signal: Signal,
     authorizeOrderAction: SignalCallerAuthorization,
   ) => Promise<{ readonly availableQuantity: number; readonly submittedQuantity: number }>;
-  readonly resolveDoomsdayClearanceQuantity: (
+  readonly readFreshAvailableSellQuantity: (
     symbol: string,
     authorizeOrderAction: SignalCallerAuthorization,
   ) => Promise<number>;
@@ -195,7 +195,7 @@ export function createQuantityResolver(deps: {
 
   /**
    * 读取当前标的的权威可用卖出数量。
-   * 普通卖出与末日清仓共用同一份新鲜仓位事实，二者仅在后续是否允许信号数量裁剪上分叉。
+   * 普通卖出、末日清仓和距离换仓共用新鲜仓位事实；只有普通卖出允许信号数量裁剪。
    *
    * @param symbol 交易标的
    * @param authorizeOrderAction 原 caller 授权，限流/外部读取后复核
@@ -294,24 +294,9 @@ export function createQuantityResolver(deps: {
     };
   }
 
-  /**
-   * 解析末日清仓数量。
-   * 末日专用命令不携带普通 signal.quantity，因此必须直接使用本轮权威可用持仓全量清仓。
-   *
-   * @param symbol 交易标的
-   * @param authorizeOrderAction 原 caller 授权，限流/外部读取后复核
-   * @returns 当前新鲜可用持仓的安全整数数量；无可用持仓时返回 0
-   */
-  async function resolveDoomsdayClearanceQuantity(
-    symbol: string,
-    authorizeOrderAction: SignalCallerAuthorization,
-  ): Promise<number> {
-    return readFreshAvailableSellQuantity(symbol, authorizeOrderAction);
-  }
-
   return {
     calculateSellQuantity,
-    resolveDoomsdayClearanceQuantity,
+    readFreshAvailableSellQuantity,
     resolveBuyQuantity: (signal, isShortSymbol, targetNotional, finalPrice, finalLotSize) =>
       resolveBuyQuantity(logger, signal, isShortSymbol, targetNotional, finalPrice, finalLotSize),
   };

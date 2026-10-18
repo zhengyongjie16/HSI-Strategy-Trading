@@ -170,6 +170,7 @@ describe('quote request metadata snapshot', () => {
       });
       const riskChecker = createRiskCheckerDouble();
       const seatSwitch = createSeatSwitchWorkflow({
+        readSwitchPositions: async () => [],
         logger,
         monitorConfig: config.monitor,
         symbolRegistry,

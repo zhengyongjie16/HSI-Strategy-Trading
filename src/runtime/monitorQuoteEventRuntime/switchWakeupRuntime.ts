@@ -286,6 +286,7 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
   let drainPromise: Promise<void> | null = null;
   let draining = false;
   let unsubscribeQuoteUpdated: (() => void) | null = null;
+  let unsubscribeSellOperationChanged: (() => void) | null = null;
   let unsubscribeOrderStateChanged: (() => void) | null = null;
   let unsubscribeFreshReached: (() => void) | null = null;
   let unsubscribeGateStateChanged: (() => void) | null = null;
@@ -844,12 +845,21 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       return;
     }
 
-    const routeKeys = orderWakeupsBySymbol.get(symbol);
-    if (routeKeys === undefined) {
-      return;
+    const routeKeys = new Set(orderWakeupsBySymbol.get(symbol));
+    // advance 返回 WAIT 到新索引安装之间仍属于原在途 owner。零成交终态和 handoff
+    // 释放不产生 freshness，必须锁存为 dirty，不能仅因旧 wakeup 是已消费 timer 而丢弃。
+    for (const [routeKey, routeState] of routeStates) {
+      if (
+        routeState.inFlight &&
+        isRouteCurrent(routeState.route) &&
+        deps.symbolRegistry.getSeatState(routeState.route.direction).symbol === symbol
+      ) {
+        routeKeys.add(routeKey);
+      }
     }
 
     for (const routeKey of routeKeys) {
+      // 原 trigger 继续负责生命周期/交易门禁；在途只置 dirty，不递归启动或跨 route 授权。
       triggerRoute(routeKey, 'ORDER_EVENT');
     }
   }
@@ -912,6 +922,9 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
       handleQuoteUpdated(event.symbol);
     });
 
+    unsubscribeSellOperationChanged =
+      deps.orderMonitor.onSellOperationChanged(handleOrderStateChanged);
+
     unsubscribeOrderStateChanged = deps.orderMonitor.onOrderStateChanged((event) => {
       handleOrderStateChanged(event.symbol);
     });
@@ -932,6 +945,8 @@ export function createSwitchWakeupRuntime(deps: SwitchWakeupRuntimeDeps): Switch
     running = false;
     unsubscribeQuoteUpdated?.();
     unsubscribeQuoteUpdated = null;
+    unsubscribeSellOperationChanged?.();
+    unsubscribeSellOperationChanged = null;
     unsubscribeOrderStateChanged?.();
     unsubscribeOrderStateChanged = null;
     unsubscribeFreshReached?.();

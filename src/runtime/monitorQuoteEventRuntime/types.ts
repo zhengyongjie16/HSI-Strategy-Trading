@@ -1,4 +1,4 @@
-import type { OrderTrackingEvents } from '../../types/orderTracking.js';
+import type { OrderTrackingEvents, SellOperationEvents } from '../../types/orderTracking.js';
 import type { DailyLossTracker } from '../../types/risk.js';
 import type { OrderRecorder } from '../../types/orderRecorder.js';
 import type { RiskChecker } from '../../types/riskCheck.js';
@@ -299,7 +299,7 @@ export type SwitchWakeupRuntimeDeps = Readonly<{
   marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated'>;
 
   /** 订单事件源 */
-  readonly orderMonitor: OrderTrackingEvents;
+  readonly orderMonitor: OrderTrackingEvents & SellOperationEvents;
 
   /** 权威席位注册表 */
   symbolRegistry: SymbolRegistry;

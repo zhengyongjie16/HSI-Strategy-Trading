@@ -99,6 +99,7 @@ async function createHarness(
     },
   });
   const seatSwitch = createSeatSwitchWorkflow({
+    readSwitchPositions: async () => [],
     monitorConfig,
     symbolRegistry,
     cacheManager: tradeRuntime.cacheManager,

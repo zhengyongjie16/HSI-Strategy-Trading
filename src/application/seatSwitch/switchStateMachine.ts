@@ -209,6 +209,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     orderMonitor,
     orderExecutor,
     orderRecorder,
+    readSwitchPositions,
     riskChecker,
     marketDataClient,
     now,
@@ -230,6 +231,19 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     calculateTradingDurationMsBetween,
     getTradingCalendarSnapshot,
   } = deps;
+
+  /** 本次等待身份及入场后新生 SELL 均由原 lifecycle owner 判定，异步窗口不重新签发卖出资格。 */
+  function hasSettledSellRemainder(state: SwitchState): boolean {
+    const ids = new Set([
+      ...state.sellWaitOrderIds,
+      ...orderMonitor
+        .getKnownSellOrderIds(state.oldSymbol)
+        .filter((id) => !state.sellOrderIdsAtAdmission.includes(id)),
+    ]);
+    return [...ids].some(
+      (id) => orderMonitor.getSellOperationState(id) === 'SETTLED_WITH_REMAINDER',
+    );
+  }
 
   /** 判断订单是否为指定标的的可撤销买入挂单 */
   function isCancelableBuyOrder(order: PendingOrder, symbol: string): boolean {
@@ -513,6 +527,10 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return createNoopDriveResult();
     }
 
+    const sellOrderIdsAtAdmission =
+      switchMode === 'DISTANCE' ? orderMonitor.getKnownSellOrderIds(seatState.symbol) : [];
+    const admissionSellOrderIds =
+      switchMode === 'DISTANCE' ? orderMonitor.getUnsettledSellOrderIds(seatState.symbol) : [];
     const seatVersionAtStart = symbolRegistry.getSeatVersion(direction);
     const seatSymbol = seatState.symbol;
     // 原closure携带调用方captured epoch/receipt/gate/position组件；仅叠加原ACTIVE身份，不换票。
@@ -635,6 +653,18 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       nextCallPrice: next?.callPrice ?? null,
       shouldRebuy,
     });
+    publishedState.sellOrderIdsAtAdmission = sellOrderIdsAtAdmission;
+    if (switchMode === 'DISTANCE')
+      publishedState.sellWaitOrderIds = [
+        ...new Set([
+          ...admissionSellOrderIds,
+          ...orderMonitor
+            .getKnownSellOrderIds(publishedState.oldSymbol)
+            .filter((id) => !sellOrderIdsAtAdmission.includes(id)),
+          ...orderMonitor.getUnsettledSellOrderIds(publishedState.oldSymbol),
+        ]),
+      ];
+
     switchStates.set(direction, publishedState);
 
     // 只证明本次已发布的WAIT事实，不是交易授权；原receipt/position/canContinue不能被此票替换。
@@ -877,19 +907,75 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     }
 
     if (state.stage === 'SELL_OUT') {
-      const position = extractPosition(positions, state.oldSymbol);
-      const totalQuantity = position?.quantity ?? 0;
-      const availableQuantity = position?.availableQuantity ?? 0;
+      state.sellWaitOrderIds = [
+        ...new Set([
+          ...state.sellWaitOrderIds,
+          ...orderMonitor
+            .getKnownSellOrderIds(state.oldSymbol)
+            .filter((id) => !state.sellOrderIdsAtAdmission.includes(id)),
+          ...orderMonitor.getUnsettledSellOrderIds(state.oldSymbol),
+        ]),
+      ];
 
-      if (isValidPositiveNumber(totalQuantity) && availableQuantity === 0) {
-        return createOrderAndFreshnessWait(state.oldSymbol);
-      }
+      // 入场或异步等候期间旧操作已带余量结束：释放的数量不是新增机会，不得补卖。
+      if (!state.sellSubmissionResolved && hasSettledSellRemainder(state))
+        state.sellSubmissionResolved = true;
 
-      if (isValidPositiveNumber(availableQuantity)) {
-        if (state.sellSubmitted) {
-          return createOrderAndFreshnessWait(state.oldSymbol);
+      // 快照只能决定是否需要无报价读仓，不能证明空仓或占用量；决定不发单也必须读取 broker。
+      if (
+        !state.sellSubmissionResolved &&
+        !isValidPositiveNumber(extractPosition(positions, state.oldSymbol)?.availableQuantity)
+      ) {
+        const isAvailabilityCurrent = orderMonitor.captureSellAvailabilityGuard(state.oldSymbol);
+        if (!isAvailabilityCurrent()) return createOrderAndFreshnessWait(state.oldSymbol);
+
+        let currentPositions: ReadonlyArray<Position>;
+        try {
+          currentPositions = await readSwitchPositions(state.oldSymbol);
+        } catch (error) {
+          if (!isExternalApiRequestError(error)) throw error;
+
+          if (!canContinue() || !isCurrentSwitchStateValid(state)) return createNoopDriveResult();
+
+          return createWaitDriveResult([
+            { kind: 'RETRY_TIMER', atMs: now().getTime() + ORDER_QUOTE_RETRY.INTERVAL_MS },
+          ]);
         }
 
+        if (!canContinue() || !isCurrentSwitchStateValid(state)) return createNoopDriveResult();
+
+        if (!isAvailabilityCurrent())
+          return createWaitDriveResult([
+            { kind: 'ORDER_EVENT', symbols: [state.oldSymbol] },
+            { kind: 'RETRY_TIMER', atMs: now().getTime() + ORDER_QUOTE_RETRY.INTERVAL_MS },
+          ]);
+
+        for (const position of currentPositions) {
+          if (!Number.isSafeInteger(position.availableQuantity) || position.availableQuantity < 0)
+            throw new RangeError('[自动换标] 权威可卖持仓必须为非负安全整数');
+        }
+
+        if (
+          !currentPositions.some(
+            (position) => position.symbol === state.oldSymbol && position.availableQuantity > 0,
+          )
+        )
+          state.sellSubmissionResolved = true;
+      }
+
+      // 唯一一次卖出决策使用 executor 提交时的实时 available，不从 runtime 缓存推断是否发单。
+      async function decideIndependentSell(): Promise<SwitchDriveResult | null> {
+        /** 报价失败只结束本次新增决策；仍必须等原操作结算、真实核仓，不能释放席位归属。 */
+        function finishWithoutNewSell(reason: string): SwitchDriveResult | null {
+          if (state.switchMode !== 'DISTANCE') return failAndClear(reason);
+
+          state.sellSubmissionResolved = true;
+          resetQuoteRetryState(state);
+          logger.warn(
+            `[自动换标] 新增卖出决策结束，保留旧标等待核仓: monitor=${monitorSymbol} direction=${direction} symbol=${state.oldSymbol} reason=${reason}`,
+          );
+          return null;
+        }
         const nowMs = now().getTime();
         if (!hasQuoteRetryElapsed(state, nowMs)) {
           return createQuoteRetryWait(state.oldSymbol);
@@ -920,7 +1006,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
           advanceQuoteRetryState(state, nowMs);
           if (state.quoteRetryExhausted) {
-            return failAndClear('QUOTE_RETRY_EXHAUSTED:SELL_OUT');
+            return finishWithoutNewSell('QUOTE_RETRY_EXHAUSTED:SELL_OUT');
           }
 
           return createQuoteRetryWait(state.oldSymbol);
@@ -937,7 +1023,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         });
         if (sellQuoteReadiness !== 'READY') {
           if (sellQuoteReadiness !== 'MISSING') {
-            return failAndClear('INVALID_QUOTE:SELL_OUT');
+            return finishWithoutNewSell('INVALID_QUOTE:SELL_OUT');
           }
 
           if (!canContinue()) {
@@ -946,7 +1032,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
 
           advanceQuoteRetryState(state, nowMs);
           if (state.quoteRetryExhausted) {
-            return failAndClear('QUOTE_RETRY_EXHAUSTED:SELL_OUT');
+            return finishWithoutNewSell('QUOTE_RETRY_EXHAUSTED:SELL_OUT');
           }
 
           return createQuoteRetryWait(state.oldSymbol);
@@ -964,7 +1050,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           reason: '自动换标-移仓卖出',
           executionOrigin: 'SWITCH_MOVE',
           orderTypeOverride: switchPolicy.orderTypeOverride,
-          quantity: availableQuantity,
+          quantity: null,
           seatVersion,
         });
 
@@ -973,58 +1059,155 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
           return invalidResultBeforeSellSubmit;
         }
 
-        const executionResult = await executeSwitchSignal(
-          signal,
-          `[自动换标] 移仓卖出未提交成功，等待重试: monitorSymbol=${monitorSymbol} direction=${direction} symbol=${state.oldSymbol}`,
-          () => canContinue() && isCurrentSwitchStateValid(state),
+        const executionResult = await orderExecutor.executeSignals(
+          [signal],
+          () =>
+            canContinue() && isCurrentSwitchStateValid(state) && !hasSettledSellRemainder(state),
         );
-        if (executionResult !== null) {
-          const orderId = executionResult.executedOrderIds[0];
+        const orderId = executionResult.executedOrderIds[0];
+        const decision = executionResult.sellDecisionResults?.find(
+          (result) => result.signal === signal,
+        );
+        if (orderId !== undefined) {
           if (typeof orderId !== 'string' || orderId.length === 0)
             throw new TypeError('Switch sell acknowledgement must contain a nonempty order ID');
 
-          // 仅关联本次实际issued的原state；即使脱离当前map，也不污染较新route或再卖一次。
-          state.sellSubmitted = true;
+          // ACK 归属原 issued state，即使授权变化也不得再次提交。
+          state.sellSubmissionResolved = true;
           state.sellOrderId = orderId;
+          state.sellWaitOrderIds = [...new Set([...state.sellWaitOrderIds, orderId])];
           if (!isCurrentSwitchStateValid(state)) return createNoopDriveResult();
 
           resetQuoteRetryState(state);
           return createOrderAndFreshnessWait(state.oldSymbol);
         }
 
+        if (decision?.kind === 'REJECTED' || decision?.kind === 'NO_AVAILABLE_QUANTITY') {
+          // 明确拒绝或没有可卖量都是一次性决策的结束，不是可重复提交的“空结果”。
+          state.sellSubmissionResolved = true;
+          resetQuoteRetryState(state);
+        }
+
+        if (!state.sellSubmissionResolved && hasSettledSellRemainder(state))
+          state.sellSubmissionResolved = true;
+
         const invalidResultAfterSellSubmit = stopIfSwitchInvalid();
         if (invalidResultAfterSellSubmit !== null) return invalidResultAfterSellSubmit;
 
         if (!canContinue()) return createNoopDriveResult();
 
-        advanceQuoteRetryState(state, now().getTime());
-        if (state.quoteRetryExhausted) return failAndClear('QUOTE_RETRY_EXHAUSTED:SELL_OUT_SUBMIT');
+        if (!state.sellSubmissionResolved) {
+          if (
+            executionResult.quoteFailures.some(
+              (failure) => failure.signal === signal && failure.kind === 'QUOTE_INVALID',
+            )
+          )
+            return finishWithoutNewSell('INVALID_QUOTE:SELL_OUT_SUBMIT');
 
-        return createQuoteRetryWait(state.oldSymbol);
-      }
+          if (decision?.kind === 'SELL_AVAILABILITY_CHANGED')
+            return createWaitDriveResult([
+              { kind: 'ORDER_EVENT', symbols: [state.oldSymbol] },
+              { kind: 'RETRY_TIMER', atMs: now().getTime() + ORDER_QUOTE_RETRY.INTERVAL_MS },
+            ]);
 
-      if (state.shouldRebuy && !state.sellSubmitted && !isValidPositiveNumber(totalQuantity)) {
-        const openBuyExposure = hasOpenBuyExposure({
-          orderRecorder,
-          symbol: state.oldSymbol,
-          direction,
-          positions,
-        });
-        if (openBuyExposure) {
-          return createOrderAndFreshnessWait(state.oldSymbol);
+          advanceQuoteRetryState(state, now().getTime());
+          if (state.quoteRetryExhausted)
+            return finishWithoutNewSell('QUOTE_RETRY_EXHAUSTED:SELL_OUT_SUBMIT');
+
+          return createQuoteRetryWait(state.oldSymbol);
         }
 
-        if (!canContinue()) {
-          return createNoopDriveResult();
+        return null;
+      }
+
+      if (!state.sellSubmissionResolved) {
+        const decisionResult = await decideIndependentSell();
+        if (decisionResult !== null) return decisionResult;
+
+        if (!canContinue() || !isCurrentSwitchStateValid(state)) return createNoopDriveResult();
+      }
+
+      // 原有卖单、本次新单、原单已结算但 MO 尚未 ACK 的 placeholder 都归唯一订单 owner。
+      if (
+        orderMonitor.getUnsettledSellOrderIds(state.oldSymbol).length > 0 ||
+        !state.sellWaitOrderIds.every((id) => orderMonitor.getSellOperationState(id) !== 'PENDING')
+      )
+        return createOrderAndFreshnessWait(state.oldSymbol);
+
+      const isSellFactsCurrent = orderMonitor.captureSellAvailabilityGuard(state.oldSymbol);
+      if (!isSellFactsCurrent()) return createOrderAndFreshnessWait(state.oldSymbol);
+
+      let finalPositions: ReadonlyArray<Position>;
+      let finalPendingOrders: ReadonlyArray<PendingOrder>;
+      try {
+        // waitForFresh 只证明经济结算水位，零成交撤销/拒绝不会推进水位；因此必须重新读取。
+        finalPositions = await readSwitchPositions(state.oldSymbol);
+        if (!canContinue() || !isCurrentSwitchStateValid(state)) return createNoopDriveResult();
+
+        if (!isSellFactsCurrent())
+          return createWaitDriveResult([
+            { kind: 'ORDER_EVENT', symbols: [state.oldSymbol] },
+            { kind: 'RETRY_TIMER', atMs: now().getTime() + ORDER_QUOTE_RETRY.INTERVAL_MS },
+          ]);
+
+        finalPendingOrders = await cacheManager.getPendingOrders([state.oldSymbol], true);
+      } catch (error) {
+        if (!isExternalApiRequestError(error)) throw error;
+
+        if (!canContinue() || !isCurrentSwitchStateValid(state)) return createNoopDriveResult();
+
+        return createWaitDriveResult([
+          { kind: 'RETRY_TIMER', atMs: now().getTime() + ORDER_QUOTE_RETRY.INTERVAL_MS },
+        ]);
+      }
+
+      if (!canContinue() || !isCurrentSwitchStateValid(state)) return createNoopDriveResult();
+
+      if (
+        !isSellFactsCurrent() ||
+        orderMonitor.getUnsettledSellOrderIds(state.oldSymbol).length > 0 ||
+        !state.sellWaitOrderIds.every(
+          (id) => orderMonitor.getSellOperationState(id) !== 'PENDING',
+        ) ||
+        finalPendingOrders.some(
+          (order) => order.symbol === state.oldSymbol && pendingOrderStatuses.has(order.status),
+        )
+      ) {
+        return createWaitDriveResult([
+          { kind: 'ORDER_EVENT', symbols: [state.oldSymbol] },
+          { kind: 'RETRY_TIMER', atMs: now().getTime() + ORDER_QUOTE_RETRY.INTERVAL_MS },
+        ]);
+      }
+
+      let totalQuantity = 0;
+      for (const position of finalPositions) {
+        if (position.symbol !== state.oldSymbol) continue;
+
+        if (!Number.isSafeInteger(position.quantity) || position.quantity < 0)
+          throw new RangeError('[自动换标] 权威总持仓必须为非负安全整数');
+
+        totalQuantity += position.quantity;
+        if (!Number.isSafeInteger(totalQuantity)) throw new RangeError('[自动换标] 权威总持仓溢出');
+      }
+
+      if (totalQuantity > 0) {
+        throw new Error(
+          `[自动换标] 卖出操作全部结算后仍有旧标持仓，禁止补卖或绑定新标，等待人工处理: monitor=${monitorSymbol} direction=${direction} seatVersion=${seatVersion} old=${state.oldSymbol} next=${state.nextSymbol} quantity=${totalQuantity} operations=${JSON.stringify(state.sellWaitOrderIds)}`,
+        );
+      }
+
+      // 预算只来自本次新操作；旧单独自清空或本次零成交都正常换标、跳过回补。
+      let sellNotional = '0';
+      if (state.sellOrderId !== null) {
+        for (const id of orderMonitor.getSellOperationOrderIds(state.sellOrderId)) {
+          sellNotional = exactAdd(
+            sellNotional,
+            orderRecorder.getSellRecordByOrderId(id)?.costAmount ?? '0',
+          );
         }
-
-        state.shouldRebuy = false;
       }
 
-      if (!canContinue()) {
-        return createNoopDriveResult();
-      }
-
+      state.shouldRebuy = exactCompare(sellNotional, '0') > 0;
       state.stage = 'BIND_NEW';
     }
 
@@ -1607,6 +1790,38 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
       return createNoopAdvanceResult(direction);
     }
 
+    if (
+      pendingSwitch.switchMode === 'DISTANCE' &&
+      (pendingSwitch.stage === 'CANCEL_PENDING' || pendingSwitch.stage === 'SELL_OUT')
+    ) {
+      pendingSwitch.sellWaitOrderIds = [
+        ...new Set([
+          ...pendingSwitch.sellWaitOrderIds,
+          ...orderMonitor
+            .getKnownSellOrderIds(pendingSwitch.oldSymbol)
+            .filter((id) => !pendingSwitch.sellOrderIdsAtAdmission.includes(id)),
+          ...orderMonitor.getUnsettledSellOrderIds(pendingSwitch.oldSymbol),
+        ]),
+      ];
+    }
+
+    // 已提交/明确结束的新增决策只等 owner，不在 handoff 的 mutation permit 后再排一次无关读单。
+    if (
+      pendingSwitch.stage === 'SELL_OUT' &&
+      pendingSwitch.sellSubmissionResolved &&
+      (orderMonitor.getUnsettledSellOrderIds(pendingSwitch.oldSymbol).length > 0 ||
+        pendingSwitch.sellWaitOrderIds.some(
+          (id) => orderMonitor.getSellOperationState(id) === 'PENDING',
+        ))
+    ) {
+      return {
+        advanced: true,
+        direction,
+        stillPending: true,
+        driveResult: createOrderAndFreshnessWait(pendingSwitch.oldSymbol),
+      };
+    }
+
     let pendingOrdersForOldSymbol: ReadonlyArray<PendingOrder>;
     try {
       pendingOrdersForOldSymbol = await cacheManager.getPendingOrders([pendingSwitch.oldSymbol]);
@@ -1649,7 +1864,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     if (
       driveResult.kind === 'WAIT' &&
       pendingSwitch.stage === 'SELL_OUT' &&
-      pendingSwitch.sellSubmitted &&
+      pendingSwitch.sellSubmissionResolved &&
       pendingSwitch.sellOrderId !== null
     ) {
       if (!isCurrentSwitchStateValid(pendingSwitch)) return createNoopAdvanceResult(direction);

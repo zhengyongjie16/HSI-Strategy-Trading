@@ -54,7 +54,7 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number = 1_000): P
 }
 
 describe('terminal switch finalization integration', () => {
-  it('clears a distance switch after SELL_OUT receives an invalid quote through the real runtime', async () => {
+  it('finishes a distance switch after invalid SELL_OUT quote only when authoritative final positions are flat', async () => {
     const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
     const quoteListeners = new Set<(event: QuoteUpdatedEvent) => void>();
     const monitorConfig = createMonitorConfigDouble({
@@ -204,6 +204,7 @@ describe('terminal switch finalization integration', () => {
       },
     });
     const actualAutoSymbolManager = createSeatSwitchWorkflow({
+      readSwitchPositions: async () => [],
       logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
@@ -345,13 +346,13 @@ describe('terminal switch finalization integration', () => {
           advanced: true,
           direction: 'LONG',
           stillPending: false,
-          driveResult: { kind: 'FAILED', reason: 'INVALID_QUOTE:SELL_OUT' },
+          driveResult: { kind: 'COMPLETED' },
         },
       ]);
 
       expect(symbolRegistry.getSeatState('LONG')).toMatchObject({
-        symbol: null,
-        status: 'EMPTY',
+        symbol: 'NEW_BULL.HK',
+        status: 'ACTIVATING',
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
       });

@@ -73,7 +73,12 @@ export type CreateMonitorContextParams = Readonly<{
 type MonitorContextBootstrapRuntime = Readonly<{
   readonly tradeRuntime: Pick<
     TradeRuntime,
-    'orderRecorder' | 'orderExecutor' | 'cacheManager' | 'orderMonitor' | 'orderHoldRegistry'
+    | 'orderRecorder'
+    | 'orderExecutor'
+    | 'cacheManager'
+    | 'orderMonitor'
+    | 'orderHoldRegistry'
+    | 'accountService'
   >;
   readonly dailyLossTracker: DailyLossTracker;
 

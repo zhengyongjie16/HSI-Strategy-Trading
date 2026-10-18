@@ -233,6 +233,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const seatSwitch = createSeatSwitchWorkflow({
+      readSwitchPositions: async () => [],
       logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
@@ -523,6 +524,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const seatSwitch = createSeatSwitchWorkflow({
+      readSwitchPositions: async () => [],
       logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
@@ -794,6 +796,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const seatSwitch = createSeatSwitchWorkflow({
+      readSwitchPositions: async () => [],
       logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
@@ -1065,6 +1068,7 @@ describe('periodic auto-symbol full chain integration', () => {
     });
 
     const seatSwitch = createSeatSwitchWorkflow({
+      readSwitchPositions: async () => [],
       logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,

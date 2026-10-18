@@ -428,6 +428,9 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
     runtime.trackedOrderLifecycles.set(params.orderId, {
       ...runtime.trackedOrderLifecycles.get(params.orderId),
       state: 'CLOSED',
+      settlementCompleted: true,
+      settledWithRemainder:
+        side === 'SELL' && tracked !== undefined && quantity < tracked.submittedQuantity,
     });
     orderHoldRegistry.markOrderClosed(params.orderId);
     emitOrderStateChanged({

@@ -245,6 +245,7 @@ describe('distance switch timeout market conversion rebuy', () => {
         }),
       });
       const manager = createSeatSwitchWorkflow({
+        readSwitchPositions: (symbol) => account.getStockPositions({ symbols: [symbol] }),
         logger: createLoggerDouble(),
         monitorConfig: config,
         symbolRegistry: registry,

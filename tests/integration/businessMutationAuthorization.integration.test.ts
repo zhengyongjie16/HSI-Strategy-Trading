@@ -374,6 +374,7 @@ async function createFixture() {
 /** 换标入口只消费真实 pending cache 与 snapshot/settlement/席位票。 */
 async function createPendingSwitch(f: Awaited<ReturnType<typeof createFixture>>) {
   const manager = createSeatSwitchWorkflow({
+    readSwitchPositions: async () => [],
     logger: createLoggerStub(),
     monitorConfig: f.monitorContext.config,
     symbolRegistry: f.symbolRegistry,

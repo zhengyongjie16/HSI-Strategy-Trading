@@ -195,6 +195,7 @@ function createRealPeriodicPublicationContext(params: {
       new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1')])),
   });
   const manager = createSeatSwitchWorkflow({
+    readSwitchPositions: async () => [],
     logger: createLoggerDouble(),
     monitorConfig: base.config,
     symbolRegistry: base.symbolRegistry,
@@ -439,6 +440,7 @@ describe('monitorTaskProcessor business flow', () => {
     const context = {
       ...baseContext,
       seatSwitch: createSeatSwitchWorkflow({
+        readSwitchPositions: async () => [],
         logger: createLoggerDouble(),
         monitorConfig: baseContext.config,
         symbolRegistry: baseContext.symbolRegistry,

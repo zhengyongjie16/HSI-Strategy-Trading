@@ -174,6 +174,7 @@ describe('auto-symbol-switch integration', () => {
       findCandidate: async () => candidateQueue.shift() ?? null,
     };
     const manager = createSeatSwitchWorkflow({
+      readSwitchPositions: async () => [],
       logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
@@ -536,6 +537,7 @@ describe('auto-symbol-switch integration', () => {
         findCandidate: async () => candidateQueue.shift() ?? null,
       };
       const manager = createSeatSwitchWorkflow({
+        readSwitchPositions: async () => [],
         logger: createLoggerStub(),
         monitorConfig,
         symbolRegistry,
@@ -724,6 +726,7 @@ describe('auto-symbol-switch integration', () => {
     });
 
     const manager = createSeatSwitchWorkflow({
+      readSwitchPositions: async () => [],
       logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
@@ -820,6 +823,7 @@ describe('auto-symbol-switch integration', () => {
     });
 
     const manager = createSeatSwitchWorkflow({
+      readSwitchPositions: async () => [],
       logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
@@ -918,6 +922,7 @@ describe('auto-symbol-switch integration', () => {
       findCandidate: async () => candidateQueue.shift() ?? null,
     };
     const manager = createSeatSwitchWorkflow({
+      readSwitchPositions: async () => [],
       logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,

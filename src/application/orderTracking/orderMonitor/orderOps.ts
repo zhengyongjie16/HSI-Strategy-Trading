@@ -481,6 +481,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
     runtime.trackedOrderLifecycles.set(orderId, {
       ...runtime.trackedOrderLifecycles.get(orderId),
       symbol,
+      executionSide,
       state: 'OPEN',
     });
     attachTrackedOrder(runtime, symbol, orderId);

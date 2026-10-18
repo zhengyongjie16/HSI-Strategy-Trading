@@ -60,6 +60,7 @@ function createDistanceFlowHarness(direction: 'LONG' | 'SHORT', sameSymbol = fal
   const orderRecorder = createOrderRecorderDouble();
   let searchCalls = 0;
   const manager = createSeatSwitchWorkflow({
+    readSwitchPositions: async () => [],
     logger: createLoggerStub(),
     monitorConfig,
     symbolRegistry,

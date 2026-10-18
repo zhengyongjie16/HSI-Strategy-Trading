@@ -126,6 +126,20 @@ export interface OrderMonitor {
   /** 订阅订单终态结算事件 */
   onOrderStateChanged: (listener: (event: OrderStateChangedEvent) => void) => Unsubscribe;
 
+  /** handoff 提交明确结束并释放占用后唤醒等待方，不伪造终态结算。 */
+  readonly onSellOperationChanged: (listener: (symbol: string) => void) => Unsubscribe;
+
+  /** 当前生命周期内已归属该标的的全部 SELL 身份，包含已终结订单；供入场增量捕获。 */
+  readonly getKnownSellOrderIds: (symbol: string) => ReadonlyArray<string>;
+
+  /** 真实 tracking 未结算卖单以及已结算原单的 handoff placeholder，包含现存和新进入的操作。 */
+  readonly getUnsettledSellOrderIds: (symbol: string) => ReadonlyArray<string>;
+
+  /** 原单与真实后继均已权威关闭、本地结算并释放占用，才证明整个操作结束。 */
+  readonly getSellOperationState: (
+    originalOrderId: string,
+  ) => 'PENDING' | 'SETTLED' | 'SETTLED_WITH_REMAINDER';
+
   /** 开始追踪订单 */
   trackOrder: (params: TrackOrderParams) => void;
 

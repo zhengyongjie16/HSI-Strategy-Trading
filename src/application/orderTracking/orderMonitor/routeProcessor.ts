@@ -389,12 +389,12 @@ async function submitTimeoutMarketOrder(
 
   // 先做无副作用预检；最终 route/gate 复核与 SDK submit 必须留在同一 callback permit。
   if (!isRouteGenerationCurrent(deps.runtime, params)) {
-    deps.orderRecorder.markSellCancelled(order.orderId);
+    deps.releaseSellHandoff(order.orderId, order.symbol);
     return;
   }
 
   if (!deps.isContinuousTradingAllowed()) {
-    deps.orderRecorder.markSellCancelled(order.orderId);
+    deps.releaseSellHandoff(order.orderId, order.symbol);
     logger.info(`[连续交易门禁] 连续交易关闭，卖出订单 ${order.orderId} 超时转市价单被阻止`);
     return;
   }
@@ -458,17 +458,17 @@ async function submitTimeoutMarketOrder(
       });
     });
   } catch (error: unknown) {
-    deps.orderRecorder.markSellCancelled(order.orderId);
+    deps.releaseSellHandoff(order.orderId, order.symbol);
     throw error;
   }
 
   if (submitOutcome.kind === 'PRECHECK_SKIPPED') {
-    deps.orderRecorder.markSellCancelled(order.orderId);
+    deps.releaseSellHandoff(order.orderId, order.symbol);
     return;
   }
 
   if (submitOutcome.kind === 'BROKER_REJECTED') {
-    deps.orderRecorder.markSellCancelled(order.orderId);
+    deps.releaseSellHandoff(order.orderId, order.symbol);
     logger.warn(
       `[订单监控] 卖出订单 ${order.orderId} 超时转市价被 broker 拒绝，code=${submitOutcome.result.code ?? 'null'}`,
     );
@@ -525,7 +525,7 @@ async function submitTimeoutMarketOrder(
       order.isProtectiveLiquidation,
       deps.now().getTime(),
     );
-    deps.orderRecorder.markSellCancelled(order.orderId);
+    deps.releaseSellHandoff(order.orderId, order.symbol);
   } catch (error: unknown) {
     logger.error(
       `[订单监控] 卖出订单 ${order.orderId} 转市价单已提交，但本地同步失败，订单ID=${newOrderId}`,
@@ -669,7 +669,7 @@ async function handleSellOrderTimeout(
   }
 
   if (!isRouteGenerationCurrent(deps.runtime, params)) {
-    deps.orderRecorder.markSellCancelled(orderId);
+    deps.releaseSellHandoff(orderId, order.symbol);
     return true;
   }
 

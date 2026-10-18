@@ -78,6 +78,7 @@ function createSwitch(
       new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '0.07', 10000)])),
   });
   return createSeatSwitchWorkflow({
+    readSwitchPositions: async () => [],
     monitorConfig: config,
     symbolRegistry: registry,
     marketDataClient: market,

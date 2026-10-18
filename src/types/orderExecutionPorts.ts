@@ -26,6 +26,12 @@ export type ExecutionQuoteFailure = {
 export type ExecuteSignalsResult = {
   readonly executedOrderIds: ReadonlyArray<string>;
   readonly quoteFailures: ReadonlyArray<ExecutionQuoteFailure>;
+
+  /** 仅有明确卖出决策时携带；零可卖/拒绝不得被解释为可以重提。 */
+  readonly sellDecisionResults?: ReadonlyArray<{
+    readonly signal: ExecutableSignal;
+    readonly kind: 'REJECTED' | 'NO_AVAILABLE_QUANTITY' | 'SELL_AVAILABILITY_CHANGED';
+  }>;
 };
 
 /**

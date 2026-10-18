@@ -44,3 +44,8 @@ export interface OrderTrackingLifecycle {
   readonly stopRuntimeAndDrain: () => Promise<void>;
   readonly teardown: () => Promise<void>;
 }
+
+/** 卖出操作的 handoff 占用释放事件；不是第二次订单结算或成交事实。 */
+export interface SellOperationEvents {
+  readonly onSellOperationChanged: (listener: (symbol: string) => void) => Unsubscribe;
+}

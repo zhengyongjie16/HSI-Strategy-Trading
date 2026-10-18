@@ -47,7 +47,18 @@ export interface SeatSwitchWorkflowDeps {
   readonly orderExecutor: SignalExecutor;
   readonly cacheManager: Pick<OrderCacheManager, 'getPendingOrders'>;
   readonly orderHoldRegistry: OrderHoldReader;
-  readonly orderMonitor: OrderCancellation & Pick<OrderMonitor, 'getSellOperationOrderIds'>;
+  readonly orderMonitor: OrderCancellation &
+    Pick<
+      OrderMonitor,
+      | 'getSellOperationOrderIds'
+      | 'getUnsettledSellOrderIds'
+      | 'getKnownSellOrderIds'
+      | 'getSellOperationState'
+      | 'captureSellAvailabilityGuard'
+    >;
+
+  /** 结算后的临时权威核仓；不提交 canonical snapshot 或改变 settlement readiness。 */
+  readonly readSwitchPositions: (symbol: string) => Promise<ReadonlyArray<Position>>;
   readonly orderRecorder: OrderRecorder;
   readonly riskChecker: RiskChecker;
   readonly candidateSearch: SeatSwitchCandidateSearch;
@@ -249,7 +260,18 @@ export interface SwitchStateMachineDeps {
   readonly orderExecutor: SignalExecutor;
   readonly cacheManager: Pick<OrderCacheManager, 'getPendingOrders'>;
   readonly orderHoldRegistry: OrderHoldReader;
-  readonly orderMonitor: OrderCancellation & Pick<OrderMonitor, 'getSellOperationOrderIds'>;
+  readonly orderMonitor: OrderCancellation &
+    Pick<
+      OrderMonitor,
+      | 'getSellOperationOrderIds'
+      | 'getUnsettledSellOrderIds'
+      | 'getKnownSellOrderIds'
+      | 'getSellOperationState'
+      | 'captureSellAvailabilityGuard'
+    >;
+
+  /** 结算后的临时权威核仓；不提交 canonical snapshot 或改变 settlement readiness。 */
+  readonly readSwitchPositions: (symbol: string) => Promise<ReadonlyArray<Position>>;
   readonly orderRecorder: OrderRecorder;
   readonly riskChecker: RiskChecker;
   readonly marketDataClient: MarketDataClient;

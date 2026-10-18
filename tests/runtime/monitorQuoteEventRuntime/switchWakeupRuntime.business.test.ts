@@ -2116,6 +2116,56 @@ describe('switchWakeupRuntime', () => {
     await runtimeHarness.runtime.stopAndDrain();
   });
 
+  it.each(['OTHER_SYMBOL', 'STALE_ROUTE', 'STOPPED'] as const)(
+    'does not latch an unindexed order event for %s during WAIT return',
+    async (scope) => {
+      const returning = createDeferred();
+      let calls = 0;
+      const h = await createBaseHarness({
+        seatSwitch: createSeatSwitchWorkflowDouble({
+          hasPendingSwitch: () => true,
+          advancePendingSwitch: async (params) => {
+            calls++;
+            await returning.promise;
+            return {
+              advanced: true,
+              direction: params.direction,
+              stillPending: true,
+              driveResult: createWaitResult([{ kind: 'ORDER_EVENT', symbols: ['BULL.HK'] }]),
+            };
+          },
+        }),
+      });
+      try {
+        h.runtime.start();
+        h.runtime.handoffPendingSwitch({
+          direction: 'LONG',
+          monitorContext: h.monitorContext,
+          driveResult: createWaitResult([{ kind: 'RETRY_TIMER', atMs: 1000 }]),
+        });
+        h.timerHarness.fireDueTimers();
+        await waitTick();
+        expect(calls).toBe(1);
+        if (scope === 'STALE_ROUTE')
+          h.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+            ...h.symbolRegistry.getSeatState('LONG'),
+            lastSeatActivatedAt: 2,
+          });
+
+        if (scope === 'STOPPED') h.runtime.stop();
+
+        emitOrderStateChanged(scope === 'OTHER_SYMBOL' ? 'OTHER.HK' : 'BULL.HK');
+        returning.resolve();
+        await waitTick();
+        await waitTick();
+        expect(calls).toBe(1);
+      } finally {
+        returning.resolve();
+        await h.runtime.stopAndDrain();
+      }
+    },
+  );
+
   it('collapses concurrent wakeups to the latest pending execution for the same route', async () => {
     const firstAdvance = createDeferred();
     const observedPositionQuantities: ReadonlyArray<number>[] = [];

@@ -129,6 +129,7 @@ export type OrderActionResult =
   | { readonly kind: 'REPLACED'; readonly orderId: string }
   | { readonly kind: 'SELL_AVAILABILITY_CHANGED'; readonly symbol: string }
   | { readonly kind: 'QUOTE_MISSING' | 'QUOTE_INVALID'; readonly symbol: string }
+  | { readonly kind: 'REJECTED' | 'NO_AVAILABLE_QUANTITY' }
   | { readonly kind: 'SKIPPED' };
 
 /** 命令批次的内部执行事实；commandIndex 保留输入序号，解析时克隆的 signal 不承担回映身份。 */
@@ -136,6 +137,10 @@ export type OrderCommandBatchResult = {
   readonly executedOrderIds: ReadonlyArray<string>;
   readonly reevaluationSymbols: ReadonlyArray<string>;
   readonly unresolvedQuoteSymbols: ReadonlyArray<string>;
+  readonly sellDecisionResults: ReadonlyArray<{
+    readonly commandIndex: number;
+    readonly kind: 'REJECTED' | 'NO_AVAILABLE_QUANTITY' | 'SELL_AVAILABILITY_CHANGED';
+  }>;
   readonly quoteFailures: ReadonlyArray<{
     readonly commandIndex: number;
     readonly kind: 'QUOTE_MISSING' | 'QUOTE_INVALID';
@@ -155,7 +160,7 @@ export type SubmitOrderParams = {
   /** SELL 在最终报价前已完成的数量计划；BUY 必须为 null 并在 permit 内按 P1 重算。 */
   readonly submittedQuantity: number | null;
 
-  /** 末日读仓前由 tracking owner 捕获，最终提交边界不得重签；普通交易不提供。 */
+  /** 末日或距离换仓读仓前由 tracking owner 捕获，最终提交边界不得重签；普通合单不提供。 */
   readonly isSellAvailabilityCurrent?: () => boolean;
   readonly orderTypeConfig: OrderTypeConfig;
   readonly remark: string | undefined;
@@ -251,7 +256,7 @@ export interface QuantityResolver {
     signal: Signal,
     authorizeOrderAction: SignalCallerAuthorization,
   ) => Promise<SellQuantityResolution>;
-  resolveDoomsdayClearanceQuantity: (
+  readFreshAvailableSellQuantity: (
     symbol: string,
     authorizeOrderAction: SignalCallerAuthorization,
   ) => Promise<number>;

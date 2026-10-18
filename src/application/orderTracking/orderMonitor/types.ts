@@ -446,6 +446,8 @@ export type RouteProcessorDeps = {
   readonly isContinuousTradingAllowed: () => boolean;
 
   /** accepted 后先登记真实 S1→MO S2 身份，不受后续 tracking 同步结果撤销。 */
+  /** 释放真实 handoff placeholder 并发布操作变化；UNKNOWN 不得调用。 */
+  readonly releaseSellHandoff: (orderId: string, symbol: string) => void;
   readonly recordAcceptedSellContinuation: (originalOrderId: string, marketOrderId: string) => void;
   readonly trackOrder: (params: TrackOrderParams) => void;
   readonly cancelOrder: (
@@ -576,7 +578,16 @@ type OrderTerminalConfirmation = {
 export type TrackedOrderLifecycle = {
   /** 仅在真实 tracking 证明归属后写入，终态保留，用于标的内读仓计划的 ABA 失效。 */
   readonly symbol?: string;
+
+  /** 真实 tracking 的执行方向，终结后保留以识别异步窗口中新出现的 SELL。 */
+  readonly executionSide?: 'BUY' | 'SELL';
   readonly state: 'OPEN' | 'CLOSED' | null;
+
+  /** 本地结算和资源释放确已完成；恢复 tracking 不得抹掉已发生的完成事实。 */
+  readonly settlementCompleted?: boolean;
+
+  /** 已结算 SELL 最终未成交完；真实 MO 后继存在时由后继结果覆盖操作结论。 */
+  readonly settledWithRemainder?: boolean;
   readonly firstCancelAcknowledgedAtMs?: number | null;
   readonly terminalConfirmation?: OrderTerminalConfirmation;
 };

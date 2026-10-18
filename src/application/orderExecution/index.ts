@@ -512,9 +512,11 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
         reevaluationSymbols: [],
         unresolvedQuoteSymbols: [],
         quoteFailures: [],
+        sellDecisionResults: [],
       };
     }
 
+    const sellDecisionResults: Array<OrderCommandBatchResult['sellDecisionResults'][number]> = [];
     const executedOrderIds: string[] = [];
     const reevaluationSymbols = new Set<string>();
     const unresolvedQuoteSymbols = new Set<string>();
@@ -560,6 +562,15 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
       );
 
       const actionResult = await submitTargetOrder(command, authorizeOrderAction);
+      if (
+        command.kind === 'SELL' &&
+        (actionResult.kind === 'REJECTED' ||
+          actionResult.kind === 'NO_AVAILABLE_QUANTITY' ||
+          actionResult.kind === 'SELL_AVAILABILITY_CHANGED')
+      ) {
+        sellDecisionResults.push({ commandIndex, kind: actionResult.kind });
+      }
+
       if (actionResult.kind === 'SUBMITTED' || actionResult.kind === 'REPLACED') {
         executedOrderIds.push(actionResult.orderId);
       } else if (actionResult.kind === 'SELL_AVAILABILITY_CHANGED') {
@@ -575,6 +586,7 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
       reevaluationSymbols: [...reevaluationSymbols],
       unresolvedQuoteSymbols: [...unresolvedQuoteSymbols],
       quoteFailures,
+      sellDecisionResults,
     };
   }
 
@@ -594,6 +606,16 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     const result = await executeSignalsForPurpose(commands, callerAuthorization);
     return {
       executedOrderIds: result.executedOrderIds,
+      ...(result.sellDecisionResults.length === 0
+        ? {}
+        : {
+            sellDecisionResults: result.sellDecisionResults.map(({ commandIndex, kind }) => {
+              const signal = signals[commandIndex];
+              if (signal === undefined) throw new Error('[订单执行] 卖出决策缺少原输入身份');
+
+              return { signal, kind };
+            }),
+          }),
       quoteFailures: result.quoteFailures.map(({ commandIndex, kind }) => {
         const signal = signals[commandIndex];
         if (signal === undefined) throw new Error('[订单执行] 最终报价失败缺少原输入身份');

@@ -1000,6 +1000,7 @@ describe('full business simulation integration', () => {
       },
     };
     const seatSwitch = createSeatSwitchWorkflow({
+      readSwitchPositions: async () => [],
       logger: createLoggerDouble(),
       monitorConfig,
       symbolRegistry,

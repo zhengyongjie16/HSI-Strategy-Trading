@@ -123,6 +123,8 @@ export function createMonitorContext(params: CreateMonitorContextParams): Monito
     orderHoldRegistry: postGateRuntime.tradeRuntime.orderHoldRegistry,
     orderMonitor: postGateRuntime.tradeRuntime.orderMonitor,
     orderExecutor: postGateRuntime.tradeRuntime.orderExecutor,
+    readSwitchPositions: (symbol) =>
+      postGateRuntime.tradeRuntime.accountService.getStockPositions({ symbols: [symbol] }),
     orderRecorder: postGateRuntime.tradeRuntime.orderRecorder,
     riskChecker,
     candidateSearch: postGateRuntime.candidateSearch,

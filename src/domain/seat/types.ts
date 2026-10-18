@@ -153,7 +153,17 @@ export type SwitchState = {
   readonly oldSymbol: string;
   readonly nextSymbol: string | null;
   readonly nextCallPrice: string | null;
-  sellSubmitted: boolean;
+
+  /** 入场前已存在的 SELL 身份基线；只排除既往已完成操作，不遗漏入场 await 内新生即终结的单。 */
+  sellOrderIdsAtAdmission: ReadonlyArray<string>;
+
+  /** 本轮新增决策已结束（ACK、拒绝、零可卖或报价失败），不得重新提交。 */
+  sellSubmissionResolved: boolean;
+
+  /** 仅等待身份，不保存订单状态/成交事实；预算仍仅属于 sellOrderId 的真实操作。 */
+  sellWaitOrderIds: ReadonlyArray<string>;
+
+  /** 本次独立新增卖单的 ACK；仅它及真实 MO 后继提供回补预算。 */
   sellOrderId: string | null;
   shouldRebuy: boolean;
   quoteRetryAttempts: number;

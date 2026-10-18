@@ -148,6 +148,7 @@ export async function createDistanceSwitchPublicationFixture(
     riskChecker,
   });
   const manager = createSeatSwitchWorkflow({
+    readSwitchPositions: async () => [],
     logger: createLoggerStub(),
     monitorConfig: config,
     symbolRegistry,

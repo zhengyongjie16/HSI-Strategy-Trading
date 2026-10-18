@@ -520,6 +520,7 @@ async function createDefaultDistanceSwitchHarness(
       new Map([...symbols].map((symbol) => [symbol, createQuoteDouble(symbol, '1')])),
   });
   publicationManager = createSeatSwitchWorkflow({
+    readSwitchPositions: async () => [],
     logger: createLoggerStub(),
     monitorConfig: distanceMonitorConfig,
     symbolRegistry,

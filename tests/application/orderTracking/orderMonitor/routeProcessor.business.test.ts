@@ -416,6 +416,9 @@ async function createDeps(params?: {
     orderRecorder: params?.orderRecorder ?? createOrderRecorderDouble(),
     rateLimiter: params?.rateLimiter ?? createRateLimiterDouble(),
     isContinuousTradingAllowed: params?.isContinuousTradingAllowed ?? (() => true),
+    releaseSellHandoff: (orderId) => {
+      deps.orderRecorder.markSellCancelled(orderId);
+    },
     recordAcceptedSellContinuation: params?.recordAcceptedSellContinuation ?? (() => {}),
     trackOrder:
       params?.trackOrder ??

@@ -111,6 +111,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   };
   // 仅保存 ELO/LO 原卖单到已 accepted MO 后继的身份；金额始终由 recorder 持有。
   const acceptedSellContinuations = new Map<string, string>();
+  const sellOperationListeners = new Set<(symbol: string) => void>();
   let initialized = false;
   let initializationPromise: Promise<void> | null = null;
   let teardownPromise: Promise<void> | null = null;
@@ -290,6 +291,62 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     return marketOrderId === undefined ? [originalOrderId] : [originalOrderId, marketOrderId];
   }
 
+  /** 只读唯一订单 owner：终态未结算、超时未 ACK、真实 MO 在途均不能视为空仓。 */
+  function getKnownSellOrderIds(symbol: string): ReadonlyArray<string> {
+    return [...runtime.trackedOrderLifecycles]
+      .filter(([, lifecycle]) => lifecycle.symbol === symbol && lifecycle.executionSide === 'SELL')
+      .map(([id]) => id);
+  }
+
+  function getUnsettledSellOrderIds(symbol: string): ReadonlyArray<string> {
+    return [
+      ...new Set([
+        ...[...runtime.trackedOrders.values()]
+          .filter((order) => order.symbol === symbol && order.executionSide === 'SELL')
+          .map((order) => order.orderId),
+        ...orderRecorder
+          .getPendingSellSnapshot()
+          .filter((order) => order.symbol === symbol)
+          .map((order) => order.orderId),
+      ]),
+    ];
+  }
+
+  function getSellOperationState(
+    originalOrderId: string,
+  ): 'PENDING' | 'SETTLED' | 'SETTLED_WITH_REMAINDER' {
+    const pending = new Set(orderRecorder.getPendingSellSnapshot().map((order) => order.orderId));
+    const ids = getSellOperationOrderIds(originalOrderId);
+    if (
+      !ids.every(
+        (id) =>
+          runtime.trackedOrderLifecycles.get(id)?.settlementCompleted === true &&
+          !runtime.trackedOrders.has(id) &&
+          !pending.has(id),
+      )
+    )
+      return 'PENDING';
+
+    const lastId = ids.at(-1);
+    if (lastId === undefined) throw new Error('[订单监控] 卖出操作缺少原单身份');
+
+    return runtime.trackedOrderLifecycles.get(lastId)?.settledWithRemainder === true
+      ? 'SETTLED_WITH_REMAINDER'
+      : 'SETTLED';
+  }
+
+  function onSellOperationChanged(listener: (symbol: string) => void): () => void {
+    sellOperationListeners.add(listener);
+    return () => {
+      sellOperationListeners.delete(listener);
+    };
+  }
+
+  function releaseSellHandoff(orderId: string, symbol: string): void {
+    orderRecorder.markSellCancelled(orderId);
+    for (const listener of sellOperationListeners) listener(symbol);
+  }
+
   const routeProcessor = createRouteProcessor({
     logger: logger,
     diagnostics: deps.diagnostics,
@@ -301,6 +358,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     rateLimiter,
     isContinuousTradingAllowed,
     recordAcceptedSellContinuation,
+    releaseSellHandoff,
     trackOrder: orderOps.trackOrder,
     cancelOrder: cancelOrderForRoute,
     settleOrder: settlementFlow.settleOrder,
@@ -896,6 +954,10 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     getPendingSellOrders,
     captureSellAvailabilityGuard,
     getSellOperationOrderIds,
+    getKnownSellOrderIds,
+    getUnsettledSellOrderIds,
+    getSellOperationState,
+    onSellOperationChanged,
     hasPendingProtectiveLiquidationOrders,
     clearTrackedOrders,
   };

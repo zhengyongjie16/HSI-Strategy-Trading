@@ -474,6 +474,10 @@ export function createOrderMonitorDouble(overrides: Partial<OrderMonitor> = {}):
         generation === trackingGeneration &&
         pending === JSON.stringify(overrides.getPendingSellOrders?.(symbol) ?? []);
     },
+    onSellOperationChanged: () => () => {},
+    getKnownSellOrderIds: () => [],
+    getUnsettledSellOrderIds: () => [],
+    getSellOperationState: () => 'SETTLED',
     getSellOperationOrderIds: (originalOrderId) => [originalOrderId],
     hasPendingProtectiveLiquidationOrders: () => false,
     clearTrackedOrders: () => {},

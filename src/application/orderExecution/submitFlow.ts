@@ -113,7 +113,7 @@ function getOutcomeRelatedBuyOrderIds(outcome: CancelOrderOutcome): ReadonlyArra
 
 /**
  * 解析最终卖单应登记的关联买单集合。
- * 显式传入 null 表示受控路径（如末日清仓）要求彻底取消智能平仓关联，
+ * 显式传入 null 表示独立卖出路径（末日清仓、距离换仓）不继承智能平仓关联，
  * 只有调用方未提供该字段时才允许使用信号携带的普通关联集合。
  *
  * @param side 中性订单方向
@@ -326,7 +326,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
     const symbolDisplayForLog = formatSymbolDisplay(symbol, signal.symbolName ?? null);
     const finalAuthorizationAborted = new Error('原 caller 最终提交授权失效');
-    const sellAvailabilityChanged = new Error('末日可卖量计划已失效');
+    const sellAvailabilityChanged = new Error('独立卖出可卖量计划已失效');
 
     try {
       return await rateLimiter.withTradeMutation(async (permit) => {
@@ -462,11 +462,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
         if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
 
-        // 普通 SELL 保留原合单门禁；末日只沿读仓前的 owner 证明新增，不改动任何既有 SELL。
+        // 普通 SELL 保留原合单门禁；末日及距离换仓沿读仓前 owner 证明独立新增。
         const isSellSubmissionCurrent = (): boolean => {
-          if (command.executionPurpose === 'DOOMSDAY_CLEARANCE') {
+          if (
+            command.executionPurpose === 'DOOMSDAY_CLEARANCE' ||
+            signal.executionOrigin === 'SWITCH_MOVE'
+          ) {
             if (isSellAvailabilityCurrent === undefined)
-              throw new TypeError('[末日清仓] 缺少读仓前的可卖量计划证明');
+              throw new TypeError('[独立卖出] 缺少读仓前的可卖量计划证明');
 
             if (!isSellAvailabilityCurrent()) throw sellAvailabilityChanged;
 
@@ -503,7 +506,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
         if (response.kind === 'REJECTED') {
           handleSubmitError(logger, response, signal, orderPayload);
-          return { kind: 'SKIPPED' };
+          return { kind: 'REJECTED' };
         }
 
         if (response.kind === 'UNKNOWN') {
@@ -592,7 +595,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     const isSellAvailabilityCurrent = orderMonitor.captureSellAvailabilityGuard(symbol);
     if (!isSellAvailabilityCurrent()) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
 
-    const freshSubmittedQuantity = await quantityResolver.resolveDoomsdayClearanceQuantity(
+    const freshSubmittedQuantity = await quantityResolver.readFreshAvailableSellQuantity(
       symbol,
       () => authorizeOrderAction('executeSignals'),
     );
@@ -639,6 +642,31 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     const orderType = getOrderTypeFromConfig(orderTypeConfig);
     const isProtectiveLiquidation = isLiquidationSignal(signal);
     const remark = buildOrderRemark(isProtectiveLiquidation);
+
+    if (side === 'SELL' && signal.executionOrigin === 'SWITCH_MOVE') {
+      // 换仓只新增实时 available；原卖单继续归原 owner，不撤、不改、不合并，也不预扣 broker 占用。
+      const isSellAvailabilityCurrent = orderMonitor.captureSellAvailabilityGuard(symbol);
+      if (!isSellAvailabilityCurrent()) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+
+      const quantity = await quantityResolver.readFreshAvailableSellQuantity(symbol, () =>
+        authorizeOrderAction('executeSignals'),
+      );
+      if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
+
+      if (!isSellAvailabilityCurrent()) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+
+      if (quantity === 0) return { kind: 'NO_AVAILABLE_QUANTITY' };
+
+      return submitOrder({
+        command,
+        authorizeOrderAction,
+        submittedQuantity: quantity,
+        isSellAvailabilityCurrent,
+        orderTypeConfig,
+        remark,
+        relatedBuyOrderIds: null,
+      });
+    }
 
     if (side === 'SELL') {
       const initialSellQuantity = await quantityResolver.calculateSellQuantity(symbol, signal, () =>

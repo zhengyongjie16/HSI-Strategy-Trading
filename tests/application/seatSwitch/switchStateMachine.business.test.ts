@@ -158,6 +158,7 @@ function createLongSwitchAdmissionHarness(params: {
   const signalBuilder = createSignalBuilder({ now });
   const tradeRuntime = createTradeRuntimeDouble(params.tradeRuntimeOverrides);
   const machine = createSwitchStateMachine({
+    readSwitchPositions: async () => [],
     autoSearchConfig: monitorConfig.autoSearchConfig,
     monitorSymbol: 'HSI.HK',
     symbolRegistry,
@@ -234,7 +235,7 @@ async function runDistanceSwitch(
 
 describe('autoSymbolManager switchStateMachine business flow', () => {
   it.each(['SELL_OUT', 'REBUY'] as const)(
-    '%s 有效报价但持续空 accepted IDs 时只允许初次提交加有限重试，耗尽后 FAILED/EMPTY',
+    '%s 空 accepted IDs 有限重试；SELL_OUT 耗尽后真实零仓正常完成，REBUY 保持原失败政策',
     async (stage) => {
       let nowMs = 1000;
       let rejectedSubmissions = 0;
@@ -305,7 +306,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           canContinue: captureSwitchSeatAuthorization(harness.symbolRegistry, 'LONG'),
         });
         expect(rejectedSubmissions).toBe(attempt);
-        expect(state.quoteRetryAttempts).toBe(attempt);
+        expect(state.quoteRetryAttempts).toBe(
+          stage === 'SELL_OUT' && attempt > ORDER_QUOTE_RETRY.MAX_ATTEMPTS ? 0 : attempt,
+        );
+
         if (attempt <= ORDER_QUOTE_RETRY.MAX_ATTEMPTS) {
           expect(result.driveResult.kind).toBe('WAIT');
           expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('SWITCHING');
@@ -316,6 +320,9 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           });
           expect(rejectedSubmissions).toBe(attempt);
           nowMs += ORDER_QUOTE_RETRY.INTERVAL_MS;
+        } else if (stage === 'SELL_OUT') {
+          expect(result.driveResult.kind).toBe('COMPLETED');
+          expect(state.sellSubmissionResolved).toBeTrue();
         } else {
           expect(result.driveResult).toEqual({
             kind: 'FAILED',
@@ -324,8 +331,10 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         }
       }
 
-      expect(state.stage).toBe('FAILED');
-      expect(harness.symbolRegistry.getSeatState('LONG').status).toBe('EMPTY');
+      expect(state.stage).toBe(stage === 'SELL_OUT' ? 'COMPLETE' : 'FAILED');
+      expect(harness.symbolRegistry.getSeatState('LONG').status).toBe(
+        stage === 'SELL_OUT' ? 'ACTIVATING' : 'EMPTY',
+      );
       expect(harness.switchStates.has('LONG')).toBeFalse();
       const afterFailure = await harness.machine.advancePendingSwitch({
         direction: 'LONG',
@@ -370,6 +379,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         }),
     });
     const autoSymbolManager = createSeatSwitchWorkflow({
+      readSwitchPositions: async () => [],
       logger: createLoggerStub(),
       monitorConfig,
       symbolRegistry,
@@ -1080,6 +1090,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -1168,6 +1179,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -1259,6 +1271,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -1350,6 +1363,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     let findBestCalls = 0;
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -1448,6 +1462,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     );
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -1560,6 +1575,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       cacheManager: { getPendingOrders: async () => [] },
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -1695,6 +1711,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           : null,
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -1792,7 +1809,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     expect(executedActions[0]).toEqual({
       action: 'SELLCALL',
       symbol: 'OLD_BULL.HK',
-      quantity: 100,
+      quantity: null,
     });
     nowMs += 1_000;
     const barrierResult = await machine.advancePendingSwitch({
@@ -1911,6 +1928,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -2060,6 +2078,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -2206,6 +2225,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -2297,7 +2317,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       throw new Error('canonical pending lifecycle must contain at least one status');
     }
 
-    // 真实BUY消失后反向/异标的/终态事实仍在，不能误撤或卡住WAIT。
+    // 撤买阶段忽略 SELL；最终强刷必须证明同标的 SELL 也已结束。
     const ignoredOrders: ReadonlyArray<PendingOrder> = [
       {
         orderId: 'SAME-SYMBOL-SELL',
@@ -2335,7 +2355,12 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     let executeCalls = 0;
     const tradeRuntime = createTradeRuntimeDouble({
       cacheManager: {
-        getPendingOrders: async () => {
+        getPendingOrders: async (_symbols, forceRefresh) => {
+          if (forceRefresh)
+            return ignoredOrders.filter(
+              (order) => order.symbol !== 'OLD_BULL.HK' || order.status === 'FILLED',
+            );
+
           pendingOrdersCall += 1;
           if (pendingOrdersCall <= 2) {
             return [
@@ -2373,6 +2398,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -2535,6 +2561,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -2693,6 +2720,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -2862,6 +2890,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           : null,
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -3025,6 +3054,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -3175,6 +3205,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -3337,6 +3368,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -3475,6 +3507,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           : null,
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -3656,6 +3689,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           : null,
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -3814,6 +3848,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
           : null,
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -3908,7 +3943,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     expect(executedActions).toEqual(['SELLCALL', 'BUYCALL']);
   });
 
-  it('fails and clears seat when rebuy sell-notional is unavailable', async () => {
+  it('completes switch without rebuy when the new sell operation has no executed amount', async () => {
     const monitorConfig = createMonitorConfigDouble({
       autoSearchConfig: getDefaultAutoSearchConfig(),
     });
@@ -3952,6 +3987,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       getSellRecordByOrderId: () => null,
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -4037,8 +4073,8 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     );
     expect(executedActions).toEqual(['SELLCALL']);
     const longSeat = symbolRegistry.getSeatState('LONG');
-    expect(longSeat.status).toBe('EMPTY');
-    expect(longSeat.symbol).toBeNull();
+    expect(longSeat.status).toBe('ACTIVATING');
+    expect(longSeat.symbol).toBe('NEW_BULL.HK');
     expect(machine.hasPendingSwitch('LONG')).toBeFalse();
   });
 
@@ -4071,6 +4107,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     let findCalls = 0;
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -4159,6 +4196,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     let executeCalls = 0;
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -4261,6 +4299,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -4351,6 +4390,7 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
     });
     const signalBuilder = createSignalBuilder({ now: () => new Date(nowMs) });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
@@ -4651,7 +4691,7 @@ describe('P1 switch 原授权与真实ack交错', () => {
 
     expect(harness.switchStates.get('LONG')).toMatchObject({
       stage: 'SELL_OUT',
-      sellSubmitted: true,
+      sellSubmissionResolved: true,
       sellOrderId: 'BROKER-P1-SELL',
     });
 
@@ -4722,7 +4762,7 @@ describe('P1 switch 原授权与真实ack交错', () => {
     expect(caught).toBe(original);
     expect(submissions).toBe(1);
     expect(harness.switchStates.get('LONG')).toMatchObject({
-      sellSubmitted: false,
+      sellSubmissionResolved: false,
       sellOrderId: null,
       stage: 'SELL_OUT',
     });

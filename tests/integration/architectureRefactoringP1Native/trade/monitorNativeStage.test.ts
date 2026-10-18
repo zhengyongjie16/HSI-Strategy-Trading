@@ -247,6 +247,9 @@ describe('monitor actual native mutation stages', () => {
       config: buildOrderMonitorConfig(f.config.global),
       now: () => new Date(1700000200000),
       isContinuousTradingAllowed: () => true,
+      releaseSellHandoff: (orderId) => {
+        f.orderRecorder.markSellCancelled(orderId);
+      },
       recordAcceptedSellContinuation: (originalId, marketId) => {
         acceptedContinuations.push([originalId, marketId]);
       },

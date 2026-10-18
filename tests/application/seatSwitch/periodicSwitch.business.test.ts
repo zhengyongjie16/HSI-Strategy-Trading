@@ -141,6 +141,7 @@ function createPeriodicHarness(params: HarnessParams): {
     },
   });
   const machine = createSwitchStateMachine({
+    readSwitchPositions: async () => [],
     autoSearchConfig: monitorConfig.autoSearchConfig,
     monitorSymbol: 'HSI.HK',
     symbolRegistry,
@@ -1022,6 +1023,7 @@ describe('periodic auto-switch regression', () => {
       },
     });
     const machine = createSwitchStateMachine({
+      readSwitchPositions: async () => [],
       autoSearchConfig: monitorConfig.autoSearchConfig,
       monitorSymbol: 'HSI.HK',
       symbolRegistry,
