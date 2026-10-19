@@ -138,6 +138,8 @@ bun test tests/core/strategy tests/main/asyncProgram/delayedSignalVerifier tests
 
 以下为实施落点，不表示这些文件已经存在。能在同一职责文件内完整表达的内容不额外拆目录。
 
+> **策略落点已被替代：**具体策略不再落在 `src/core/strategy/<策略目录>/`。当前目标为 `src/strategies/<策略目录>/`，入口、`config.json`、配置解析、DSL、指标、信号、验证与私有常量同目录；公共端口在 `src/types/strategy.ts`，通用 ID/目录映射与普通交易准入规则在 `src/domain/strategy/`，选中加载与实例创建在 `src/app/startup/`。替代依据见 `docs/plans/strategy-module-cohesion-refactoring-plan.md`；本文其余命名、单实例、免注册加载、source/dist、构建与生命周期约束继续有效，下文 `src/core/strategy/` 策略根及 definition/config 分根描述按新单根理解。
+
 ```text
 src/core/strategy/types.ts                    策略无关公共契约
 src/core/strategy/utils.ts                    中性的ID/目录映射及definition校验工具

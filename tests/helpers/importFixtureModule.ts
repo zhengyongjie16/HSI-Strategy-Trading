@@ -30,9 +30,7 @@ export async function importFixtureModule(root: string, href: string): Promise<u
     'runtime/lifecycle/terminationRuntime',
     'domain/seat/symbolRegistry',
   ]);
-  const definition = /^app\/startup\/strategyDefinitions\/[a-z][a-zA-Z0-9]*\/definition$/.test(
-    entry,
-  );
+  const definition = /^strategies\/[a-z][a-zA-Z0-9]*\/definition$/.test(entry);
   if (
     !relative.startsWith(layout) ||
     !relative.endsWith(extension) ||

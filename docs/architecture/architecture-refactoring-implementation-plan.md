@@ -6,6 +6,8 @@
 >
 > **范围更新：金融精度重构已纳入同次架构重构。**设计文档 §8.4 及相关条款中“保留旧 number 转换位置”“精度升级另立需求”的要求，以及 `OrderCommand.price: number` 示例，现在仅作为迁移前基线，不再是数值终态；数值表示、迁移与验收以本计划 §4.4、P0.4、§13.4.2 和 §15 为准。其余目录、owner、事件与事务边界仍沿用设计。本次只更新实施文档，未选择或安装十进制库，未修改代码、依赖或测试。
 >
+> **范围更新（策略布局）：**具体策略落点已由 `docs/plans/strategy-module-cohesion-refactoring-plan.md` 统一为 `src/strategies/<策略目录>/`：入口、`config.json`、配置解析、DSL、指标、信号规则、延迟验证与私有常量同目录；公共端口、宿主执行、队列与生命周期能力保持外置。本文 §4.1.1、§4.1.2 中按 `domain/strategy`、`runtime/strategy/<策略目录>`、`config`、`app/startup` 分根的策略落点，以及 P3F 的 definition/config 分根布局，均由该方案替代；P3F 历史迁移与验收记录按原阶段保留，不改写历史证据，其余目录、owner、门禁与交易约束继续有效。
+>
 > **本轮用户确认记录（用户已确认全文及精度解释；以下口径为后续实施唯一依据。今后如需改变该口径，须再次确认）：**
 >
 > - 已确认 protective 责任边界：`PostTradeSettlementWorkflow` 独占保护性清仓最终完成判定、同步 durable append、daily-loss/cooldown/episode 内存提交及 ready；protective workflow 只负责触发、目的识别、执行前门禁和执行。订单 tracking 提供可信事实，domain 可提供纯规则，但不能形成第二判定者或提交者。
@@ -302,7 +304,7 @@ src/
 │   ├── seat/                    # seat identity/selection/switch policy/纯状态
 │   ├── risk/                    # 风险规则与纯评估
 │   ├── liquidation/             # 清仓规则、执行状态、cooldown 状态
-│   └── strategy/                # 策略纯元数据/参数模型/指标与验证计算
+│   └── strategy/                # 中性策略 ID/目录映射与宿主共享的普通交易准入规则，不含具体策略实现
 ├── application/                 # 用例、完成条件、失败及重试 owner，通过窄 ports 调外部
 │   ├── accountPositionSnapshot/ # coordinator、请求协调、generation、私有 store、internal pump
 │   ├── postTradeSettlement/
@@ -332,7 +334,6 @@ src/
 │   ├── quoteSubscriptionRuntime/
 │   ├── seatActivationDispatcher/
 │   ├── seatRuntimeCleanupDispatcher/
-│   ├── strategy/                 # 选中策略的现存私有延迟执行、timer、emitter 与生命周期编排
 │   ├── timeWakeupEvaluationProgram/
 │   ├── timeWakeupPlanner/
 │   ├── timeWakeupRuntime/
@@ -348,6 +349,7 @@ src/
 │   ├── logger/
 │   └── display/                   # 按现有职责输出账户/行情/监控显示
 │
+├── strategies/                   # 具体策略功能内聚：入口、config.json、解析、DSL、指标、信号、验证、私有常量
 ├── config/                       # 配置解析与校验
 ├── constants/                    # 集中稳定项目规则
 ├── types/                        # 最近共同父级的窄共享 fact/contract，不依赖高层实现
@@ -355,7 +357,7 @@ src/
 
 tests/                            # 最终职责镜像；基线旧路径只保留到对应测试迁移闭合
 ├── app/  domain/  application/  runtime/  infrastructure/
-├── config/  constants/  types/  utils/
+├── config/  constants/  types/  utils/  strategies/
 ├── architecture/
 └── integration/
 ```
@@ -366,7 +368,7 @@ tests/                            # 最终职责镜像；基线旧路径只保�
 - `src/application/orderTracking/` 是订单事实及经济投影推进唯一 owner。tracking/recovery 串行入口可内聚；已消费输入和投影覆盖元数据内聚现有订单记录/事实存储，规则归 `domain/order`，不为目录拆事务或建立第二订单账。activation、`orderExecution` 和 snapshot coordinator 不复制该状态；API 重建与在线结算共用设计 §9.2 的幂等基线。
 - 普通 BUY/SELL 的现有 owner 直接迁入 `application/ordinaryBuy`、`application/ordinarySell`，不新增转发 wrapper。职责真实独立时可合并目录，但必须维持单一入口、完成条件和失败 owner。
 - `src/app/runtime/create*.ts` 仅创建/装配具体程序；队列、事件监听、唤醒编排和 stop/drain 在 `runtime/`。底层系统时钟、setTimeout/clearTimeout 等实现位于 `infrastructure/time/`，经窄能力注入；业务 owner 为保持自身不变量而内聚的 pump 不另拆 runtime。保留现有具体 program 名及语义，不因层名而机械改名。
-- 策略纯元数据、参数模型、指标增量状态、样本和验证计算属于 `domain/strategy`；现有 `intradayRegression/runtime/` 是指标增量计算，不因名字含 runtime 就迁到顶层 runtime。现存 `index.ts` / `verification/index.ts` 中私有 pending、timer/token、保存的 emitter 调用、clock/logger/fatal 与失效/reset/destroy 编排属于 `runtime/strategy/<策略目录>/`，不能把整套策略执行搬入 domain。仍由 app 只创建选中策略的一个实例，不公开 pending、不新增 runner/registry。`definition.ts` 的配置导入、prepare/create 装配与 selected-strategy factory 归 `app/startup`，配置解析归 `config`；实际行情监听仍归原具名 runtime。P3F 同切面定稿 definition/config 文件布局，并同步更新 `prepareStrategy` 的目录定位、`strategyLoaderHelpers` 的文件位置校验和 `.ts/.js` 扩展规则；不得只改静态 import 而留下旧路径或错误邻接约束，不增加路径探测回退、预加载或热更新。
+- 具体策略按功能内聚：入口、静态配置、配置解析、DSL、指标增量状态、样本、验证计算与私有 pending 全部位于 `src/strategies/<策略目录>/`，不得再分散到 `domain/strategy`、`runtime/strategy/<策略目录>`、`config/strategy/<策略目录>` 和 `app/startup/strategyDefinitions/<策略目录>`。仍由 app 只创建选中策略的一个实例，不公开 pending、不新增 runner/registry。`src/types/strategy.ts` 保留公共端口，`src/domain/strategy/` 保留中性 ID/目录映射与宿主共享的普通交易准入规则，选中加载与实例创建保留 `app/startup`；实际行情监听仍归原具名 runtime。`prepareStrategy` 改为相对加载器模块 URL 的单根 `src/strategies/` 定位，`strategyLoaderHelpers` 在同一策略目录内检查 definition 与 config，仍按 `.ts/.js` 扩展规则定位；不得只改静态 import 而留下旧路径或错误邻接约束，不增加路径探测回退、预加载或热更新。本条的策略落点替代原分根决策，依据 `docs/plans/strategy-module-cohesion-refactoring-plan.md`。
 - `services/autoSymbolFinder` 拆分为 `infrastructure/longbridge/market` 的 warrantList SDK 查询、外部缓存与 IO retry，`domain/seat` 的纯筛选规则，`application/autoSearch` 的失败/重试策略；SDK mapper 才依赖 SDK。
 - `services/liquidationCooldown/index.ts` 的 Map 计数/冷却规则迁 `domain/liquidation/cooldown`，但同目录 `tradeLogHydrator.ts` 含仓储读取与恢复编排，归 `application/protectiveLiquidation` 的恢复职责，经窄仓储 port 工作；不能整目录搬入 domain。实际文件读写在 `infrastructure/persistence/mixedTradeLogRepository`。
 - `refreshGate` 并入 `application/postTradeSettlement`；`positionCache` 作为私有索引由 `application/accountPositionSnapshot` 单一持有。SDK numeric mapper 进 trade/market adapter，领域数学仍按 domain 职责收口，恢复编排/排序归 application；通用纯数学留 `utils/numeric` 并由独立十进制库承接。新层消费前完成对应 SDK numeric 输入/结果契约替换，不能只保留审计字符串却把运算改成 number；quote retry 外部 IO 不得留在 utils。
@@ -376,6 +378,8 @@ tests/                            # 最终职责镜像；基线旧路径只保�
 ### 4.1.2 来源、终态、阶段与移除/验证映射
 
 表内当前路径只表示迁移来源，不表示终态残留。P1/P2 为安全协议可修改旧路径且必须清理闭合切面；测试旧路径同理仅为迁移前基线。
+
+> **策略行更新：**表中 `src/core/strategy/**` 行的迁移阶段与验收事实保持不变；其“最终目录”中的 `domain/strategy` / `runtime/strategy/<策略目录>` / `config` 分根策略落点，已由 `docs/plans/strategy-module-cohesion-refactoring-plan.md` 替代为 `src/strategies/<策略目录>/`，本表其余来源、阶段与验证要求不变。
 
 | 当前来源 | 来源职责拆分 | 最终目录 | 闭合阶段 | 旧入口移除与验证 |
 | --- | --- | --- | --- | --- |
@@ -1366,6 +1370,8 @@ submit request attempted
 
 ### 9.6 P3F：普通交易、自动寻标、静态清仓与风险刷新
 
+> **策略落点更新：**本节首个策略条目中的 `runtime/strategy/<策略目录>` + `domain/strategy` + `config` 分根策略落点及 P3F 验收中 `tests/runtime/strategy`、`tests/domain/strategy` 的具体策略测试镜像，已由 `docs/plans/strategy-module-cohesion-refactoring-plan.md` 替代为 `src/strategies/<策略目录>/` 与 `tests/strategies/<策略目录>/`；其余 owner 拆分、加载契约和 P3F 历史验收记录不变。
+
 #### 终态目标与迁移来源
 
 - 策略私有执行与动态加载：按 §4.1.1 的职责拆分在本阶段闭合，现存 pending/timer/saved-emitter 与生命周期编排迁至 `runtime/strategy/<策略目录>/`，纯指标增量状态、样本/验证计算留 domain。迁移 `prepareStrategy` / `strategyLoaderHelpers` / selected factory 的全部路径和布局契约，保留精确文件/扩展名校验、只 import/prepare 选中项一次、配置失败先于 SDK 创建及同一实例跨日重置；所需 SDK-free 契约随切面提前完成，不等待 P4，不新建策略 runner/registry。
@@ -2259,6 +2265,8 @@ src/config/constants/types/utils
 | 离线 fixtures 恢复 | `tests/integration/architectureRefactoringRecovery/recovery.integration.test.ts` 的完整 loader/rebuild、BUY/SELL baseline、crash-gap、损益分段/冷却与重启；`tests/application/tradingDayRebuild/loadTradingDayRuntimeSnapshot.test.ts`；低位冲突无独立持久证据时 fail-fast，不伪造 correction |
 | 技术指标与非金融路径 | `tests/domain/strategy/intradayRegression/indicators/`、信号/延迟验证与 `numericBoundary.test.ts`；保持指标 number 算法及合法结构数值边界 |
 | 金融显示 | `tests/infrastructure/display/{accountDisplay,marketMonitor}/business.test.ts`；`tests/utils/numeric/exact.test.ts` 的一次 half-even、尾零/高位及 `1.0051` 防二次舍入 |
+
+注：上表为当时轮次的测试证据路径；具体策略内聚后 `tests/domain/strategy/intradayRegression/**` 与 `tests/runtime/strategy/intradayRegression/**` 已迁移到 `tests/strategies/intradayRegression/**`，历史验收事实不改写。
 
 - 原有效行为保持、受控浮点误差修正和历史冲突阻断分别由上述行为与恢复测试验证；**离线 fixtures 不等于真实历史逐条对账，也不等于候选/指定回退版本真实恢复演练**。真实原始 V1＋权威订单逐条对账，以及精度迁移后候选版与指定回退版完整恢复，仍是未来生产发布前独立阻断门禁（§17.5）。
 - 文档补证后执行 `bun --no-env-file node_modules/prettier/bin/prettier.cjs --check docs/architecture/architecture-refactoring-implementation-plan.md tests/architecture/refactoring/README.md` 与 `git diff --check`，均 exit 0；对应 `09-doc-format-check.log`、`10-diff-check.log`。相对本轮验证前内容，仅两份本节相关文档和 `src/application/seatActivation/types.ts`、`tests/infrastructure/longbridge/trade/orderFactMapper.test.ts` 的纯排版有变化，无关文件保持原副本内容。

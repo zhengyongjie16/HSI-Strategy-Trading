@@ -24,7 +24,7 @@ import {
 import { createStrategyEmitter } from '../../src/runtime/businessEventProgram/emissionAdapter.js';
 import type { Signal } from '../../src/types/signal.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
-import { marketContext } from '../domain/strategy/intradayRegression/fixtures.js';
+import { marketContext } from '../strategies/intradayRegression/indicatorFixtures.js';
 import {
   createLiquidationCooldownTrackerDouble,
   createLoggerDouble,
@@ -37,7 +37,7 @@ import {
   createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
 import { waitUntil } from '../helpers/asyncProgram.js';
-import { createHarness, prepareFixture } from '../runtime/strategy/intradayRegression/fixtures.js';
+import { createHarness, prepareFixture } from '../strategies/intradayRegression/runtimeFixtures.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 describe('delayed strategy sell integration', () => {

@@ -22,7 +22,7 @@
 - 全仓实际 `TradeContext.new` 创建点必须恰好一个且位于 production trade adapter；不把已迁移的旧 core 路径当不可变业务基线。
 - `snapshotProbe.ts` 保留唯一 canonical owner、readonly reader/嵌套事实、能力外泄、第二 writer、cast/Object.assign 等保护；原 snapshot/mirror occurrence 在 P1 到期。
 - `numericProbe.ts` / `numericBoundary.test.ts` 保留字段 identity、金融 number/有损投影保护和合法整数/指标边界。投影额度按文件、原函数、表达式逐 occurrence 计数，仅原金融投影可获额度；P1 已闭合字段/投影立即到期，后续金融额度按所属阶段收缩，最迟 P4.5 归零。P2 恢复/持久化原契约的累计金额不允许退回 number 或直接有损投影；revision/时间字段仍为结构 number。`Quote.prevClose` 的真实角色由附加登记补齐，不重写 P0 审计。
-- 策略私有身份按 domain/runtime/config/`app/startup/strategyDefinitions` 四根识别；同策略的合法跨根连接仍受层矩阵约束。`strategyDynamicBoundary.test.ts` 执行真实准备器验证 definition/config 分根，入口精确定位为 `src/app/startup/strategyDefinitions/<selected>/definition.ts` 或 `dist/src/app/startup/strategyDefinitions/<selected>/definition.js`，不回退旧 core 路径。
+- 策略私有身份按单一策略根 `src/strategies/<selected>/` 识别；原 `domain/strategy`、`runtime/strategy`、`config/strategy`、`app/startup/strategyDefinitions` 四根身份及 definition/config 分根契约不再成立。入口、`config.json`、解析、DSL、指标、信号、验证与私有常量同目录。宿主或其他策略导入某策略私有实现、配置与常量均由 `strategyBoundary.test.ts` 拒绝。`strategyDynamicBoundary.test.ts` 执行真实准备器验证同目录 definition/config，入口精确定位为 `src/strategies/<selected>/definition.ts` 或 `dist/src/strategies/<selected>/definition.js`，不回退旧 core 或四根路径，也不在 `.ts/.js` 之间回退。
 - 非字面量加载只准入两条有限结构连接：runAppDeps 直接向实际声明的 prepareStrategy 注入 `importModule: (href) => import(href)`；真实 loader 的 importStrategyDefinition 使用已声明 StrategyLocation/StrategyFileSystem 参数，经 Node pathToFileURL(location.definitionPath).href 调用 importModule。路径、真实声明及参数 symbol 共同校验，局部同名函数/契约、任意 URL、间接回调或其他 loader 均拒绝；不扩大原 baseline 的动态 occurrence 额度。加载安全仍由真实元信息负例与唯一消费者检查共同验证，不宣称任意数据流证明。
 
 ## 明确不做的事

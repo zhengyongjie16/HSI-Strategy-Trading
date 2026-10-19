@@ -1,6 +1,6 @@
 /**
  * 单活跃策略准备模块。
- * env presence 检查 → 模块相对精确定位 → 只导入/prepare 选中项一次，不创建实例或 SDK。
+ * env presence 检查 → 模块相对精确定位同一策略目录 → 只导入/prepare 选中项一次，不创建实例或 SDK。
  */
 import nodePath from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,10 +52,7 @@ export async function prepareStrategy(
     throw new Error('[Strategy:location] 不支持的加载器扩展名: ' + extension);
   }
 
-  const rootPath = nodePath.resolve(fileURLToPath(new URL('strategyDefinitions/', moduleUrl)));
-  const configRootPath = nodePath.resolve(
-    fileURLToPath(new URL('../../config/strategy/', moduleUrl)),
-  );
+  const rootPath = nodePath.resolve(fileURLToPath(new URL('../../strategies/', moduleUrl)));
   await assertStrategyNode(rootPath, 'directory', deps);
   const names = await deps.readDirectory(rootPath);
   if (
@@ -65,14 +62,7 @@ export async function prepareStrategy(
     throw new Error('[Strategy:selection] 选中目录不存在、拼写不符或大小写冲突: ' + directoryName);
   }
 
-  await assertStrategyNode(configRootPath, 'directory', deps);
-  const location = await inspectStrategyLocation(
-    rootPath,
-    configRootPath,
-    directoryName,
-    extension,
-    deps,
-  );
+  const location = await inspectStrategyLocation(rootPath, directoryName, extension, deps);
   const definition = await importStrategyDefinition(location, deps);
   return { strategyId, prepared: prepareStrategyDefinition(definition) };
 }

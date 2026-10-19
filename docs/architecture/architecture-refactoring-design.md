@@ -358,7 +358,7 @@ Domain 只依赖项目内部契约，不依赖：
 
 Domain 可以通过工厂封装席位、订单占用、冷却等领域状态，并通过业务方法推进；不是只能容纳无状态函数。时间相关规则接收显式时间值，不读取系统时钟或安排 timer。`liquidationCooldown` 的计数和冷却规则属于此层；同目录 `tradeLogHydrator.ts` 的仓储读取/恢复编排归 application/protectiveLiquidation，实际文件读写归 infrastructure，不整目录搬入 domain。
 
-策略按实际职责而非名称拆分：`intradayRegression/runtime/` 是指标增量计算与状态，应留在 domain/strategy；`definition.ts` 中配置导入、prepare/create 与选中策略工厂属于 app/startup，配置解析属于 config；只有实际行情监听和唤醒归顶层 runtime。
+具体策略按功能内聚，不按技术层分散：入口、静态配置、配置解析、DSL、指标、信号规则、延迟验证与私有常量统一位于 `src/strategies/<策略目录>/`，系统执行能力保持外置。公共端口继续保留 `src/types/strategy.ts`；中性 ID/目录映射与宿主共享的普通交易准入规则留在 `src/domain/strategy/`；选中加载与实例创建留在 `src/app/startup/`；行情宿主、交易授权、队列与生命周期清理留在现有 runtime/application owner，只有实际行情监听和唤醒归顶层 runtime。宿主不得读取策略私有指标、样本、pending 或配置结构，策略也不得把下单、席位或生命周期权限搬入自己的目录。本段替代原按 `domain/strategy`、`runtime/strategy/<策略目录>`、`config`、`app/startup` 拆分具体策略的落点决策，替代依据见 `docs/plans/strategy-module-cohesion-refactoring-plan.md`；本设计其余交易与生命周期约束不变。
 
 不允许 domain 自己：
 
@@ -479,7 +479,7 @@ Longbridge 适配器负责：
 
 `app/runtime` 若保留，只能存放创建/接线工厂；实际监听、队列和启停 owner 归 `runtime`。保留 `app/shutdown` 现有增量 cleanup 执行机制，日切运行编排归 runtime，业务重建完成条件归 application，不新增第二套生命周期执行器。
 
-类型仍按最近共同父级放置：局部 `types.ts`、层内共享类型、必要的 `src/types/` 跨层窄契约。跨层事实模型不得经高层实现类型反向依赖；不把 `types/services.ts` 改名为另一个超级 `contracts`。常量继续按项目规范集中在 `src/constants/`；纯业务规则不因是纯函数而归入通用 utils。
+类型仍按最近共同父级放置：局部 `types.ts`、层内共享类型、必要的 `src/types/` 跨层窄契约。跨层事实模型不得经高层实现类型反向依赖；不把 `types/services.ts` 改名为另一个超级 `contracts`。常量继续按项目规范集中在 `src/constants/`；唯一例外是具体策略的私有规则常量随策略放在 `src/strategies/<策略目录>/constants.ts`，宿主和其他策略不得导入；纯业务规则不因是纯函数而归入通用 utils。
 
 ---
 

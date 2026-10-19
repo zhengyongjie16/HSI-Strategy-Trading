@@ -21,9 +21,9 @@ import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import {
   prepareFixture,
   createHarness,
-} from '../../runtime/strategy/intradayRegression/fixtures.js';
-import { configObject } from '../../config/strategy/intradayRegression/fixtures.js';
-import { marketContext } from '../../domain/strategy/intradayRegression/fixtures.js';
+} from '../../strategies/intradayRegression/runtimeFixtures.js';
+import { configObject } from '../../strategies/intradayRegression/configFixtures.js';
+import { marketContext } from '../../strategies/intradayRegression/indicatorFixtures.js';
 import { waitUntil } from '../../helpers/asyncProgram.js';
 import type { StrategyDecision, TradingSignalStrategy } from '../../../src/types/strategy.js';
 import type { Position } from '../../../src/types/account.js';

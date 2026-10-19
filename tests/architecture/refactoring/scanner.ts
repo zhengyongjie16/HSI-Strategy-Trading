@@ -246,35 +246,110 @@ function guardedFixtureImport(file: string, node: ts.Node): boolean {
   const guards = new Set(
     body.statements
       .filter(ts.isIfStatement)
+      .filter(
+        (statement) =>
+          ts.isBlock(statement.thenStatement) &&
+          statement.thenStatement.statements.some(ts.isThrowStatement),
+      )
       .map((statement) => compact(statement.expression.getText())),
   );
-  const declarations = body.statements
-    .filter(ts.isVariableStatement)
-    .flatMap((statement) =>
-      [...statement.declarationList.declarations].map((declaration) =>
-        compact(declaration.getText()),
+  const declarations = new Set(
+    body.statements
+      .filter(ts.isVariableStatement)
+      .flatMap((statement) =>
+        [...statement.declarationList.declarations].map((declaration) =>
+          compact(declaration.getText()),
+        ),
       ),
-    );
+  );
+  const entries = body.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => [...statement.declarationList.declarations])
+    .find(
+      (declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === 'entries',
+    )?.initializer;
+  const entryArray =
+    entries !== undefined && ts.isNewExpression(entries) && entries.expression.getText() === 'Set'
+      ? entries.arguments?.[0]
+      : undefined;
+  const reviewedEntries = new Set([
+    'app/startup/prepareStrategy',
+    'app/startup/createSelectedStrategy',
+    'app/shutdown/createCleanup',
+    'runtime/businessEventProgram/index',
+    'runtime/asyncProgram/tradeTaskQueue/index',
+    'runtime/lifecycle/terminationRuntime',
+    'domain/seat/symbolRegistry',
+  ]);
   return (
+    entryArray !== undefined &&
+    ts.isArrayLiteralExpression(entryArray) &&
+    entryArray.elements.length === reviewedEntries.size &&
+    entryArray.elements.every(
+      (entry) => ts.isStringLiteral(entry) && reviewedEntries.has(entry.text),
+    ) &&
+    new Set(entryArray.elements.filter(ts.isStringLiteral).map((entry) => entry.text)).size ===
+      reviewedEntries.size &&
+    declarations.has(
+      String.raw`definition = /^strategies\/[a-z][a-zA-Z0-9]*\/definition$/.test(entry)`,
+    ) &&
+    declarations.has("layout = relative.startsWith('dist/src/') ? 'dist/src/' : 'src/'") &&
+    declarations.has("extension = layout === 'src/' ? '.ts' : '.js'") &&
     guards.has("url.protocol !== 'file:' || url.search !== '' || url.hash !== ''") &&
     guards.has(
       '!relative.startsWith(layout) || !relative.endsWith(extension) || (!entries.has(entry) && !definition)',
     ) &&
-    declarations.includes(
+    declarations.has(
       '[directory, file] = await Promise.all([realpath(root), realpath(fileURLToPath(url))])',
     )
   );
 }
 
-/** §5.1 的 domain 直接文件/网络/调度能力边界；不追踪任意 caller 或间接数据流。 */
+/** 新策略默认纯；仅三个精确相对路径承担装配或受控运行职责。 */
+function strategyRole(file: string): 'pure' | 'definition' | 'runtime' | undefined {
+  const match = /^src\/strategies\/[^/]+\/(.+)$/.exec(file);
+  const role = match?.[1];
+  if (role === undefined) return undefined;
+
+  if (role === 'definition.ts') return 'definition';
+
+  return role === 'index.ts' || role === 'verification/pendingVerification.ts' ? 'runtime' : 'pure';
+}
+
+/** domain 与全部策略禁止直接文件/网络/环境模块；os 与 fs/net 同属环境边界，共享同一清单。 */
 function forbiddenDomainIo(file: string, specifier: string): boolean {
   return (
-    file.startsWith('src/domain/') &&
-    /^(?:node:)?(?:fs(?:\/promises)?|https?|http2|net|tls|dgram|dns(?:\/promises)?|timers(?:\/promises)?)$/.test(
-      specifier,
-    )
+    (file.startsWith('src/domain/') || strategyRole(file) !== undefined) &&
+    [
+      'fs',
+      'http',
+      'https',
+      'http2',
+      'net',
+      'tls',
+      'dgram',
+      'dns',
+      'os',
+      'timers',
+      'child_process',
+      'worker_threads',
+      'cluster',
+      'readline',
+      'process',
+      'console',
+    ].includes(specifier.replace(/^node:/, '').split('/')[0] ?? '')
   );
 }
+
+/**
+ * 有限能力成员身份：仅标准库/平台声明中的真实环境与高精度时钟成员。
+ * 以 owner 接口、成员名与声明来源三重身份识别，不按 env/now 等拼写全局禁用。
+ */
+const AMBIENT_CAPABILITY_MEMBERS: Readonly<Record<string, ReadonlyArray<string>>> = {
+  Process: ['env', 'hrtime', 'uptime'],
+  DateConstructor: ['now'],
+  Performance: ['now'],
+};
 
 /** 生产目标矩阵从 P0 生效；测试装配真实 owner，不继承目录同名的生产依赖限制。 */
 function forbiddenLayer(file: string, target: string): boolean {
@@ -283,6 +358,21 @@ function forbiddenLayer(file: string, target: string): boolean {
   const from = file.split('/')[1];
   const to = target.split('/')[1];
   if (!target.startsWith('src/')) return false;
+
+  const targetOwner = /^src\/strategies\/([^/]+)\//.exec(target)?.[1];
+  const owner = /^src\/strategies\/([^/]+)\//.exec(file)?.[1];
+  if (targetOwner !== undefined && targetOwner !== owner) return true;
+
+  if (
+    strategyRole(file) === 'pure' &&
+    ['definition', 'runtime'].includes(strategyRole(target) ?? '')
+  )
+    return true;
+
+  if (owner !== undefined)
+    return ['app', 'application', 'runtime', 'infrastructure', 'core', 'main', 'services'].includes(
+      to ?? '',
+    );
 
   if (from === 'application')
     return ['app', 'runtime', 'infrastructure', 'core', 'main', 'services'].includes(to ?? '');
@@ -322,9 +412,7 @@ export function selectedStrategyPath(
 ): boolean {
   if (!/^[a-z][a-zA-Z0-9]*$/.test(selected)) return false;
 
-  const directory = compiled
-    ? 'dist/src/app/startup/strategyDefinitions'
-    : 'src/app/startup/strategyDefinitions';
+  const directory = compiled ? 'dist/src/strategies' : 'src/strategies';
   return (
     path.resolve(candidate) ===
     path.resolve(root, directory, selected, `definition.${compiled ? 'js' : 'ts'}`)
@@ -465,6 +553,18 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
   const checker = program.getTypeChecker();
   const wanted = new Set(files.map((file) => path.resolve(file).toLowerCase()));
   const relative = (file: string) => path.relative(root, file).replaceAll('\\', '/');
+  const moduleTarget = (file: string, specifier: string, resolved: string | undefined): string => {
+    if (resolved !== undefined) return relative(resolved);
+
+    if (specifier.startsWith('.'))
+      return path.posix
+        .normalize(path.posix.join(path.posix.dirname(file), specifier))
+        .replace(/\.js$/, '.ts');
+
+    return specifier.startsWith('@/')
+      ? 'src/' + specifier.slice(2).replace(/\.js$/, '.ts')
+      : specifier;
+  };
   const imports: string[] = [],
     uses: string[] = [],
     origins: string[] = [],
@@ -524,6 +624,8 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
   }
 
   function typeUsage(node: ts.Node): boolean {
+    if (ts.isSourceFile(node)) return false;
+
     for (
       let parent = node.parent;
       !ts.isSourceFile(parent) && !ts.isStatement(parent);
@@ -555,6 +657,144 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
         );
       }) ?? false
     );
+  }
+
+  /** 只匹配真实公共注入契约的调用签名；不因局部函数或成员同名而拒绝。 */
+  function injectedStrategyCall(node: ts.CallExpression): boolean {
+    const declaration = checker.getResolvedSignature(node)?.declaration;
+    if (declaration === undefined) return false;
+
+    const file = relative(declaration.getSourceFile().fileName);
+    const contracts: Readonly<Record<string, ReadonlyArray<string>>> = {
+      'src/types/runtime.ts': ['RuntimeClock', 'RuntimeScheduler'],
+      'src/types/strategy.ts': ['StrategyEmitter'],
+      'src/types/logger.ts': ['Logger'],
+    };
+    for (let parent: ts.Node = declaration; !ts.isSourceFile(parent); parent = parent.parent) {
+      if (
+        (ts.isInterfaceDeclaration(parent) || ts.isTypeAliasDeclaration(parent)) &&
+        (contracts[file]?.includes(parent.name.text) ||
+          (file === 'src/types/strategy.ts' &&
+            parent.name.text === 'StrategyDeps' &&
+            ts.isTypeAliasDeclaration(parent) &&
+            ts.isTypeLiteralNode(parent.type) &&
+            ts.isPropertySignature(declaration.parent) &&
+            declaration.parent.parent === parent.type &&
+            ts.isIdentifier(declaration.parent.name) &&
+            declaration.parent.name.text === 'onFatalError'))
+      )
+        return true;
+    }
+
+    return false;
+  }
+
+  /** 属性符号身份必须同时命中 owner 接口、成员名与标准库/平台声明来源。 */
+  function ambientCapabilityProperty(type: ts.Type, member: string | undefined): boolean {
+    if (member === undefined) return false;
+
+    return (
+      checker.getPropertyOfType(type, member)?.declarations?.some((declaration) => {
+        if (!declaration.getSourceFile().isDeclarationFile) return false;
+
+        const source = declaration.getSourceFile().fileName.replaceAll('\\', '/');
+        if (!/\/node_modules\/(?:@types\/node|bun-types|typescript\/lib)\//.test(source))
+          return false;
+
+        const owner = declaration.parent;
+        const ownerName =
+          ts.isInterfaceDeclaration(owner) ||
+          ts.isClassDeclaration(owner) ||
+          ts.isTypeAliasDeclaration(owner)
+            ? owner.name?.text
+            : undefined;
+        return (
+          ownerName !== undefined &&
+          AMBIENT_CAPABILITY_MEMBERS[ownerName]?.includes(member) === true
+        );
+      }) ?? false
+    );
+  }
+
+  /** 零参数 Date 构造身份来自标准库；别名 `const Clock = Date` 共享同一 DateConstructor 身份。 */
+  function ambientDateConstructor(node: ts.Expression): boolean {
+    const symbol = checker.getTypeAtLocation(node).getSymbol();
+    return (
+      symbol?.name === 'DateConstructor' &&
+      (symbol.declarations?.some(
+        (declaration) =>
+          declaration.getSourceFile().isDeclarationFile &&
+          declaration.getSourceFile().fileName.replaceAll('\\', '/').includes('/typescript/lib/'),
+      ) ??
+        false)
+    );
+  }
+
+  /** 解构键同样支持计算属性名中的字符串字面量，避免与 ESLint 规则出现覆盖差异。 */
+  function bindingMember(node: ts.BindingElement): string | undefined {
+    const key = node.propertyName ?? node.name;
+    if (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) return key.text;
+
+    if (ts.isComputedPropertyName(key) && ts.isStringLiteralLike(key.expression))
+      return key.expression.text;
+
+    return undefined;
+  }
+
+  /** 变量初始化与直接参数默认值的对象解构携带能力身份；不追踪嵌套数据流。 */
+  function ambientDestructuredBinding(node: ts.BindingElement): boolean {
+    if (!ts.isObjectBindingPattern(node.parent)) return false;
+
+    const declaration = node.parent.parent;
+    if (
+      !(ts.isVariableDeclaration(declaration) || ts.isParameter(declaration)) ||
+      declaration.initializer === undefined
+    )
+      return false;
+
+    return ambientCapabilityProperty(
+      checker.getTypeAtLocation(declaration.initializer),
+      bindingMember(node),
+    );
+  }
+
+  /**
+   * ambient 符号身份来自标准库；显式 Date 输入、类型引用和同名局部纯值保持合法。
+   * process 根标识符同时覆盖 cwd/argv/stdout/exit、赋值与默认解构；
+   * `globalThis.process` 等普通根访问的属性名解析到同一 ambient 声明，无需数据流引擎。
+   */
+  function ambientStrategyIo(node: ts.Node): boolean {
+    if (ambientDomainIo(node)) return true;
+
+    if (
+      ts.isIdentifier(node) &&
+      /^(?:process|console|Bun|Deno|WebSocket|XMLHttpRequest|performance)$/.test(node.text)
+    )
+      return (
+        actualSymbol(node)?.declarations?.some((declaration) => {
+          if (!declaration.getSourceFile().isDeclarationFile) return false;
+
+          const source = declaration.getSourceFile().fileName.replaceAll('\\', '/');
+          return source.includes('/node_modules/') || source.includes('/typescript/lib/');
+        }) ?? false
+      );
+
+    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+      const argument = ts.isElementAccessExpression(node) ? node.argumentExpression : node.name;
+      const member =
+        ts.isIdentifier(argument) || ts.isStringLiteralLike(argument) ? argument.text : undefined;
+      return ambientCapabilityProperty(checker.getTypeAtLocation(node.expression), member);
+    }
+
+    if (
+      (ts.isNewExpression(node) || ts.isCallExpression(node)) &&
+      (node.arguments?.length ?? 0) === 0
+    )
+      return ambientDateConstructor(node.expression);
+
+    if (ts.isBindingElement(node)) return ambientDestructuredBinding(node);
+
+    return false;
   }
 
   const sdkSymbol = (node: ts.Node) =>
@@ -1556,7 +1796,7 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
       }
 
       if (
-        /^src\/(application|domain|runtime)\//.test(file) &&
+        /^src\/(application|domain|runtime|strategies)\//.test(file) &&
         (ts.isTypeReferenceNode(node) ||
           ts.isExpressionWithTypeArguments(node) ||
           ts.isTypeQueryNode(node)) &&
@@ -1567,8 +1807,40 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
       if (file.startsWith('src/') && ts.isIdentifier(node) && sdkSymbol(node) && !sdkAdapter(file))
         origins.push(occurrenceKey(file, node.getText(), node.text));
 
-      if (file.startsWith('src/domain/') && ambientDomainIo(node))
-        violations.push(occurrenceKey(file, 'DOMAIN_DIRECT_IO', (node as ts.Identifier).text));
+      if (
+        (file.startsWith('src/domain/') && !typeUsage(node) && ambientDomainIo(node)) ||
+        (strategyRole(file) !== undefined && !typeUsage(node) && ambientStrategyIo(node))
+      )
+        violations.push(occurrenceKey(file, 'DOMAIN_DIRECT_IO', compact(node.getText())));
+
+      if (
+        (strategyRole(file) === 'pure' || strategyRole(file) === 'definition') &&
+        ts.isCallExpression(node) &&
+        injectedStrategyCall(node)
+      )
+        violations.push(occurrenceKey(file, 'STRATEGY_PURE_CAPABILITY', compact(node.getText())));
+
+      if (
+        strategyRole(file) === 'definition' &&
+        (ts.isCallExpression(node) || ts.isNewExpression(node)) &&
+        functionName(node) === '<module>'
+      ) {
+        const declaration = ts.isCallExpression(node)
+          ? checker.getResolvedSignature(node)?.declaration
+          : undefined;
+        const freeze =
+          ts.isCallExpression(node) &&
+          ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === 'freeze' &&
+          declaration !== undefined &&
+          declaration.getSourceFile().fileName.replaceAll('\\', '/').includes('/typescript/lib/') &&
+          ts.isInterfaceDeclaration(declaration.parent) &&
+          declaration.parent.name.text === 'ObjectConstructor';
+        if (!freeze)
+          violations.push(
+            occurrenceKey(file, 'STRATEGY_DEFINITION_EVALUATION', compact(node.getText())),
+          );
+      }
 
       if (
         ts.isImportEqualsDeclaration(node) &&
@@ -1585,10 +1857,29 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
             program.getCompilerOptions(),
             ts.sys,
           ).resolvedModule;
+          const target = moduleTarget(file, module.text, resolved?.resolvedFileName);
+          if (forbiddenLayer(file, target)) violations.push(occurrenceKey(file, 'LAYER', target));
+
           if (
-            file.startsWith('src/domain/') &&
+            (module.text === 'longbridge' || target.includes('node_modules/longbridge/')) &&
+            !sdkAdapter(file)
+          )
+            imports.push(
+              occurrenceKey(
+                file,
+                'IMPORT_EQUALS',
+                module.text,
+                '*',
+                node.name.text,
+                node.isTypeOnly,
+              ),
+            );
+
+          if (
+            (file.startsWith('src/domain/') || strategyRole(file) !== undefined) &&
+            !node.isTypeOnly &&
             resolved !== undefined &&
-            relative(resolved.resolvedFileName).startsWith('src/utils/logger/')
+            /^src\/(?:utils|infrastructure)\/logger\//.test(relative(resolved.resolvedFileName))
           )
             violations.push(
               occurrenceKey(file, 'DOMAIN_DIRECT_IO', relative(resolved.resolvedFileName)),
@@ -1609,7 +1900,7 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
           program.getCompilerOptions(),
           ts.sys,
         ).resolvedModule;
-        const target = resolved === undefined ? module.text : relative(resolved.resolvedFileName);
+        const target = moduleTarget(file, module.text, resolved?.resolvedFileName);
         const kind = ts.isImportDeclaration(node) ? 'IMPORT' : 'RE_EXPORT';
         const bindings: {
           imported: string;
@@ -1670,8 +1961,8 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
         if (forbiddenLayer(file, target)) violations.push(occurrenceKey(file, 'LAYER', target));
 
         if (
-          file.startsWith('src/domain/') &&
-          target.startsWith('src/utils/logger/') &&
+          (file.startsWith('src/domain/') || strategyRole(file) !== undefined) &&
+          /^src\/(?:utils|infrastructure)\/logger\//.test(target) &&
           (bindings.length === 0 || bindings.some((binding) => !binding.typeOnly))
         )
           violations.push(occurrenceKey(file, 'DOMAIN_DIRECT_IO', target));
@@ -1767,9 +2058,9 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
           ).resolvedModule;
           if (
             !ts.isImportTypeNode(node) &&
-            file.startsWith('src/domain/') &&
+            (file.startsWith('src/domain/') || strategyRole(file) !== undefined) &&
             target !== undefined &&
-            relative(target.resolvedFileName).startsWith('src/utils/logger/')
+            /^src\/(?:utils|infrastructure)\/logger\//.test(relative(target.resolvedFileName))
           )
             violations.push(
               occurrenceKey(file, 'DOMAIN_DIRECT_IO', relative(target.resolvedFileName)),
@@ -1793,19 +2084,9 @@ export function scanProgram(root: string, program: ts.Program, files: ReadonlyAr
               ),
             );
 
-          if (
-            target !== undefined &&
-            (forbiddenLayer(file, relative(target.resolvedFileName)) ||
-              /^src\/(core|main|services)\//.test(relative(target.resolvedFileName)))
-          )
-            violations.push(
-              occurrenceKey(
-                file,
-                'DYNAMIC_EDGE',
-                relative(target.resolvedFileName),
-                compact(node.getText()),
-              ),
-            );
+          const edge = moduleTarget(file, specifier, target?.resolvedFileName);
+          if (forbiddenLayer(file, edge) || /^src\/(core|main|services)\//.test(edge))
+            violations.push(occurrenceKey(file, 'DYNAMIC_EDGE', edge, compact(node.getText())));
         } else if (
           !guardedFixtureImport(file, node) &&
           (!ts.isCallExpression(node) || !selectedStrategyLoaderCall(root, node, checker))

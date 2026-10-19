@@ -54,6 +54,25 @@ const defaults =
 const realBroker = `import { createTradeContextMock } from '${path.resolve(process.cwd(), 'mock/longbridge/tradeContextMock.ts').replaceAll('\\', '/')}'; export function broker() { return createTradeContextMock(); }`;
 
 describe('SDK helper actual invocation boundaries', () => {
+  it('strategy synthetic retains SDK execution detection through relocated test helpers', () => {
+    const helper =
+      "import { construct } from '../tests/strategies/newAlpha/factory.js'; export function broker() { return construct(); }";
+    const consumer = "import { broker } from '../../mock/broker.js'; broker();";
+    expect(
+      helperConsumers(helper, consumer, {
+        'tests/strategies/newAlpha/factory.ts':
+          "import { Decimal } from 'longbridge'; export const construct = () => new Decimal('1');",
+      }),
+    ).toHaveLength(1);
+
+    expect(
+      helperConsumers(helper, consumer, {
+        'tests/strategies/newAlpha/factory.ts':
+          'export const construct = () => ({ orderId: "neutral" });',
+      }),
+    ).toEqual([]);
+  });
+
   it.each([
     "const Money = Decimal; return new Money('1');",
     'const zero = Decimal.ZERO; return zero();',

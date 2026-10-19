@@ -15,6 +15,23 @@ const account =
 const quote = 'type Quote = { readonly price: string };';
 
 describe('P0.3 staged financial boundaries', () => {
+  it('strategy synthetic keeps indicator numbers legal without exempting financial projections', () => {
+    const file = 'src/strategies/newAlpha/newMath.ts';
+    expect(
+      numericOccurrences(
+        file,
+        'export const indicator = (sample: number, alpha: number) => sample * alpha;',
+      ),
+    ).toEqual([]);
+    const projection = numericOccurrences(
+      file,
+      `${account} export const read = (fact: AccountSnapshot) => Number(fact.positionValue);`,
+    );
+    expect(projection).toHaveLength(1);
+    expect(projection[0]).toContain('PROJECTION');
+    expect(newNumeric(projection, frozenNumeric, 'P6')).toEqual(projection);
+  });
+
   it('freezes audited old financial occurrences, allowing deletion only', () => {
     const actual = listTypeScript('src').flatMap((file) =>
       numericOccurrences(file.replaceAll(path.sep, '/'), sourceText(file)),

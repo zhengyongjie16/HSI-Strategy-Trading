@@ -15,6 +15,7 @@ src/
 ├── application/  # 业务用例与事实 owner
 ├── runtime/      # 事件路由、队列、时间唤醒与生命周期
 ├── infrastructure/ # SDK、持久化、日志与显示适配器
+├── strategies/   # 具体策略功能模块（入口、配置、指标、信号、验证）
 └── utils/        # 工具模块
 ```
 

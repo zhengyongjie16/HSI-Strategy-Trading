@@ -1,5 +1,12 @@
 /** 离线行情测试入口：私有构造 SDK candle/push/config，用真实行情 client 或工具计算得到中性出口。 */
-import { Decimal, TradeSession, type Candlestick, type PushCandlestickEvent } from 'longbridge';
+import {
+  Decimal,
+  TradeSession,
+  WarrantStatus,
+  WarrantType,
+  type Candlestick,
+  type PushCandlestickEvent,
+} from 'longbridge';
 import { createQuoteContextMock } from '../../../../mock/longbridge/quoteContextMock.js';
 import { createMarketDataClient } from '../../../../src/infrastructure/longbridge/market/quoteClient.js';
 import { mapCandlestickPeriodToSdk } from '../../../../src/infrastructure/longbridge/market/marketEnumMapper.js';
@@ -48,16 +55,40 @@ function createSdkCandlestickPush(
   };
 }
 
-/** 创建生产 client，SDK Config 与离线 context 的装配留在合法 infra 测试边界。 */
+/** 调用首参的合法形态只有标的字符串或全字符串标的数组；其余形态是 fixture 契约破裂，不静默降级。 */
+function isSymbolList(value: unknown): value is ReadonlyArray<string> {
+  return Array.isArray(value) && value.every((item: unknown) => typeof item === 'string');
+}
+
+/** 创建生产 client，SDK Config、离线 context 与场景 control 的装配留在合法 infra 测试边界。 */
 export async function createMarketFixture(): Promise<MarketFixture> {
   const context = createQuoteContextMock();
+  let armedRealtimeQuoteGate: {
+    readonly entered: () => void;
+    readonly released: Promise<void>;
+  } | null = null;
+  // 场景需要见证“底层结果已取得、退订尚未完成”的竞态；仅首次武装的读取在结果返回后暂停。
+  const quoteContext = {
+    ...context,
+    realtimeQuote: async (symbols: ReadonlyArray<string>) => {
+      const quotes = await context.realtimeQuote(symbols);
+      const gate = armedRealtimeQuoteGate;
+      if (gate !== null) {
+        armedRealtimeQuoteGate = null;
+        gate.entered();
+        await gate.released;
+      }
+
+      return quotes;
+    },
+  };
   const client = await createMarketDataClient({
     config: {
       refreshAccessToken: () => {
         throw new Error('offline market fixture cannot refresh SDK credentials');
       },
     },
-    quoteContextFactory: () => context,
+    quoteContextFactory: () => quoteContext,
   });
   return {
     client: {
@@ -83,6 +114,75 @@ export async function createMarketFixture(): Promise<MarketFixture> {
           symbols.map((symbol) => ({ symbol, quote: { symbol, prevClose: previousClose } })),
         );
       },
+      seedQuotes: (quotes) => {
+        context.seedStaticInfo(
+          quotes.map((quote) => ({
+            symbol: quote.symbol,
+            info: {
+              symbol: quote.symbol,
+              nameHk: quote.name,
+              ...(quote.lotSize === undefined ? {} : { lotSize: quote.lotSize }),
+            },
+          })),
+        );
+
+        context.seedQuotes(
+          quotes.map((quote) => ({
+            symbol: quote.symbol,
+            quote: {
+              symbol: quote.symbol,
+              lastDone: new Decimal(quote.price),
+              prevClose: new Decimal(quote.previousClose),
+              timestamp: new Date(quote.timestampMs),
+            },
+          })),
+        );
+      },
+      seedWarrants: (monitorSymbol, warrants) => {
+        context.seedWarrantList(
+          monitorSymbol,
+          warrants.map((warrant) => ({
+            symbol: warrant.symbol,
+            name: warrant.name,
+            lastDone: new Decimal(warrant.price),
+            callPrice: new Decimal(warrant.callPrice),
+            toCallPrice: new Decimal(warrant.toCallPrice),
+            turnover: new Decimal(warrant.turnover),
+            warrantType: warrant.direction === 'BULL' ? WarrantType.Bull : WarrantType.Bear,
+            status: WarrantStatus.Normal,
+          })),
+        );
+      },
+      pauseFirstRealtimeQuote: () => {
+        if (armedRealtimeQuoteGate !== null)
+          throw new Error('market fixture realtime quote gate already armed');
+
+        const entered = Promise.withResolvers<undefined>();
+        const released = Promise.withResolvers<undefined>();
+        armedRealtimeQuoteGate = {
+          entered: () => {
+            entered.resolve();
+          },
+          released: released.promise,
+        };
+        return {
+          entered: entered.promise,
+          release: () => {
+            released.resolve();
+          },
+        };
+      },
+      readSymbolCalls: (method) =>
+        context.getCalls(method).map((call, index) => {
+          const first = call.args[0];
+          if (typeof first === 'string') return [first];
+
+          if (isSymbolList(first)) return first;
+
+          throw new TypeError(
+            `[marketFixture] ${method} call #${index} first argument is neither a symbol string nor a symbol string list`,
+          );
+        }),
       seedCandlesticks: (symbol, period, candles) => {
         context.seedCandlesticks(
           symbol,

@@ -29,7 +29,7 @@ import {
   createTradeRuntimeDouble,
   createWarrantDistanceInfoDouble,
 } from '../helpers/testDoubles.js';
-import { createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
+import { createHarness } from '../strategies/intradayRegression/runtimeFixtures.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const T = Date.parse('2026-02-16T02:00:00.000Z');

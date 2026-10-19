@@ -28,6 +28,8 @@
 - `src/core/strategy/intradayRegression/index.ts`：候选生成还依赖席位与卖出初始买单事实，且内部绑定实盘采样和定时器。
 - `src/main/businessEventProgram/index.ts`：实盘具有 latest-only 合并与观察时间语义，不适合作为本离散模型的直接驱动器。
 
+> **路径基线说明（策略布局迁移后）：**本节引用的是 P3F 前的 `src/core/strategy/intradayRegression/` 基线路径。策略功能内聚后当前落点为 `src/strategies/intradayRegression/`：`config.json` → 同目录 `config.json`，指标编排/数学 → `indicators/`，条件求值与延迟模式判断 → `signalRules.ts`/`profile/`，验证与样本 → `verification/`，实例/pending/展示 → `index.ts`、`verification/pendingVerification.ts`、`display.ts`；`businessEventProgram` 现为 `src/runtime/businessEventProgram/`。本节结论仍作为回测设计依据，具体文件与行号在实施前按当前实现重新核对。
+
 重要区别：实盘缓存保留 200 根，不意味着每次从最近 200 根重新初始化所有递归指标。实盘 runtime 正常增量推进时，EMA、RSI 平滑状态、KDJ、ADX 等可能保留更早历史的影响。用户要求的严格滚动 200 根模型应每个窗口独立重算，不得宣称与实盘增量模型完全一致。
 
 ## 4. 业务决策与时段边界

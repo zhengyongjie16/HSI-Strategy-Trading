@@ -3,7 +3,7 @@ import { createLoggerDouble } from '../../helpers/testDoubles.js';
 
 /** 真实策略 + 宿主 emitter + 席位取消：验证私有 pending 跨异步回流而不是旧 verifier mock。 */
 import { describe, expect, it } from 'bun:test';
-import { prepareFixture } from '../strategy/intradayRegression/fixtures.js';
+import { prepareFixture } from '../../strategies/intradayRegression/runtimeFixtures.js';
 import { createSeatRuntimeCleanupDispatcher } from '../../../src/runtime/seatRuntimeCleanupDispatcher/index.js';
 import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';

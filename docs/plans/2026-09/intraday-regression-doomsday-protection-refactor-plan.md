@@ -175,6 +175,8 @@ src/core/strategy/intradayRegression/
     └── utils.ts
 ```
 
+> **策略落点更新：**策略目录现为 `src/strategies/intradayRegression/`，公共契约对应 `src/types/strategy.ts`；若实施本末日保护拆分，新增模块应放在该策略目录内（如 `doomsdayProtection/`），不得回到 `src/core/strategy/` 或按技术层另建策略根。替代依据见 `docs/plans/strategy-module-cohesion-refactoring-plan.md`；本文其余交易、重试与生命周期语义不变。
+
 文件可按真实职责合并，但不能把所有新逻辑堆进已有 K 线处理函数。内部模块通过参数接收依赖，运行时类型和工具按仓库 TypeScript 规范组织；共享固定常量仍遵循仓库常量位置规则，业务可调参数放 JSON。
 
 ### 5.2 公共策略契约

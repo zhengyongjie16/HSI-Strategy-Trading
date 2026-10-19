@@ -66,6 +66,8 @@ src/core/strategy/intradayRegression/
   ...                                      # DSL、采样、验证、显示等私有模块
 ```
 
+> **策略落点已被替代（后于本文实施）：**具体策略现统一在 `src/strategies/<策略目录>/`；公共端口在 `src/types/strategy.ts`，通用 ID/目录映射与普通交易准入规则在 `src/domain/strategy/`，选中加载与实例创建在 `src/app/startup/`。本文关于命名映射、单实例、免注册加载、source/dist 定位、生命周期与构建约束仍有效；上文 `src/core/strategy/...` 布局、以及“策略根每个一级子目录都是完整策略”的目录根改为 `src/strategies/`，替代依据见 `docs/plans/strategy-module-cohesion-refactoring-plan.md`。
+
 目录名按 camelCase，与严格 kebab-case ID 按 §3.3 双向对应；当前为 `intraday-regression → intradayRegression`。策略根每个一级子目录都必须是完整策略，不以缺入口为由跳过；公共内容放根级文件或根外中性模块。具体策略可按职责拆私有文件，不要求为每个概念新建目录。旧 `src/core/strategy/index.ts` 通用工厂在切换后删除，不保留转发入口；不创建原方案的 `src/config/strategy.ts`。
 
 以下内容必须位于具体目录：

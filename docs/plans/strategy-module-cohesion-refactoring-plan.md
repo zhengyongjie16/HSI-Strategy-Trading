@@ -1,9 +1,10 @@
 # 策略独立功能模块内聚重构方案
 
-> 状态：设计已确认，待实施；本文不是代码迁移完成报告。  
+> 状态：已实施并完成独立复核；落地与验收结果见 §2.4，未在该节记录的结果不视为通过。
+>
 > 已确认决策：具体策略统一放入 `src/strategies/<strategyDirectory>/`，策略私有逻辑不得继续按顶层技术层分散。  
 > 分析基线：`beta-V2` 提交 `c36cadb2d7c1a424d9998b7b9db20f01d78819f9`；对照 `develop` 提交 `6e239c8a128372bd9b2fb2d79464346792a5e81e`。分析时已通过远端引用核对两者；实施前须重新确认工作区和提交。  
-> 本次交付只新增方案文档，不修改生产代码、测试、架构规则或项目规范。方案中的勾选项均为后续实施任务。源码行号仅作为基线定位提示，以文件和符号为准。
+> 初版交付只新增方案文档，未修改生产代码、测试、架构规则或项目规范；随后实施按 §10 完成，落地与验收见 §2.4。源码行号仅作为基线定位提示，以文件和符号为准。
 
 ## 1. 目标、结论与非目标
 
@@ -21,7 +22,7 @@
 
 ### 1.2 已确认的根因
 
-当前日内回归策略有 31 个具体策略文件，分属五个根：
+当前日内回归策略有 31 个具体策略文件，分属五个根（分析基线；迁移后的现状与验证见 §2.4）：
 
 | 根位置 | 文件数 | 职责 |
 | --- | --: | --- |
@@ -125,6 +126,8 @@ await rename(nodePath.join(f.root, 'src'), nodePath.join(f.root, 'source removed
 
 Windows / Bun 1.3.14 下两次出现 `EPERM`。观测到两个 source smoke 已运行；本用例随后要求的无源码 dist smoke 未执行，不能计为通过。错误发生于已加载源码目录的重命名；具体文件句柄持有者尚未证实，不把推测写成已确认根因。
 
+> **实施阶段用户确认：**保留 source/dist smoke 的受控子进程隔离方案（进程结束后才重命名或移除临时 `src`，dist smoke 在新子进程中执行并要求原 `src` 不存在）；验收范围只限当前环境 Windows + Bun 1.4.2，不以旧 Bun 1.3.14 的 EPERM 复现作为通过条件；不宣称已查明旧版本 EPERM 的文件句柄根因。B1 是否通过只以统一验证中原行为断言的实际结果记录，实施过程中不预先写“已通过”。
+
 后续实施须优先修复测试隔离，不改生产行为：
 
 1. source smoke 在受控子进程中执行，进程结束后才重命名或移除临时工程的 `src`。
@@ -134,6 +137,44 @@ Windows / Bun 1.3.14 下两次出现 `EPERM`。观测到两个 source smoke 已�
 5. 如果隔离后仍失败，继续定位文件占用；不得用固定 sleep、任意重试、Windows skip、复制第二棵源码或保留 `src` 的方式假装完成无源码验证。
 
 B1 解决并通过原行为断言前，不得宣称构建基线或迁移验收全部通过。本次只记录该阻塞，不修改其测试实现。
+
+### 2.4 实施阶段验证记录
+
+本节只记录迁移完成后的实际结果；§2.2 的基线检查与 §2.3 的 EPERM 复现保留为历史证据，不改写。
+
+**基线与证据口径**
+
+- 验收对应 `beta-V2` HEAD `783daaca5a9b1cc525e9cdbafea6708312af9239`；初始工作区无用户改动，实施与验证期间未 checkout 或 commit。验证者早期一份 master 系报告属展示错误，已校正，不作为证据。
+- 验收日志保存在仓库外 `~/verify-final-2026/`；仓库内只保留本节记录，不新增日志资产。
+
+**迁移结果**
+
+- 生产文件 29 个 = 28 个 TS + 1 个 `config.json`，全部位于 `src/strategies/intradayRegression/`；旧四根及私有常量文件已删除，`src/domain/strategy/` 仅保留 `ordinarySignalGuard.ts`、`utils.ts`。
+- 私有测试 17 个文件位于 `tests/strategies/intradayRegression/`（13 个测试 + 4 个 fixture/类型辅助），按 §7.1 映射落地。
+- 26 个业务 TS 正文未变、JSON 同构，两组共五个类型声明合并一致，imports 等价：本次为纯移动加类型归并，没有业务正文变化。
+- 加载为单根 `src/strategies/` 的同目录 definition/config 校验；配置根参数、双根分支、re-export、wrapper 与 fallback 均已删除，旧同名 JSON 不能作为回退。
+- 公共契约 `src/types/strategy.ts` 与非策略宿主的交易端口无变更。
+- 旧路径有效 imports 为 0；其余命中均为负向用例、契约说明、历史基线证据或本方案迁移表，逐条分类通过。
+
+**门禁与冻结**
+
+- 私有 owner 改为单根，覆盖常量、类型与 JSON；补齐正反边界 fixture 与旧路径拒绝用例。
+- 有限静态门禁按标准库/平台声明身份识别环境与高精度时钟能力（模块 `fs`/`os`/`net`/`child_process` 等，成员 `process.env`、`globalThis.process`、`Date.now` 等），保留 `node:path`、`node:util`、纯 Logger 类型、显式 `Date` 输入与局部同名纯值等合法例。它是有限身份门禁，不是任意恶意插件沙箱：不承诺拦截刻意规避写法或任意间接数据流。
+- `tests/architecture/refactoring/baseline.json`、`baseline.ts`、`unresolved.json` 相对 HEAD 的 git diff 全为 0，历史审计额度未重采样、未清零；28 个目标 TS 全部实际进入扫描，JSON 资产由加载边界与真实构建验证。
+
+**验证结果（最终）**
+
+- 质量命令严格按序：`bun format` exit 0（96s）→ `bun lint` exit 0（83s）→ `bun type-check` exit 0（7.2s）。819 个文件指纹在 format 前、format 后、测试后相同，格式命令没有带入无关改动。
+- 全量 `bun test`（R2b）exit 0：3163 pass / 0 fail / 0 skip / 0 todo，314 个文件，19527 个 expect，331.71s（wall 332s），包含构建 4 项。该轮是唯一最终证据；中间轮次只作过程记录，不并入结论。
+- 架构门禁：503 pass / 0 fail / 0 skip，9 个文件，3849 个 expect（其中 freeze 207、eslint 82，合计 289）。
+- 构建：Windows + Bun 1.4.2 下，受控子进程隔离的 source/dist smoke、真实 clean + tsc、无源码产物加载均通过；B1 原行为断言通过（构建 4 项）。不宣称旧 Bun 1.3.14 的 EPERM 根因已查明或修复。
+- 定向轮次（G1 178、G2 108、G3 45、G5 build+helper 5）均 0 fail；此后仅四个架构门禁相关文件变更，已由最终全量重新覆盖，不以定向轮次代替最终数字。
+- `git diff --check` 与 `git diff HEAD --check` 均为 exit 0；无探针或测试子进程遗留。
+- 未执行真实券商 SDK 实盘测试，也未进行部署演练；本文不据此宣称这些能力。
+
+**用户额外授权的测试修复**
+
+`tests/integration/quoteRequestSnapshot.integration.test.ts`、`tests/infrastructure/longbridge/market/marketFixture.ts`、`tests/infrastructure/longbridge/market/types.ts` 的修复针对 HEAD 已存在的 SDK 测试边界问题，不是本次迁移引入；保留真实 `quoteClient` 与原有 2 个场景、42 个 expect，经独立复核通过。
 
 ## 3. 目标模块边界
 
@@ -329,7 +370,7 @@ dist/src/strategies/<name>/config.json
 - 选中目录和两个固定文件的类型、精确文件名、realpath 边界及 symlink/junction 检查保留。
 - 只导入选中 definition 一次、prepare 一次，不预加载其他策略或统一校验其业务配置。
 - 命名导出仍为 `strategyDefinition`，其 ID 必须与目录推导一致。
-- prepare/create 拒绝 Promise/thenable，异常保留阶段和 cause。
+- prepare/create 拒绝 Promise/thenable；prepare 阶段失败包装为带阶段标识、保留 cause 的错误，create 抛出的错误直接传播、不二次包装；create 另校验同步返回、身份与完整端口。
 - create 返回身份匹配的完整端口；继续先登记可用 destroy，再验证其余实例契约。
 - prepare/create 均在 SDK 接入前完成；不改变 app 启动顺序。
 
@@ -382,12 +423,12 @@ src/strategies/<directory>/... → owner = <directory>
 
 基线扫描器部分能力检查依赖 `src/domain/` 前缀，新目录不自动继承这些检查。必须把策略内部仍为纯计算的角色纳入相同强度的约束，而不是给整个 `strategies` 根原生 I/O 权限。
 
-当前纯角色包括：config/DSL、constants、signalRules、display、indicatorHelpers、indicators、profile、verification 的纯规则与样本存储。它们不直接访问文件、网络、环境、实际 clock/timer、logger 输出，也不调用 emitter。实例 `index.ts` 与 `verification/pendingVerification.ts` 可以通过注入依赖组织策略私有状态，但不得调用 ambient timer 或 SDK。
+当前纯角色包括：config/DSL、constants、signalRules、display、indicatorHelpers、indicators、profile、verification 的纯规则与样本存储。它们不直接访问文件、网络、环境、实际 clock/timer、logger 输出，也不调用 emitter 或 `StrategyDeps.onFatalError`。后者按真实公共契约的源文件、owner 和成员签名识别，不禁止同名局部纯函数或 type-only 契约。实例 `index.ts` 与 `verification/pendingVerification.ts` 可以通过注入依赖组织策略私有状态，但不得调用 ambient timer 或 SDK。
 
 实现以现有 AST/符号检查为基础，按策略相对文件角色定义，不按具体策略 ID 注册。角色分类采用以下确定规则：
 
 1. 除下面的精确例外外，策略内其他实现文件默认受纯角色约束。新命名的纯辅助模块自动受保护，不需要中央登记，也不能落入未分类的放行区。
-2. 精确相对路径 `definition.ts` 是装配入口，允许导入本策略配置和实例工厂；它不因此获得直接 I/O、原生 timer 或模块求值时启动运行行为的权限。
+2. 精确相对路径 `definition.ts` 是装配入口，允许导入本策略配置和实例工厂；它仍受纯能力约束，不因此获得 clock、scheduler、logger、emitter、onFatalError 注入调用、直接 I/O、原生 timer 或模块求值时启动运行行为的权限。
 3. 精确相对路径 `index.ts` 与 `verification/pendingVerification.ts` 是受控运行角色，可使用注入依赖。这里只匹配策略根下的实例 `index.ts`，不能把 `indicators/index.ts`、`profile/index.ts`、`verification/index.ts` 或整个 verification 目录放宽。
 4. 纯模块不能反向导入 definition、实例或 pending 调度实现；`types.ts` 仍只能承载类型，其 type-only 公共 scheduler/emitter 契约引用不授予运行能力。
 5. 上述相对路径约定适用于所有策略 ID，角色文件按需要实现，不要求无延迟策略创建空 pending 文件。新的状态协调先内聚在既有运行角色；若未来确实需要新的运行能力文件形态，应作为显式边界设计变更评估，不用策略 ID 白名单或任意文件默认放行解决。
@@ -533,7 +574,7 @@ src/strategies/<directory>/... → owner = <directory>
 
 > 跨模块共享常量继续集中在 `src/constants/`；具体策略私有规则常量放 `src/strategies/<name>/constants.ts`，不得被宿主或其他策略导入。
 
-不放宽其他模块常量规则，不因本次规划修改业务知识库中的交易规则。实际修改 skill 时还须遵循 writing-skills 的适用流程；本次仅在方案中列明，未修改该文件。
+不放宽其他模块常量规则，不因本次规划修改业务知识库中的交易规则。实际修改 skill 时须遵循当前环境可用的技能编写流程；本环境未提供 writing-skills 技能，不以缺少该技能阻塞，也不自行引入新技能。上述常量例外已同步到该 skill 的代码组织常量行。
 
 ### 9.2 与旧架构方案的关系
 
@@ -563,43 +604,43 @@ src/strategies/<directory>/... → owner = <directory>
 
 ### R0：确认基线、解决 B1、确定规则
 
-- [ ] 核对分支、提交和用户现有改动，不覆盖无关工作。
-- [ ] 解决 §2.3 的构建测试进程隔离阻塞，原 source/dist 行为断言全部通过。
-- [ ] 核对 31 文件清单、两组共五个类型声明归并、三个 fixture 重名处理。
-- [ ] 明确新根依赖矩阵、纯计算角色及私有常量规范例外。
-- [ ] 保持原算法配置基线，不引入新的业务失败语义。
+- [x] 核对分支、提交和用户现有改动，不覆盖无关工作（`beta-V2` HEAD `783daac…`；初始无用户改动，未 checkout/commit）。
+- [x] 解决 §2.3 的构建测试进程隔离阻塞，原 source/dist 行为断言全部通过（隔离方案已由用户确认，验收只限当前 Windows + Bun 1.4.2；构建 4 项通过，见 §2.4）。
+- [x] 核对 31 文件清单、两组共五个类型声明归并、三个 fixture 重名处理（落地为 29 = 28 TS + 1 JSON，见 §2.4）。
+- [x] 明确新根依赖矩阵、纯计算角色及私有常量规范例外（含有限 ambient 身份门禁，边界见 §2.4）。
+- [x] 保持原算法配置基线，不引入新的业务失败语义（业务 TS 正文与 JSON 等价，见 §2.4）。
 
 出口：真实构建基线不再有 B1，迁移清单和门禁调整范围可执行。若 B1 未解决，后续可继续分析，但不能通过最终验收。
 
 ### R1：完整功能迁移及加载闭合
 
-- [ ] 按 §4 迁移生产文件、归并类型，修正所有直接 imports。
-- [ ] definition 改为本策略相对配置与实例导入。
-- [ ] prepare/helper 改为单根同目录检查，删除配置根参数及双根分支。
-- [ ] 保持公共类型、通用 guard/ID helper、宿主和执行 owner 不动。
-- [ ] 按 §7 迁移测试、重命名 fixture 并修正集成消费者。
-- [ ] 修正源码/产物 fixture、工具数学叶子引用。
-- [ ] 删除旧具体策略文件，不留 re-export、wrapper、fallback 或旧策略根双读取。
+- [x] 按 §4 迁移生产文件、归并类型，修正所有直接 imports。
+- [x] definition 改为本策略相对配置与实例导入。
+- [x] prepare/helper 改为单根同目录检查，删除配置根参数及双根分支。
+- [x] 保持公共类型、通用 guard/ID helper、宿主和执行 owner 不动。
+- [x] 按 §7 迁移测试、重命名 fixture 并修正集成消费者。
+- [x] 修正源码/产物 fixture、工具数学叶子引用。
+- [x] 删除旧具体策略文件，不留 re-export、wrapper、fallback 或旧策略根双读取（有效 imports 为 0，见 §2.4）。
 
 出口：新布局的 source 加载、配置、策略行为和宿主集成通过，纯移动与类型归并以外没有业务正文变化。
 
 ### R2：架构门禁、构建和文档闭合
 
-- [ ] 私有 owner 改为单根，包含常量/JSON/类型，补齐正反边界 fixture。
-- [ ] 迁移纯计算能力约束，保持 SDK、金融精度、类型组织门禁覆盖。
-- [ ] 更新 selectedStrategyPath、fixture importer、source/dist 动态入口测试。
-- [ ] 用真实 clean + tsc 验证 JSON、增删策略、独立 schema 和无源码产物加载。
-- [ ] 更新规范、README、直接相关架构说明；保留历史冻结证据。
-- [ ] 对旧路径搜索结果逐条分类，清除实际消费边，不按字符串数量机械删历史。
+- [x] 私有 owner 改为单根，包含常量/JSON/类型，补齐正反边界 fixture。
+- [x] 迁移纯计算能力约束，保持 SDK、金融精度、类型组织门禁覆盖。
+- [x] 更新 selectedStrategyPath、fixture importer、source/dist 动态入口测试。
+- [x] 用真实 clean + tsc 验证 JSON、增删策略、独立 schema 和无源码产物加载（构建 4 项通过）。
+- [x] 更新规范、README、直接相关架构说明；保留历史冻结证据。
+- [x] 对旧路径搜索结果逐条分类，清除实际消费边，不按字符串数量机械删历史（分类结果见 §2.4）。
 
 出口：架构、构建、类型与相关文档一致，无新增白名单漏洞或弱化的测试。
 
 ### R3：最终验证及交付
 
-- [ ] 依次运行 `bun format` → `bun lint` → `bun type-check`，检查格式命令没有带入无关修改。
-- [ ] 完成 §11 的定向行为、架构、构建及完整测试验证。
-- [ ] 独立复审真实调用链、所有迁移 import、配置资产及残留目录。
-- [ ] 输出实际文件变更、验证命令和结果、未解决事项；未通过不宣告完成。
+- [x] 依次运行 `bun format` → `bun lint` → `bun type-check`，检查格式命令没有带入无关修改（均 exit 0；819 文件指纹前后一致，见 §2.4）。
+- [x] 完成 §11 的定向行为、架构、构建及完整测试验证（架构 503 pass；全量 3163 pass，见 §2.4）。
+- [x] 独立复审真实调用链、所有迁移 import、配置资产及残留目录（含用户额外授权的三个测试文件）。
+- [x] 输出实际文件变更、验证命令和结果、未解决事项；未通过不宣告完成（验收日志在仓库外 `~/verify-final-2026/`）。
 
 部署时先停止旧进程并完成清理，再完整构建部署并启动；不在线替换策略文件，不热重载。回滚使用完整已验证版本包，不在程序中保留旧布局兼容开关。
 
@@ -613,7 +654,7 @@ bun lint
 bun type-check
 ```
 
-这组命令用于实际代码实施。当前仅新增方案文档，不运行会重写全仓的 `bun format` 来伪造重构验证；当前文档单独做格式检查。
+这组命令用于实际代码实施，已按序执行，实际结果与 819 个文件指纹一致性见 §2.4。本次仅更新文档时，不重跑会重写全仓的 `bun format`；对本文只做 `prettier --check` 与必要的同文件 `--write`。
 
 ### 11.2 迁移后的定向验证
 
@@ -658,16 +699,16 @@ constants/strategy/intradayRegression
 
 只有下列条件全部满足，才算架构修复完成：
 
-- [ ] 具体策略实现和配置集中于 `src/strategies/<name>/`，测试集中于对应 tests 目录。
-- [ ] 同一策略只有一个实例/指标/样本/pending owner，宿主不持有第二份策略状态。
-- [ ] 新增独立 schema 策略无需修改宿主、加载器或策略 ID 白名单。
-- [ ] 公共契约和现有事件/生命周期连接不变，I01–I17 均有有效回归保护。
-- [ ] 宿主/跨策略导入私有常量、类型、JSON 与实现均被拒绝。
-- [ ] 纯计算、SDK 和金融门禁没有因为新根而漏检，冻结额度未放宽。
-- [ ] 两种 source/dist 布局、无源码产物加载、配置及增删策略构建全部通过，B1 已解决。
-- [ ] 旧实现及有效引用清理完毕，没有兼容层、转发出口和热更新路径。
-- [ ] 规范、架构说明和当前使用文档一致，历史证据被正确区分。
-- [ ] 必需质量命令和最终测试通过，实际结果已记录。
+- [x] 具体策略实现和配置集中于 `src/strategies/<name>/`，测试集中于对应 tests 目录（29 生产 / 17 测试文件）。
+- [x] 同一策略只有一个实例/指标/样本/pending owner，宿主不持有第二份策略状态。
+- [x] 新增独立 schema 策略无需修改宿主、加载器或策略 ID 白名单。
+- [x] 公共契约和现有事件/生命周期连接不变，I01–I17 均有有效回归保护（全量 3163 pass）。
+- [x] 宿主/跨策略导入私有常量、类型、JSON 与实现均被拒绝。
+- [x] 纯计算、SDK 和金融门禁没有因为新根而漏检，冻结额度未放宽（冻结三文件 diff 为 0）。
+- [x] 两种 source/dist 布局、无源码产物加载、配置及增删策略构建全部通过，B1 已解决（构建 4 项通过；不宣称旧 EPERM 根因）。
+- [x] 旧实现及有效引用清理完毕，没有兼容层、转发出口和热更新路径。
+- [x] 规范、架构说明和当前使用文档一致，历史证据被正确区分。
+- [x] 必需质量命令和最终测试通过，实际结果已记录（format/lint/type-check exit 0；全量 3163 pass，见 §2.4）。
 
 ## 12. 后续新增策略的最短操作流程
 

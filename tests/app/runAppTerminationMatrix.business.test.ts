@@ -1,4 +1,4 @@
-import { strategyDefinition } from '../../src/app/startup/strategyDefinitions/intradayRegression/definition.js';
+import { strategyDefinition } from '../../src/strategies/intradayRegression/definition.js';
 
 /** T20/T21：离线真实 post-gate owner 的 root 挂起终止矩阵，不访问账户或入口。 */
 import { describe, expect, it, mock } from 'bun:test';
@@ -14,8 +14,8 @@ import { executeStartupRebuild } from '../../src/application/tradingDayRebuild/s
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createBrokerClientFactoryDouble } from '../helpers/brokerClientFactoryDouble.js';
 import { createWarrantListCache } from '../../src/infrastructure/longbridge/market/warrantListCache/index.js';
-import { prepareFixture, createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
-import { configObject } from '../config/strategy/intradayRegression/fixtures.js';
+import { prepareFixture, createHarness } from '../strategies/intradayRegression/runtimeFixtures.js';
+import { configObject } from '../strategies/intradayRegression/configFixtures.js';
 import type {
   RunAppDeps,
   RuntimeAssemblyResources,

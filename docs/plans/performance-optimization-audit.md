@@ -1,6 +1,8 @@
 # 全仓性能分析与优化计划
 
 > 状态：只读审计结论与待实施计划，尚未实施优化。审计方式：6 个分区审查代理与 2 个独立复核代理协作；主代理负责调度、证据归并和结论汇总。证据边界：未运行性能基准、CPU/GC profile 或实盘测试。收益排序依据静态调用链、复杂度、触发频率和工程风险，不代表实测加速比例。行号为审计时位置，实施前应重新核对对应函数和真实调用链。
+>
+> **策略路径迁移注：**本文 `src/core/strategy/intradayRegression/**` 路径是审计基线的历史证据，不作为当前落点。策略功能内聚后按以下对应关系定位：指标编排/数学 → `src/strategies/intradayRegression/indicators/`，验证与样本 → `verification/`，条件求值与延迟模式 → `signalRules.ts`/`profile/`，实例、pending 与展示 → `index.ts`、`verification/pendingVerification.ts`、`display.ts`，配置 → 同目录 `config.json`。审计时行号与文件名不迁移、不重算；实施优化前以实际函数与调用链重新核对。
 
 ## 1. 总体结论
 

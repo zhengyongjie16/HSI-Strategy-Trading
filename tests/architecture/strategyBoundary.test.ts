@@ -34,6 +34,13 @@ function moduleReferences(file: string, source: string): ReadonlyArray<string> {
     }
 
     if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      ts.isStringLiteral(node.moduleReference.expression)
+    )
+      references.push(node.moduleReference.expression.text);
+
+    if (
       ts.isImportTypeNode(node) &&
       ts.isLiteralTypeNode(node.argument) &&
       ts.isStringLiteral(node.argument.literal)
@@ -54,21 +61,17 @@ function moduleReferences(file: string, source: string): ReadonlyArray<string> {
   }
   visit(ast);
   return references
-    .filter((reference) => reference.startsWith('.'))
+    .filter((reference) => reference.startsWith('.') || reference.startsWith('@/'))
     .map((reference) =>
-      path.posix
-        .normalize(path.posix.join(path.posix.dirname(file), reference))
-        .replace(/\.js$/, '.ts'),
+      (reference.startsWith('@/')
+        ? 'src/' + reference.slice(2)
+        : path.posix.normalize(path.posix.join(path.posix.dirname(file), reference))
+      ).replace(/\.js$/, '.ts'),
     );
 }
 
 function privateStrategyOwner(file: string): string | null {
-  for (const prefix of [
-    'src/domain/strategy/',
-    'src/runtime/strategy/',
-    'src/config/strategy/',
-    'src/app/startup/strategyDefinitions/',
-  ]) {
+  for (const prefix of ['src/strategies/']) {
     if (!file.startsWith(prefix)) continue;
 
     const tail = file.slice(prefix.length);
@@ -79,13 +82,8 @@ function privateStrategyOwner(file: string): string | null {
 }
 
 describe('single active strategy architecture', () => {
-  it('identifies same-strategy ownership across four roots without granting host access', () => {
-    for (const prefix of [
-      'src/domain/strategy/',
-      'src/runtime/strategy/',
-      'src/config/strategy/',
-      'src/app/startup/strategyDefinitions/',
-    ]) {
+  it('identifies same-strategy ownership under a single root without granting host access', () => {
+    for (const prefix of ['src/strategies/']) {
       expect(privateStrategyOwner(prefix + 'intradayRegression/index.ts')).toBe(
         'intradayRegression',
       );
@@ -114,6 +112,10 @@ describe('single active strategy architecture', () => {
     const oldRoots = [
       ['src', 'services', 'indicators'].join('/'),
       ['src', 'core', 'strategy'].join('/'),
+      'src/domain/strategy/intradayRegression',
+      'src/runtime/strategy/intradayRegression',
+      'src/config/strategy/intradayRegression',
+      'src/app/startup/strategyDefinitions/intradayRegression',
     ] as const;
     expect(
       await access(oldRoots[0]).then(
@@ -130,6 +132,14 @@ describe('single active strategy architecture', () => {
       )
     )
       expect(await listSources(oldRoots[1])).toEqual([]);
+
+    for (const retired of oldRoots.slice(2))
+      expect(
+        await access(retired).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(false);
 
     const violations: string[] = [];
     for (const root of ['src', 'tools', 'tests', 'mock']) {
@@ -159,6 +169,7 @@ describe('single active strategy architecture', () => {
       'export { probe } from "' + target + '";',
       'const probe = import("' + target + '");',
       'const probe = require("' + target + '");',
+      'import probe = require("' + target + '");',
     ])
       expect(moduleReferences('tools/probe.ts', source)).toEqual([
         path.posix.normalize(path.posix.join('tools', target)).replace(/\.js$/, '.ts'),
@@ -166,7 +177,7 @@ describe('single active strategy architecture', () => {
   });
 
   it('keeps actual analysis consumers on direct private mathematical leaves and types', async () => {
-    const indicators = 'src/domain/strategy/intradayRegression/indicators/';
+    const indicators = 'src/strategies/intradayRegression/indicators/';
     for (const [file, expected] of [
       [
         'tools/dailyIndicatorAnalysis/indicatorCalculators.ts',
@@ -188,7 +199,7 @@ describe('single active strategy architecture', () => {
   });
 
   it('keeps leaf evaluation declaration-only across runtime imports without executing SDK', async () => {
-    const indicators = 'src/domain/strategy/intradayRegression/indicators/';
+    const indicators = 'src/strategies/intradayRegression/indicators/';
     const leaves = ['ema', 'kdj', 'mfi', 'rsi', 'indicatorMath'].map(
       (name) => indicators + name + '.ts',
     );

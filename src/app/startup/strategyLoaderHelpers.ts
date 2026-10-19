@@ -53,10 +53,9 @@ async function assertStrategyFile(
   await assertStrategyNode(nodePath.join(directoryPath, name), 'file', fs, directoryPath);
 }
 
-/** 同时校验 app definition 与 config 资产布局，只读取选中项的元信息，不预加载其他策略。 */
+/** 在选中策略目录内同时校验 definition 与 config 资产，只读取选中项的元信息，不预加载其他策略。 */
 export async function inspectStrategyLocation(
   rootPath: string,
-  configRootPath: string,
   directoryName: string,
   extension: '.ts' | '.js',
   fs: StrategyFileSystem,
@@ -66,18 +65,7 @@ export async function inspectStrategyLocation(
   await assertStrategyNode(directoryPath, 'directory', fs, rootPath);
   const definitionName = `${STRATEGY_DEFINITION_FILE_NAME}${extension}`;
   await assertStrategyFile(directoryPath, definitionName, fs);
-
-  const configNames = await fs.readDirectory(configRootPath);
-  if (
-    !configNames.includes(directoryName) ||
-    configNames.filter((name) => name.toLowerCase() === directoryName.toLowerCase()).length !== 1
-  ) {
-    throw new Error(`[Strategy:metadata] 配置目录缺失或大小写冲突: ${directoryName}`);
-  }
-
-  const configDirectoryPath = nodePath.join(configRootPath, directoryName);
-  await assertStrategyNode(configDirectoryPath, 'directory', fs, configRootPath);
-  await assertStrategyFile(configDirectoryPath, STRATEGY_CONFIG_FILE_NAME, fs);
+  await assertStrategyFile(directoryPath, STRATEGY_CONFIG_FILE_NAME, fs);
 
   return {
     strategyId,

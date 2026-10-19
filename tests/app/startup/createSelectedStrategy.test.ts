@@ -95,6 +95,30 @@ describe('selected strategy cleanup boundary', () => {
     expect(created).toBe(1);
   });
 
+  it('propagates the original create failure unchanged', () => {
+    const cause = new Error('create failed');
+    const cleanup = createCleanup();
+    let caught: unknown;
+    try {
+      createSelectedStrategy(
+        {
+          strategyId: 'selected',
+          prepared: {
+            create: () => {
+              throw cause;
+            },
+          },
+        },
+        deps,
+        cleanup,
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(cause);
+  });
+
   for (const kind of [
     'wrongIdentity',
     'missingMethod',

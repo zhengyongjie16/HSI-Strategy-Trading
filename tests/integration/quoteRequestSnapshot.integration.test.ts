@@ -1,24 +1,21 @@
 /**
  * 行情请求快照竞态回归。
  * 连接真实 quoteClient、订阅 owner、SymbolRegistry、周期换标、普通 BUY 与 FIFO fatal 通道；
- * 在 SDK IO 边界控制数据和完成时序，验证另一方向合法退订不会破坏原请求。
+ * 经中性行情 fixture 在 SDK IO 边界播种报价/轮证并暂停首次 realtime 结果，验证另一方向合法退订不会破坏原请求。
  */
 import { describe, expect, it } from 'bun:test';
-import { Decimal, WarrantStatus, WarrantType } from 'longbridge';
 import { createWarrantCandidateSearch } from '../../src/application/autoSearch/candidateSearch.js';
 import { createOrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/index.js';
 import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
 import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import { validateSignalSeat } from '../../src/domain/seat/seatPolicy.js';
 import { getTradingMinutesSinceOpen } from '../../src/domain/tradingSession/index.js';
-import { createMarketDataClient } from '../../src/infrastructure/longbridge/market/quoteClient.js';
 import { createBuyProcessor } from '../../src/runtime/asyncProgram/buyProcessor/index.js';
 import { createBuyTaskQueue } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
 import { createQuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscriptionRuntime/index.js';
 import type { Quote } from '../../src/types/quote.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
-import { createQuoteContextMock } from '../../mock/longbridge/quoteContextMock.js';
 import { createSnapshotFixture } from '../helpers/accountPositionSnapshot.js';
 import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import {
@@ -33,7 +30,7 @@ import {
   createSignalDouble,
   createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
-import { createSdkConfigDouble } from '../infrastructure/longbridge/trade/sdkConfigDouble.js';
+import { createMarketFixture } from '../infrastructure/longbridge/market/marketFixture.js';
 
 describe('quote request metadata snapshot', () => {
   it.each(['cleared', 'rebound'] as const)(
@@ -71,65 +68,54 @@ describe('quote request metadata snapshot', () => {
         account: createAccountSnapshotDouble('100000'),
         positions: [],
       });
-      const quoteContext = createQuoteContextMock();
-      quoteContext.seedStaticInfo([
-        { symbol: 'HSI.HK', info: { symbol: 'HSI.HK', nameHk: '恒指' } },
-        { symbol: 'BULL.HK', info: { symbol: 'BULL.HK', nameHk: '入口牛证', lotSize: 100 } },
-        { symbol: 'BEAR.HK', info: { symbol: 'BEAR.HK', nameHk: '入口熊证', lotSize: 500 } },
+      const { client, controller } = await createMarketFixture();
+      const marketDataClient = {
+        ...client,
+        getQuotes: (symbols: Iterable<string>) => client.getQuotes([...symbols]),
+      };
+      const realtimeGate = controller.pauseFirstRealtimeQuote();
+      controller.seedQuotes([
+        {
+          symbol: 'HSI.HK',
+          name: '恒指',
+          price: '20000',
+          previousClose: '19800',
+          timestampMs: now.getTime(),
+        },
+        {
+          symbol: 'BULL.HK',
+          name: '入口牛证',
+          price: '0.9',
+          previousClose: '0.912345678901234567',
+          timestampMs: now.getTime(),
+          lotSize: 100,
+        },
+        {
+          symbol: 'BEAR.HK',
+          name: '入口熊证',
+          price: '0.8',
+          previousClose: '0.812345678901234567',
+          timestampMs: now.getTime(),
+          lotSize: 500,
+        },
       ]);
 
-      quoteContext.seedQuotes(
-        [
-          { symbol: 'HSI.HK', price: '20000', prevClose: '19800' },
-          { symbol: 'BULL.HK', price: '0.9', prevClose: '0.912345678901234567' },
-          { symbol: 'BEAR.HK', price: '0.8', prevClose: '0.812345678901234567' },
-        ].map(({ symbol, price, prevClose }) => ({
-          symbol,
-          quote: {
-            symbol,
-            lastDone: new Decimal(price),
-            prevClose: new Decimal(prevClose),
-            timestamp: now,
-          },
-        })),
-      );
-
-      quoteContext.seedWarrantList(
+      controller.seedWarrants(
         'HSI.HK',
         rebind
           ? [
               {
                 symbol: 'NEW_BEAR.HK',
                 name: '新熊证',
-                lastDone: new Decimal('9.9'),
-                callPrice: new Decimal('20100'),
-                toCallPrice: new Decimal('-0.004'),
-                turnover: new Decimal('10000000'),
-                warrantType: WarrantType.Bear,
-                status: WarrantStatus.Normal,
+                price: '9.9',
+                callPrice: '20100',
+                toCallPrice: '-0.004',
+                turnover: '10000000',
+                direction: 'BEAR',
               },
             ]
           : [],
       );
-      const entered = Promise.withResolvers<undefined>();
-      const release = Promise.withResolvers<undefined>();
-      let pauseRead = true;
-      const client = await createMarketDataClient({
-        config: createSdkConfigDouble(),
-        quoteContextFactory: () => ({
-          ...quoteContext,
-          realtimeQuote: async (symbols) => {
-            const quotes = await quoteContext.realtimeQuote(symbols);
-            if (pauseRead) {
-              pauseRead = false;
-              entered.resolve();
-              await release.promise;
-            }
-
-            return quotes;
-          },
-        }),
-      });
       const queue = createBuyTaskQueue({
         clock,
         diagnostics: createDiagnosticObserverDouble(),
@@ -162,7 +148,7 @@ describe('quote request metadata snapshot', () => {
         logger,
         tradingConfig: config,
         symbolRegistry,
-        marketDataClient: client,
+        marketDataClient,
         orderHoldRegistry: tradeRuntime.orderHoldRegistry,
         quoteSubscriptionState,
         snapshot,
@@ -174,13 +160,13 @@ describe('quote request metadata snapshot', () => {
         logger,
         monitorConfig: config.monitor,
         symbolRegistry,
-        marketDataClient: client,
+        marketDataClient,
         ...tradeRuntime,
         riskChecker,
         candidateSearch: createWarrantCandidateSearch({
           monitorSymbol: config.monitor.monitorSymbol,
           autoSearchConfig: config.monitor.autoSearchConfig,
-          marketDataClient: client,
+          marketDataClient,
           logger,
           getTradingMinutesSinceOpen,
         }),
@@ -199,9 +185,9 @@ describe('quote request metadata snapshot', () => {
         riskChecker,
         liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
         marketDataClient: {
-          ...client,
+          ...marketDataClient,
           getQuotes: async (symbols) => {
-            const quotes = await client.getQuotes(symbols);
+            const quotes = await marketDataClient.getQuotes(symbols);
             observedQuotes.push(quotes);
             return quotes;
           },
@@ -224,8 +210,8 @@ describe('quote request metadata snapshot', () => {
         subscriptions.start();
         processor.start();
         queue.push({ type: 'STRATEGY_BUY', data: signal });
-        await entered.promise;
-        expect(quoteContext.getCalls('realtimeQuote')[0]?.args[0]).toEqual([
+        await realtimeGate.entered;
+        expect(controller.readSymbolCalls('realtimeQuote')[0]).toEqual([
           'HSI.HK',
           'BULL.HK',
           'BEAR.HK',
@@ -237,7 +223,7 @@ describe('quote request metadata snapshot', () => {
           currentTime: now,
           canContinue: captureSwitchSeatAuthorization(symbolRegistry, 'SHORT'),
         });
-        expect(quoteContext.getCalls('warrantList')).toHaveLength(1);
+        expect(controller.readSymbolCalls('warrantList')).toHaveLength(1);
         if (rebind) {
           expect(switchResult.kind).toBe('WAIT');
           expect(symbolRegistry.getSeatState('SHORT')).toMatchObject({
@@ -266,17 +252,13 @@ describe('quote request metadata snapshot', () => {
         // 回归止于换绑交付；未运行激活 owner，ACTIVATING 新标的尚不获首次行情准入。
         await subscriptions.waitForAdmission([]);
         expect([...quoteSubscriptionState.allTradingSymbols]).toEqual(['HSI.HK', 'BULL.HK']);
-        expect(quoteContext.getCalls('unsubscribe').map((call) => call.args[0])).toEqual([
-          ['BEAR.HK'],
-        ]);
+        expect(controller.readSymbolCalls('unsubscribe')).toEqual([['BEAR.HK']]);
 
-        expect(quoteContext.getCalls('subscribe').map((call) => call.args[0])).toEqual([
-          ['HSI.HK', 'BULL.HK', 'BEAR.HK'],
-        ]);
+        expect(controller.readSymbolCalls('subscribe')).toEqual([['HSI.HK', 'BULL.HK', 'BEAR.HK']]);
 
         expect(symbolRegistry.getSeatState('LONG')).toBe(longSeat);
         expect(validateSignalSeat({ signal, symbolRegistry }).valid).toBeTrue();
-        release.resolve();
+        realtimeGate.release();
         await processor.stopAndDrain();
         expect(termination.getFatalState()).toEqual({ hasFatalError: false });
         expect(termination.isTerminated()).toBeFalse();
@@ -301,9 +283,9 @@ describe('quote request metadata snapshot', () => {
           lotSize: 500,
         });
         expect(client.getQuotes(['BEAR.HK'])).rejects.toThrow('未订阅');
-        expect(quoteContext.getCalls('realtimeQuote')).toHaveLength(1);
+        expect(controller.readSymbolCalls('realtimeQuote')).toHaveLength(1);
       } finally {
-        release.resolve();
+        realtimeGate.release();
         await processor.stopAndDrain();
         await subscriptions.stopAndDrain();
       }

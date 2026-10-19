@@ -29,7 +29,7 @@ import {
 } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import { createStrategyEmitter } from '../../src/runtime/businessEventProgram/emissionAdapter.js';
 import type { ExecutableSignal } from '../../src/types/signal.js';
-import { marketContext } from '../domain/strategy/intradayRegression/fixtures.js';
+import { marketContext } from '../strategies/intradayRegression/indicatorFixtures.js';
 import { captureSwitchSeatAuthorization } from '../helpers/seatTestUtils.js';
 import {
   createDailyLossTrackerDouble,
@@ -46,7 +46,7 @@ import {
   createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
 import { createRuntimeStates, waitUntil } from '../helpers/asyncProgram.js';
-import { createHarness, prepareFixture } from '../runtime/strategy/intradayRegression/fixtures.js';
+import { createHarness, prepareFixture } from '../strategies/intradayRegression/runtimeFixtures.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 /** 装配真实下单、订单终态和刷新流程；唯一可控阻塞位于账户服务的上游请求。 */

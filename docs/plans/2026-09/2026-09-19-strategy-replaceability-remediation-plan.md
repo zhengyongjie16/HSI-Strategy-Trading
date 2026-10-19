@@ -7,6 +7,8 @@
 > **已确认的 H/L/C 输入合同与坏柱政策**：KDJ 只读取 `high`/`low`/`close`。每个 H/L/C 仅在缺失字段、`null`、`undefined`、空白字符串、非数值文本或非有限数时拒绝；非空且可转换为有限数的数值字符串接受，零和负数接受，也不因 H/L/C 区间不一致拒绝；不增加正数或 `low <= close <= high` 约束。`open`、`volume` 不是 KDJ 必需字段。合法输入即使本轮整个窗口 `range === 0` 也推进窗口并保留历史平滑状态，但本轮 K/D/J 为 unavailable，不暴露旧值；恢复有效 range 后继续既有算法，且不取消已有 pending。无效输入和零 range 是不同分支。该政策已选定，不再存在业务确认阻塞；实现、测试和本地验收结果见第 4.4 节。
 >
 > 实施前已重新检查 HEAD、工作区和相关调用链；本记录不覆盖他人改动。
+>
+> **策略路径说明（后于本记录实施）：**本文生产/测试路径（`src/core/strategy/intradayRegression/**`、`tests/core/strategy/intradayRegression/**`）是实施时的基线证据。策略功能内聚后当前落点为 `src/strategies/intradayRegression/**` 与 `tests/strategies/intradayRegression/**`，公共契约在 `src/types/strategy.ts`；本文确认的 H/L/C/KDJ 输入政策、可用性传播、triggerTime 语义与验收事实不因路径迁移改变。
 
 ## 0. 当前状态、证据和限制
 

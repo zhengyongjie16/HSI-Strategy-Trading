@@ -41,7 +41,7 @@ import {
   createTradeRuntimeDouble,
 } from '../helpers/testDoubles.js';
 import { waitUntil } from '../helpers/asyncProgram.js';
-import { createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
+import { createHarness } from '../strategies/intradayRegression/runtimeFixtures.js';
 
 /** 不承担待测在途工作的处理器，提供生命周期必需的完整启停端口。 */
 function createIdleProcessor(): Processor {

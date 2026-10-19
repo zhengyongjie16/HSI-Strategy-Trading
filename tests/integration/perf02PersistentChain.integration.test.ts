@@ -29,7 +29,7 @@ import type { BusinessEventProgram } from '../../src/runtime/businessEventProgra
 import type { CandlestickUpdatedEvent, MarketDataClient } from '../../src/types/marketPorts.js';
 import type { TradingSignalStrategy } from '../../src/types/strategy.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
-import { configObject } from '../config/strategy/intradayRegression/fixtures.js';
+import { configObject } from '../strategies/intradayRegression/configFixtures.js';
 import {
   createLiquidationCooldownTrackerDouble,
   createLoggerDouble,
@@ -44,7 +44,7 @@ import type {
 } from '../infrastructure/longbridge/market/types.js';
 import { createEventHarness, monitorConfig } from '../runtime/businessEventProgram/fixtures.js';
 import type { EventHarness } from '../runtime/businessEventProgram/types.js';
-import { prepareFixture } from '../runtime/strategy/intradayRegression/fixtures.js';
+import { prepareFixture } from '../strategies/intradayRegression/runtimeFixtures.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const SYMBOL = 'HSI.HK';

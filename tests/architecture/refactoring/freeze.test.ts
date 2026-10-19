@@ -72,6 +72,55 @@ const program = createAuditProgram(root, files);
 const actual = scanProgram(root, program, files);
 
 describe('P6 frozen occurrence architecture', () => {
+  it('includes each of the 28 migrated TypeScript modules in the actual audit Program', () => {
+    const directory = 'src/strategies/intradayRegression/';
+    const expected = [
+      'config.ts',
+      'constants.ts',
+      'definition.ts',
+      'display.ts',
+      'dsl.ts',
+      'index.ts',
+      'indicatorHelpers/types.ts',
+      'indicatorHelpers/utils.ts',
+      'indicators/adx.ts',
+      'indicators/ema.ts',
+      'indicators/index.ts',
+      'indicators/indicatorMath.ts',
+      'indicators/kdj.ts',
+      'indicators/macd.ts',
+      'indicators/mfi.ts',
+      'indicators/psy.ts',
+      'indicators/rsi.ts',
+      'indicators/types.ts',
+      'profile/index.ts',
+      'profile/types.ts',
+      'profile/utils.ts',
+      'signalRules.ts',
+      'types.ts',
+      'verification/index.ts',
+      'verification/pendingVerification.ts',
+      'verification/sampleRules.ts',
+      'verification/sampleStore.ts',
+      'verification/types.ts',
+    ].map((file) => directory + file);
+    const strategyFiles = files
+      .map((file) => path.relative(root, file).replaceAll('\\', '/'))
+      .filter((file) => file.startsWith(directory));
+    strategyFiles.sort((left, right) => left.localeCompare(right));
+    expected.sort((left, right) => left.localeCompare(right));
+    expect(strategyFiles).toEqual(expected);
+    expect(expected).toHaveLength(28);
+    for (const file of expected) {
+      const source = program.getSourceFile(path.join(root, file));
+      expect(source).toBeDefined();
+      expect(source?.statements.length).toBeGreaterThan(0);
+      expect(program.getSyntacticDiagnostics(source)).toEqual([]);
+    }
+
+    expect(actual.violations.filter((row) => row.includes(directory))).toEqual([]);
+  });
+
   it.each([
     "import { readFileSync } from 'node:fs'; void readFileSync;",
     "import type { Stats } from 'node:fs'; export type Stat = Stats;",
@@ -107,6 +156,74 @@ describe('P6 frozen occurrence architecture', () => {
         "import { basename } from 'node:path'; import { inspect } from 'node:util'; export const name = inspect(basename('order')); const fetch = (value: string) => value; export const pure = fetch('order'); const setTimeout = (value: number) => value; export const count = setTimeout(1); const port = { fetch: () => 'order' }; void port.fetch();",
       'src/infrastructure/persistence/read.ts':
         "import { readFileSync } from 'node:fs'; export const read = readFileSync;",
+    });
+    expect(scan.violations).toEqual([]);
+  });
+
+  it.each([
+    'const { env } = process; export const value = env.ACTIVE_STRATEGY_ID;',
+    'const { env: environment } = process; export const value = environment.ACTIVE_STRATEGY_ID;',
+    'const { now } = Date; export const value = now();',
+    'const { now: clockNow } = Date; export const value = clockNow();',
+    'export const read = ({ now }: { readonly now: () => number } = Date): number => now();',
+    'export const read = ({ now: clockNow }: { readonly now: () => number } = Date): number => clockNow();',
+    "export const read = ({ ['now']: clockNow }: { readonly now: () => number } = Date): number => clockNow();",
+    'const { hrtime } = process; export const value = hrtime.bigint();',
+    "const { ['env']: environment } = process; export const value = environment.ACTIVE_STRATEGY_ID;",
+    'export const value = process[`hrtime`].bigint();',
+    'export const value = performance.now();',
+    'export const value = globalThis.performance.now();',
+    'export const value = process.hrtime.bigint();',
+    'export const value = process.uptime();',
+    'export const value = process.cwd();',
+    'export const value = process.argv.join(" ");',
+    "export const value = process.stdout.write('x');",
+    'export const value = process.exit(0);',
+    'export const swap = (next: NodeJS.Process) => { process = next; };',
+    'export const read = ({ env }: { readonly env: NodeJS.ProcessEnv } = process) => env;',
+    'export const stop = () => globalThis.process.exit(0);',
+    "export const log = () => globalThis.console.log('x');",
+    'export const clock = globalThis.performance;',
+    'const Clock = Date; export const value = new Clock();',
+    "import os from 'node:os'; export const value = os.platform();",
+    "import { platform } from 'os'; export const value = platform();",
+    "import type { CpuInfo } from 'node:os'; export type Input = CpuInfo;",
+  ])('rejects ambient environment and clock capabilities in every strategy role: %s', (source) => {
+    const roles = [
+      'newMath.ts',
+      'index.ts',
+      'definition.ts',
+      'verification/pendingVerification.ts',
+    ];
+    const scan = fixture(
+      Object.fromEntries(roles.map((role) => [`src/strategies/newAlpha/${role}`, source])),
+    );
+    for (const role of roles)
+      expect(
+        scan.violations.some(
+          (key) =>
+            key.includes(`src/strategies/newAlpha/${role}`) && key.includes('DOMAIN_DIRECT_IO'),
+        ),
+      ).toBe(true);
+  });
+
+  it('allows local direct parameter defaults and explicit Date in every strategy role', () => {
+    const source =
+      "export const read = ({ now }: { readonly now: () => number } = { now: (): number => 1 }): number => now(); export const renamed = ({ now: clockNow }: { readonly now: () => number } = { now: (): number => 1 }): number => clockNow(); export const computed = ({ ['now']: clockNow }: { readonly now: () => number } = { now: (): number => 1 }): number => clockNow(); export const date = (value: Date): Date => new Date(value);";
+    const scan = fixture(
+      Object.fromEntries(
+        ['newMath.ts', 'definition.ts', 'index.ts', 'verification/pendingVerification.ts'].map(
+          (role) => [`src/strategies/newAlpha/${role}`, source],
+        ),
+      ),
+    );
+    expect(scan.violations).toEqual([]);
+  });
+
+  it('allows standard-library helpers, explicit Date, type references and local names in strategies', () => {
+    const scan = fixture({
+      'src/strategies/newAlpha/newMath.ts':
+        "import { basename } from 'node:path'; import { inspect } from 'node:util'; const now = () => 1; const env = { ACTIVE_STRATEGY_ID: 'x' }; const performance = { now: () => 1 }; const process = { env: { ACTIVE_STRATEGY_ID: 'x' }, hrtime: { bigint: () => 1n }, uptime: () => 1 }; const Clock = Date; const { now: aliasNow } = { now: () => 2 }; const { env: localEnv } = { env: 'x' }; const { ['now']: computedNow } = { now: () => 3 }; export const value = [basename('x'), inspect(1), now(), env.ACTIVE_STRATEGY_ID, performance.now(), process.env.ACTIVE_STRATEGY_ID, process.hrtime.bigint(), process.uptime(), process[`uptime`](), aliasNow(), computedNow(), localEnv, new Clock(1), new Date(1), Date.parse('2024-01-01T00:00:00Z')]; export type Input = { at: Date; env: NodeJS.ProcessEnv; ctor: DateConstructor; local: typeof now };",
     });
     expect(scan.violations).toEqual([]);
   });
@@ -581,14 +698,48 @@ describe('P6 frozen occurrence architecture', () => {
         real + '\nexport const bypass = (href: string) => import(href);',
     });
     expect(injected.violations.filter((key) => key.includes('NONLITERAL'))).toHaveLength(1);
-    const unguarded = fixture({
-      'tests/helpers/importFixtureModule.ts': real.replace(
-        "url.protocol !== 'file:'",
-        "url.protocol === 'file:'",
-      ),
-    });
-    expect(unguarded.violations.some((key) => key.includes('NONLITERAL'))).toBeTrue();
-  });
+    for (const [before, after] of [
+      ["url.protocol !== 'file:'", "url.protocol === 'file:'"],
+      ["url.search !== ''", 'false'],
+      ["url.hash !== ''", 'false'],
+      ['!relative.startsWith(layout)', 'false'],
+      ['!relative.endsWith(extension)', 'false'],
+      ['(!entries.has(entry) && !definition)', 'false'],
+      ['realpath(root)', 'Promise.resolve(root)'],
+      ['realpath(fileURLToPath(url))', 'Promise.resolve(fileURLToPath(url))'],
+      [String.raw`/^strategies\/[a-z][a-zA-Z0-9]*\/definition$/`, '/.*/'],
+      ["'domain/seat/symbolRegistry'", "'strategies/arbitrary/index'"],
+    ] as const) {
+      expect(real.includes(before)).toBe(true);
+      const unguarded = fixture({
+        'tests/helpers/importFixtureModule.ts': real.replace(before, after),
+      });
+      expect(unguarded.violations.some((key) => key.includes('NONLITERAL'))).toBeTrue();
+    }
+
+    const entryList = /const entries = new Set\(\[([\s\S]*?)\]\)/.exec(real)?.[1];
+    expect(entryList).toBeDefined();
+    const entries = entryList?.match(/'[^']+'/g) ?? [];
+    expect(entries).toHaveLength(7);
+    for (const [members, allowed] of [
+      [[...entries.slice(1), entries[0]], true],
+      [entries.slice(1), false],
+      [[...entries, "'strategies/arbitrary/index'"], false],
+      [[...entries.slice(1), entries[1]], false],
+      [[...entries, entries[0]], false],
+    ] as const) {
+      const mutated = fixture({
+        'tests/helpers/importFixtureModule.ts': real.replace(
+          `const entries = new Set([${entryList}])`,
+          `const entries = new Set([${members.join(',')}])`,
+        ),
+      });
+      expect(mutated.violations.some((key) => key.includes('NONLITERAL'))).toBe(!allowed);
+    }
+
+    const relocated = fixture({ 'tests/build/strategyReplaceabilitySmoke.ts': real });
+    expect(relocated.violations.some((key) => key.includes('NONLITERAL'))).toBeTrue();
+  }, 20_000);
 
   it.each([
     ['src/application/probe.ts', 'TradeRuntime'],
@@ -1362,7 +1513,7 @@ describe('P6 frozen occurrence architecture', () => {
   it('constrains selected strategy entry paths in both source and compiled layouts', () => {
     for (const compiled of [false, true]) {
       const prefix = compiled ? 'dist/src' : 'src';
-      const directory = `${prefix}/app/startup/strategyDefinitions`;
+      const directory = `${prefix}/strategies`;
       const extension = compiled ? 'js' : 'ts';
       expect(
         selectedStrategyPath(
@@ -1393,6 +1544,8 @@ describe('P6 frozen occurrence architecture', () => {
 
     for (const directory of [
       'src/core/strategy',
+      'src/app/startup/strategyDefinitions',
+      'dist/src/app/startup/strategyDefinitions',
       'dist/core/strategy',
       'dist/app/startup/strategyDefinitions',
       'src/domain/strategy',

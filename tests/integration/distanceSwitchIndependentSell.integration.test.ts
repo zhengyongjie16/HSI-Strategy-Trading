@@ -30,7 +30,7 @@ import {
   createRiskCheckerDouble,
   createWarrantDistanceInfoDouble,
 } from '../helpers/testDoubles.js';
-import { createHarness } from '../runtime/strategy/intradayRegression/fixtures.js';
+import { createHarness } from '../strategies/intradayRegression/runtimeFixtures.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 

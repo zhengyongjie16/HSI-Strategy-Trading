@@ -1,6 +1,6 @@
 /**
  * 非字面量 selected-strategy 路径保护：执行真实准备器，但只注入元信息/模块对象。
- * 覆盖 definition/config 分根、源码与 compiled 布局、越界、链接和大小写，不求值策略或 SDK。
+ * 覆盖 definition/config 同根、源码与 compiled 布局、越界、链接和大小写，不求值策略或 SDK。
  */
 import path from 'node:path';
 import os from 'node:os';
@@ -24,13 +24,12 @@ function loaderFixture(
   const root = path.join(os.tmpdir(), 'hsi-static-strategy-fixture');
   const prefix = compiled ? 'dist/src' : 'src';
   const extension = compiled ? 'js' : 'ts';
-  const strategyRoot = path.join(root, prefix, 'app/startup/strategyDefinitions');
-  const configRoot = path.join(root, prefix, 'config/strategy');
+  const strategyRoot = path.join(root, prefix, 'strategies');
   const owner = path.join(strategyRoot, 'intradayRegression');
-  const configOwner = path.join(configRoot, 'intradayRegression');
+
   const definition = path.join(owner, `definition.${extension}`);
-  const config = path.join(configOwner, 'config.json');
-  const directories = new Set([strategyRoot, configRoot, owner, configOwner]);
+  const config = path.join(owner, 'config.json');
+  const directories = new Set([strategyRoot, owner]);
   const loaderModuleHref = pathToFileURL(
     path.join(root, prefix, `app/startup/prepareStrategy.${extension}`),
   ).href;
@@ -47,14 +46,13 @@ function loaderFixture(
             ? ['intradayRegression', 'IntradayRegression']
             : ['intradayRegression'];
 
-        if (directory === configRoot)
+        if (directory === owner) {
+          if (mode === 'missingConfig') return [`definition.${extension}`];
+
           return mode === 'configCase'
-            ? ['intradayRegression', 'IntradayRegression']
-            : ['intradayRegression'];
-
-        if (directory === owner) return [`definition.${extension}`];
-
-        if (directory === configOwner) return mode === 'missingConfig' ? [] : ['config.json'];
+            ? [`definition.${extension}`, 'config.json', 'Config.json']
+            : [`definition.${extension}`, 'config.json'];
+        }
 
         return [];
       },
@@ -89,7 +87,7 @@ function loaderFixture(
 
 describe('selected dynamic strategy boundary', () => {
   it.each([false, true])(
-    'imports and prepares only the selected definition with separate config (%s)',
+    'imports and prepares only the selected definition with colocated config (%s)',
     async (compiled) => {
       const probe = loaderFixture(compiled, 'valid');
       await prepareStrategy({ env: { ACTIVE_STRATEGY_ID: 'intraday-regression' } }, probe.deps);

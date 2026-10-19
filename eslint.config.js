@@ -1,4 +1,5 @@
 import path from 'node:path';
+import ts from 'typescript';
 import { defineConfig } from 'eslint/config';
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
@@ -59,17 +60,13 @@ const strategyPrivateBoundaryRule = {
       privateStrategy: '宿主/公共模块不得导入私有策略，策略之间也不得相互导入。',
       selectedLoaderOnly:
         '非字面量动态 import 仅允许 runAppDeps 的 selected-strategy importModule 能力。',
+      pureRole: '纯策略模块不得反向依赖装配或受控运行实现。',
     },
   },
   create(context) {
     const filename = getNormalizedFilename(context);
     if (!isSrcFile(filename)) return {};
-    const strategyRoots = [
-      '/src/domain/strategy/',
-      '/src/runtime/strategy/',
-      '/src/config/strategy/',
-      '/src/app/startup/strategyDefinitions/',
-    ];
+    const strategyRoots = ['/src/strategies/'];
 
     function strategyDirectory(file) {
       for (const root of strategyRoots) {
@@ -86,7 +83,28 @@ const strategyPrivateBoundaryRule = {
       const property = callback?.parent;
       const object = property?.parent;
       const call = object?.parent;
+      const services = context.sourceCode.parserServices;
+      const callee =
+        call?.type === 'CallExpression'
+          ? services.esTreeNodeToTSNodeMap.get(call.callee)
+          : undefined;
+      const checker = services.program.getTypeChecker();
+      const binding = callee === undefined ? undefined : checker.getSymbolAtLocation(callee);
+      const actual =
+        binding && (binding.flags & ts.SymbolFlags.Alias) !== 0
+          ? checker.getAliasedSymbol(binding)
+          : binding;
+      const selectedPreparation = actual?.declarations?.some(
+        (declaration) =>
+          declaration
+            .getSourceFile()
+            .fileName.replaceAll('\\', '/')
+            .endsWith('/src/app/startup/prepareStrategy.ts') &&
+          ts.isFunctionDeclaration(declaration) &&
+          declaration.name?.text === 'prepareStrategy',
+      );
       return (
+        selectedPreparation &&
         callback?.type === 'ArrowFunctionExpression' &&
         callback.body === node &&
         callback.params.length === 1 &&
@@ -108,10 +126,18 @@ const strategyPrivateBoundaryRule = {
     }
 
     function check(node, source) {
-      if (typeof source?.value !== 'string' || !source.value.startsWith('.')) return;
-      const target = path.posix.normalize(
-        path.posix.join(path.posix.dirname(filename), source.value),
-      );
+      if (typeof source?.value !== 'string') return;
+      const specifier = source.value.split(/[?#]/)[0];
+      const target = specifier.startsWith('@/')
+        ? filename.slice(0, filename.indexOf('/src/')) + '/src/' + specifier.slice(2)
+        : specifier.startsWith('.')
+          ? path.posix.normalize(path.posix.join(path.posix.dirname(filename), specifier))
+          : specifier;
+      if (
+        strategyFileRole(filename) === 'pure' &&
+        ['definition', 'runtime'].includes(strategyFileRole(target))
+      )
+        reportNode(context, node, 'pureRole');
       const targetDirectory = strategyDirectory(target);
       if (targetDirectory === undefined) return;
       if (strategyDirectory(filename) === targetDirectory) return;
@@ -138,6 +164,258 @@ const strategyPrivateBoundaryRule = {
       TSImportType(node) {
         check(node, node.source);
       },
+      TSImportEqualsDeclaration(node) {
+        if (node.moduleReference.type === 'TSExternalModuleReference')
+          check(node, node.moduleReference.expression);
+      },
+      CallExpression(node) {
+        if (node.callee.type !== 'Identifier' || node.callee.name !== 'require') return;
+        if (typeof node.arguments[0]?.value !== 'string')
+          reportNode(context, node, 'selectedLoaderOnly');
+        else check(node, node.arguments[0]);
+      },
+    };
+  },
+};
+
+function strategyFileRole(filename) {
+  const role = /\/src\/strategies\/[^/]+\/(.+)$/.exec(filename)?.[1]?.replace(/\.js$/, '.ts');
+  if (role === undefined) return undefined;
+  if (role === 'definition.ts') return 'definition';
+  return role === 'index.ts' || role === 'verification/pendingVerification.ts' ? 'runtime' : 'pure';
+}
+
+/**
+ * 有限能力成员身份：仅标准库/平台声明中的真实环境与高精度时钟成员。
+ * 以 owner 接口、成员名与声明来源三重身份识别，不按 env/now 等拼写全局禁用。
+ */
+const ambientCapabilityMembers = {
+  Process: ['env', 'hrtime', 'uptime'],
+  DateConstructor: ['now'],
+  Performance: ['now'],
+};
+
+/** 策略角色规则复用真实 TS 签名身份，不以成员名猜测注入能力。 */
+const strategyCapabilitiesRule = {
+  meta: {
+    type: 'problem',
+    schema: [],
+    messages: {
+      ambient: '所有策略角色禁止直接 I/O、环境、原生时间/调度和 SDK。',
+      injected:
+        '纯策略与 definition 角色不得调用 clock、scheduler、logger、emitter 或 onFatalError 注入能力。',
+      evaluation: 'definition 模块求值不得启动运行；仅允许声明及 Object.freeze 装配。',
+    },
+  },
+  create(context) {
+    const role = strategyFileRole(getNormalizedFilename(context));
+    if (role === undefined) return {};
+    const services = context.sourceCode.parserServices;
+    const checker = services.program.getTypeChecker();
+    const sourcePath = (node) => node.getSourceFile().fileName.replaceAll('\\', '/');
+    const symbol = (node) => {
+      const found = checker.getSymbolAtLocation(node);
+      return found && (found.flags & ts.SymbolFlags.Alias) !== 0
+        ? checker.getAliasedSymbol(found)
+        : found;
+    };
+    const tsNode = (node) => services.esTreeNodeToTSNodeMap.get(node);
+    const ambientSymbol = (node) =>
+      symbol(tsNode(node))?.declarations?.some(
+        (declaration) =>
+          declaration.getSourceFile().isDeclarationFile &&
+          /\/node_modules\//.test(sourcePath(declaration)),
+      );
+    const typePosition = (node) => {
+      for (let parent = node.parent; parent && parent.type !== 'Program'; parent = parent.parent)
+        if (
+          parent.type.startsWith('TS') &&
+          !['TSAsExpression', 'TSNonNullExpression', 'TSSatisfiesExpression'].includes(parent.type)
+        )
+          return true;
+      return false;
+    };
+    const ambientSource = (declaration) =>
+      declaration.getSourceFile().isDeclarationFile &&
+      /\/node_modules\/(?:@types\/node|bun-types|typescript\/lib)\//.test(sourcePath(declaration));
+    const literalName = (value) => {
+      if (value?.type === 'Literal')
+        return typeof value.value === 'string' ? value.value : undefined;
+      if (value?.type === 'TemplateLiteral' && value.expressions.length === 0)
+        return value.quasis[0]?.value.cooked ?? undefined;
+      return undefined;
+    };
+    const memberName = (node) =>
+      node.computed
+        ? literalName(node.property)
+        : (node.property.name ?? literalName(node.property));
+    const bindingName = (node) =>
+      node.computed ? literalName(node.key) : (node.key.name ?? literalName(node.key));
+    /** 属性符号身份必须同时命中 owner 接口、成员名与标准库/平台声明来源。 */
+    function ambientCapabilityMember(type, name) {
+      const property = typeof name === 'string' ? checker.getPropertyOfType(type, name) : undefined;
+      if (!property) return false;
+      return (
+        property.declarations?.some((declaration) => {
+          if (!ambientSource(declaration)) return false;
+          const owner = declaration.parent;
+          const ownerName =
+            owner &&
+            (ts.isInterfaceDeclaration(owner) ||
+              ts.isClassDeclaration(owner) ||
+              ts.isTypeAliasDeclaration(owner))
+              ? owner.name?.text
+              : undefined;
+          return (
+            ownerName !== undefined && ambientCapabilityMembers[ownerName]?.includes(name) === true
+          );
+        }) ?? false
+      );
+    }
+    /** 零参数 Date 构造身份来自标准库；别名 `const Clock = Date` 共享同一 DateConstructor 身份。 */
+    function ambientDateConstructor(expression) {
+      const found = checker.getTypeAtLocation(tsNode(expression)).getSymbol();
+      return (
+        found?.name === 'DateConstructor' &&
+        (found.declarations?.some(
+          (declaration) =>
+            declaration.getSourceFile().isDeclarationFile &&
+            /\/typescript\/lib\//.test(sourcePath(declaration)),
+        ) ??
+          false)
+      );
+    }
+    function moduleEdge(node, source, typeOnly) {
+      if (typeof source?.value !== 'string') return;
+      const value = source.value;
+      if (
+        /** os 与 fs/net 同属环境/文件系统边界；策略角色不按调用点区分读取用途。 */
+        /^(?:longbridge(?:\/|$)|(?:node:)?(?:fs(?:\/promises)?|https?|http2|net|tls|dgram|dns(?:\/promises)?|os|timers(?:\/promises)?|child_process|worker_threads|cluster|readline(?:\/promises)?|process|console)$)/.test(
+          value,
+        ) ||
+        (!typeOnly && /(?:utils|infrastructure)\/logger\//.test(value))
+      )
+        reportNode(context, node, 'ambient');
+    }
+    function call(node) {
+      const original = tsNode(node);
+      const declaration = checker.getResolvedSignature(original)?.declaration;
+      if (role !== 'runtime' && declaration) {
+        const file = sourcePath(declaration);
+        for (let parent = declaration; parent && !ts.isSourceFile(parent); parent = parent.parent) {
+          if (!(ts.isInterfaceDeclaration(parent) || ts.isTypeAliasDeclaration(parent))) continue;
+          const name = parent.name.text;
+          if (
+            (file.endsWith('/src/types/runtime.ts') &&
+              ['RuntimeClock', 'RuntimeScheduler'].includes(name)) ||
+            (file.endsWith('/src/types/strategy.ts') &&
+              (name === 'StrategyEmitter' ||
+                (name === 'StrategyDeps' &&
+                  ts.isTypeAliasDeclaration(parent) &&
+                  ts.isTypeLiteralNode(parent.type) &&
+                  ts.isPropertySignature(declaration.parent) &&
+                  declaration.parent.parent === parent.type &&
+                  ts.isIdentifier(declaration.parent.name) &&
+                  declaration.parent.name.text === 'onFatalError'))) ||
+            (file.endsWith('/src/types/logger.ts') && name === 'Logger')
+          ) {
+            reportNode(context, node, 'injected');
+            break;
+          }
+        }
+      }
+      if (node.arguments.length === 0 && ambientDateConstructor(node.callee))
+        reportNode(context, node, 'ambient');
+      if (role !== 'definition') return;
+      for (let parent = node.parent; parent; parent = parent.parent)
+        if (
+          ['ArrowFunctionExpression', 'FunctionExpression', 'FunctionDeclaration'].includes(
+            parent.type,
+          )
+        )
+          return;
+      if (
+        declaration &&
+        ts.isInterfaceDeclaration(declaration.parent) &&
+        declaration.parent.name.text === 'ObjectConstructor' &&
+        /\/typescript\/lib\//.test(sourcePath(declaration)) &&
+        node.callee.type === 'MemberExpression' &&
+        node.callee.property.name === 'freeze'
+      )
+        return;
+      reportNode(context, node, 'evaluation');
+    }
+    return {
+      ImportDeclaration(node) {
+        moduleEdge(
+          node,
+          node.source,
+          node.importKind === 'type' ||
+            (node.specifiers.length > 0 &&
+              node.specifiers.every((specifier) => specifier.importKind === 'type')),
+        );
+      },
+      ExportNamedDeclaration(node) {
+        moduleEdge(node, node.source, node.exportKind === 'type');
+      },
+      ExportAllDeclaration(node) {
+        moduleEdge(node, node.source, node.exportKind === 'type');
+      },
+      TSImportType(node) {
+        moduleEdge(node, node.source, true);
+      },
+      TSImportEqualsDeclaration(node) {
+        if (node.moduleReference.type === 'TSExternalModuleReference')
+          moduleEdge(node, node.moduleReference.expression, node.importKind === 'type');
+      },
+      ImportExpression(node) {
+        moduleEdge(node, node.source, false);
+      },
+      Identifier(node) {
+        if (
+          !typePosition(node) &&
+          /**
+           * 名单只收环境/原生调度/平台根对象；命中仍要求标准库声明身份，同名局部声明不受影响。
+           * 普通根访问 `globalThis.console`/`globalThis.process`/`globalThis.performance` 的属性名
+           * 解析到同一 ambient 声明，因此有限闭合这三类 dot 访问；计算字符串根访问不在闭合范围。
+           */
+          /^(?:process|fetch|setTimeout|setInterval|setImmediate|clearTimeout|clearInterval|clearImmediate|queueMicrotask|console|Bun|Deno|WebSocket|XMLHttpRequest|performance)$/.test(
+            node.name,
+          ) &&
+          ambientSymbol(node)
+        )
+          reportNode(context, node, 'ambient');
+      },
+      Property(node) {
+        if (node.parent.type !== 'ObjectPattern') return;
+        const declarator = node.parent.parent;
+        let initializer;
+        if (declarator.type === 'VariableDeclarator') initializer = declarator.init;
+        else if (
+          declarator.type === 'AssignmentPattern' &&
+          ['ArrowFunctionExpression', 'FunctionExpression', 'FunctionDeclaration'].includes(
+            declarator.parent.type,
+          ) &&
+          declarator.parent.params.includes(declarator)
+        )
+          initializer = declarator.right;
+        if (initializer == null) return;
+        const name = bindingName(node);
+        if (ambientCapabilityMember(checker.getTypeAtLocation(tsNode(initializer)), name))
+          reportNode(context, node, 'ambient');
+      },
+      MemberExpression(node) {
+        if (typePosition(node)) return;
+        const name = memberName(node);
+        if (ambientCapabilityMember(checker.getTypeAtLocation(tsNode(node.object)), name))
+          reportNode(context, node, 'ambient');
+      },
+      CallExpression(node) {
+        if (node.callee.type === 'Identifier' && node.callee.name === 'require')
+          moduleEdge(node, node.arguments[0], false);
+        call(node);
+      },
+      NewExpression: call,
     };
   },
 };
@@ -360,6 +638,7 @@ export default defineConfig(
         rules: {
           'no-import-alias': noImportAliasRule,
           'strategy-private-boundary': strategyPrivateBoundaryRule,
+          'strategy-capabilities': strategyCapabilitiesRule,
           'no-redundant-type-alias': redundantTypeAliasRule,
           'type-definitions-location': typeDefinitionsLocationRule,
           'types-file-only-types': typesFileOnlyTypesRule,
@@ -497,6 +776,7 @@ export default defineConfig(
       'prefer-arrow-callback': 'error',
       'local/no-import-alias': 'error',
       'local/strategy-private-boundary': 'error',
+      'local/strategy-capabilities': 'error',
       'local/no-redundant-type-alias': 'error',
       'local/type-definitions-location': 'error',
       'local/types-file-only-types': 'error',
@@ -555,6 +835,7 @@ export default defineConfig(
     },
   },
   ...Object.entries({
+    strategies: ['app', 'application', 'runtime', 'infrastructure', 'core', 'main', 'services'],
     application: ['app', 'runtime', 'infrastructure', 'core', 'main', 'services'],
     runtime: ['app', 'infrastructure', 'core', 'main', 'services'],
     domain: ['app', 'application', 'runtime', 'infrastructure', 'core', 'main', 'services'],
