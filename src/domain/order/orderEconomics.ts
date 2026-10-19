@@ -16,7 +16,8 @@ function cumulativeExecutionAmount(executedPrice: string | null, executedQuantit
 }
 
 /**
- * 完整累计量才确认真实执行时间；重复 tradeId 必须同载荷，revision 后流水不属于此次观察。
+ * 完整累计量才确认真实执行时间；重复 tradeId 必须同载荷。
+ * trade_done_at 与 order updated_at 是两个独立券商事实，不互相约束先后。
  * 保持原提前匹配行为：满足当前累计量后的额外流水不倒推此次观察的执行时间。
  */
 function matchingExecutionTime(
@@ -59,8 +60,6 @@ function matchingExecutionTime(
       throw new TypeError('[orderMapper] execution lacks positive quantity/price');
     }
 
-    if (order.updatedAtMs !== null && doneAt > order.updatedAtMs) continue;
-
     quantity += increment;
     if (!Number.isSafeInteger(quantity))
       throw new RangeError('[orderMapper] execution quantity overflow');
@@ -98,7 +97,6 @@ function compatibleTerminalExecutionPrice(
     confirmed.updatedAtMs <= 0 ||
     !Number.isSafeInteger(confirmed.executionTimeMs) ||
     confirmed.executionTimeMs <= 0 ||
-    confirmed.executionTimeMs > confirmed.updatedAtMs ||
     !['OPEN', 'TERMINAL'].includes(confirmed.phase) ||
     exactCompare(confirmed.cumulativeAmount, '0') <= 0
   )
@@ -118,7 +116,6 @@ function compatibleTerminalExecutionPrice(
       execution.quantity <= 0 ||
       !Number.isSafeInteger(execution.tradeDoneAtMs) ||
       execution.tradeDoneAtMs <= 0 ||
-      execution.tradeDoneAtMs > order.updatedAtMs ||
       exactCompare(execution.price, '0') <= 0
     )
       throw new TypeError('[orderMapper] incompatible terminal execution ledger');

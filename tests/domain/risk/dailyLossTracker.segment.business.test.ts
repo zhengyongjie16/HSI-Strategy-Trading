@@ -2694,4 +2694,46 @@ describe('dailyLossTracker segment flow', () => {
     }).not.toThrow();
     expect(tracker.getLossOffset('LONG')).toBe('0');
   });
+
+  it('admits an in-day fill later than its revision and skips a historical one', () => {
+    const tracker = createSegmentTracker();
+    const monitor = createMonitor();
+    const now = new Date('2026-03-03T02:00:00.000Z');
+    const inDayUpdatedAtMs = Date.parse('2026-03-03T01:00:00.000Z');
+    const historicalUpdatedAtMs = Date.parse('2026-03-02T01:00:00.000Z');
+    const inDayBuy = createExecutedOrder({
+      status: 'FILLED',
+      executionStatus: 'FILLED',
+      executionPhase: 'TERMINAL',
+      orderId: 'in-day-late-execution',
+      symbol: 'BULL.HK',
+      executionSide: 'BUY',
+      executedPrice: '10',
+      executedAmount: '100',
+      executedQuantity: 10,
+      updatedAtMs: inDayUpdatedAtMs,
+      executionTimeMs: inDayUpdatedAtMs + 1000,
+    });
+    const historicalSell = createExecutedOrder({
+      status: 'FILLED',
+      executionStatus: 'FILLED',
+      executionPhase: 'TERMINAL',
+      orderId: 'historical-late-execution',
+      symbol: 'BULL.HK',
+      executionSide: 'SELL',
+      executedPrice: '11',
+      executedAmount: '110',
+      executedQuantity: 10,
+      updatedAtMs: historicalUpdatedAtMs,
+      executionTimeMs: historicalUpdatedAtMs + 1000,
+    });
+
+    expect(() => {
+      tracker.recalculateFromAllOrders([inDayBuy, historicalSell], monitor, now);
+    }).not.toThrow();
+
+    expect(tracker.getExecutionTimeEvidence().map((item) => item.brokerOrderId)).toEqual([
+      'in-day-late-execution',
+    ]);
+  });
 });

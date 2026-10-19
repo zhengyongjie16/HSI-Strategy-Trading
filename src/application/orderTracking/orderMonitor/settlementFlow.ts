@@ -257,8 +257,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       params.executedQuantity < 0 ||
       exactCompare(params.executedAmount, '0') <= 0 ||
       params.executedTimeMs === null ||
-      params.orderUpdatedAtMs === null ||
-      params.executedTimeMs > params.orderUpdatedAtMs
+      params.orderUpdatedAtMs === null
     )
       throw new Error('[订单监控] 保护性终态原始执行事实不完整');
 

@@ -202,8 +202,7 @@ function parseBaseline(raw: unknown): ProtectiveLiquidationOrderBaselineV1 {
     lastExecutionTimeMs <= 0 ||
     typeof orderRevisionMs !== 'number' ||
     !Number.isFinite(orderRevisionMs) ||
-    orderRevisionMs <= 0 ||
-    lastExecutionTimeMs > orderRevisionMs
+    orderRevisionMs <= 0
   ) {
     throw new TypeError('[MixedTradeLogRepository] invalid order baseline');
   }
@@ -312,7 +311,6 @@ function parseExecutionProgressRecord(
     typeof orderRevisionMs !== 'number' ||
     !Number.isFinite(orderRevisionMs) ||
     orderRevisionMs <= 0 ||
-    lastExecutionTimeMs > orderRevisionMs ||
     typeof progressId !== 'string' ||
     progressId !==
       `v1:${tradingDayKey}:${monitorSymbol}:${direction}:${symbol}:${orderId}:` +

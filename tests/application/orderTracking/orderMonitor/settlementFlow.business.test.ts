@@ -286,42 +286,34 @@ describe('settlementFlow business flow', () => {
   }
 
   it.each(['FILLED', 'CANCELED', 'REJECTED'] as const)(
-    '保护性 SELL %s 的执行时间晚于 revision 时不得把 DailyLoss no-op 当作本地结算许可',
+    '保护性 SELL %s 的执行时间晚于 revision 仍按真实成交时间结算',
     (closedReason) => {
       const orderId = `PROTECTIVE-LATE-EXECUTION-${closedReason}`,
-        harness = createHarness();
+        harness = createHarness(),
+        executedTimeMs = PROTECTIVE_EXECUTION_TIME_MS + 1;
       harness.trackProtective(orderId);
-      const pending = harness.recorder.getPendingSellSnapshot();
       expect(() =>
-        harness.flow.settleOrder(
-          terminalParams(orderId, {
-            closedReason,
-            executedTimeMs: PROTECTIVE_EXECUTION_TIME_MS + 1,
-          }),
-        ),
-      ).toThrow(/正成交缺少可信金额或独立执行时间/);
-      assertNoCommittedEffects(harness, orderId);
-      expect(harness.persisted).toEqual([]);
-      expect(harness.recorder.getPendingSellSnapshot()).toEqual(pending);
-      expect(harness.runtime.trackedOrders.has(orderId)).toBe(true);
+        harness.flow.settleOrder(terminalParams(orderId, { closedReason, executedTimeMs })),
+      ).not.toThrow();
+      expect(harness.commits).toHaveLength(1);
+      expect(harness.commits[0]?.fact).toMatchObject({
+        brokerOrderId: orderId,
+        executionTimeMs: executedTimeMs,
+        updatedAtMs: PROTECTIVE_EXECUTION_TIME_MS,
+      });
     },
   );
 
-  it('保护性 SELL timeout prepare 的执行时间晚于 revision 时零副作用失败', () => {
+  it('保护性 SELL timeout prepare 的执行时间晚于 revision 时仍使用真实成交时间', () => {
     const orderId = 'PROTECTIVE-TIMEOUT-PREPARE-LATE-EXECUTION',
-      harness = createHarness();
+      harness = createHarness(),
+      executedTimeMs = PROTECTIVE_EXECUTION_TIME_MS + 1;
     harness.trackProtective(orderId);
-    expect(() =>
-      harness.flow.prepareProtectiveTerminalExecution(
-        terminalParams(orderId, {
-          closedReason: 'CANCELED',
-          executedTimeMs: PROTECTIVE_EXECUTION_TIME_MS + 1,
-        }),
-      ),
-    ).toThrow(/原始执行事实不完整/);
-    assertNoCommittedEffects(harness, orderId);
-    expect(harness.persisted).toEqual([]);
-    expect(harness.runtime.trackedOrders.has(orderId)).toBe(true);
+    const result = harness.flow.prepareProtectiveTerminalExecution(
+      terminalParams(orderId, { closedReason: 'CANCELED', executedTimeMs }),
+    );
+    expect(result).not.toBeNull();
+    expect(harness.commits[0]?.fact.executionTimeMs).toBe(executedTimeMs);
   });
 
   it('protective FILLED persists durable progress before any local settlement and retries the uncommitted fact', () => {

@@ -32,8 +32,7 @@ function assertExecutionPayload(fact: Omit<BrokerOrderExecutionFact, 'phase'>): 
     amountComparison <= 0 ||
     fact.executionTimeMs === null ||
     !Number.isSafeInteger(fact.executionTimeMs) ||
-    fact.executionTimeMs <= 0 ||
-    fact.executionTimeMs > fact.updatedAtMs
+    fact.executionTimeMs <= 0
   ) {
     throw new Error('[订单事实] 正成交缺少可信金额或独立执行时间');
   }

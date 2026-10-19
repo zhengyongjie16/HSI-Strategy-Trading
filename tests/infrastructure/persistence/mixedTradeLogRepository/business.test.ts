@@ -19,7 +19,6 @@ import { buildTradeLogPath } from '../../../../src/infrastructure/persistence/mi
 
 const tempDirs: string[] = [];
 const completionBoundaryMs = Date.parse('2026-07-11T10:00:00+08:00');
-const progressExecutionMs = Date.parse('2026-07-11T09:59:00+08:00');
 
 function createRootDir(): string {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixed-trade-log-'));
@@ -334,10 +333,23 @@ describe('mixedTradeLogRepository', () => {
     expect(() => {
       store.appendExecutionProgressIdempotent({
         ...toExecutionProgressInput(progress),
-        orderRevisionMs: progressExecutionMs - 1,
+        lastExecutionTimeMs: Number.NaN,
       });
     }).toThrow(/invalid V1 execution progress record/);
     expect(listDailyFiles(rootDir)).toEqual([]);
+  });
+
+  it('accepts durable progress whose execution time is after its order revision', () => {
+    const rootDir = createRootDir();
+    const store = createStore(rootDir);
+    const progress = createProgressRecord();
+
+    store.appendExecutionProgressIdempotent({
+      ...toExecutionProgressInput(progress),
+      lastExecutionTimeMs: progress.orderRevisionMs + 1000,
+    });
+
+    expect(store.loadExecutionProgressRecords(progress.tradingDayKey)).toHaveLength(1);
   });
 
   it('rejects old JSON files and same-day dual formats without altering either file', () => {

@@ -65,9 +65,6 @@ function assertRawExecution(
   )
     throw new Error('[订单监控] 正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision');
 
-  if (observed.executedTimeMs > observed.updatedAtMs)
-    throw new Error('[订单监控] 原始执行时间晚于 order revision');
-
   if (
     quantity > known.executedQuantity &&
     known.lastOrderUpdateAtMs !== null &&

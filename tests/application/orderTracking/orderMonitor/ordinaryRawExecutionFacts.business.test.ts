@@ -402,23 +402,24 @@ describe('orderMonitor 普通订单原始成交事实准入', () => {
     ).toThrow('[订单监控] 累计成交推进但 broker revision 倒退');
   });
 
-  it('累计成交增加的执行时间不得晚于同次 broker revision', () => {
+  it('累计成交增加的执行时间可以晚于同次 broker revision', () => {
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDINARY-EXECUTION-AFTER-REVISION',
       side: 'BUY',
     });
 
-    expect(() =>
-      mergeMonotonicOrderFact(trackedOrder, {
-        executedAmount: '40.8',
-        executionPhase: 'OPEN',
-        status: 'PARTIALLY_FILLED',
-        executedQuantity: 40,
-        executedPrice: '1.02',
-        executedTimeMs: KNOWN_FACT_TIME_MS + 1,
-        updatedAtMs: KNOWN_FACT_TIME_MS,
-      }),
-    ).toThrow('[订单监控] 原始执行时间晚于 order revision');
+    const merged = mergeMonotonicOrderFact(trackedOrder, {
+      executedAmount: '40.8',
+      executionPhase: 'OPEN',
+      status: 'PARTIALLY_FILLED',
+      executedQuantity: 40,
+      executedPrice: '1.02',
+      executedTimeMs: KNOWN_FACT_TIME_MS + 1,
+      updatedAtMs: KNOWN_FACT_TIME_MS,
+    });
+
+    expect(merged?.executedTimeMs).toBe(KNOWN_FACT_TIME_MS + 1);
+    expect(merged?.updatedAtMs).toBe(KNOWN_FACT_TIME_MS);
   });
 
   const assertOrdinaryRawFactWithoutExecutionTimeFailsClosed = async (

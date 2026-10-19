@@ -282,8 +282,7 @@ function createOrderFactFromFill(
     !Number.isSafeInteger(executedTime) ||
     executedTime <= 0 ||
     !Number.isSafeInteger(orderUpdatedAtMs) ||
-    orderUpdatedAtMs <= 0 ||
-    executedTime > orderUpdatedAtMs
+    orderUpdatedAtMs <= 0
   ) {
     return null;
   }
@@ -571,8 +570,7 @@ function collectOwnedInDayExecutionsForRecalculation(params: {
     if (
       order.executionTimeMs === null ||
       !Number.isSafeInteger(order.executionTimeMs) ||
-      order.executionTimeMs <= 0 ||
-      order.executionTimeMs > order.updatedAtMs
+      order.executionTimeMs <= 0
     ) {
       throw new Error(`[DailyLossTracker] 已成交订单缺少可信真实 execution time: ${order.orderId}`);
     }
@@ -957,8 +955,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
     if (
       cumulativeQuantity > fact.cumulativeQuantity ||
       exactCompare(cumulativeAmount, fact.cumulativeAmount) > 0 ||
-      params.orderRevisionMs > fact.orderUpdatedAtMs ||
-      params.lastExecutionTimeMs > params.orderRevisionMs
+      params.orderRevisionMs > fact.orderUpdatedAtMs
     ) {
       throw new Error(
         `[DailyLossTracker] execution progress exceeds current fact: ${params.orderId}`,

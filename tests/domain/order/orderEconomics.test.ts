@@ -56,20 +56,19 @@ describe('pure order economics', () => {
     expect(ledger).toEqual([late, early, late]);
   });
 
-  it('leaves incomplete/excess quantity unknown and ignores future/foreign ledger for time only', () => {
+  it('leaves incomplete/excess quantity unknown and resolves trade time independent of order revision', () => {
     expect(orderEconomics.executionTime(order, [])).toBeNull();
     expect(orderEconomics.executionTime(order, [{ ...fill, quantity: 39 }])).toBeNull();
     expect(orderEconomics.executionTime(order, [{ ...fill, quantity: 41 }])).toBeNull();
-    expect(orderEconomics.executionTime(order, [{ ...fill, tradeDoneAtMs: 201 }])).toBeNull();
     expect(orderEconomics.executionTime(order, [{ ...fill, orderId: 'other' }])).toBeNull();
     expect(
       orderEconomics.executionTime({ ...order, executedQuantity: 0 }, [{ ...fill, price: '0' }]),
     ).toBeNull();
+    // trade_done_at 与 order updated_at 是两个独立券商事实，晚于 revision 也必须解析出真实成交时间。
+    expect(orderEconomics.executionTime(order, [{ ...fill, tradeDoneAtMs: 201 }])).toBe(201);
     const future = { ...fill, tradeId: 'future', tradeDoneAtMs: 201 };
     expect(orderEconomics.executionTime(order, [fill, future])).toBe(100);
-    expect(() => orderEconomics.compatibleTerminalPrice(order, [fill, future], confirmed)).toThrow(
-      'incompatible terminal execution ledger',
-    );
+    expect(orderEconomics.compatibleTerminalPrice(order, [fill, future], confirmed)).toBeNull();
   });
 
   it.each([
