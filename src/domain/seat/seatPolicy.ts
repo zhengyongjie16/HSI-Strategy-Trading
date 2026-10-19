@@ -138,7 +138,7 @@ function resolveSeatUnavailableReason(seatState: SeatState): SeatUnavailableReas
  * @param seatState 席位状态
  * @returns 不可用原因的中文描述字符串
  */
-export function describeSeatUnavailable(seatState: SeatState): string {
+function describeSeatUnavailable(seatState: SeatState): string {
   const reason = resolveSeatUnavailableReason(seatState);
   switch (reason) {
     case 'SEAT_EMPTY': {

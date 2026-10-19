@@ -109,7 +109,6 @@ function createTrackedOrder(params: {
     replaceBlockedUntilAt: null,
     quoteRetryAttempts: 0,
     quoteRetryNextAt: null,
-    quoteRetryExhausted: false,
     replaceTempBlockedCount: 0,
     replaceResumeMode: 'TIME_BACKOFF',
     timeoutMarketConversionPending: false,
@@ -422,81 +421,63 @@ describe('orderMonitor 普通订单原始成交事实准入', () => {
     ).toThrow('[订单监控] 原始执行时间晚于 order revision');
   });
 
-  it('普通 SELL WS 0 到 40 的累计成交缺少原始时间时零副作用失败', async () => {
+  const assertOrdinaryRawFactWithoutExecutionTimeFailsClosed = async (
+    params: Readonly<{
+      side: 'BUY' | 'SELL';
+      status: 'PartialFilled' | 'Filled';
+      executedQuantity: string;
+    }>,
+  ): Promise<void> => {
     const trackedOrder = createTrackedOrder({
-      orderId: 'ORDINARY-SELL-WS-INVALID-TIME',
+      orderId: `ORDINARY-${params.side}-WS-INVALID-TIME`,
+      side: params.side,
+    });
+    const harness = await createEventFlowHarness(trackedOrder);
+    const event = await createNativeObservation({
+      orderId: trackedOrder.orderId,
+      side: trackedOrder.side,
+      status: params.status,
+      quantity: '100',
+      executedQuantity: params.executedQuantity,
+      executedPrice: '1.02',
+      revisionMs: KNOWN_FACT_TIME_MS,
+      executionTimeMs: null,
+    });
+
+    expect(() => {
+      harness.eventFlow.handleOrderChangedWhenActive(event);
+    }).toThrow('[订单监控] 正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision');
+
+    expect(trackedOrder).toMatchObject({
+      status: 'WORKING',
+      executedQuantity: 0,
+      executedPrice: null,
+      lastExecutedTimeMs: null,
+      lastOrderUpdateAtMs: null,
+    });
+    expect(harness.pendingSellQuantities).toEqual([]);
+    expect(harness.dailyLossInputs).toEqual([]);
+    expect(harness.settlementInputs).toEqual([]);
+    expect(harness.routeWakeups).toEqual([]);
+
+    expect(harness.orderRecorder.getExecutionFact(trackedOrder.orderId)).toBeNull();
+    expect(harness.dailyLossTracker.getLossOffset('LONG')).toBe('0');
+    await harness.dispose();
+  };
+
+  it('普通 SELL WS 0 到 40 的累计成交缺少原始时间时零副作用失败', async () =>
+    assertOrdinaryRawFactWithoutExecutionTimeFailsClosed({
       side: 'SELL',
-    });
-    const harness = await createEventFlowHarness(trackedOrder);
-    const event = await createNativeObservation({
-      orderId: trackedOrder.orderId,
-      side: trackedOrder.side,
       status: 'PartialFilled',
-      quantity: '100',
       executedQuantity: '40',
-      executedPrice: '1.02',
-      revisionMs: KNOWN_FACT_TIME_MS,
-      executionTimeMs: null,
-    });
+    }));
 
-    expect(() => {
-      harness.eventFlow.handleOrderChangedWhenActive(event);
-    }).toThrow('[订单监控] 正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision');
-
-    expect(trackedOrder).toMatchObject({
-      status: 'WORKING',
-      executedQuantity: 0,
-      executedPrice: null,
-      lastExecutedTimeMs: null,
-      lastOrderUpdateAtMs: null,
-    });
-    expect(harness.pendingSellQuantities).toEqual([]);
-    expect(harness.dailyLossInputs).toEqual([]);
-    expect(harness.settlementInputs).toEqual([]);
-    expect(harness.routeWakeups).toEqual([]);
-
-    expect(harness.orderRecorder.getExecutionFact(trackedOrder.orderId)).toBeNull();
-    expect(harness.dailyLossTracker.getLossOffset('LONG')).toBe('0');
-    await harness.dispose();
-  });
-
-  it('普通 BUY Filled WS 缺少原始时间时不会进入结算或路由', async () => {
-    const trackedOrder = createTrackedOrder({
-      orderId: 'ORDINARY-BUY-WS-INVALID-TIME',
+  it('普通 BUY Filled WS 缺少原始时间时不会进入结算或路由', async () =>
+    assertOrdinaryRawFactWithoutExecutionTimeFailsClosed({
       side: 'BUY',
-    });
-    const harness = await createEventFlowHarness(trackedOrder);
-    const event = await createNativeObservation({
-      orderId: trackedOrder.orderId,
-      side: trackedOrder.side,
       status: 'Filled',
-      quantity: '100',
       executedQuantity: '100',
-      executedPrice: '1.02',
-      revisionMs: KNOWN_FACT_TIME_MS,
-      executionTimeMs: null,
-    });
-
-    expect(() => {
-      harness.eventFlow.handleOrderChangedWhenActive(event);
-    }).toThrow('[订单监控] 正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision');
-
-    expect(trackedOrder).toMatchObject({
-      status: 'WORKING',
-      executedQuantity: 0,
-      executedPrice: null,
-      lastExecutedTimeMs: null,
-      lastOrderUpdateAtMs: null,
-    });
-    expect(harness.pendingSellQuantities).toEqual([]);
-    expect(harness.dailyLossInputs).toEqual([]);
-    expect(harness.settlementInputs).toEqual([]);
-    expect(harness.routeWakeups).toEqual([]);
-
-    expect(harness.orderRecorder.getExecutionFact(trackedOrder.orderId)).toBeNull();
-    expect(harness.dailyLossTracker.getLossOffset('LONG')).toBe('0');
-    await harness.dispose();
-  });
+    }));
 
   it('普通 SELL 终态 40 到 80 的旧 revision 不得借用已确认时间结算', async () => {
     const trackedOrder = createTrackedOrder({

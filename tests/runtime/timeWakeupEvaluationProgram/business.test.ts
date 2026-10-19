@@ -238,7 +238,6 @@ async function createTimeWakeupEvaluationHarness(
         return (
           options.lifecycleTick?.(date, runtime) ?? {
             nextRetryAtMs: null,
-            pendingOpenRebuild: false,
           }
         );
       },
@@ -333,7 +332,7 @@ describe('timeWakeupEvaluationProgram', () => {
       },
       lifecycleTick: async () => {
         lifecycleCalled = true;
-        return { nextRetryAtMs: null, pendingOpenRebuild: false };
+        return { nextRetryAtMs: null };
       },
       emitGateStateChanged: () => {
         gateEmitted = true;
@@ -405,7 +404,7 @@ describe('timeWakeupEvaluationProgram', () => {
       initialCanTrade: false,
       lifecycleTick: async () => {
         calls.push('lifecycle');
-        return { nextRetryAtMs: null, pendingOpenRebuild: false };
+        return { nextRetryAtMs: null };
       },
       emitGateStateChanged: () => {
         calls.push('gate');
@@ -460,7 +459,7 @@ describe('timeWakeupEvaluationProgram', () => {
         }
 
         lifecycleState.lifecycleState.isTradingEnabled = shouldEnableTrading;
-        return { nextRetryAtMs: null, pendingOpenRebuild: !shouldEnableTrading };
+        return { nextRetryAtMs: null };
       },
       emitGateStateChanged: () => {
         gateCalls.push('gate');
@@ -612,7 +611,6 @@ describe('timeWakeupEvaluationProgram', () => {
       now,
       lifecycleTick: async () => ({
         nextRetryAtMs: now.getTime() + 30_000,
-        pendingOpenRebuild: false,
       }),
       doomsdayResult: {
         executed: false,
@@ -664,7 +662,7 @@ describe('timeWakeupEvaluationProgram', () => {
       },
       lifecycleTick: async (_now, runtime) => {
         lifecycleRuntimeFlags.push(runtime);
-        return { nextRetryAtMs: null, pendingOpenRebuild: false };
+        return { nextRetryAtMs: null };
       },
     });
 
@@ -690,7 +688,7 @@ describe('timeWakeupEvaluationProgram', () => {
       },
       lifecycleTick: async (_now, runtime) => {
         lifecycleRuntimeFlags.push(runtime);
-        return { nextRetryAtMs: null, pendingOpenRebuild: false };
+        return { nextRetryAtMs: null };
       },
     });
 

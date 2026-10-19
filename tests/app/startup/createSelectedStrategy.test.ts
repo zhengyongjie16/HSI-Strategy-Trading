@@ -74,7 +74,6 @@ describe('selected strategy cleanup boundary', () => {
     const context: StrategyMarketContext = {
       candlesticks: {
         symbol: 'HSI.HK',
-        period: 'MIN_1',
         version: 1,
         initialized: true,
         lastBarTimestamp: 0,

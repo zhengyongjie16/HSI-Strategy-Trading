@@ -27,7 +27,7 @@ describe('orderMonitor OPEN state-check amount revision', () => {
     f.runtime.runtimeState = 'ACTIVE';
     f.runtime.running = true;
     const orderId = 'OPEN-STATE-AMOUNT-REVISION';
-    f.recorder.submitSellOrder(orderId, 'BULL.HK', 'LONG', 100, [], true, firstRevisionMs - 10);
+    f.recorder.submitSellOrder(orderId, 'BULL.HK', 'LONG', 100, [], firstRevisionMs - 10);
     const recorder = {
       ...f.recorder,
       markSellPartialFilled: (id: string, quantity: number) => {

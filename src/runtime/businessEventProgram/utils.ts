@@ -11,7 +11,6 @@ export function projectCandlesticks(
 ): StrategyCandlestickSnapshot {
   return Object.freeze({
     symbol: snapshot.symbol,
-    period: snapshot.period,
     version: snapshot.version,
     initialized: snapshot.initialized,
     lastBarTimestamp: snapshot.lastBarTimestamp,

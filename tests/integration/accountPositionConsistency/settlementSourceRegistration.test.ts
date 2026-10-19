@@ -109,30 +109,30 @@ it('distinguishes initial controlled coverage from online changed facts at the r
     updatedAtMs: 1030,
     phase: 'TERMINAL',
   };
-  const duplicate = owner.commitExecutionFact(original, true, [], () => 'DUPLICATE');
-  expect(duplicate.authoritativeFactChanged).toBe(false);
+  owner.commitExecutionFact(original, true, [], () => 'DUPLICATE');
+  expect(owner.getExecutionFact(original.brokerOrderId)).toEqual(original);
   expect(settlement.getStatus().staleVersion).toBe(0);
   const correction = { ...original, cumulativeAmount: '100.0000000000000001', updatedAtMs: 1040 };
   const appendFailure = new Error('offline durable append rejected');
-  expect(() =>
+  expect(() => {
     owner.commitExecutionFact(correction, true, [], () => {
       throw appendFailure;
-    }),
-  ).toThrow(appendFailure);
+    });
+  }).toThrow(appendFailure);
   expect(owner.getExecutionFact(original.brokerOrderId)).toEqual(original);
   expect(owner.getCostBasis('SOURCE.HK', true)).toEqual({ costAmount: '300', quantity: 200 });
   expect(settlement.getStatus().staleVersion).toBe(0);
   expect(snapshot.getView().token.snapshotGeneration).toBe(0);
   let durableAccepted = false;
-  const receipt = owner.commitExecutionFact(correction, true, [], () => {
+  owner.commitExecutionFact(correction, true, [], () => {
     expect(owner.getExecutionFact(original.brokerOrderId)).toEqual(original);
     expect(settlement.getStatus().staleVersion).toBe(0);
     durableAccepted = true;
     return 'ADMITTED';
   });
   expect(durableAccepted).toBe(true);
-  expect(receipt.authoritativeFactChanged).toBe(true);
-  expect(receipt.executionAdvanced).toBe(false);
+  // 同量合法金额修订只推进金额；数量与阶段未变。
+  expect(owner.getExecutionFact(baseline.orderId)).toEqual(correction);
   expect(settlement.getStatus()).toMatchObject({ currentVersion: 0, staleVersion: 1 });
   expect(snapshot.getView().token.snapshotGeneration).toBe(1);
   expect(owner.getCostBasis('SOURCE.HK', true)).toEqual({
@@ -140,9 +140,8 @@ it('distinguishes initial controlled coverage from online changed facts at the r
     quantity: 200,
   });
 
-  expect(
-    owner.commitExecutionFact(correction, true, [], () => 'DUPLICATE').authoritativeFactChanged,
-  ).toBe(false);
+  owner.commitExecutionFact(correction, true, [], () => 'DUPLICATE');
+  expect(owner.getExecutionFact(baseline.orderId)).toEqual(correction);
   expect(settlement.getStatus().staleVersion).toBe(1);
   const advance = {
     ...correction,
@@ -151,14 +150,12 @@ it('distinguishes initial controlled coverage from online changed facts at the r
     executionTimeMs: 1050,
     updatedAtMs: 1050,
   };
-  expect(owner.commitExecutionFact(advance, true, [], () => 'ADMITTED').executionAdvanced).toBe(
-    true,
-  );
+  owner.commitExecutionFact(advance, true, [], () => 'ADMITTED');
+  expect(owner.getExecutionFact(baseline.orderId)?.cumulativeQuantity).toBe(200);
   expect(settlement.getStatus().staleVersion).toBe(2);
   expect(snapshot.getView().token.snapshotGeneration).toBe(2);
-  expect(
-    owner.commitExecutionFact(advance, true, [], () => 'DUPLICATE').authoritativeFactChanged,
-  ).toBe(false);
+  owner.commitExecutionFact(advance, true, [], () => 'DUPLICATE');
+  expect(owner.getExecutionFact(baseline.orderId)).toEqual(advance);
   expect(settlement.getStatus().staleVersion).toBe(2);
   const partial: BrokerOrderExecutionFact = {
     brokerOrderId: 'ONLINE-PARTIAL',
@@ -170,19 +167,22 @@ it('distinguishes initial controlled coverage from online changed facts at the r
     updatedAtMs: 1100,
     phase: 'OPEN',
   };
-  expect(
-    owner.commitExecutionFact(partial, true, [], () => 'ADMITTED').economicProjectionChanged,
-  ).toBe(false);
+  const projectedBeforePartial = owner.getCostBasis('SOURCE.HK', true);
+  owner.commitExecutionFact(partial, true, [], () => 'ADMITTED');
+  // OPEN partial 只记权威事实，不推进经济投影。
+  expect(owner.getExecutionFact('ONLINE-PARTIAL')).toEqual(partial);
+  expect(owner.getCostBasis('SOURCE.HK', true)).toEqual(projectedBeforePartial);
   expect(settlement.getStatus().staleVersion).toBe(3);
   const terminal = { ...partial, phase: 'TERMINAL' as const, updatedAtMs: 1110 };
-  const terminalReceipt = owner.commitExecutionFact(terminal, true, [], () => 'ADMITTED');
-  expect(terminalReceipt.executionAdvanced).toBe(false);
-  expect(terminalReceipt.economicProjectionChanged).toBe(true);
+  owner.commitExecutionFact(terminal, true, [], () => 'ADMITTED');
+  expect(owner.getExecutionFact('ONLINE-PARTIAL')?.cumulativeQuantity).toBe(50);
+  expect(owner.getCostBasis('SOURCE.HK', true)).toEqual({
+    costAmount: '450.0000000000000002',
+    quantity: 350,
+  });
   expect(settlement.getStatus().staleVersion).toBe(4);
   expect(snapshot.getView().token.snapshotGeneration).toBe(4);
-  expect(
-    owner.commitExecutionFact(terminal, true, [], () => 'DUPLICATE').authoritativeFactChanged,
-  ).toBe(false);
+  owner.commitExecutionFact(terminal, true, [], () => 'DUPLICATE');
   expect(settlement.getStatus().staleVersion).toBe(4);
   expect(io.calls).toEqual([]);
 });

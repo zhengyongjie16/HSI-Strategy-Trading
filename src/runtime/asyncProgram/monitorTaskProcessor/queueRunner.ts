@@ -67,14 +67,6 @@ export function createQueueRunner({
   }
 
   /**
-   * 处理队列任务完成，触发下一轮调度。
-   * 单轮消费结束后需再次调度，否则队列中后续任务不会被处理；通过 scheduleNextProcess 解耦避免递归堆叠。
-   */
-  function handleProcessFinished(): void {
-    scheduleNextProcess();
-  }
-
-  /**
    * 调度下一次队列处理。队列为空时停止调度；否则通过 setImmediate 异步触发，避免阻塞当前调用栈。
    * 为什么：使用 setImmediate 将调度与消费解耦，保证同一时刻仅有一个消费在飞行，避免递归调用堆叠。
    */
@@ -111,7 +103,7 @@ export function createQueueRunner({
         .catch(handleProcessError)
         .finally(() => {
           inFlightPromise = null;
-          handleProcessFinished();
+          scheduleNextProcess();
         });
     }
 

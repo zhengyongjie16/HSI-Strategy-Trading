@@ -371,7 +371,7 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       expect(activatingTransitions).toHaveLength(0);
       expect(monitorTaskQueue.isEmpty()).toBeTrue();
 
-      lifecycleResult.resolve({ nextRetryAtMs: null, pendingOpenRebuild: false });
+      lifecycleResult.resolve({ nextRetryAtMs: null });
       await evaluation;
 
       expect(symbolRegistry.getSeatVersion('LONG')).toBe(originalVersion + 1);
@@ -384,7 +384,7 @@ describe('AutoSearchWakeupRuntime stale continuation business flow', () => {
       expect(monitorTaskQueue.isEmpty()).toBeTrue();
     } finally {
       staleCandidate.resolve(null);
-      lifecycleResult.resolve({ nextRetryAtMs: null, pendingOpenRebuild: false });
+      lifecycleResult.resolve({ nextRetryAtMs: null });
       await runtime.stopAndDrain();
       seatActivationDispatcher.stop();
       unsubscribe();

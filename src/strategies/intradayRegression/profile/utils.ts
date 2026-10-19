@@ -5,12 +5,7 @@ import {
   validatePsyPeriod,
   validateRsiPeriod,
 } from '../indicatorHelpers/utils.js';
-import type {
-  DisplayIndicatorItem,
-  ProfileIndicator,
-  VerificationIndicator,
-  IndicatorCollector,
-} from './types.js';
+import type { ProfileIndicator, VerificationIndicator, IndicatorCollector } from './types.js';
 
 /**
  * 解析单个指标名称并标准化为 ProfileIndicator。默认行为：无效或不受支持的名称返回 null。
@@ -115,10 +110,8 @@ export function toSortedPeriods(periods: ReadonlySet<number>): ReadonlyArray<num
  * @param collector 指标收集器
  * @returns 展示计划（固定顺序）
  */
-export function buildDisplayPlan(
-  collector: IndicatorCollector,
-): ReadonlyArray<DisplayIndicatorItem> {
-  const displayPlan: DisplayIndicatorItem[] = [];
+export function buildDisplayPlan(collector: IndicatorCollector): ReadonlyArray<ProfileIndicator> {
+  const displayPlan: ProfileIndicator[] = [];
   const emaPeriods = toSortedPeriods(collector.requiredPeriods.ema);
   for (const period of emaPeriods) {
     displayPlan.push(`EMA:${period}`);

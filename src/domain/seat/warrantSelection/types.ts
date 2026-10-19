@@ -47,10 +47,7 @@ export type WarrantSelectionPolicyResult =
  */
 export type SelectBestWarrantInput = Readonly<{
   warrants: ReadonlyArray<
-    Pick<
-      MarketWarrantListItem,
-      'symbol' | 'name' | 'callPrice' | 'toCallPrice' | 'turnover' | 'status'
-    >
+    Pick<MarketWarrantListItem, 'symbol' | 'callPrice' | 'toCallPrice' | 'turnover' | 'status'>
   >;
   tradingMinutes: number;
   policy: DirectionalAutoSearchPolicy;
@@ -66,7 +63,6 @@ export type WarrantSelectionStage = 'PRIMARY' | 'DEGRADED';
  */
 export type EvaluatedWarrantCandidate = Readonly<{
   symbol: string;
-  name: string | null;
   callPrice: string;
   distancePct: string;
   turnover: string;
@@ -87,10 +83,8 @@ export type RankedWarrantCandidate = EvaluatedWarrantCandidate &
  */
 export type WarrantCandidate = Readonly<{
   symbol: string;
-  name: string | null;
   callPrice: string;
   distancePct: string;
-  turnover: string;
   turnoverPerMinute: string;
   selectionStage: WarrantSelectionStage;
   distanceDeltaToThreshold: string;

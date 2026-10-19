@@ -457,7 +457,7 @@ describe('quoteClient business flow', () => {
     expect(received).toHaveLength(0);
   });
 
-  it('publishes standardized candlestick updates for subscribed symbols and supports listener disposal', async () => {
+  it('publishes standardized candlestick update notifications for subscribed symbols and supports listener disposal', async () => {
     quoteMock.seedCandlesticks('BULL.HK', RealPeriod.Min_1, [
       makeCandlestick(100, '2026-02-16T01:00:00.000Z'),
       makeCandlestick(101, '2026-02-16T01:01:00.000Z'),
@@ -473,18 +473,9 @@ describe('quoteClient business flow', () => {
     const received: Array<{
       readonly symbol: string;
       readonly period: CandlestickPeriod;
-      readonly version: number;
-      readonly lastBarConfirmed: boolean | null;
-      readonly latestClose: number;
     }> = [];
     const dispose = client.onCandlestickUpdated((event) => {
-      received.push({
-        symbol: event.symbol,
-        period: event.period,
-        version: event.snapshot.version,
-        lastBarConfirmed: event.snapshot.lastBarConfirmed,
-        latestClose: Number(event.snapshot.candles.at(-1)?.close?.toString() ?? Number.NaN),
-      });
+      received.push({ symbol: event.symbol, period: event.period });
     });
 
     quoteMock.emitCandlestick(
@@ -499,13 +490,12 @@ describe('quoteClient business flow', () => {
     quoteMock.flushAllEvents();
 
     expect(received).toHaveLength(1);
-    expect(received[0]).toEqual({
-      symbol: 'BULL.HK',
-      period: 'MIN_1',
-      version: 2,
-      lastBarConfirmed: false,
-      latestClose: 105,
-    });
+    expect(received[0]).toEqual({ symbol: 'BULL.HK', period: 'MIN_1' });
+
+    const pushedSnapshot = client.getCandlestickSnapshot('BULL.HK', 'MIN_1');
+    expect(pushedSnapshot?.version).toBe(2);
+    expect(pushedSnapshot?.lastBarConfirmed).toBe(false);
+    expect(Number(pushedSnapshot?.candles.at(-1)?.close?.toString() ?? Number.NaN)).toBe(105);
 
     dispose();
     quoteMock.emitCandlestick(
@@ -586,7 +576,7 @@ describe('quoteClient business flow', () => {
     });
 
     expect(warrantQuotes).toHaveLength(1);
-    expect(warrantQuotes[0]?.symbol).toBe('BULL-CALL.HK');
+    expect(warrantQuotes[0]).toEqual({ callPrice: '18800', category: 1 });
     expect(warrantList.map((item) => item.symbol)).toEqual(['BULL-CALL.HK']);
     expect(quoteMock.getCalls('warrantQuote')[0]?.args).toEqual([['BULL-CALL.HK']]);
     expect(quoteMock.getCalls('warrantList')[0]?.args).toEqual([
@@ -941,9 +931,9 @@ describe('quoteClient business flow', () => {
 
     const beforeCandles = before.candles;
     const beforeCandle = before.candles.at(-1);
-    const events: Array<{ readonly snapshot: typeof before }> = [];
+    const events: Array<{ readonly symbol: string; readonly period: CandlestickPeriod }> = [];
     const dispose = client.onCandlestickUpdated((event) => {
-      events.push({ snapshot: event.snapshot });
+      events.push({ symbol: event.symbol, period: event.period });
     });
 
     quoteMock.emitCandlestick(
@@ -968,7 +958,7 @@ describe('quoteClient business flow', () => {
     expect(snapshot.candles).toBe(beforeCandles);
     expect(snapshot.candles.at(-1)).toBe(beforeCandle);
     expect(events).toHaveLength(1);
-    expect(events[0]?.snapshot).toBe(snapshot);
+    expect(events[0]).toEqual({ symbol: 'BULL.HK', period: 'MIN_1' });
 
     const firstVersion = snapshot.version;
     quoteMock.emitCandlestick(

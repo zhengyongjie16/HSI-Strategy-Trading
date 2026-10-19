@@ -115,7 +115,6 @@ export function readAuthMode(env: NodeJS.ProcessEnv): AuthMode | null {
  */
 export function readOAuthAuthConfig(env: NodeJS.ProcessEnv): OAuthAuthConfig {
   return {
-    mode: 'oauth',
     clientId: getStringConfig(env, 'LONGBRIDGE_CLIENT_ID'),
     callbackPort: parseCallbackPort(env),
   };
@@ -130,7 +129,6 @@ export function readOAuthAuthConfig(env: NodeJS.ProcessEnv): OAuthAuthConfig {
  */
 export function readApiKeyAuthConfig(env: NodeJS.ProcessEnv): ApiKeyAuthConfig {
   return {
-    mode: 'apikey',
     appKey: getStringConfig(env, 'LONGBRIDGE_APP_KEY'),
     appSecret: getStringConfig(env, 'LONGBRIDGE_APP_SECRET'),
     accessToken: getStringConfig(env, 'LONGBRIDGE_ACCESS_TOKEN'),

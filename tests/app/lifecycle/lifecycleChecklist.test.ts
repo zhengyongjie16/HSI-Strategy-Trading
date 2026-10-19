@@ -1,7 +1,7 @@
 /** 生命周期清单纯校验：结构、反向覆盖、重复与顺序负例；真实接线另见 wiring 测试。 */
 import { describe, expect, it } from 'bun:test';
-import { LIFECYCLE_CHECKLIST } from '../../../src/app/lifecycle/lifecycleChecklist.js';
-import { validateLifecycleChecklist } from '../../../src/app/lifecycle/lifecycleChecklistValidation.js';
+import { LIFECYCLE_CHECKLIST } from './lifecycleChecklist.js';
+import { validateLifecycleChecklist } from './lifecycleChecklistValidation.js';
 
 // 仅缩小纯函数负例输入；不作为生产路径的覆盖证据。
 const drainChecklist = {

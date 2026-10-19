@@ -34,7 +34,7 @@ export type RiskCheckResult = {
 };
 
 /** 买入前现金及单标的持仓限额的同步检查；不读取 API 或持有订单执行入口。 */
-export interface OrderRiskChecker {
+interface OrderRiskChecker {
   /** 买入订单前风险检查（现金与持仓限制） */
   readonly checkBeforeOrder: (params: {
     readonly account: AccountSnapshot | null;

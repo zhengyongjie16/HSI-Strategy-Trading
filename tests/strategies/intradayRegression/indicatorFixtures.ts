@@ -7,9 +7,9 @@ import type {
 /** 策略数学回归的本地 fixture，不经宿主旧画像替身。 */
 import type {
   IndicatorUsageProfile,
-  DisplayIndicatorItem,
+  ProfileIndicator,
 } from '../../../src/strategies/intradayRegression/profile/types.js';
-import type { CandleData } from '../../../src/types/data.js';
+import type { FixtureCandle } from './types.js';
 
 export function createIndicatorUsageProfileDouble(overrides?: {
   readonly requiredFamilies?: Partial<IndicatorUsageProfile['requiredFamilies']>;
@@ -17,7 +17,7 @@ export function createIndicatorUsageProfileDouble(overrides?: {
   readonly verificationIndicatorsBySide?: Partial<
     IndicatorUsageProfile['verificationIndicatorsBySide']
   >;
-  readonly displayPlan?: ReadonlyArray<DisplayIndicatorItem>;
+  readonly displayPlan?: ReadonlyArray<ProfileIndicator>;
 }): IndicatorUsageProfile {
   const requiredFamilies: IndicatorUsageProfile['requiredFamilies'] = {
     mfi: overrides?.requiredFamilies?.mfi ?? true,
@@ -36,7 +36,7 @@ export function createIndicatorUsageProfileDouble(overrides?: {
     sell: overrides?.verificationIndicatorsBySide?.sell ?? ['K', 'D', 'J'],
   };
 
-  const defaultDisplayPlan: ReadonlyArray<DisplayIndicatorItem> = [
+  const defaultDisplayPlan: ReadonlyArray<ProfileIndicator> = [
     ...requiredPeriods.ema.map((period) => `EMA:${period}` as const),
     ...requiredPeriods.rsi.map((period) => `RSI:${period}` as const),
     ...(requiredFamilies.mfi ? (['MFI'] as const) : []),
@@ -56,7 +56,7 @@ export function createIndicatorUsageProfileDouble(overrides?: {
 
 /** 只在旧数学 fixture 边界标准化 primitive，保持缺失/非有限值。 */
 export function normalizeCandles(
-  candles: ReadonlyArray<CandleData>,
+  candles: ReadonlyArray<FixtureCandle>,
 ): StrategyCandlestickSnapshot['candles'] {
   return candles.map((candle) =>
     Object.freeze({
@@ -70,7 +70,7 @@ export function normalizeCandles(
   );
 }
 
-function primitive(value: CandleData['close']): number | string | null | undefined {
+function primitive(value: FixtureCandle['close']): number | string | null | undefined {
   return typeof value === 'object' && value !== null ? value.toString() : value;
 }
 
@@ -83,7 +83,6 @@ export function marketContext(
   return {
     candlesticks: {
       symbol: 'HSI.HK',
-      period: 'MIN_1',
       version,
       initialized: true,
       lastBarTimestamp: 1200000,

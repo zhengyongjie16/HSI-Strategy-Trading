@@ -7,10 +7,7 @@
 
 import { createMonitorConfig } from '../../mock/factories/configFactory.js';
 import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
-import type {
-  AutoSearchWorkflow,
-  WarrantCandidateSearch,
-} from '../../src/application/autoSearch/types.js';
+import type { WarrantCandidateSearch } from '../../src/application/autoSearch/types.js';
 import type {
   CancelPendingBuyOrdersContext,
   CancelPendingBuyOrdersResult,
@@ -48,7 +45,7 @@ import type { SeatRuntimeCleanupDispatcher } from '../../src/runtime/seatRuntime
 import type { AccountSnapshot, Position } from '../../src/types/account.js';
 import type { AccountPositionSnapshotReader } from '../../src/types/accountPosition.js';
 import type { MonitorConfig } from '../../src/types/config.js';
-import type { CandleData, NormalizedCandle } from '../../src/types/data.js';
+import type { NormalizedCandle } from '../../src/types/data.js';
 import type {
   CandlestickCacheSnapshot,
   CandlestickPeriod,
@@ -160,13 +157,13 @@ function listHKDateKeysInRange(startDate: Date, endDate: Date): ReadonlyArray<st
 }
 
 /**
- * 将测试中的 CandleData 收敛为本地缓存使用的 primitive-only K 线。
+ * 将测试 seed 的 K 线复制为本地缓存使用的 frozen primitive-only K 线。
  *
  * @param candles 中性 seed 或测试 fixture 的 K 线数组
  * @returns 可供本地快照与指标计算消费的 K 线数组；每根 K 线独立冻结，数组保持可变
  */
 function normalizeCandlestickData(
-  candles: ReadonlyArray<CandleData>,
+  candles: ReadonlyArray<NormalizedCandle>,
 ): ReadonlyArray<NormalizedCandle> {
   return candles.map((candle) => {
     const timestamp = normalizeTimestamp(candle.timestamp);
@@ -269,8 +266,6 @@ export function createAccountPositionSnapshotReaderDouble(
     },
     getStatus: () => ({
       admission: 'CLOSED',
-      inFlight: false,
-      pending: false,
       token: reader.getView().token,
     }),
   };
@@ -283,18 +278,12 @@ export function createAccountPositionSnapshotReaderDouble(
  */
 export function createOrderRecorderDouble(overrides: Partial<OrderRecorder> = {}): OrderRecorder {
   const base: OrderRecorder = {
-    commitExecutionFact: (fact, _isLong, _related, beforeCommit) => {
+    commitExecutionFact: (_fact, _isLong, _related, beforeCommit) => {
       beforeCommit();
-      return {
-        brokerOrderId: fact.brokerOrderId,
-        authoritativeFactChanged: false,
-        executionAdvanced: false,
-        economicProjectionChanged: false,
-      };
     },
     getExecutionFact: () => null,
     commitRebuildSnapshot: (_targets, _orders, isCurrent) =>
-      isCurrent() ? { status: 'COMMITTED', receipts: [] } : { status: 'ABORTED' },
+      isCurrent() ? { status: 'COMMITTED' } : { status: 'ABORTED' },
     clearBuyOrders: () => {},
     getLatestBuyOrderCost: () => null,
     getSellRecordByOrderId: () => null,
@@ -505,7 +494,7 @@ export function createOrderMonitorDouble(overrides: Partial<OrderMonitor> = {}):
 export function createRiskCheckerDouble(overrides: Partial<RiskChecker> = {}): RiskChecker {
   const allowedResult: RiskCheckResult = { allowed: true };
   const base: RiskChecker = {
-    setWarrantInfoFromCallPrice: (): WarrantRefreshResult => ({ status: 'ok', isWarrant: true }),
+    setWarrantInfoFromCallPrice: (): WarrantRefreshResult => ({ status: 'ok' }),
     checkBeforeOrder: () => allowedResult,
     checkWarrantRisk: () => allowedResult,
     checkWarrantDistanceLiquidation: (): WarrantDistanceLiquidationResult => ({
@@ -533,7 +522,7 @@ export function createWarrantRiskRefreshDouble(
 ): WarrantRiskRefresh {
   return {
     refreshWarrantInfoForSymbol: async (_symbol, _isLongSymbol, isCurrent) =>
-      isCurrent() ? { status: 'notWarrant', isWarrant: false } : { status: 'INVALIDATED' },
+      isCurrent() ? { status: 'notWarrant' } : { status: 'INVALIDATED' },
     ...overrides,
   };
 }
@@ -621,13 +610,6 @@ export function createWarrantCandidateSearchDouble(
     findCandidate: async () => null,
     ...overrides,
   };
-}
-
-/** 创建运行期空席位用例替身，不混入换标状态或生命周期。 */
-export function createAutoSearchWorkflowDouble(
-  overrides: Partial<AutoSearchWorkflow> = {},
-): AutoSearchWorkflow {
-  return { maybeSearchOnEvent: async () => {}, cancelSearch: () => {}, ...overrides };
 }
 
 /** 创建普通 BUY 用例替身，仅暴露执行和日切冷却清理。 */
@@ -1230,7 +1212,7 @@ export function createSymbolRegistryDouble(params?: {
 
       return null;
     },
-    updateSeatState(direction: 'LONG' | 'SHORT', nextState: SeatState): SeatState {
+    updateSeatState(direction: 'LONG' | 'SHORT', nextState: SeatState): void {
       const normalizedNextState = normalizeSeatState(nextState);
 
       if (direction === 'LONG') {
@@ -1249,7 +1231,7 @@ export function createSymbolRegistryDouble(params?: {
           ...emitSeatTruthChanged({ direction }),
         ];
         throwIfListenerErrors(listenerErrors);
-        return longSeat;
+        return;
       }
 
       const previousState = shortSeat;
@@ -1267,12 +1249,11 @@ export function createSymbolRegistryDouble(params?: {
         ...emitSeatTruthChanged({ direction }),
       ];
       throwIfListenerErrors(listenerErrors);
-      return shortSeat;
     },
     updateSeatStateWithVersionBump(
       direction: 'LONG' | 'SHORT',
       nextState: SeatState,
-    ): { readonly seatState: SeatState; readonly seatVersion: number } {
+    ): { readonly seatVersion: number } {
       const normalizedNextState = normalizeSeatState(nextState);
 
       if (direction === 'LONG') {
@@ -1292,7 +1273,7 @@ export function createSymbolRegistryDouble(params?: {
           ...emitSeatTruthChanged({ direction }),
         ];
         throwIfListenerErrors(listenerErrors);
-        return { seatState: longSeat, seatVersion: longVersion };
+        return { seatVersion: longVersion };
       }
 
       const previousState = shortSeat;
@@ -1311,7 +1292,7 @@ export function createSymbolRegistryDouble(params?: {
         ...emitSeatTruthChanged({ direction }),
       ];
       throwIfListenerErrors(listenerErrors);
-      return { seatState: shortSeat, seatVersion: shortVersion };
+      return { seatVersion: shortVersion };
     },
     onSeatStateChanged: (listener) => {
       seatStateChangedListeners.add(listener);

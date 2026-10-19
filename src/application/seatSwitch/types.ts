@@ -408,7 +408,7 @@ export type DistanceSwitchExecutionResult =
   | Readonly<{ kind: 'RETRY_PRECHECK'; retryAtMs: number }>;
 
 /** 预寻标边界：同一候选 policy 由 autoSearch owner 提供，换标不读取原生 warrant 列表或建立另一份缓存。 */
-export interface SeatSwitchCandidateSearch {
+interface SeatSwitchCandidateSearch {
   readonly resolveDistanceRange: (
     direction: 'LONG' | 'SHORT',
   ) => Readonly<{ min: string; max: string }> | null;
@@ -432,7 +432,7 @@ export type PeriodicSwitchTask = Readonly<{
 export type PeriodicSwitchTaskStatus = 'processed' | 'skipped' | 'failed' | 'blocked';
 
 /** 已发布 WAIT 的唯一接棒端口；仅注册后续 owner，不代替原交易授权。 */
-export interface SeatSwitchWakeupPort {
+interface SeatSwitchWakeupPort {
   readonly handoffPendingSwitch: (
     params: Readonly<{
       direction: 'LONG' | 'SHORT';
@@ -447,7 +447,7 @@ export interface SeatSwitchWakeupPort {
 }
 
 /** 周期计划副作用边界；失败时刻由应用层下发，timer/暂停/清理由 runtime 实现。 */
-export interface PeriodicSwitchPlanPort {
+interface PeriodicSwitchPlanPort {
   readonly markWaitingEmpty: (authorization: PeriodicSwitchTaskAuthorization) => void;
   readonly clearWaitingEmpty: (authorization: PeriodicSwitchTaskAuthorization) => void;
   readonly replanRouteAfterTask: (

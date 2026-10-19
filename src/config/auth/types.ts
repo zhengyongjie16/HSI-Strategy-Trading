@@ -13,7 +13,6 @@ export type AuthMode = 'oauth' | 'apikey';
  * 使用范围：仅 config/auth 模块与配置校验层使用。
  */
 export type OAuthAuthConfig = {
-  readonly mode: 'oauth';
   readonly clientId: string | null;
   readonly callbackPort: number | null;
 };
@@ -25,7 +24,6 @@ export type OAuthAuthConfig = {
  * 使用范围：仅 config/auth 模块与配置校验层使用。
  */
 export type ApiKeyAuthConfig = {
-  readonly mode: 'apikey';
   readonly appKey: string | null;
   readonly appSecret: string | null;
   readonly accessToken: string | null;

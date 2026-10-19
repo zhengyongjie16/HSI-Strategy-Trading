@@ -43,7 +43,6 @@ describe('marketMonitor renderer', () => {
 
     const bullText = formatWarrantDistanceDisplay(
       createWarrantDistanceInfoDouble({
-        warrantType: 'BULL',
         distanceNumerator: '1.9',
         distanceDenominator: '100',
       }),
@@ -52,7 +51,6 @@ describe('marketMonitor renderer', () => {
 
     const bearText = formatWarrantDistanceDisplay(
       createWarrantDistanceInfoDouble({
-        warrantType: 'BEAR',
         distanceNumerator: '-2.35',
         distanceDenominator: '100',
       }),
@@ -61,7 +59,6 @@ describe('marketMonitor renderer', () => {
 
     const unknownText = formatWarrantDistanceDisplay(
       createWarrantDistanceInfoDouble({
-        warrantType: 'BULL',
         distanceNumerator: null,
         distanceDenominator: null,
       }),
@@ -72,8 +69,6 @@ describe('marketMonitor renderer', () => {
   it('formats position display text with required labels and order', () => {
     const display = formatPositionDisplay(
       {
-        r1: '100',
-        n1: 100,
         r2: '110',
         unrealizedPnL: '10',
       },
@@ -124,13 +119,10 @@ describe('marketMonitor renderer', () => {
       direction: 'LONG',
       displayInfo: {
         warrantDistanceInfo: createWarrantDistanceInfoDouble({
-          warrantType: 'BULL',
           distanceNumerator: '0.7',
           distanceDenominator: '100',
         }),
         unrealizedLossMetrics: {
-          r1: '100',
-          n1: 100,
           r2: '110',
           unrealizedPnL: '10',
         },
@@ -182,13 +174,12 @@ describe('marketMonitor renderer', () => {
       )?.priceText,
     ).toBe('-0.000');
 
-    expect(
-      formatPositionDisplay({ r1: '1', n1: 1, r2: '0.999999', unrealizedPnL: '-0.000001' }, 1),
-    ).toBe('持仓市值=1.00 持仓盈亏=-0.00 订单数量=1');
+    expect(formatPositionDisplay({ r2: '0.999999', unrealizedPnL: '-0.000001' }, 1)).toBe(
+      '持仓市值=1.00 持仓盈亏=-0.00 订单数量=1',
+    );
 
     expect(
       formatWarrantDistanceDisplay({
-        warrantType: 'BEAR',
         distanceNumerator: '-0.000001',
         distanceDenominator: '1',
       }),
@@ -196,7 +187,6 @@ describe('marketMonitor renderer', () => {
 
     expect(
       formatWarrantDistanceDisplay({
-        warrantType: 'BULL',
         distanceNumerator: '0',
         distanceDenominator: '1',
       }),
@@ -206,7 +196,6 @@ describe('marketMonitor renderer', () => {
   it('uses unrounded distance basis, including long exact values beyond number precision', () => {
     expect(
       formatWarrantDistanceDisplay({
-        warrantType: 'BULL',
         distanceNumerator: '1.0051',
         distanceDenominator: '100',
       }),
@@ -214,7 +203,6 @@ describe('marketMonitor renderer', () => {
 
     expect(
       formatWarrantDistanceDisplay({
-        warrantType: 'BULL',
         distanceNumerator: '1.005',
         distanceDenominator: '100',
       }),
@@ -236,7 +224,6 @@ describe('marketMonitor renderer', () => {
   it('fails fast for corrupt distance basis, financial text and integer display counts', () => {
     expect(() =>
       formatWarrantDistanceDisplay({
-        warrantType: 'BULL',
         distanceNumerator: '1',
         distanceDenominator: null,
       }),
@@ -244,7 +231,6 @@ describe('marketMonitor renderer', () => {
 
     expect(() =>
       formatWarrantDistanceDisplay({
-        warrantType: 'BULL',
         distanceNumerator: null,
         distanceDenominator: '1',
       }),
@@ -252,7 +238,6 @@ describe('marketMonitor renderer', () => {
 
     expect(() =>
       formatWarrantDistanceDisplay({
-        warrantType: 'BULL',
         distanceNumerator: '1',
         distanceDenominator: '0',
       }),
@@ -260,7 +245,6 @@ describe('marketMonitor renderer', () => {
 
     expect(() =>
       formatWarrantDistanceDisplay({
-        warrantType: 'BULL',
         distanceNumerator: 'NaN',
         distanceDenominator: '1',
       }),

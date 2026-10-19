@@ -8,7 +8,7 @@ import type { GlobalConfig } from '../../types/config.js';
 import type { OrderReadStatus, OrderClosedReason } from '../../types/orderReadMetadata.js';
 
 import { exactCompare, exactSubtract, formatDecimal } from '../../utils/numeric/exact.js';
-import { isOpenOrderReadStatus, isTerminalOrderReadStatus } from './orderReadLifecycle.js';
+import { isOpenOrderReadStatus } from './orderReadLifecycle.js';
 import type { OrderMonitorConfig, TrackedOrder } from './types.js';
 
 /**
@@ -34,48 +34,18 @@ export function buildOrderMonitorConfig(globalConfig: GlobalConfig): OrderMonito
 }
 
 /**
- * 将时间字段解析为毫秒时间戳。
+ * 将 SDK 时间字段解析为毫秒时间戳。
  *
- * @param value SDK 返回的 Date 时间字段
+ * @param value SDK 返回的 Date 时间字段（updatedAt / submittedAt 等）
  * @returns 有效的正毫秒时间戳；无法解析或值无效时返回 null
  */
-function resolveTimeMs(value: Date | null | undefined): number | null {
+export function resolveTimeMs(value: Date | null | undefined): number | null {
   if (!(value instanceof Date)) {
     return null;
   }
 
   const timeMs = value.getTime();
   return Number.isFinite(timeMs) && timeMs > 0 ? timeMs : null;
-}
-
-/**
- * 解析 updatedAt 为毫秒时间戳。
- *
- * @param updatedAt SDK 返回的更新时间字段
- * @returns 有效的正毫秒时间戳；无法解析或值无效时返回 null
- */
-export function resolveUpdatedAtMs(updatedAt: Date | null | undefined): number | null {
-  return resolveTimeMs(updatedAt);
-}
-
-/**
- * 解析 submittedAt 为毫秒时间戳。
- *
- * @param submittedAt SDK 返回的提交时间字段
- * @returns 有效的正毫秒时间戳；无法解析或值无效时返回 null
- */
-export function resolveSubmittedAtMs(submittedAt: Date | null | undefined): number | null {
-  return resolveTimeMs(submittedAt);
-}
-
-/**
- * 判断订单状态是否已关闭。
- *
- * @param status 订单状态
- * @returns true 表示订单处于关闭态（成交/撤销/拒绝/过期/部分撤单）
- */
-export function isClosedStatus(status: OrderReadStatus): boolean {
-  return isTerminalOrderReadStatus(status);
 }
 
 /**

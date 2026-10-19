@@ -231,7 +231,6 @@ export type PostGateRuntime = Readonly<{
  * 不注册动态停机回调，资源释放仍由唯一 CleanupController 登记和执行。
  */
 export type RuntimeAssemblyResources = {
-  snapshot?: AccountPositionSnapshot;
   closeSnapshotAdmission?: () => void;
   lifecycleState?: LifecycleMutableState;
   strategy?: TradingSignalStrategy;

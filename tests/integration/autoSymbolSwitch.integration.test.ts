@@ -159,7 +159,6 @@ describe('auto-symbol-switch integration', () => {
         }
 
         return createWarrantDistanceInfoDouble({
-          warrantType: 'BULL',
           distanceNumerator: '0.1',
           distanceDenominator: '100',
         });
@@ -426,7 +425,6 @@ describe('auto-symbol-switch integration', () => {
           }
 
           return createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           });
@@ -739,7 +737,6 @@ describe('auto-symbol-switch integration', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: distanceToStrikePercent,
             distanceDenominator: '100',
           }),
@@ -836,7 +833,6 @@ describe('auto-symbol-switch integration', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: distanceToStrikePercent,
             distanceDenominator: '100',
           }),
@@ -935,7 +931,6 @@ describe('auto-symbol-switch integration', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),

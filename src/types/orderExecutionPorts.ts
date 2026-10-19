@@ -12,7 +12,7 @@ export type SignalCallerAuthorization = () => boolean;
  * 数据来源：共享执行器逐个命令记录，并按准确输入索引映射回原始 ExecutableSignal 对象。
  * 使用范围：普通 SELL 用例的有限缺失报价重试；INVALID 不重试，不能按 symbol 重建身份。
  */
-export type ExecutionQuoteFailure = {
+type ExecutionQuoteFailure = {
   readonly signal: ExecutableSignal;
   readonly kind: 'QUOTE_MISSING' | 'QUOTE_INVALID';
 };

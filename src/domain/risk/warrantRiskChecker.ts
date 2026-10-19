@@ -143,8 +143,6 @@ export function createWarrantRiskChecker(deps: WarrantRiskCheckerDeps): WarrantR
       deps.onInvalidCallPrice(symbol, info.callPrice);
       return {
         shouldLiquidate: false,
-        warrantType: info.warrantType,
-        distancePercent: null,
         reason: `回收价无效（${info.callPrice}），无法进行距回收价清仓判断`,
       };
     }
@@ -152,8 +150,6 @@ export function createWarrantRiskChecker(deps: WarrantRiskCheckerDeps): WarrantR
     if (validateMonitorPrice(price) !== null)
       return {
         shouldLiquidate: false,
-        warrantType: info.warrantType,
-        distancePercent: null,
         reason: `监控标的价格无效（${price}），无法进行距回收价清仓判断`,
       };
 
@@ -173,8 +169,6 @@ export function createWarrantRiskChecker(deps: WarrantRiskCheckerDeps): WarrantR
     const comparisonText = bull ? '低于或等于' : '高于或等于';
     return {
       shouldLiquidate,
-      warrantType: info.warrantType,
-      distancePercent: percent,
       reason: shouldLiquidate
         ? `${prefix}距离回收价百分比为 ${percent}%，${comparisonText}${threshold}%阈值，触发清仓（${prices}）`
         : `${prefix}距离回收价百分比为 ${percent}%，未触发清仓阈值（${prices}）`,
@@ -197,11 +191,10 @@ export function createWarrantRiskChecker(deps: WarrantRiskCheckerDeps): WarrantR
       price === null ||
       exactCompare(price, '0') <= 0
     ) {
-      return { warrantType: info.warrantType, distanceNumerator: null, distanceDenominator: null };
+      return { distanceNumerator: null, distanceDenominator: null };
     }
 
     return {
-      warrantType: info.warrantType,
       distanceNumerator: exactSubtract(price, callPrice),
       distanceDenominator: callPrice,
     };
@@ -217,7 +210,6 @@ export function createWarrantRiskChecker(deps: WarrantRiskCheckerDeps): WarrantR
     if (exactCompare(callPrice, '0') <= 0)
       return {
         status: 'error',
-        isWarrant: false,
         reason: `回收价无效（${callPrice}），无法设置牛熊证信息`,
       };
 
@@ -229,7 +221,7 @@ export function createWarrantRiskChecker(deps: WarrantRiskCheckerDeps): WarrantR
     };
     publishWarrantInfo(info, isLong);
     deps.onWarrantInfoSet(symbol, callPrice, isLong, name);
-    return { status: 'ok', isWarrant: true };
+    return { status: 'ok' };
   }
 
   return {

@@ -69,7 +69,7 @@ describe('精确成本与智能平仓全链路集成测试', () => {
     f.commit('BUY-MID', 'BUY', '1', '100', 100, 2000);
     f.commit('BUY-HIGH', 'BUY', '1.2', '120', 100, 3000);
     expect(f.recorder.getCostBasis('TEST.HK', true)).toEqual({ costAmount: '300', quantity: 300 });
-    f.recorder.submitSellOrder('SELL-1', 'TEST.HK', 'LONG', 100, ['BUY-LOW'], false, f.now + 4000);
+    f.recorder.submitSellOrder('SELL-1', 'TEST.HK', 'LONG', 100, ['BUY-LOW'], f.now + 4000);
     const result = smartClose('1.5', 300);
     expect(result.shouldHold).toBe(false);
     expect(result.quantity).toBe(200);
@@ -106,7 +106,7 @@ describe('精确成本与智能平仓全链路集成测试', () => {
   it('场景8: 待成交卖出成交资源关闭后释放占用', () => {
     f.commit('BUY-1', 'BUY', '1', '100', 100, 1000);
     f.commit('BUY-2', 'BUY', '0.9', '90', 100, 2000);
-    f.recorder.submitSellOrder('SELL-1', 'TEST.HK', 'LONG', 100, ['BUY-1'], false, f.now + 3000);
+    f.recorder.submitSellOrder('SELL-1', 'TEST.HK', 'LONG', 100, ['BUY-1'], f.now + 3000);
     expect(
       f.recorder.selectSellableOrders({
         symbol: 'TEST.HK',
@@ -131,7 +131,7 @@ describe('精确成本与智能平仓全链路集成测试', () => {
     // 原场景只测试占用释放，不能伪造 FILLED 却不抵扣经济；真实零成交终态保留全部买单。
     f.commit('BUY-1', 'BUY', '1', '100', 100, 1000);
     f.commit('BUY-2', 'BUY', '0.9', '90', 100, 2000);
-    f.recorder.submitSellOrder('SELL-1', 'TEST.HK', 'LONG', 100, ['BUY-1'], false, f.now + 3000);
+    f.recorder.submitSellOrder('SELL-1', 'TEST.HK', 'LONG', 100, ['BUY-1'], f.now + 3000);
     expect(
       f.recorder.selectSellableOrders({
         symbol: 'TEST.HK',
@@ -185,7 +185,7 @@ describe('精确成本与智能平仓全链路集成测试', () => {
     f.commit('BUY-1', 'BUY', '1', '100', 100, 1000);
     f.commit('BUY-2', 'BUY', '1.2', '120', 100, 2000);
     expect(f.recorder.getCostBasis('TEST.HK', true)).toEqual({ costAmount: '220', quantity: 200 });
-    f.recorder.submitSellOrder('SELL-1', 'TEST.HK', 'LONG', 100, ['BUY-1'], false, f.now + 3000);
+    f.recorder.submitSellOrder('SELL-1', 'TEST.HK', 'LONG', 100, ['BUY-1'], f.now + 3000);
     expect(f.recorder.getCostBasis('TEST.HK', true)).toEqual({ costAmount: '220', quantity: 200 });
   });
 
@@ -193,15 +193,7 @@ describe('精确成本与智能平仓全链路集成测试', () => {
     f.commit('BUY-1', 'BUY', '0.8', '80', 100, 1000);
     f.commit('BUY-2', 'BUY', '0.9', '90', 100, 2000);
     f.commit('BUY-3', 'BUY', '1.2', '120', 100, 3000);
-    f.recorder.submitSellOrder(
-      'SELL-1',
-      'TEST.HK',
-      'LONG',
-      200,
-      ['BUY-1', 'BUY-3'],
-      false,
-      f.now + 3500,
-    );
+    f.recorder.submitSellOrder('SELL-1', 'TEST.HK', 'LONG', 200, ['BUY-1', 'BUY-3'], f.now + 3500);
 
     expect(
       f.flow.settleOrder({
@@ -234,7 +226,7 @@ describe('精确成本与智能平仓全链路集成测试', () => {
     expect(orders).toHaveLength(2);
     expect(orders[0]?.orderId).not.toBe(orders[1]?.orderId);
     expect(orders.map((o) => o.orderId)).toEqual(['BROKER-A', 'BROKER-B']);
-    f.recorder.submitSellOrder('SELL-1', 'TEST.HK', 'LONG', 100, ['BROKER-A'], false, f.now + 2000);
+    f.recorder.submitSellOrder('SELL-1', 'TEST.HK', 'LONG', 100, ['BROKER-A'], f.now + 2000);
     const sellable = f.recorder.selectSellableOrders({
       symbol: 'TEST.HK',
       direction: 'LONG',

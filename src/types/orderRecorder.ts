@@ -1,4 +1,3 @@
-import type { Quote } from './quote.js';
 import type { OrderFact } from './trade.js';
 import type { TradingCalendarSnapshot } from './tradingCalendar.js';
 
@@ -23,12 +22,6 @@ export type OrderRecord = {
 
   /** 成交时间戳 */
   readonly executedTime: number;
-
-  /** 下单时间 */
-  readonly submittedAt: Date | undefined;
-
-  /** 更新时间 */
-  readonly updatedAt: Date | undefined;
 };
 
 /**
@@ -58,12 +51,6 @@ export type PendingSellInfo = {
 
   /** 状态 */
   readonly status: 'pending' | 'partial' | 'filled' | 'cancelled';
-
-  /** 原卖单保护性身份；合单不得跨目的扩量。 */
-  readonly isProtectiveLiquidation: boolean;
-
-  /** 提交时间 */
-  readonly submittedAt: number;
 };
 
 /**
@@ -151,7 +138,7 @@ export interface OrderRecorder {
     isLongSymbol: boolean,
     relatedBuyOrderIds: ReadonlyArray<string>,
     beforeCommit: () => OrderExecutionAdmission,
-  ) => OrderFactCommitReceipt;
+  ) => void;
 
   /** 唯一事实 owner 的只读累计事实；不是另一份经济账或 survivor 推造事实。 */
   readonly getExecutionFact: (brokerOrderId: string) => BrokerOrderExecutionFact | null;
@@ -165,7 +152,7 @@ export interface OrderRecorder {
   ) => OrderFactBatchCommitResult;
 
   /** 清空指定标的的买入订单记录 */
-  readonly clearBuyOrders: (symbol: string, isLongSymbol: boolean, quote?: Quote | null) => void;
+  readonly clearBuyOrders: (symbol: string, isLongSymbol: boolean) => void;
 
   /** 最新订单与全方向列表均以精确成本金额/数量为依据，不返回舍入均价。 */
   readonly getLatestBuyOrderCost: (symbol: string, isLongSymbol: boolean) => OrderCostBasis | null;
@@ -188,14 +175,16 @@ export interface OrderRecorder {
     isLongSymbol: boolean,
   ) => ReadonlyArray<OrderRecord>;
 
-  /** 提交卖出订单时调用（添加待成交追踪） */
+  /**
+   * 提交卖出订单时调用（添加待成交追踪）。
+   * submittedAtMs 仅用于提交事实校验（安全整数且 >0 的 fail-fast），不落库。
+   */
   readonly submitSellOrder: (
     orderId: string,
     symbol: string,
     direction: 'LONG' | 'SHORT',
     quantity: number,
     relatedBuyOrderIds: ReadonlyArray<string>,
-    isProtectiveLiquidation: boolean,
     submittedAtMs: number,
   ) => void;
 
@@ -233,7 +222,10 @@ export type OrderExecutionTimeObservation = {
   readonly executionPhase: 'OPEN' | 'TERMINAL';
 };
 
-/** 成本投影/重建只消费已验证累计事实与原提交时间，不读取SDK订单元数据。 */
+/**
+ * 已验证累计事实 + 原订单提交时间；成本投影/重建只消费已验证累计事实，
+ * 原提交时间仅供日损重算（保护边界后的零基线证明），均不读取SDK订单元数据。
+ */
 export type OrderExecutionRecordObservation = OrderExecutionTimeObservation &
   Readonly<{ submittedAt: Date }>;
 
@@ -254,14 +246,6 @@ export type OrderExecutionTimeEvidence = {
 /** 同步成交准入；封存/非当日抑制与已准入事实的纯重复明确区分，重复仍允许首次经济投影。 */
 export type OrderExecutionAdmission = 'ADMITTED' | 'DUPLICATE' | 'SUPPRESSED';
 
-/** 成功提交订单事实的收据；冲突/无归属/过期必须在成功路径之外处理。 */
-export type OrderFactCommitReceipt = {
-  readonly brokerOrderId: string;
-  readonly authoritativeFactChanged: boolean;
-  readonly executionAdvanced: boolean;
-  readonly economicProjectionChanged: boolean;
-};
-
 /** 成本计算保留金额和经证明的安全整数数量，不将舍入均价回写金融状态。 */
 export type OrderCostBasis = {
   readonly costAmount: string;
@@ -274,10 +258,9 @@ export type OrderProjectionTarget = {
   readonly isLongSymbol: boolean;
 };
 
-/** 原子 batch 的外部结果；过期只返回 ABORTED，绝不返回成功事实 receipt。 */
+/** 原子 batch 的外部结果；过期只返回 ABORTED，成功只声明已提交而不携带逐步事实。 */
 export type OrderFactBatchCommitResult =
-  | { readonly status: 'COMMITTED'; readonly receipts: ReadonlyArray<OrderFactCommitReceipt> }
-  | { readonly status: 'ABORTED' };
+  { readonly status: 'COMMITTED' } | { readonly status: 'ABORTED' };
 
 /** 订单过滤引擎；按成本金额/数量 cross product 排序并整笔消除。 */
 export interface OrderFilteringEngine {

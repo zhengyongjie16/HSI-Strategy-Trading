@@ -23,11 +23,11 @@ export function createStartupSeatSearch(deps: StartupSeatSearchDeps): StartupSea
     direction,
     currentTime,
     canContinue,
-  }: SearchOnEventParams): Promise<string | null> {
-    if (!canContinue() || candidateSearch.resolveDistanceRange(direction) === null) return null;
+  }: SearchOnEventParams): Promise<void> {
+    if (!canContinue() || candidateSearch.resolveDistanceRange(direction) === null) return;
 
     const currentSeat = symbolRegistry.getSeatState(direction);
-    if (currentSeat.status !== 'EMPTY' || isSeatFrozenToday(currentSeat)) return null;
+    if (currentSeat.status !== 'EMPTY' || isSeatFrozenToday(currentSeat)) return;
 
     const seatVersion = symbolRegistry.getSeatVersion(direction);
     const nowMs = currentTime.getTime();
@@ -77,7 +77,7 @@ export function createStartupSeatSearch(deps: StartupSeatSearchDeps): StartupSea
       throw error;
     }
 
-    if (!isSearchCurrent()) return null;
+    if (!isSearchCurrent()) return;
 
     if (best === null) {
       const seat = symbolRegistry.getSeatState(direction);
@@ -102,7 +102,7 @@ export function createStartupSeatSearch(deps: StartupSeatSearchDeps): StartupSea
         searchFailCountToday: nextFailCount,
         frozenTradingDayKey,
       });
-      return null;
+      return;
     }
 
     symbolRegistry.updateSeatState(direction, {
@@ -116,7 +116,6 @@ export function createStartupSeatSearch(deps: StartupSeatSearchDeps): StartupSea
       frozenTradingDayKey: null,
     });
     logger.info(`[席位恢复] ${monitorSymbol} ${direction} 已进入激活阶段: ${best.symbol}`);
-    return best.symbol;
   }
 
   return { searchSeat };

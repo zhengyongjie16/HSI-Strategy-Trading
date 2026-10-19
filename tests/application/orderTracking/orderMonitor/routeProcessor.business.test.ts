@@ -158,7 +158,6 @@ async function createTrackedOrder(
     replaceBlockedUntilAt: params.replaceBlockedUntilAt ?? null,
     quoteRetryAttempts: params.quoteRetryAttempts ?? 0,
     quoteRetryNextAt: params.quoteRetryNextAt ?? null,
-    quoteRetryExhausted: params.quoteRetryExhausted ?? false,
     replaceTempBlockedCount: params.replaceTempBlockedCount ?? 0,
     replaceResumeMode: params.replaceResumeMode ?? 'TIME_BACKOFF',
     timeoutMarketConversionPending: params.timeoutMarketConversionPending ?? false,
@@ -317,7 +316,6 @@ async function createTimeoutSellHandoffHarness(orderId: string): Promise<{
     'LONG',
     200,
     ['BUY-1', 'BUY-2'],
-    false,
     Date.parse('2026-04-08T09:00:00.000Z'),
   );
   const storage = orderRecorder;
@@ -1752,7 +1750,6 @@ describe('orderMonitor routeProcessor', () => {
           lastPriceUpdateAt: 0,
           quoteRetryAttempts: 0,
           quoteRetryNextAt: null,
-          quoteRetryExhausted: false,
         }),
       ]);
       const replaceOrderIds: string[] = [];
@@ -1780,7 +1777,6 @@ describe('orderMonitor routeProcessor', () => {
       const order = runtime.trackedOrders.get('SELL-QUOTE-RETRY-STATE');
       expect(order?.quoteRetryAttempts).toBe(1);
       expect(order?.quoteRetryNextAt).toBe(nowMs + ORDER_QUOTE_RETRY.INTERVAL_MS);
-      expect(order?.quoteRetryExhausted).toBe(false);
     } finally {
       Date.now = originalNow;
     }
@@ -1804,7 +1800,6 @@ describe('orderMonitor routeProcessor', () => {
           lastPriceUpdateAt: 0,
           quoteRetryAttempts: 0,
           quoteRetryNextAt: null,
-          quoteRetryExhausted: false,
         }),
       ]);
       const replaceOrderIds: string[] = [];
@@ -1831,7 +1826,6 @@ describe('orderMonitor routeProcessor', () => {
       const order = runtime.trackedOrders.get('SELL-INVALID-QUOTE-NO-RETRY');
       expect(order?.quoteRetryAttempts).toBe(0);
       expect(order?.quoteRetryNextAt).toBeNull();
-      expect(order?.quoteRetryExhausted).toBe(false);
     } finally {
       Date.now = originalNow;
     }
@@ -1855,7 +1849,6 @@ describe('orderMonitor routeProcessor', () => {
           lastPriceUpdateAt: 0,
           quoteRetryAttempts: 1,
           quoteRetryNextAt: nowMs - 1,
-          quoteRetryExhausted: false,
         }),
       ]);
       const replaceOrderIds: string[] = [];
@@ -1882,7 +1875,6 @@ describe('orderMonitor routeProcessor', () => {
       const order = runtime.trackedOrders.get('SELL-QUOTE-RETRY-TIMER');
       expect(order?.quoteRetryAttempts).toBe(2);
       expect(order?.quoteRetryNextAt).toBe(nowMs + ORDER_QUOTE_RETRY.INTERVAL_MS);
-      expect(order?.quoteRetryExhausted).toBe(false);
     } finally {
       Date.now = originalNow;
     }
@@ -1906,7 +1898,6 @@ describe('orderMonitor routeProcessor', () => {
           lastPriceUpdateAt: 0,
           quoteRetryAttempts: 2,
           quoteRetryNextAt: nowMs + ORDER_QUOTE_RETRY.INTERVAL_MS,
-          quoteRetryExhausted: false,
         }),
       ]);
       const replaceOrderIds: string[] = [];
@@ -1933,7 +1924,6 @@ describe('orderMonitor routeProcessor', () => {
       const order = runtime.trackedOrders.get('SELL-QUOTE-RETRY-RESET');
       expect(order?.quoteRetryAttempts).toBe(0);
       expect(order?.quoteRetryNextAt).toBeNull();
-      expect(order?.quoteRetryExhausted).toBe(false);
     } finally {
       Date.now = originalNow;
     }
@@ -1957,7 +1947,6 @@ describe('orderMonitor routeProcessor', () => {
           lastPriceUpdateAt: 0,
           quoteRetryAttempts: 2,
           quoteRetryNextAt: nowMs + ORDER_QUOTE_RETRY.INTERVAL_MS,
-          quoteRetryExhausted: false,
         }),
       ]);
       const replaceOrderIds: string[] = [];
@@ -1985,7 +1974,6 @@ describe('orderMonitor routeProcessor', () => {
       const order = runtime.trackedOrders.get('BUY-QUOTE-RETRY-GUARD-RESET');
       expect(order?.quoteRetryAttempts).toBe(0);
       expect(order?.quoteRetryNextAt).toBeNull();
-      expect(order?.quoteRetryExhausted).toBe(false);
     } finally {
       Date.now = originalNow;
     }

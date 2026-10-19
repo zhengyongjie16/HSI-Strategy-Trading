@@ -54,7 +54,7 @@ export function createCleanup(): CleanupController {
         await cleanupStep.handler();
         logger.debug(`${marker} done elapsedMs=${Math.round(performance.now() - startedAt)}`);
       } catch (err) {
-        failures.push({ step: cleanupStep.step, error: err });
+        failures.push({ error: err });
         logger.error(
           `${marker} failed elapsedMs=${Math.round(performance.now() - startedAt)}: ${formatError(err)}`,
         );

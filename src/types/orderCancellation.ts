@@ -7,7 +7,7 @@ import type { OrderClosedReason } from './orderReadMetadata.js';
  * 数据来源：订单 owner 或换标 owner 捕获的 epoch/readiness/席位/持仓授权。
  * 使用范围：OrderCancellation.cancelOrder 及其到 OrderMonitor mutation permit 的透传链路。
  */
-export type CancelOrderRequest =
+type CancelOrderRequest =
   | { readonly kind: 'ORDER_FACT' }
   | {
       readonly kind: 'SIGNAL_AUTHORIZED';

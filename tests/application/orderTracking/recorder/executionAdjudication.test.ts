@@ -79,7 +79,7 @@ function commit(
     throw new Error('positive fixture requires real execution time');
 
   const executionTimeMs = input.executionTimeMs;
-  return f.recorder.commitExecutionFact(
+  f.recorder.commitExecutionFact(
     input,
     true,
     [],
@@ -208,7 +208,8 @@ test('one SELL cumulative100->200 is one whole-order filter, consumption deltas 
   commit(f, advanced, '1');
   expect(f.recorder.getBuyOrdersForSymbol('A.HK', true)).toEqual([]);
   const generation = f.snapshot.getView().token.snapshotGeneration;
-  expect(commit(f, advanced, '1').economicProjectionChanged).toBe(false);
+  commit(f, advanced, '1');
+  expect(f.recorder.getExecutionFact('sell')?.cumulativeQuantity).toBe(200);
   expect(f.snapshot.getView().token.snapshotGeneration).toBe(generation);
 });
 

@@ -37,7 +37,7 @@ export type SeatActivationResult =
     };
 
 /** 临时行情保留 owner，仅供激活 await/release，不参与全局订阅完成判断。 */
-export type SeatActivationRetainOwner = Readonly<{
+type SeatActivationRetainOwner = Readonly<{
   ownerKey: string;
   reason: 'SEAT_REFRESH_WAIT';
 }>;
@@ -53,7 +53,7 @@ export interface SeatActivationSubscriptions {
 }
 
 /** 同一真实订单 owner 的窄读取/预检/消费覆盖提交能力，activation 不维护第二账本。 */
-export interface SeatActivationOrders {
+interface SeatActivationOrders {
   readonly fetchAllOrdersFromAPI: () => Promise<ReadonlyArray<OrderFact>>;
   readonly validateRebuildSnapshot: (symbol: string, orders: ReadonlyArray<OrderFact>) => void;
   readonly commitRebuildSnapshot: (
@@ -66,7 +66,7 @@ export interface SeatActivationOrders {
 }
 
 /** 已在装配层绑定同一订单 owner 的风险能力；prepare 无写入，订阅成功后才 publish。 */
-export interface SeatActivationRisk {
+interface SeatActivationRisk {
   readonly prepareUnrealizedLossData: (
     symbol: string,
     isLong: boolean,

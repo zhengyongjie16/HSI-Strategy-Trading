@@ -135,7 +135,6 @@ export function inspectBrokerOrderPush(event: PushOrderChanged): OrderPushReadFa
   return {
     orderId: event.orderId,
     symbol: event.symbol,
-    executionSide: mapBrokerOrderSide(event.side),
     executedQuantity,
     updatedAtMs: timestamp(event.updatedAt, 'updatedAt'),
   };

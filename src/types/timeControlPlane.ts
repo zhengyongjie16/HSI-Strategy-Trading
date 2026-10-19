@@ -26,7 +26,6 @@ export type LifecycleRuntimeFlags = {
  */
 export type DayLifecycleTickResult = {
   readonly nextRetryAtMs: number | null;
-  readonly pendingOpenRebuild: boolean;
 };
 
 /** 唯一生命周期推进的窄行为契约；调用方触发 tick，不持有缓存域、重建或完成条件。 */

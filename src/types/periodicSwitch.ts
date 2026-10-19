@@ -1,5 +1,3 @@
-import type { SettlementReadinessReceipt } from './settlement.js';
-
 /** 周期换标原route身份；来自真实席位和原canonical交易日，不包含当下补发的授权票。 */
 export type PeriodicSwitchRouteBaseline = Readonly<{
   direction: 'LONG' | 'SHORT';
@@ -9,10 +7,9 @@ export type PeriodicSwitchRouteBaseline = Readonly<{
   dayEpoch: number;
 }>;
 
-/** 周期任务保存的原Sreceipt与route/work闭包，跨quote/broker await原样传递。 */
+/** 周期任务保存的原route/work闭包与当前授权水位，跨quote/broker await原样传递。 */
 export type PeriodicSwitchTaskAuthorization = PeriodicSwitchRouteBaseline &
   Readonly<{
-    readinessReceipt: SettlementReadinessReceipt;
     canContinue: () => boolean;
     isRouteCurrent: () => boolean;
   }>;

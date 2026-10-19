@@ -205,7 +205,6 @@ export function createEventHarness(options: EventHarnessOptions = {}): EventHarn
     sellTaskQueue,
     symbolRegistry,
     contexts,
-    emitters,
     displays,
     strategy,
     termination,
@@ -213,7 +212,7 @@ export function createEventHarness(options: EventHarnessOptions = {}): EventHarn
     program,
     publish: (symbol = 'HSI.HK', period = 'MIN_1'): void => {
       for (const listener of listeners) {
-        listener({ symbol, period, snapshot: mutable.snapshot });
+        listener({ symbol, period });
       }
     },
     emitter: (): StrategyEmitter => {

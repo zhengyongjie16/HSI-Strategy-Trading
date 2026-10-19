@@ -146,7 +146,7 @@ export function createSettlementReadinessGate(
       return false;
 
     currentVersion = version;
-    receipt = Object.freeze({ snapshotToken: token, settlementVersion: version, ready: true });
+    receipt = Object.freeze({ snapshotToken: token, settlementVersion: version });
     const pending = waiters;
     waiters = [];
     for (const waiter of pending) waiter.resolve(receipt);

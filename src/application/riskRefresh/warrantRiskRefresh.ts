@@ -64,7 +64,7 @@ export function createWarrantRiskRefresh(deps: WarrantRiskRefreshDeps): WarrantR
         `[风险检查] 检查${isLong ? '做多' : '做空'}标的 ${formatSymbolDisplay(symbol, name)} 牛熊证信息时出错：`,
         reason,
       );
-      return { status: 'error', isWarrant: false, reason };
+      return { status: 'error', reason };
     }
 
     if (!isCurrent()) return { status: 'INVALIDATED' };
@@ -74,13 +74,13 @@ export function createWarrantRiskRefresh(deps: WarrantRiskRefreshDeps): WarrantR
       deps.logger.info(
         `[风险检查] ${isLong ? '做多' : '做空'}标的 ${formatSymbolDisplay(symbol, name)} 不是牛熊证`,
       );
-      return { status: 'notWarrant', isWarrant: false };
+      return { status: 'notWarrant' };
     }
 
     deps.logger.info(
       `[风险检查] ${isLong ? '做多' : '做空'}标的 ${formatSymbolDisplay(symbol, name)} 是${WARRANT_TYPE_NAMES[info.warrantType]}，回收价=${info.callPrice === null ? '未知' : formatDecimal(info.callPrice, 3, 'unsigned')}`,
     );
-    return { status: 'ok', isWarrant: true };
+    return { status: 'ok' };
   }
 
   return { refreshWarrantInfoForSymbol };

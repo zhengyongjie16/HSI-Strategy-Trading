@@ -463,13 +463,12 @@ function createRunAppHarnessState(
       return runtime;
     },
     loadStartupSnapshot: async (params) => {
-      const now = new Date('2026-04-29T09:30:00.000+08:00');
       if (currentScenario === 'startupSnapshotFails') {
         throw new TypeError('startup snapshot contract broken');
       }
 
       if (currentScenario === 'startupRebuildPending') {
-        return { kind: 'API_RETRY_PENDING', now };
+        return { kind: 'API_RETRY_PENDING' };
       }
 
       return loadStartupSnapshot(params);
@@ -508,7 +507,7 @@ function createRunAppHarnessState(
     },
     createAsyncRuntime: () => createMockAsyncRuntime(),
     createLifecycleRuntime: () => ({
-      tick: async () => ({ nextRetryAtMs: null, pendingOpenRebuild: false }),
+      tick: async () => ({ nextRetryAtMs: null }),
     }),
     createCleanup,
     subscribeShutdownSignal: shutdownController.subscribeShutdownSignal,

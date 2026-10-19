@@ -4,7 +4,7 @@ import type { OrderExecutionLedgerFact } from './orderExecutionLedger.js';
 import type { OrderFact } from './trade.js';
 
 /** 原 orderDetail DTO 的延后解码能力；由查询 owner 校验并合并同一 execution ledger 后调用。 */
-export interface OrderDetailDecoder {
+interface OrderDetailDecoder {
   readonly decode: (executions: ReadonlyArray<OrderExecutionLedgerFact>) => OrderFact;
 }
 

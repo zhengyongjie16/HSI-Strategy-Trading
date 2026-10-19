@@ -39,7 +39,6 @@ function createWarrant(
 ): SelectBestWarrantInput['warrants'][number] {
   return {
     symbol,
-    name: symbol,
     callPrice: '20000.1234567890123456789',
     toCallPrice: distance,
     turnover,
@@ -145,7 +144,6 @@ describe('strict two-stage exact candidate selection', () => {
         symbol: 'BEST.HK',
         selectionStage: 'PRIMARY',
         callPrice: '20000.1234567890123456789',
-        turnover: '200000.0000000000000002',
         turnoverPerMinute: '20000',
         distanceDeltaToThreshold: '0.05',
       });

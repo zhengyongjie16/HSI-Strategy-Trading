@@ -509,7 +509,6 @@ async function createDefaultDistanceSwitchHarness(
     riskChecker: createRiskCheckerDouble({
       getWarrantDistanceInfo: (_symbol, _monitorPrice, isLong) =>
         createWarrantDistanceInfoDouble({
-          warrantType: isLong ? 'BULL' : 'BEAR',
           distanceNumerator: isLong ? '0.1' : '-0.1',
           distanceDenominator: '100',
         }),
@@ -880,15 +879,6 @@ describe('monitorQuoteEventRuntime exports', () => {
 });
 
 describe('monitorQuoteEventRuntime contract', () => {
-  it('creates default runtime with start and stopAndDrain methods', async () => {
-    const harness = await createDefaultDistanceSwitchHarness();
-
-    expect(harness.runtime).toMatchObject({
-      start: expect.any(Function),
-      stopAndDrain: expect.any(Function),
-    });
-  });
-
   it('subscribes on start and unsubscribes on stopAndDrain', async () => {
     let subscribed = 0;
     let unsubscribed = 0;

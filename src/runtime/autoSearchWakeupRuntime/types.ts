@@ -9,7 +9,7 @@ import type { AutoSearchWorkflow } from '../../application/autoSearch/types.js';
 import type { SymbolRegistry } from '../../types/seat.js';
 
 /** 自动寻标授权的窄订阅能力，由 app 注入真实时间门禁事件源，不传播旧 main runtime 类型。 */
-export interface AutoSearchAuthorizationSource {
+interface AutoSearchAuthorizationSource {
   readonly onAutoSearchAuthorizationChanged: (
     listener: (event: AutoSearchAuthorizationChangedEvent) => void,
   ) => () => void;

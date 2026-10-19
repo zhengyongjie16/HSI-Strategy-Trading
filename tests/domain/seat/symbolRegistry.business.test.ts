@@ -43,7 +43,7 @@ describe('SymbolRegistry state/events', () => {
       }),
     );
 
-    const nextState = symbolRegistry.updateSeatState('LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       symbol: 'RUNTIME_BULL.HK',
       status: 'ACTIVE',
       lastSwitchAt: 100,
@@ -54,12 +54,12 @@ describe('SymbolRegistry state/events', () => {
       frozenTradingDayKey: null,
     });
 
-    expect(nextState.lastSeatActivatedAt).toBe(120);
+    expect(symbolRegistry.getSeatState('LONG').lastSeatActivatedAt).toBe(120);
   });
 
   it('preserves raw financial callPrice and unknown null without number projection or zero fill', () => {
     const registry = createSymbolRegistry(createMonitorConfigDouble());
-    const state = registry.updateSeatState('LONG', {
+    registry.updateSeatState('LONG', {
       symbol: 'RAW_BULL.HK',
       status: 'ACTIVATING',
       lastSwitchAt: 100,
@@ -69,15 +69,19 @@ describe('SymbolRegistry state/events', () => {
       searchFailCountToday: 0,
       frozenTradingDayKey: null,
     });
-    expect(state.callPrice).toBe('21000.000000000000000001');
-    expect(
-      registry.updateSeatState('LONG', {
-        ...state,
-        symbol: 'RAW_BULL.HK',
-        status: 'ACTIVATING',
-        callPrice: null,
-      }).callPrice,
-    ).toBeNull();
+    expect(registry.getSeatState('LONG').callPrice).toBe('21000.000000000000000001');
+
+    registry.updateSeatState('LONG', {
+      symbol: 'RAW_BULL.HK',
+      status: 'ACTIVATING',
+      lastSwitchAt: 100,
+      lastSearchAt: 100,
+      lastSeatActivatedAt: null,
+      callPrice: null,
+      searchFailCountToday: 0,
+      frozenTradingDayKey: null,
+    });
+    expect(registry.getSeatState('LONG').callPrice).toBeNull();
   });
 
   it('rejects malformed financial callPrice before truth, version or observer publication', () => {
@@ -206,7 +210,7 @@ describe('SymbolRegistry state/events', () => {
     const previousState = symbolRegistry.getSeatState('LONG');
     const previousVersion = symbolRegistry.getSeatVersion('LONG');
 
-    expect(() =>
+    expect(() => {
       symbolRegistry.updateSeatState('LONG', {
         symbol: 'BAD.HK',
         status: 'ACTIVE',
@@ -216,8 +220,8 @@ describe('SymbolRegistry state/events', () => {
         callPrice: '20000',
         searchFailCountToday: 0,
         frozenTradingDayKey: null,
-      }),
-    ).toThrow('lastSeatActivatedAt 必须是有限时间戳');
+      });
+    }).toThrow('lastSeatActivatedAt 必须是有限时间戳');
     expect(symbolRegistry.getSeatState('LONG')).toEqual(previousState);
     expect(symbolRegistry.getSeatVersion('LONG')).toBe(previousVersion);
   });
@@ -239,9 +243,9 @@ describe('SymbolRegistry state/events', () => {
       frozenTradingDayKey: null,
     } as unknown as RuntimeWritableSeatState;
 
-    expect(() => symbolRegistry.updateSeatState('LONG', illegalState)).toThrow(
-      'EMPTY 不得绑定标的',
-    );
+    expect(() => {
+      symbolRegistry.updateSeatState('LONG', illegalState);
+    }).toThrow('EMPTY 不得绑定标的');
     expect(symbolRegistry.resolveSeatBySymbol('BAD.HK')).toBeNull();
   });
 
@@ -285,7 +289,7 @@ describe('SymbolRegistry state/events', () => {
     });
 
     expect(result.seatVersion).toBe(2);
-    expect(result.seatState.status).toBe('ACTIVATING');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
     const resolvedSeat = symbolRegistry.resolveSeatBySymbol('NEW_BULL.HK');
     expect(resolvedSeat?.direction).toBe('LONG');
     expect(resolvedSeat?.seatVersion).toBe(2);
@@ -332,7 +336,7 @@ describe('SymbolRegistry state/events', () => {
       });
     });
 
-    const nextState = symbolRegistry.updateSeatState('LONG', {
+    symbolRegistry.updateSeatState('LONG', {
       symbol: 'OLD_BULL.HK',
       status: 'ACTIVATING',
       lastSwitchAt: 100,
@@ -343,7 +347,7 @@ describe('SymbolRegistry state/events', () => {
       frozenTradingDayKey: null,
     });
 
-    expect(nextState.status).toBe('ACTIVATING');
+    expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
     expect(symbolRegistry.getSeatVersion('LONG')).toBe(1);
     expect(stateEvents).toEqual([
       {

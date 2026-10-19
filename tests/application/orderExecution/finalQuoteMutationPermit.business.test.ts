@@ -209,15 +209,15 @@ async function createSellExecutionFixture(params: {
   const detailFrames = pendingOrders.map((order) => ({
     orderId: order.orderId,
     tradeId: 'FINAL-QUOTE-' + order.orderId,
-    symbol: order.symbol,
+    symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
-    side: order.side,
+    side: 'SELL' as const,
     orderType: order.orderType === 'MO' ? ('MO' as const) : ('ELO' as const),
     status: 'Canceled' as const,
     quantity: String(order.submittedQuantity),
     executedQuantity: String(order.executedQuantity),
-    submittedPrice: order.submittedPrice ?? '0',
+    submittedPrice: order.orderType === 'MO' ? '0' : '1',
     executedPrice: '0',
     submittedAtMs: order.submittedAt,
     executionTimeMs: null,
@@ -254,21 +254,20 @@ async function createSellExecutionFixture(params: {
   for (const order of pendingOrders) {
     authority.economic.recorder.submitSellOrder(
       order.orderId,
-      order.symbol,
+      'BULL.HK',
       'LONG',
       order.submittedQuantity,
       [],
-      false,
       order.submittedAt,
     );
 
     operations.trackOrder({
       orderId: order.orderId,
-      symbol: order.symbol,
-      side: order.side,
-      executionSide: order.side,
-      price: order.submittedPrice,
-      initialSubmittedPrice: order.submittedPrice,
+      symbol: 'BULL.HK',
+      side: 'SELL',
+      executionSide: 'SELL',
+      price: order.orderType === 'MO' ? null : '1',
+      initialSubmittedPrice: order.orderType === 'MO' ? null : '1',
       quantity: order.submittedQuantity,
       submittedAtMs: order.submittedAt,
       initialStatus: order.status,
@@ -333,10 +332,9 @@ async function createSellExecutionFixture(params: {
 
       return outcome;
     },
-    getPendingSellOrders: (symbol) =>
-      pendingOrders.filter(
-        (order) =>
-          order.symbol === symbol && authority.economic.runtime.trackedOrders.has(order.orderId),
+    getPendingSellOrders: () =>
+      pendingOrders.filter((order) =>
+        authority.economic.runtime.trackedOrders.has(order.orderId),
       ),
     replaceOrderPriceWithPermit: operations.replaceOrderPriceWithPermit,
   };
@@ -744,7 +742,9 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     expect(Object.is(fixture.trackedOrders[0]?.price, '1.6')).toBeTrue();
   });
 
-  it('never invokes the unrealized-loss buy gate for an ordinary sell', async () => {
+  const assertSellNeverConsumesBuyGate = async (
+    overrides: Readonly<{ reason: string; isProtectiveLiquidation?: true }>,
+  ): Promise<void> => {
     let unrealizedLossGateCalls = 0;
     const fixture = await createSellExecutionFixture({
       getQuote: async () => createQuoteDouble('BULL.HK', '1.6', 100),
@@ -760,9 +760,12 @@ describe('OrderExecutor terminal quote mutation permit', () => {
         symbol: 'BULL.HK',
         action: 'SELLCALL',
         triggerTimeMs: EXECUTION_NOW_MS,
-        reason: 'a sell must not consume the buy-only loss gate',
+        reason: overrides.reason,
       }),
       quantity: 200,
+      ...(overrides.isProtectiveLiquidation === true
+        ? { isProtectiveLiquidation: true as const }
+        : {}),
     };
 
     const result = await fixture.executor.executeSignals([signal], fixture.callerAuthorization);
@@ -770,36 +773,18 @@ describe('OrderExecutor terminal quote mutation permit', () => {
     expect(result.executedOrderIds).toHaveLength(1);
     expect(unrealizedLossGateCalls).toBe(0);
     expect(fixture.native.nativeSubmitObservations()).toHaveLength(1);
-  });
+  };
 
-  it('never invokes the unrealized-loss buy gate for a protective liquidation sell', async () => {
-    let unrealizedLossGateCalls = 0;
-    const fixture = await createSellExecutionFixture({
-      getQuote: async () => createQuoteDouble('BULL.HK', '1.6', 100),
-      unrealizedLossBuyGate: {
-        checkUnrealizedLoss: () => {
-          unrealizedLossGateCalls += 1;
-          return { shouldLiquidate: true };
-        },
-      },
-    });
-    const signal = {
-      ...createSignal({
-        symbol: 'BULL.HK',
-        action: 'SELLCALL',
-        triggerTimeMs: EXECUTION_NOW_MS,
-        reason: 'protective liquidation must bypass the buy gate',
-      }),
-      quantity: 200,
-      isProtectiveLiquidation: true as const,
-    };
+  it('never invokes the unrealized-loss buy gate for an ordinary sell', async () =>
+    assertSellNeverConsumesBuyGate({
+      reason: 'a sell must not consume the buy-only loss gate',
+    }));
 
-    const result = await fixture.executor.executeSignals([signal], fixture.callerAuthorization);
-
-    expect(result.executedOrderIds).toHaveLength(1);
-    expect(unrealizedLossGateCalls).toBe(0);
-    expect(fixture.native.nativeSubmitObservations()).toHaveLength(1);
-  });
+  it('never invokes the unrealized-loss buy gate for a protective liquidation sell', async () =>
+    assertSellNeverConsumesBuyGate({
+      reason: 'protective liquidation must bypass the buy gate',
+      isProtectiveLiquidation: true,
+    }));
 
   it('reads P1 only after CANCEL_AND_SUBMIT has a terminal cancel and fresh quantity', async () => {
     const cancelOrderIds: string[] = [];
@@ -808,12 +793,9 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       pendingSellOrders: [
         {
           orderId: 'SELL-OLD-MO',
-          symbol: 'BULL.HK',
           isProtectiveLiquidation: false,
-          side: 'SELL',
           status: 'WORKING',
           orderType: 'MO',
-          submittedPrice: null,
           submittedQuantity: 100,
           executedQuantity: 0,
           submittedAt: Date.now(),
@@ -857,12 +839,9 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       pendingSellOrders: [
         {
           orderId: 'SELL-ACK-MO',
-          symbol: 'BULL.HK',
           isProtectiveLiquidation: false,
-          side: 'SELL',
           status: 'WORKING',
           orderType: 'MO',
-          submittedPrice: null,
           submittedQuantity: 100,
           executedQuantity: 0,
           submittedAt: EXECUTION_NOW_MS,
@@ -898,12 +877,9 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       pendingSellOrders: [
         {
           orderId: 'SELL-EXISTING-ELO',
-          symbol: 'BULL.HK',
           isProtectiveLiquidation: false,
-          side: 'SELL',
           status: 'WORKING',
           orderType: 'ELO',
-          submittedPrice: '1',
           submittedQuantity: 100,
           executedQuantity: 0,
           submittedAt: Date.now(),
@@ -958,12 +934,9 @@ describe('OrderExecutor terminal quote mutation permit', () => {
       pendingSellOrders: [
         {
           orderId: 'SELL-OLD-DOOMSDAY',
-          symbol: 'BULL.HK',
           isProtectiveLiquidation: false,
-          side: 'SELL',
           status: 'WORKING',
           orderType: 'ELO',
-          submittedPrice: '1',
           submittedQuantity: 100,
           executedQuantity: 0,
           submittedAt: Date.now(),
@@ -1063,12 +1036,9 @@ describe('OrderExecutor terminal quote mutation permit', () => {
           ? [
               {
                 orderId: 'SELL-QUOTE-OLD',
-                symbol: 'BULL.HK',
                 isProtectiveLiquidation: false,
-                side: 'SELL',
                 status: 'WORKING',
                 orderType: 'ELO',
-                submittedPrice: '1',
                 submittedQuantity: 100,
                 executedQuantity: 0,
                 submittedAt: EXECUTION_NOW_MS,

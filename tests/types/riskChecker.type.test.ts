@@ -67,9 +67,9 @@ function verifyExactReadonlyCostBasis(recorder: OrderRecorder, riskChecker: Risk
   const metrics = riskChecker.getUnrealizedLossMetrics('BULL.HK', '1.25');
   if (metrics !== null) {
     const pnl: string = metrics.unrealizedPnL;
-    const positionQuantity: number = metrics.n1;
+    const marketValue: string = metrics.r2;
     void pnl;
-    void positionQuantity;
+    void marketValue;
   }
 }
 

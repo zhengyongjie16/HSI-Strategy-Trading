@@ -422,7 +422,6 @@ export async function createMarketDataClient(
     const standardizedEvent: CandlestickUpdatedEvent = {
       symbol,
       period,
-      snapshot: updatedSnapshot,
     };
 
     for (const listener of candlestickUpdatedListeners) {

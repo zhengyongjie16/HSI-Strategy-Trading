@@ -2,7 +2,6 @@ import { spyOn, describe, expect, it } from 'bun:test';
 
 /** 重建经济回归：实际 issued H token → Daily prepare → O batch → Daily publish，与真实在线结算比较。 */
 
-import { classifyOrdersForRebuild } from '../../../../src/domain/order/orderRecordPolicy.js';
 import type { SnapshotToken } from '../../../../src/types/accountPosition.js';
 import type { OrderRecord } from '../../../../src/types/orderRecorder.js';
 import type { OrderFact } from '../../../../src/types/trade.js';
@@ -328,17 +327,19 @@ describe('OrderRecorder rebuild refresh', () => {
       quantity: 40,
     });
 
+    // OPEN partial 卖单保留 pending，不发布经济记录；终态 partial 卖单与在线结算同口径入账。
     expect(
-      classifyOrdersForRebuild([...longSnapshot, ...shortSnapshot]).pendingSellOrders.map(
-        (order) => ({
-          orderId: order.orderId,
-          submittedQuantity: order.quantity,
-          executedQuantity: order.executedQuantity,
-        }),
-      ),
+      ['LONG', 'SHORT'].map((prefix) => {
+        const settled = rebuilt.recorder.getSellRecordByOrderId(`${prefix}-SELL-SETTLED`);
+        return {
+          settledCostAmount: settled?.costAmount ?? null,
+          settledQuantity: settled?.executedQuantity ?? null,
+          openPartial: rebuilt.recorder.getSellRecordByOrderId(`${prefix}-SELL-OPEN-PARTIAL`),
+        };
+      }),
     ).toEqual([
-      { orderId: 'LONG-SELL-OPEN-PARTIAL', submittedQuantity: 200, executedQuantity: 100 },
-      { orderId: 'SHORT-SELL-OPEN-PARTIAL', submittedQuantity: 200, executedQuantity: 100 },
+      { settledCostAmount: '44', settledQuantity: 40, openPartial: null },
+      { settledCostAmount: '44', settledQuantity: 40, openPartial: null },
     ]);
     expect(rebuilt.sink.getStatus().staleVersion).toBe(0);
     expect(

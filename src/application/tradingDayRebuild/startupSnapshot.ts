@@ -43,7 +43,7 @@ export async function loadStartupSnapshot(
         hydrateCooldownFromTradeLog: true,
         source: 'STARTUP',
       });
-      if (!isOriginLive()) return { kind: 'ABORTED', now };
+      if (!isOriginLive()) return { kind: 'ABORTED' };
 
       switch (startupSnapshot.status) {
         case 'SUPERSEDED': {
@@ -51,7 +51,7 @@ export async function loadStartupSnapshot(
         }
 
         case 'ABORTED': {
-          return { kind: 'ABORTED', now };
+          return { kind: 'ABORTED' };
         }
 
         case 'COMMITTED': {
@@ -87,13 +87,13 @@ export async function loadStartupSnapshot(
         throw error;
       }
 
-      if (!isOriginLive()) return { kind: 'ABORTED', now };
+      if (!isOriginLive()) return { kind: 'ABORTED' };
 
       applyStartupSnapshotFailureState(lifecycleState);
       logger.error('启动快照 API 请求失败：已阻断交易并切换为开盘重建重试模式', formatError(error));
-      return { kind: 'API_RETRY_PENDING', now };
+      return { kind: 'API_RETRY_PENDING' };
     }
   }
 
-  return { kind: 'ABORTED', now };
+  return { kind: 'ABORTED' };
 }

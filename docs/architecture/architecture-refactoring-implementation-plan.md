@@ -1596,9 +1596,10 @@ tests/architecture/longbridgeBoundary.test.ts
 
 ```text
 src/app/lifecycle/
+  types.ts
+tests/app/lifecycle/
   lifecycleChecklist.ts
   lifecycleChecklistValidation.ts
-  types.ts
 ```
 
 清单至少覆盖：

@@ -14,11 +14,9 @@ import {
   mergeMonotonicOrderFact,
 } from '../../../domain/order/orderFactMerge.js';
 import { resolveOrderOwnership } from '../../../domain/order/orderOwnership.js';
+import { isTerminalOrderReadStatus } from '../../../domain/order/orderReadLifecycle.js';
 import { hasProtectiveLiquidationRemark } from '../../../domain/order/orderRemark.js';
-import {
-  isClosedStatus,
-  resolveOrderClosedReasonFromStatus,
-} from '../../../domain/order/orderTrackingPolicy.js';
+import { resolveOrderClosedReasonFromStatus } from '../../../domain/order/orderTrackingPolicy.js';
 import type { OrderReadStatus } from '../../../types/orderReadMetadata.js';
 import type { DailyLossCumulativeExecutionResult } from '../../../types/risk.js';
 import type { OrderFact } from '../../../types/trade.js';
@@ -143,7 +141,7 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
         return;
       }
 
-      if (isClosedStatus(event.status)) {
+      if (isTerminalOrderReadStatus(event.status)) {
         logger.warn(`[订单监控] 收到未追踪订单 ${orderId} 的终态事件 ${event.status}，已忽略`);
       }
 

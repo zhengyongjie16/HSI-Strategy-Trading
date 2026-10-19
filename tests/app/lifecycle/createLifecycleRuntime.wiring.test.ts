@@ -387,7 +387,7 @@ function createLifecycleRuntimeFactories(): LifecycleRuntimeFactories {
     createDayLifecycleManager: (deps) => {
       createDayLifecycleManagerCalls.push(deps);
       return {
-        tick: async () => ({ nextRetryAtMs: null, pendingOpenRebuild: false }),
+        tick: async () => ({ nextRetryAtMs: null }),
       };
     },
   };
@@ -501,27 +501,5 @@ describe('app createLifecycleRuntime wiring', () => {
     expect(cacheDomains[3]).toBe(orderDomain);
     expect(cacheDomains[4]).toBe(riskDomain);
     expect(cacheDomains[5]).toBe(globalStateDomain);
-  });
-
-  it('passes the same monitorQuoteEventRuntime object into signal runtime domain deps', async () => {
-    const deps = await createLifecycleDeps();
-    const factories = createLifecycleRuntimeFactories();
-
-    createLifecycleRuntime(deps, factories);
-
-    expect(createSignalRuntimeDomainCalls).toHaveLength(1);
-    const signalRuntimeDeps = createSignalRuntimeDomainCalls[0];
-    if (signalRuntimeDeps === undefined) {
-      throw new Error('expected createSignalRuntimeDomain to receive deps');
-    }
-
-    expect(signalRuntimeDeps.monitorQuoteEventRuntime).toBe(
-      deps.postGateRuntime.monitorQuoteEventRuntime,
-    );
-
-    expect(signalRuntimeDeps.periodicSwitchWakeupRuntime).toBe(
-      deps.postGateRuntime.periodicSwitchWakeupRuntime,
-    );
-    expect(signalRuntimeDeps.orderMonitor).toBe(deps.postGateRuntime.tradeRuntime.orderMonitor);
   });
 });

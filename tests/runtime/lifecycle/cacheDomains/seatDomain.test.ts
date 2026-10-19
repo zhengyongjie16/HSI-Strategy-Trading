@@ -68,11 +68,10 @@ describe('createSeatDomain', () => {
       resolveSeatBySymbol: () => null,
       updateSeatState: (direction: 'LONG' | 'SHORT', nextState: SeatState) => {
         updateCalls.push({ direction, nextState });
-        return nextState;
       },
       updateSeatStateWithVersionBump: (direction: 'LONG' | 'SHORT', nextState: SeatState) => {
         atomicUpdateCalls.push({ direction, nextState });
-        return { seatState: nextState, seatVersion: 2 };
+        return { seatVersion: 2 };
       },
       onSeatStateChanged: () => () => {},
       onSeatTruthChanged: () => {
@@ -165,8 +164,6 @@ describe('createSeatDomain', () => {
         } else {
           shortSeatState = nextState;
         }
-
-        return nextState;
       },
       updateSeatStateWithVersionBump: (direction, nextState) => {
         if (direction === 'LONG') {
@@ -175,7 +172,7 @@ describe('createSeatDomain', () => {
           shortSeatState = nextState;
         }
 
-        return { seatState: nextState, seatVersion: 2 };
+        return { seatVersion: 2 };
       },
       onSeatStateChanged: () => () => {},
       onSeatTruthChanged: () => () => {},
@@ -240,9 +237,9 @@ describe('createSeatDomain', () => {
       },
       getSeatVersion: () => 1,
       resolveSeatBySymbol: () => null,
-      updateSeatState: (_direction, nextState) => nextState,
-      updateSeatStateWithVersionBump: (_direction, nextState) => {
-        return { seatState: nextState, seatVersion: 2 };
+      updateSeatState: () => {},
+      updateSeatStateWithVersionBump: (_direction, _nextState) => {
+        return { seatVersion: 2 };
       },
       onSeatStateChanged: () => () => {},
       onSeatTruthChanged: () => () => {},

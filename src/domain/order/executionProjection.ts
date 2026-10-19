@@ -3,7 +3,7 @@ import { exactAdd, exactCompare } from '../../utils/numeric/exact.js';
 import type { BrokerOrderExecutionFact, OrderRecord } from '../../types/orderRecorder.js';
 
 import type { OrderFact } from '../../types/trade.js';
-import type { OwnedExecutionFact, PreparedExecutionCommit, ProjectionSliceInput } from './types.js';
+import type { OwnedExecutionFact, ProjectionSliceInput } from './types.js';
 import { applyFilteringAlgorithm } from './orderFilteringEngine.js';
 import { calculateTotalQuantity } from './orderQuantity.js';
 import { proportionExecutionCost } from './orderRecordPolicy.js';
@@ -40,8 +40,6 @@ export function factToRecord(fact: BrokerOrderExecutionFact): OrderRecord {
     costAmount: fact.cumulativeAmount,
     executedQuantity: fact.cumulativeQuantity,
     executedTime: fact.executionTimeMs,
-    submittedAt: undefined,
-    updatedAt: new Date(fact.updatedAtMs),
   };
 }
 
@@ -71,7 +69,7 @@ export function prepareExecutionCommit(
   previous: OwnedExecutionFact | undefined,
   relatedBuyOrderIds: ReadonlyArray<string>,
   admittedSequence: number,
-): PreparedExecutionCommit {
+): OwnedExecutionFact {
   if (previous !== undefined && previous.isLongSymbol !== isLongSymbol) {
     throw new Error('[订单记录] 同 broker identity 的方向归属冲突');
   }
@@ -107,25 +105,17 @@ export function prepareExecutionCommit(
     );
   }
 
-  return {
-    entry: Object.freeze({
-      fact,
-      isLongSymbol,
-      economicQuantity: terminal ? fact.cumulativeQuantity : economicQuantity,
-      projectionSlices: Object.freeze(slices),
-      relatedBuyOrderIds: Object.freeze(
-        economicQuantity === 0 && relatedBuyOrderIds.length > 0
-          ? [...relatedBuyOrderIds]
-          : [...(previous?.relatedBuyOrderIds ?? [])],
-      ),
-    }),
-    receipt: {
-      brokerOrderId: fact.brokerOrderId,
-      authoritativeFactChanged: fact !== previous?.fact,
-      executionAdvanced: fact.cumulativeQuantity > (previous?.fact.cumulativeQuantity ?? 0),
-      economicProjectionChanged: false,
-    },
-  };
+  return Object.freeze({
+    fact,
+    isLongSymbol,
+    economicQuantity: terminal ? fact.cumulativeQuantity : economicQuantity,
+    projectionSlices: Object.freeze(slices),
+    relatedBuyOrderIds: Object.freeze(
+      economicQuantity === 0 && relatedBuyOrderIds.length > 0
+        ? [...relatedBuyOrderIds]
+        : [...(previous?.relatedBuyOrderIds ?? [])],
+    ),
+  });
 }
 
 /** 所有已消费输入都由同 owner 保存；金额修订重跑原时序/低价优先整笔过滤。 */

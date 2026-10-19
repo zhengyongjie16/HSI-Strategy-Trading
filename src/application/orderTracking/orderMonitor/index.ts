@@ -848,12 +848,9 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
       pendingOrders.push({
         orderId: order.orderId,
-        symbol: order.symbol,
-        side: order.executionSide,
         status: order.status,
         orderType: order.orderType,
         isProtectiveLiquidation: order.isProtectiveLiquidation,
-        submittedPrice: order.submittedPrice,
         submittedQuantity: order.submittedQuantity,
         executedQuantity: order.executedQuantity,
         submittedAt: order.submittedAt,

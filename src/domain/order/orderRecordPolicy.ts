@@ -19,7 +19,7 @@ import {
   integerQuotient,
 } from '../../utils/numeric/exact.js';
 import { calculateTradingDurationMsBetween } from '../tradingSession/index.js';
-import type { OrderRebuildClassification, OrderStatistics } from './types.js';
+import type { OrderStatistics } from './types.js';
 
 /**
  * 校验精确金额、安全整数数量与独立可信执行时间。
@@ -28,7 +28,7 @@ import type { OrderRebuildClassification, OrderStatistics } from './types.js';
  * @param executedTimeMs 可信执行时间
  * @returns 无返回值；非法事实立即失败
  */
-export function assertCompleteExecutionFact(
+function assertCompleteExecutionFact(
   costAmount: string,
   executedQuantity: number,
   executedTimeMs: number,
@@ -134,7 +134,7 @@ export function proportionExecutionCost(
  * @param params 成交时间、当前时间、超时分钟及交易日历
  * @returns heldTradingMs 严格大于阈值时为 true
  */
-export function isOrderTimedOut(params: OrderTimeoutCheckParams): boolean {
+function isOrderTimedOut(params: OrderTimeoutCheckParams): boolean {
   const { orderExecutedTimeMs, nowMs, timeoutMinutes, calendarSnapshot } = params;
   if (!Number.isInteger(timeoutMinutes) || timeoutMinutes < 0) {
     return false;
@@ -153,13 +153,9 @@ export function isOrderTimedOut(params: OrderTimeoutCheckParams): boolean {
 /**
  * 从已映射 API 事实提取完整成本依据，不从均价往返成本。
  * @param order 中立金融字段 API 订单
- * @param isBuyOrder 是否保留提交时间
  * @returns 正成交记录或零成交的 null
  */
-function convertOrderToRecord(
-  order: OrderExecutionRecordObservation,
-  isBuyOrder: boolean,
-): OrderRecord | null {
+function convertOrderToRecord(order: OrderExecutionRecordObservation): OrderRecord | null {
   if (order.executedQuantity === 0) {
     if (exactCompare(order.executedAmount, '0') !== 0) {
       throw new Error('[订单记录] 零数量的累计金额冲突');
@@ -179,8 +175,6 @@ function convertOrderToRecord(
     costAmount: order.executedAmount,
     executedQuantity: order.executedQuantity,
     executedTime: order.executionTimeMs,
-    submittedAt: isBuyOrder ? order.submittedAt : undefined,
-    updatedAt: new Date(order.updatedAtMs),
   };
 }
 
@@ -196,7 +190,7 @@ export function classifyAndConvertOrders(orders: ReadonlyArray<OrderExecutionRec
   const buyOrders: OrderRecord[] = [];
   const sellOrders: OrderRecord[] = [];
   for (const order of orders) {
-    const record = convertOrderToRecord(order, order.executionSide === 'BUY');
+    const record = convertOrderToRecord(order);
     if (record === null) {
       continue;
     }
@@ -213,37 +207,21 @@ export function classifyAndConvertOrders(orders: ReadonlyArray<OrderExecutionRec
 
 /**
  * 预检完整重建事实，OPEN 的 partial 保留 pending、不提前做经济终态投影。
+ * 仅校验正成交完整性、方向归属与零成交终态，不产出分类结果。
  * @param orders 单标的全量 API 事实
- * @returns terminal 执行记录与 OPEN pending 分流
+ * @returns 无返回值；非法事实/指向不可归属立即失败
  */
-export function classifyOrdersForRebuild<T extends OrderExecutionRecordObservation>(
-  orders: ReadonlyArray<T>,
-): OrderRebuildClassification<T> {
-  const executedBuyOrders: OrderRecord[] = [];
-  const executedSellOrders: OrderRecord[] = [];
-  const pendingBuyOrders: T[] = [];
-  const pendingSellOrders: T[] = [];
+export function validateOrdersForRebuild(
+  orders: ReadonlyArray<OrderExecutionRecordObservation>,
+): void {
   for (const order of orders) {
-    const lifecycle = order.executionPhase;
-    const isBuyOrder = order.executionSide === 'BUY';
-    const isSellOrder = order.executionSide === 'SELL';
-    const record = convertOrderToRecord(order, isBuyOrder);
-    if (!isBuyOrder && !isSellOrder) {
-      if (record !== null || lifecycle === 'OPEN') {
-        throw new Error('[订单记录] 订单方向不可归属');
-      }
-
-      continue;
-    }
-
-    if (lifecycle === 'OPEN') {
-      (isBuyOrder ? pendingBuyOrders : pendingSellOrders).push(order);
-    } else if (record !== null) {
-      (isBuyOrder ? executedBuyOrders : executedSellOrders).push(record);
+    const record = convertOrderToRecord(order);
+    const sideOwned = ['BUY', 'SELL'].includes(order.executionSide);
+    // 零成交终态允许方向未归属；正成交或 OPEN 需要真实归属才能分流，否则立即失败。
+    if (!sideOwned && (record !== null || order.executionPhase === 'OPEN')) {
+      throw new Error('[订单记录] 订单方向不可归属');
     }
   }
-
-  return { executedBuyOrders, executedSellOrders, pendingBuyOrders, pendingSellOrders };
 }
 
 /**

@@ -162,11 +162,8 @@ async function createFixture() {
       getPendingSellOrders: () => [
         {
           orderId: tracked.orderId,
-          symbol: tracked.symbol,
-          side: tracked.side,
           status: tracked.status,
           orderType: tracked.orderType,
-          submittedPrice: tracked.submittedPrice,
           submittedQuantity: tracked.submittedQuantity,
           executedQuantity: tracked.executedQuantity,
           submittedAt: originTime,

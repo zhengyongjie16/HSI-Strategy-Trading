@@ -343,7 +343,6 @@ async function createHarness(
       }),
       logger: createLoggerDouble(),
     }),
-    reportFatalError: termination.reportFatalError,
   });
   const rebuild = createRebuildTradingDayState({
     snapshot,
@@ -452,8 +451,8 @@ describe('rebuild settlement readiness real owner integration', () => {
       await entered.promise;
       await f.snapshot.requestClear({ reason: 'DAY_CUT', dayEpoch: 2 });
       release.resolve();
-      const result = await opening;
-      expect(result.pendingOpenRebuild).toBe(true);
+      await opening;
+      expect(f.lifecycleState.pendingOpenRebuild).toBe(true);
       expect(f.lifecycleState.isTradingEnabled).toBe(false);
       expect(f.snapshot.getStatus().admission).toBe('CLOSED');
       expect(f.postTrade.getStatus()).toMatchObject({ currentVersion: 0, staleVersion: 1 });

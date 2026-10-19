@@ -212,13 +212,10 @@ describe('submitFlow staged error classification', () => {
         getPendingSellOrders: () =>
           observations.map((fact) => ({
             orderId: fact.orderId,
-            symbol: fact.symbol,
-            side: fact.executionSide,
             submittedQuantity: fact.quantity,
             executedQuantity: fact.executedQuantity,
             status: fact.status,
             orderType: fact.orderType,
-            submittedPrice: fact.price,
             submittedAt: EXECUTION_NOW_MS,
             isProtectiveLiquidation: false,
           })),
@@ -370,8 +367,6 @@ describe('submitFlow staged error classification', () => {
       costAmount: '500',
       executedQuantity: 100,
       executedTime: Date.now(),
-      submittedAt: undefined,
-      updatedAt: undefined,
     };
     const fixture = createSubmitFlowFixture({
       orderRecorder: createOrderRecorderDouble({

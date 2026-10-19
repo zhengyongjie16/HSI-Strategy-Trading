@@ -1,6 +1,5 @@
 import type { Logger } from '../../types/logger.js';
 import type { MonitorConfig } from '../../types/config.js';
-import type { OrderTypeConfig } from '../../types/signal.js';
 import {
   createConfigValidationError,
   getBooleanConfig,
@@ -9,7 +8,6 @@ import {
   parseLiquidationCooldownConfig,
   parseDecimalRangeConfig,
   parseOrderOwnershipMapping,
-  parseOrderTypeConfig,
   parseSmartCloseTimeoutMinutesConfig,
 } from '../utils.js';
 import type { BoundedNumberConfig } from './types.js';
@@ -196,19 +194,4 @@ export function parseMonitorConfig(logger: Logger, env: NodeJS.ProcessEnv): Moni
     smartCloseEnabled,
     smartCloseTimeoutMinutes,
   };
-}
-
-/**
- * 解析交易订单类型配置。
- * @param env 进程环境变量对象
- * @param envKey 环境变量键名
- * @param defaultType 默认订单类型
- * @returns 内部订单类型配置
- */
-export function parseTradingOrderType(
-  env: NodeJS.ProcessEnv,
-  envKey: string,
-  defaultType: OrderTypeConfig,
-): OrderTypeConfig {
-  return parseOrderTypeConfig(env, envKey, defaultType);
 }

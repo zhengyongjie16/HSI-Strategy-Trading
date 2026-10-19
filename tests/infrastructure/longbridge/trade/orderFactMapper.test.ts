@@ -182,7 +182,6 @@ test('query/detail/push publish the same neutral provenance, financial text and 
   expect(decoder.inspect()).toEqual({
     orderId: 'SELL-ORIGINAL',
     symbol: 'A.HK',
-    executionSide: 'SELL',
     executedQuantity: 100,
     updatedAtMs: 3000,
   });

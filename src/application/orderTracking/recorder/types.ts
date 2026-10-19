@@ -16,7 +16,6 @@ import type {
   SellableOrderSelectParams,
 } from '../../../types/orderRecorder.js';
 import type { OrderSnapshotReadPort } from '../../../types/orderSnapshotReadPorts.js';
-import type { Quote } from '../../../types/quote.js';
 
 import type { SettlementRefreshNeedRecorder } from '../../../types/settlement.js';
 import type { OrderFact } from '../../../types/trade.js';
@@ -34,7 +33,7 @@ export interface OrderStorage {
   setBuyOrdersListForLong: (symbol: string, newList: ReadonlyArray<OrderRecord>) => void;
   setBuyOrdersListForShort: (symbol: string, newList: ReadonlyArray<OrderRecord>) => void;
   setSellRecord: (record: OrderRecord) => void;
-  clearBuyOrders: (symbol: string, isLongSymbol: boolean, quote?: Quote | null) => void;
+  clearBuyOrders: (symbol: string, isLongSymbol: boolean) => void;
   getLatestBuyOrderCost: (symbol: string, isLongSymbol: boolean) => OrderCostBasis | null;
   getSellRecordByOrderId: (orderId: string) => OrderRecord | null;
 

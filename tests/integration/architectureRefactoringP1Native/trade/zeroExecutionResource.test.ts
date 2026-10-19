@@ -120,7 +120,7 @@ async function fixture() {
     isProtectiveLiquidation: false,
     orderType: 'ELO',
   });
-  recorder.submitSellOrder('RESOURCE', 'BULL.HK', 'LONG', 100, [], false, 1700000000000);
+  recorder.submitSellOrder('RESOURCE', 'BULL.HK', 'LONG', 100, [], 1700000000000);
   const tracked = runtime.trackedOrders.get('RESOURCE');
   if (tracked === undefined) throw new Error('actual tracking missing');
 

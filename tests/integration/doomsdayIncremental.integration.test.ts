@@ -498,7 +498,7 @@ describe('末日增量清仓的原 owner 有效性证明', () => {
         emitAutoSearchAuthorizationChanged: () => {},
       },
       dayLifecycleManager: {
-        tick: async () => ({ nextRetryAtMs: null, pendingOpenRebuild: false }),
+        tick: async () => ({ nextRetryAtMs: null }),
       },
       now: () => currentTime,
     };
@@ -550,7 +550,7 @@ describe('末日增量清仓的原 owner 有效性证明', () => {
     });
     // 原单已超时；ACK 后仍等原 owner 的 WebSocket 终态，不由末日撤单。
     f.monitor.trackOrder({ ...f.tracked('OLD', 100), submittedAtMs: NOW - 600_000 });
-    f.economic.recorder.submitSellOrder('OLD', 'BULL.HK', 'LONG', 100, [], false, NOW - 600_000);
+    f.economic.recorder.submitSellOrder('OLD', 'BULL.HK', 'LONG', 100, [], NOW - 600_000);
     f.native.setCancelBeforeReply(async () => {});
     f.monitor.startRuntime();
     await until(() => f.native.nativeReadCounts().cancel === 1);
@@ -587,7 +587,6 @@ describe('末日增量清仓的原 owner 有效性证明', () => {
       'LONG',
       60,
       ['BUY-LOW', 'BUY-MID'],
-      false,
       NOW - 1_000,
     );
     const result = await f.execute();
@@ -656,7 +655,6 @@ describe('末日增量清仓的原 owner 有效性证明', () => {
         'LONG',
         60,
         ['BUY-LOW', 'BUY-MID'],
-        false,
         NOW - 1_000,
       );
       const originalBuys = buys();

@@ -236,7 +236,6 @@ async function createHarness(
           orderId: 'OLD-SELL',
           symbol: 'OLD.HK',
           side: 'SELL',
-          source: 'WS',
           status: 'FILLED',
           monitorSymbol: 'HSI.HK',
           isLongSymbol: true,

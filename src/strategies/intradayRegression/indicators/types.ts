@@ -24,7 +24,6 @@ export type PsyStreamState = {
  * 使用范围：仅 indicators/runtime 模块内部使用。
  */
 export type MacdStreamState = {
-  readonly fastPeriod: number;
   readonly slowPeriod: number;
   readonly signalPeriod: number;
   fastEmaState: EmaStreamState;

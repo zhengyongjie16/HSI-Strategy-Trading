@@ -22,6 +22,7 @@ import {
   assertProtectiveSellRawTerminalStateFactsReady,
   normalizeTerminalStateSnapshot,
 } from '../../../domain/order/orderFactMerge.js';
+import { isTerminalOrderReadStatus } from '../../../domain/order/orderReadLifecycle.js';
 import {
   canAttemptTimeoutHandling,
   canHandleClosedTimeoutRoute,
@@ -33,7 +34,6 @@ import {
 } from '../../../domain/order/orderTimeoutPolicy.js';
 import {
   calculatePriceDifference,
-  isClosedStatus,
   isWaitWsOnlyReplaceMode,
   normalizePriceText,
 } from '../../../domain/order/orderTrackingPolicy.js';
@@ -522,7 +522,6 @@ async function submitTimeoutMarketOrder(
       direction,
       marketConversionQuantity,
       relatedBuyOrderIds,
-      order.isProtectiveLiquidation,
       deps.now().getTime(),
     );
     deps.releaseSellHandoff(order.orderId, order.symbol);
@@ -693,7 +692,7 @@ function shouldHandleTimeout(deps: RouteProcessorDeps, order: OrderMonitorTracke
     return false;
   }
 
-  if (isClosedStatus(order.status) && !canHandleClosedTimeoutRoute(order)) {
+  if (isTerminalOrderReadStatus(order.status) && !canHandleClosedTimeoutRoute(order)) {
     return false;
   }
 
@@ -831,19 +830,16 @@ function applyQuoteRetryForUnavailableQuote(order: OrderMonitorTrackedOrder, now
   if (nextRetry.exhausted) {
     order.quoteRetryAttempts = nextRetry.nextAttempts;
     order.quoteRetryNextAt = null;
-    order.quoteRetryExhausted = true;
     return;
   }
 
   order.quoteRetryAttempts = nextRetry.nextAttempts;
   order.quoteRetryNextAt = nextRetry.nextRetryAt;
-  order.quoteRetryExhausted = false;
 }
 
 function resetQuoteRetryState(order: OrderMonitorTrackedOrder): void {
   order.quoteRetryAttempts = 0;
   order.quoteRetryNextAt = null;
-  order.quoteRetryExhausted = false;
 }
 
 function shouldAdvanceQuoteRetryFromTimer(

@@ -72,14 +72,13 @@ export type QuoteUpdatedEvent = {
 };
 
 /**
- * 标准化 K 线更新事件。
- * 数据来源：market adapter 在推送更新本地缓存后发布。
- * 使用范围：普通信号宿主与策略，只读取当前权威缓存快照。
+ * 标准化 K 线更新通知。
+ * 数据来源：market adapter 在推送更新本地缓存后发布，只携带标的与周期。
+ * 使用范围：普通信号宿主与策略；收到通知后读取当前权威缓存快照。
  */
 export type CandlestickUpdatedEvent = {
   readonly symbol: string;
   readonly period: CandlestickPeriod;
-  readonly snapshot: CandlestickCacheSnapshot;
 };
 
 /**
@@ -107,28 +106,25 @@ export type MarketWarrantListRequest = Readonly<{
 
 /**
  * 轮证报价最小事实。
- * 数据来源：market adapter 将 warrantQuote 金融原文适配为文本。
+ * 数据来源：market adapter 将 warrantQuote 金融原文适配为文本；标的身份由 adapter 对原始 SDK 行校验，不随事实输出。
  * 使用范围：轮证风险刷新；结构字段保留原缺失语义，不伪造回收价。
  */
 export type MarketWarrantQuote = {
-  readonly symbol: string;
   readonly callPrice?: string | null | undefined;
   readonly category?: number | string | null;
 };
 
 /**
  * 轮证列表最小事实。
- * 数据来源：market adapter 将 warrantList 金融原文适配为文本。
+ * 数据来源：market adapter 将 warrantList 金融原文适配为文本；name/lastDone/warrantType 由 adapter 校验原始
+ * SDK 字段（保持原校验顺序），三者均不随事实输出。
  * 使用范围：候选筛选与寻标缓存；toCallPrice 保留外部小数比值口径。
  */
 export type MarketWarrantListItem = {
   readonly symbol: string;
-  readonly name?: string | null;
-  readonly lastDone: string | null | undefined;
   readonly toCallPrice: string | null | undefined;
   readonly callPrice?: string | null | undefined;
   readonly turnover: string | null | undefined;
-  readonly warrantType: number | string | null | undefined;
   readonly status: 'NORMAL' | 'NON_NORMAL' | null | undefined;
 };
 

@@ -127,7 +127,6 @@ function resolveEvaluatedWarrantCandidate(
 
   return {
     symbol: warrant.symbol,
-    name: warrant.name ?? null,
     callPrice,
     distancePct,
     turnover,
@@ -168,10 +167,8 @@ function shouldReplaceBestCandidate(
 function toWarrantCandidate(candidate: RankedWarrantCandidate): WarrantCandidate {
   return {
     symbol: candidate.symbol,
-    name: candidate.name,
     callPrice: candidate.callPrice,
     distancePct: candidate.distancePct,
-    turnover: candidate.turnover,
     turnoverPerMinute:
       candidate.tradingMinutes === '0'
         ? '0'

@@ -80,13 +80,18 @@ function createTradingConfig(
   return createTradingConfigFactory({ monitor });
 }
 
+/** loader 测试夹具：除注入依赖外保留真实 termination 的 reportFatalError，供 snapshot fatal 验证使用。 */
+type LoadTradingDayRuntimeSnapshotHarness = LoadTradingDayRuntimeSnapshotDeps & {
+  readonly reportFatalError: (error: unknown) => void;
+};
+
 function createBaseDeps(
-  overrides: Partial<LoadTradingDayRuntimeSnapshotDeps> & {
+  overrides: Partial<LoadTradingDayRuntimeSnapshotHarness> & {
     readonly accountService?: AccountService;
     readonly orderMonitor?: ReturnType<typeof createTradeRuntimeDouble>['orderMonitor'];
     readonly orderRecorder?: ReturnType<typeof createTradeRuntimeDouble>['orderRecorder'];
   } = {},
-): LoadTradingDayRuntimeSnapshotDeps {
+): LoadTradingDayRuntimeSnapshotHarness {
   const tradingConfig = overrides.tradingConfig ?? createTradingConfig();
   const marketDataClient = overrides.marketDataClient ?? createMarketDataClientDouble();
   const tradeRuntime = createTradeRuntimeDouble();
@@ -269,6 +274,9 @@ function createAutoSearchMonitor(): LoadTradingDayRuntimeSnapshotDeps['tradingCo
   });
 }
 
+/** 中性列表项不再携带牛熊类型；harness 保留创建时类型以模拟 adapter 按 request.types 过滤。 */
+const warrantTypesByItem = new WeakMap<object, 'BULL' | 'BEAR'>();
+
 function createWarrantInfo(params: {
   readonly symbol: string;
   readonly warrantType: 'Bull' | 'Bear';
@@ -276,16 +284,15 @@ function createWarrantInfo(params: {
   readonly turnover: string;
   readonly callPrice: string;
 }): Awaited<ReturnType<MarketQuoteContext['warrantList']>>[number] {
-  return {
+  const item = {
     symbol: params.symbol,
-    name: params.symbol,
-    lastDone: '0.1',
     toCallPrice: params.apiDistanceRatio,
     turnover: params.turnover,
     callPrice: params.callPrice,
-    warrantType: params.warrantType,
-    status: 'NORMAL',
+    status: 'NORMAL' as const,
   };
+  warrantTypesByItem.set(item, params.warrantType === 'Bull' ? 'BULL' : 'BEAR');
+  return item;
 }
 
 function createWarrantQuoteContextHarness() {
@@ -294,9 +301,10 @@ function createWarrantQuoteContextHarness() {
   const port: MarketQuoteContext = createQuoteContextDouble({
     warrantList: async (request) => {
       calls.push(request);
-      return (lists.get(request.symbol) ?? []).filter((item) =>
-        request.types.includes(item.warrantType === 'Bull' ? 'BULL' : 'BEAR'),
-      );
+      return (lists.get(request.symbol) ?? []).filter((item) => {
+        const warrantType = warrantTypesByItem.get(item);
+        return warrantType !== undefined && request.types.includes(warrantType);
+      });
     },
   });
   return {

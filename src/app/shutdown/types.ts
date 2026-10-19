@@ -36,11 +36,10 @@ export type RegisteredCleanupStep = CleanupStep &
 
 /**
  * 退出清理失败条目。
- * 类型用途：记录单个 cleanup 步骤失败的步骤名与原始错误。
+ * 类型用途：记录单个 cleanup 步骤失败时的原始错误。
  * 数据来源：由 createCleanup 在执行各清理步骤时收集。
  * 使用范围：仅 app cleanup 装配链路内部使用。
  */
 export type CleanupFailure = Readonly<{
-  step: string;
   error: unknown;
 }>;

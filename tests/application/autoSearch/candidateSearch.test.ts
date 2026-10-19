@@ -33,12 +33,9 @@ function createLoggerRecorder() {
 function createWarrant(overrides: Partial<MarketWarrantListItem> = {}): MarketWarrantListItem {
   return {
     symbol: 'BULL-1.HK',
-    name: 'BULL-1.HK',
-    lastDone: '0.07',
     callPrice: '20000.1234567890123456789',
     toCallPrice: '0.003500000000000000001',
     turnover: '3000000.000000000000000001',
-    warrantType: 'BULL',
     status: 'NORMAL',
     ...overrides,
   };

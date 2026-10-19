@@ -142,10 +142,8 @@ export function createWarrantCandidateWithOverrides(
 ): WarrantCandidate {
   return {
     symbol,
-    name: symbol,
     callPrice: '21000',
     distancePct: '0.5',
-    turnover: '1000000',
     turnoverPerMinute: '100000',
     selectionStage: 'PRIMARY',
     distanceDeltaToThreshold: '0.15',

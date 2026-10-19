@@ -321,7 +321,6 @@ export function createStartupRecoveryHarness(
     createLifecycleRuntime: () => ({
       tick: async () => ({
         nextRetryAtMs: null,
-        pendingOpenRebuild: stateFixtures.lifecycleState.pendingOpenRebuild,
       }),
     }),
     createCleanup,

@@ -242,7 +242,6 @@ function createPostGateRuntimeFactory(
       },
       reportFatalError: termination.reportFatalError,
     });
-    resources.snapshot = snapshot;
     let snapshotDrain: Promise<void> | null = null;
     const closeSnapshotAdmission = (): void => {
       if (snapshotDrain !== null) return;
@@ -409,7 +408,6 @@ function createPostGateRuntimeFactory(
       protectionRecovery: postTradeConsistencyRuntime,
       startupSeatSearch,
       seatActivationDispatcher,
-      reportFatalError: termination.reportFatalError,
     });
     const marketMonitor = createMarketMonitor();
     const doomsdayClearanceWorkflow = createDoomsdayClearanceWorkflow({

@@ -622,7 +622,7 @@ describe('createDayLifecycleManager', () => {
       const monitorContext = createMonitorContextDouble({
         symbolRegistry,
         riskChecker: createRiskCheckerDouble({
-          setWarrantInfoFromCallPrice: () => ({ status: 'ok', isWarrant: true }),
+          setWarrantInfoFromCallPrice: () => ({ status: 'ok' }),
         }),
       });
       const rebuildTradingDayState = createRebuildTradingDayState({
@@ -840,7 +840,7 @@ describe('createDayLifecycleManager', () => {
         createRuntime({ dayKey: '2026-04-30', isTradingDay: true, canTradeNow: false }),
       );
       expect(midnightResult.nextRetryAtMs).toBeNull();
-      expect(midnightResult.pendingOpenRebuild).toBe(true);
+      expect(mutableState.pendingOpenRebuild).toBe(true);
       expect(mutableState.lifecycleState).toBe('MIDNIGHT_CLEANED');
 
       const openResult = await manager.tick(
@@ -848,7 +848,7 @@ describe('createDayLifecycleManager', () => {
         createRuntime({ dayKey: '2026-04-30', isTradingDay: true, canTradeNow: true }),
       );
       expect(openResult.nextRetryAtMs).toBeNull();
-      expect(openResult.pendingOpenRebuild).toBe(false);
+      expect(mutableState.pendingOpenRebuild).toBe(false);
       expect(mutableState.lifecycleState).toBe('ACTIVE');
       expect(mutableState.isTradingEnabled).toBe(true);
       expect(order).toEqual(['open', 'midnight', 'open']);
@@ -891,7 +891,7 @@ describe('createDayLifecycleManager', () => {
       });
 
       expect(result.nextRetryAtMs).toBe(now.getTime() + 1_000);
-      expect(result.pendingOpenRebuild).toBe(false);
+      expect(mutableState.pendingOpenRebuild).toBe(false);
       expect(mutableState.isTradingEnabled).toBe(false);
     });
 
@@ -933,7 +933,7 @@ describe('createDayLifecycleManager', () => {
       });
 
       expect(result.nextRetryAtMs).toBe(now.getTime() + 2_000);
-      expect(result.pendingOpenRebuild).toBe(true);
+      expect(mutableState.pendingOpenRebuild).toBe(true);
       expect(mutableState.lifecycleState).toBe('OPEN_REBUILD_FAILED');
       expect(mutableState.isTradingEnabled).toBe(false);
     });
@@ -964,7 +964,7 @@ describe('createDayLifecycleManager', () => {
       });
 
       expect(result.nextRetryAtMs).toBeNull();
-      expect(result.pendingOpenRebuild).toBe(false);
+      expect(mutableState.pendingOpenRebuild).toBe(false);
       expect(mutableState.lifecycleState).toBe('ACTIVE');
       expect(mutableState.isTradingEnabled).toBe(true);
     });

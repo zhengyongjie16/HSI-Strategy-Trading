@@ -11,7 +11,6 @@ export type OrderExecutionPriceEvidence = BrokerOrderExecutionFact &
 export type OrderPushReadFact = Readonly<{
   orderId: string;
   symbol: string;
-  executionSide: 'BUY' | 'SELL';
   executedQuantity: number;
   updatedAtMs: number;
 }>;

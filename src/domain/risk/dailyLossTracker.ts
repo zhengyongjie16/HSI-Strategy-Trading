@@ -214,8 +214,6 @@ function buildStateFromFacts(
       costAmount: segmentAmount,
       executedQuantity: segmentQuantity,
       executedTime: fact.lastExecutionTimeMs,
-      submittedAt: undefined,
-      updatedAt: new Date(fact.orderUpdatedAtMs),
     };
     if (fact.side === 'BUY') {
       buyOrders.push(record);

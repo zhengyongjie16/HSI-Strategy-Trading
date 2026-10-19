@@ -82,7 +82,7 @@ async function createHarness(
   const recorder = createOrderRecorderDouble({
     commitRebuildSnapshot: () => {
       writes.push('orders');
-      return { status: 'COMMITTED', receipts: [] };
+      return { status: 'COMMITTED' };
     },
   });
   const context = createMonitorContextDouble({
@@ -95,7 +95,7 @@ async function createHarness(
       },
       setWarrantInfoFromCallPrice: () => {
         writes.push('warrant');
-        return { status: 'ok', isWarrant: true };
+        return { status: 'ok' };
       },
     }),
   });

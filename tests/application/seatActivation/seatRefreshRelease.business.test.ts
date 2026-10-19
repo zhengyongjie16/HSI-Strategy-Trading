@@ -16,7 +16,7 @@ import {
  */
 
 import { describe, expect, it, spyOn } from 'bun:test';
-import { classifyOrdersForRebuild } from '../../../src/domain/order/orderRecordPolicy.js';
+import { validateOrdersForRebuild } from '../../../src/domain/order/orderRecordPolicy.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import type { Quote } from '../../../src/types/quote.js';
@@ -98,7 +98,7 @@ async function createActivationProtocolFixture() {
   spyOn(context.orderRecorder, 'validateRebuildSnapshot').mockImplementation((symbol, orders) => {
     stages.push(`preflight:${symbol}`);
     expect(orders).toBe(allOrders);
-    classifyOrdersForRebuild(orders.filter((order) => order.symbol === symbol));
+    validateOrdersForRebuild(orders.filter((order) => order.symbol === symbol));
   });
 
   spyOn(context.orderRecorder, 'commitRebuildSnapshot').mockImplementation(

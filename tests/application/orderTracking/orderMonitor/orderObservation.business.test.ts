@@ -345,9 +345,15 @@ describe('order observation authoritative boundaries', () => {
       DIAGNOSTIC_OPERATIONS.ORDER_TERMINAL_CONFIRMED,
     ]);
 
+    // 确认来源仍由真实诊断字段保留，lifecycle 只留存在标记。
+    expect(h.records[0]?.fields).toMatchObject({
+      orderId: recoveryOrder.orderId,
+      source: 'RECOVERY',
+    });
+
     expect(h.runtime.trackedOrderLifecycles.get(recoveryOrder.orderId)).toMatchObject({
       state: null,
-      terminalConfirmation: { source: 'RECOVERY' },
+      terminalConfirmed: true,
     });
   });
 });

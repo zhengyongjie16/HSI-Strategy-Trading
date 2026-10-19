@@ -34,7 +34,6 @@ import { waitUntil } from '../helpers/asyncProgram.js';
 import type { Position } from '../../src/types/account.js';
 import type { Quote } from '../../src/types/quote.js';
 import type { MarketDataClient } from '../../src/types/marketPorts.js';
-import type { OrderHoldSymbolsChangedEvent } from '../../src/types/orderHold.js';
 import type { SymbolRegistry } from '../../src/types/seat.js';
 import type { MonitorTaskDataMap } from '../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 
@@ -52,13 +51,11 @@ const ORDER_SYMBOL = 'ORDER.HK';
  */
 function createOrderHoldSource(initialSymbols: ReadonlyArray<string>) {
   const holdSymbols = new Set(initialSymbols);
-  const listeners = new Set<(event: OrderHoldSymbolsChangedEvent) => void>();
+  const listeners = new Set<() => void>();
 
   return {
     getOrderHoldSymbols: (): Set<string> => new Set(holdSymbols),
-    onOrderHoldSymbolsChanged: (
-      listener: (event: OrderHoldSymbolsChangedEvent) => void,
-    ): (() => void) => {
+    onOrderHoldSymbolsChanged: (listener: () => void): (() => void) => {
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
@@ -67,13 +64,13 @@ function createOrderHoldSource(initialSymbols: ReadonlyArray<string>) {
     add: (symbol: string): void => {
       holdSymbols.add(symbol);
       for (const listener of listeners) {
-        listener({ symbol, action: 'ADDED' });
+        listener();
       }
     },
     remove: (symbol: string): void => {
       holdSymbols.delete(symbol);
       for (const listener of listeners) {
-        listener({ symbol, action: 'REMOVED' });
+        listener();
       }
     },
   };

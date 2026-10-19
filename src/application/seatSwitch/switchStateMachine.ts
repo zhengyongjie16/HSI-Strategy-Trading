@@ -324,7 +324,7 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     readonly nowDate: Date;
     readonly lastSwitchAt: number | null;
     readonly bumpVersion: boolean;
-  }): boolean {
+  }): void {
     const { direction, currentSeat, nowDate, lastSwitchAt, bumpVersion } = params;
     const nowMs = nowDate.getTime();
     const hkDateKey = getHKDateKey(nowDate);
@@ -356,8 +356,6 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
         `[自动换标] ${monitorSymbol} ${direction} 当日寻标失败达 ${nextFailCount} 次，席位冻结`,
       );
     }
-
-    return true;
   }
 
   /**
@@ -379,17 +377,13 @@ export function createSwitchStateMachine(deps: SwitchStateMachineDeps): SwitchSt
     // 原票有效时先关闭原周期等待；EMPTY/version bump后不能用旧ACTIVE票自否认已提交收口。
     if (!clearPeriodicPending(direction, canContinue)) return false;
 
-    if (
-      !clearSeatWithSearchFailure({
-        direction,
-        currentSeat,
-        nowDate,
-        lastSwitchAt: nowMs,
-        bumpVersion: true,
-      })
-    ) {
-      return false;
-    }
+    clearSeatWithSearchFailure({
+      direction,
+      currentSeat,
+      nowDate,
+      lastSwitchAt: nowMs,
+      bumpVersion: true,
+    });
 
     logger.info(
       `[自动换标] ${monitorSymbol} ${direction} 周期换标无候选，清空席位 oldSymbol=${currentSeat.symbol ?? 'null'}`,

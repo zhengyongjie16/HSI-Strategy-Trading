@@ -20,8 +20,6 @@ function makeOrder(
     costAmount,
     executedQuantity: quantity,
     executedTime: time,
-    submittedAt: undefined,
-    updatedAt: undefined,
   };
 }
 

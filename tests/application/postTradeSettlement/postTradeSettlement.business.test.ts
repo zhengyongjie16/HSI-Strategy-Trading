@@ -338,7 +338,6 @@ describe('PostTradeSettlementWorkflow', () => {
     await manualScheduler.runNext(0);
     const first = await firstWait;
 
-    expect(first.ready).toBe(true);
     expect(first.snapshotToken).toEqual(snapshot.getView().token);
     expect(first.settlementVersion).toBe(1);
     expect(runtime.isCurrent(first)).toBe(true);

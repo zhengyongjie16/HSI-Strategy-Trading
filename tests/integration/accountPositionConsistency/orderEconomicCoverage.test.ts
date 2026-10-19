@@ -109,17 +109,19 @@ describe('same-instance economic coverage across neutral API and online facts', 
       [],
       () => 'ADMITTED',
     );
-    const receipt = owner.commitExecutionFact(terminal, true, [], () => 'ADMITTED');
-    expect(receipt.executionAdvanced).toBe(false);
-    expect(receipt.economicProjectionChanged).toBe(true);
+    const beforeTerminal = owner.getExecutionFact('PHASE-BUY');
+    owner.commitExecutionFact(terminal, true, [], () => 'ADMITTED');
+    // 同量 OPEN->TERMINAL 不推进数量，只补上终态经济投影。
+    expect(owner.getExecutionFact('PHASE-BUY')?.cumulativeQuantity).toBe(
+      beforeTerminal?.cumulativeQuantity,
+    );
+    expect(owner.getExecutionFact('PHASE-BUY')?.phase).toBe('TERMINAL');
     expect(owner.getCostBasis('COVERED.HK', true)).toEqual({ costAmount: '45', quantity: 5 });
     expect(
       owner.commitRebuildSnapshot(targets, observations, () => true, 'ACTIVATION').status,
     ).toBe('COMMITTED');
 
-    expect(
-      owner.commitExecutionFact(terminal, true, [], () => 'DUPLICATE').economicProjectionChanged,
-    ).toBe(false);
+    owner.commitExecutionFact(terminal, true, [], () => 'DUPLICATE');
     risk.publish(risk.prepare(owner, 'COVERED.HK', true, '0'));
     expect(risk.getUnrealizedLossData('COVERED.HK')).toEqual({ r1: '45', n1: 5 });
     const earlier = {
@@ -134,14 +136,12 @@ describe('same-instance economic coverage across neutral API and online facts', 
       cumulativeAmount: '100',
       executionTimeMs: 2010,
     };
-    expect(owner.commitExecutionFact(advanced, true, [], () => 'ADMITTED').executionAdvanced).toBe(
-      true,
-    );
+    owner.commitExecutionFact(advanced, true, [], () => 'ADMITTED');
+    expect(owner.getExecutionFact('SAME-REVISION')?.cumulativeQuantity).toBe(100);
     expect(owner.getExecutionFact('SAME-REVISION')?.updatedAtMs).toBe(2030);
-    expect(
-      owner.commitExecutionFact({ ...advanced, phase: 'TERMINAL' }, true, [], () => 'ADMITTED')
-        .executionAdvanced,
-    ).toBe(false);
+    owner.commitExecutionFact({ ...advanced, phase: 'TERMINAL' }, true, [], () => 'ADMITTED');
+    expect(owner.getExecutionFact('SAME-REVISION')?.cumulativeQuantity).toBe(100);
+    expect(owner.getExecutionFact('SAME-REVISION')?.phase).toBe('TERMINAL');
     expect(owner.getCostBasis('COVERED.HK', true)).toEqual({ costAmount: '145', quantity: 105 });
     expect(io.calls).toEqual([]);
   });
@@ -175,15 +175,18 @@ describe('same-instance economic coverage across neutral API and online facts', 
       'BUY150',
     ]);
 
+    const retained = owner.getBuyOrdersForSymbol('COVERED.HK', true).map((order) => order.orderId);
     for (const original of [buy150, buy50, sell100]) {
-      expect(
-        owner.commitExecutionFact(original, true, [], () => 'DUPLICATE').economicProjectionChanged,
-      ).toBe(false);
+      owner.commitExecutionFact(original, true, [], () => 'DUPLICATE');
     }
 
+    expect(owner.getBuyOrdersForSymbol('COVERED.HK', true).map((order) => order.orderId)).toEqual(
+      retained,
+    );
+
     const sell200 = fact('CUMULATIVE-SELL', 'SELL', 200, '240', 1300);
-    const receipt = owner.commitExecutionFact(sell200, true, [], () => 'ADMITTED');
-    expect(receipt.executionAdvanced).toBe(true);
+    owner.commitExecutionFact(sell200, true, [], () => 'ADMITTED');
+    expect(owner.getExecutionFact('CUMULATIVE-SELL')?.cumulativeQuantity).toBe(200);
     // 同一 SELL 的累计 200 应整笔覆盖两张 BUY，不能把 100/100 当两笔卖出。
     expect(owner.getBuyOrdersForSymbol('COVERED.HK', true)).toEqual([]);
     expect(owner.getCostBasis('COVERED.HK', true)).toBeNull();
@@ -198,13 +201,9 @@ describe('same-instance economic coverage across neutral API and online facts', 
       ).status,
     ).toBe('COMMITTED');
 
-    expect(
-      owner.commitExecutionFact(sell200, true, [], () => 'DUPLICATE').economicProjectionChanged,
-    ).toBe(false);
+    owner.commitExecutionFact(sell200, true, [], () => 'DUPLICATE');
 
-    expect(
-      owner.commitExecutionFact(buy150, true, [], () => 'DUPLICATE').economicProjectionChanged,
-    ).toBe(false);
+    owner.commitExecutionFact(buy150, true, [], () => 'DUPLICATE');
     expect(owner.getBuyOrdersForSymbol('COVERED.HK', true)).toEqual([]);
     expect(io.calls).toEqual([]);
   });
@@ -225,10 +224,10 @@ describe('same-instance economic coverage across neutral API and online facts', 
     owner.commitRebuildSnapshot(targets, [apiOrder(original)], () => true, 'ACTIVATION');
     owner.clearBuyOrders('COVERED.HK', true);
     const corrected = { ...original, cumulativeAmount: '150.00000000000000015', updatedAtMs: 1100 };
-    const correction = owner.commitExecutionFact(corrected, true, [], () => 'ADMITTED');
-    expect(correction.authoritativeFactChanged).toBe(true);
-    expect(correction.executionAdvanced).toBe(false);
-    expect(correction.economicProjectionChanged).toBe(false);
+    owner.commitExecutionFact(corrected, true, [], () => 'ADMITTED');
+    // 权威事实变化但清理后的经济范围不复活；数量未推进。
+    expect(owner.getExecutionFact(original.brokerOrderId)?.cumulativeQuantity).toBe(150);
+    expect(owner.getBuyOrdersForSymbol('COVERED.HK', true)).toEqual([]);
     expect(owner.getExecutionFact(original.brokerOrderId)?.cumulativeAmount).toBe(
       '150.00000000000000015',
     );
@@ -243,9 +242,7 @@ describe('same-instance economic coverage across neutral API and online facts', 
     expect(owner.getCostBasis('COVERED.HK', true)).toEqual({ costAmount: '350', quantity: 250 });
     risk.publish(risk.prepare(owner, 'COVERED.HK', true, '0'));
     expect(risk.getUnrealizedLossData('COVERED.HK')).toEqual({ r1: '350', n1: 250 });
-    expect(
-      owner.commitExecutionFact(later, true, [], () => 'DUPLICATE').economicProjectionChanged,
-    ).toBe(false);
+    owner.commitExecutionFact(later, true, [], () => 'DUPLICATE');
     expect(io.calls).toEqual([]);
   });
 
@@ -261,24 +258,25 @@ describe('same-instance economic coverage across neutral API and online facts', 
     owner.commitExecutionFact(partial, true, [], () => 'ADMITTED');
     expect(owner.getCostBasis('COVERED.HK', true)).toBeNull();
     const terminal = { ...partial, phase: 'TERMINAL' as const, updatedAtMs: 1100 };
-    const first = owner.commitExecutionFact(terminal, true, [], () => 'ADMITTED');
-    expect(first.executionAdvanced).toBe(false);
-    expect(first.economicProjectionChanged).toBe(true);
+    const beforeTerminal = owner.getExecutionFact('PARTIAL-BUY');
+    owner.commitExecutionFact(terminal, true, [], () => 'ADMITTED');
+    expect(owner.getExecutionFact('PARTIAL-BUY')?.cumulativeQuantity).toBe(
+      beforeTerminal?.cumulativeQuantity,
+    );
     expect(owner.getCostBasis('COVERED.HK', true)).toEqual({ costAmount: '100', quantity: 100 });
-    owner.submitSellOrder('RESOURCE-SELL', 'COVERED.HK', 'LONG', 100, ['PARTIAL-BUY'], false, 1200);
+    owner.submitSellOrder('RESOURCE-SELL', 'COVERED.HK', 'LONG', 100, ['PARTIAL-BUY'], 1200);
     const sell = fact('RESOURCE-SELL', 'SELL', 100, '110', 1300);
     owner.commitExecutionFact(sell, true, [], () => 'ADMITTED');
+    expect(owner.getSellRecordByOrderId('RESOURCE-SELL')?.executedQuantity).toBe(100);
     expect(owner.getCostBasis('COVERED.HK', true)).toBeNull();
     expect(owner.getPendingSellSnapshot()).toHaveLength(1);
-    const replay = owner.commitExecutionFact(sell, true, [], () => 'DUPLICATE');
-    expect(replay.economicProjectionChanged).toBe(false);
+    owner.commitExecutionFact(sell, true, [], () => 'DUPLICATE');
     expect(owner.getPendingSellSnapshot()).toHaveLength(1);
+    expect(owner.getCostBasis('COVERED.HK', true)).toBeNull();
     expect(owner.markSellFilled('RESOURCE-SELL')?.orderId).toBe('RESOURCE-SELL');
     expect(owner.markSellFilled('RESOURCE-SELL')).toBeNull();
     expect(owner.getPendingSellSnapshot()).toEqual([]);
-    expect(
-      owner.commitExecutionFact(terminal, true, [], () => 'DUPLICATE').economicProjectionChanged,
-    ).toBe(false);
+    owner.commitExecutionFact(terminal, true, [], () => 'DUPLICATE');
     expect(owner.getBuyOrdersForSymbol('COVERED.HK', true)).toEqual([]);
     expect(io.calls).toEqual([]);
   });

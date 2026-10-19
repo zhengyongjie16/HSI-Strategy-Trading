@@ -233,44 +233,8 @@ export type BuyThrottleDeps = Readonly<{
   readonly clock: RuntimeClock;
 }>;
 
-/**
- * 卖出数量新鲜度解析结果。
- * 类型用途：同时保留账户刚读取的可卖上限与当前信号允许提交的数量，供撤单后的重规划统一裁剪。
- * 数据来源：QuantityResolver 对 TradeContext.stockPositions 的实时读取。
- * 使用范围：仅 orderExecutor/submitFlow.ts 使用。
- */
-export type SellQuantityResolution = {
-  readonly availableQuantity: number;
-  readonly submittedQuantity: number;
-};
-
-/**
- * 数量解析器接口。
- * 类型用途：以金融文本接收预算与最终价格，仅返回已证明的安全整数数量，避免域内持有 SDK Decimal。
- * 数据来源：由 createQuantityResolver 工厂创建。
- * 使用范围：仅 orderExecutor 目录内部使用。
- */
-export interface QuantityResolver {
-  calculateSellQuantity: (
-    symbol: string,
-    signal: Signal,
-    authorizeOrderAction: SignalCallerAuthorization,
-  ) => Promise<SellQuantityResolution>;
-  readFreshAvailableSellQuantity: (
-    symbol: string,
-    authorizeOrderAction: SignalCallerAuthorization,
-  ) => Promise<number>;
-  resolveBuyQuantity: (
-    signal: Signal,
-    isShortSymbol: boolean,
-    targetNotional: string,
-    finalPrice: string,
-    finalLotSize: number | undefined,
-  ) => number;
-}
-
 /** 执行器只使既有订单缓存失效，不读写第二订单账。 */
-export interface OrderExecutionCacheInvalidator {
+interface OrderExecutionCacheInvalidator {
   clearCache: () => void;
 }
 

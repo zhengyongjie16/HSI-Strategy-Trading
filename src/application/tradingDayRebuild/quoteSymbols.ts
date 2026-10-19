@@ -7,18 +7,14 @@ import type { SymbolRegistry } from '../../types/seat.js';
 /**
  * 收集运行时需要获取行情的标的代码集合（监控标的 + 席位占用标的 + 持仓标的 + 订单持有标的）。默认行为：合并去重后返回 Set。
  *
- * @param monitorConfig 唯一监控配置（monitorSymbol、longSymbol、shortSymbol）
+ * @param monitorConfig 唯一监控配置（monitorSymbol）
  * @param symbolRegistry 标的注册表，用于解析席位当前占用标的
  * @param positions 当前持仓数组
  * @param orderHoldSymbols 订单持有标的集合
  * @returns 需要拉取行情的标的代码集合
  */
 export function collectRuntimeQuoteSymbols(
-  monitorConfig: {
-    readonly monitorSymbol: string;
-    readonly longSymbol: string;
-    readonly shortSymbol: string;
-  },
+  monitorConfig: { readonly monitorSymbol: string },
   symbolRegistry: SymbolRegistry,
   positions: ReadonlyArray<Position>,
   orderHoldSymbols: ReadonlySet<string>,
@@ -42,22 +38,15 @@ export function collectRuntimeQuoteSymbols(
 /**
  * 收集所有需要获取行情的标的代码（监控标的 + 席位占用标的），供运行时快照与订阅链路批量拉取行情。
  *
- * @param monitorConfig 唯一监控配置（monitorSymbol、longSymbol、shortSymbol）
- * @param symbolRegistry 标的注册表，可选；传入时从席位状态解析做多/做空占用标的并加入集合
+ * @param monitorConfig 唯一监控配置（monitorSymbol）
+ * @param symbolRegistry 标的注册表，用于从席位状态解析做多/做空占用标的并加入集合
  * @returns 需要拉取行情的标的代码集合
  */
 function collectAllQuoteSymbols(
-  monitorConfig: {
-    readonly monitorSymbol: string;
-    readonly longSymbol: string;
-    readonly shortSymbol: string;
-  },
-  symbolRegistry?: SymbolRegistry | null,
+  monitorConfig: { readonly monitorSymbol: string },
+  symbolRegistry: SymbolRegistry,
 ): Set<string> {
   const symbols = [monitorConfig.monitorSymbol];
-  if (!symbolRegistry) {
-    return new Set(symbols);
-  }
 
   const longSeat = symbolRegistry.getSeatState('LONG');
   const shortSeat = symbolRegistry.getSeatState('SHORT');

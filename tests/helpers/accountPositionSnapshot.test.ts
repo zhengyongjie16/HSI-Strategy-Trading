@@ -30,7 +30,7 @@ describe('P1 neutral snapshot fixtures', () => {
     });
     const freshness = createSettlementFreshnessFixture(snapshot);
     const receipt = await freshness.waitForFresh();
-    expect(receipt.ready).toBe(true);
+    expect(receipt.snapshotToken).toEqual(snapshot.getView().token);
     expect(freshness.isCurrent(receipt)).toBe(true);
     expect(snapshot.getView().account?.totalCash).toBe('100000.123456789012345678');
     expect(snapshot.getAvailablePosition('BULL.HK')?.quantity).toBe(100);

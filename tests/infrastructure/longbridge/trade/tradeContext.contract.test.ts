@@ -5,6 +5,7 @@
  * - 验证 TradeContext Mock 契约与调用行为。
  */
 import { describe, expect, it } from 'bun:test';
+import assert from 'node:assert/strict';
 import { OrderSide, OrderStatus, OrderType, TimeInForceType, TopicType } from 'longbridge';
 import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
 import { toMockDecimal } from '../../../../mock/longbridge/decimal.js';
@@ -374,9 +375,7 @@ describe('TradeContext mock contract', () => {
       errorMessage: 'today executions failed by rule',
     });
 
-    expect(async () => {
-      await tradeCtx.todayExecutions();
-    }).toThrow('today executions failed by rule');
+    await assert.rejects(tradeCtx.todayExecutions(), /today executions failed by rule/);
 
     const calls = tradeCtx.getCalls('todayExecutions');
     expect(calls).toHaveLength(1);
@@ -390,16 +389,17 @@ describe('TradeContext mock contract', () => {
       errorMessage: 'submit failed by rule',
     });
 
-    expect(async () => {
-      await tradeCtx.submitOrder({
+    await assert.rejects(
+      tradeCtx.submitOrder({
         symbol: '700.HK',
         side: OrderSide.Buy,
         orderType: OrderType.ELO,
         timeInForce: TimeInForceType.Day,
         submittedQuantity: toMockDecimal(100),
         submittedPrice: toMockDecimal(320),
-      });
-    }).toThrow('submit failed by rule');
+      }),
+      /submit failed by rule/,
+    );
 
     const logs = tradeCtx.getCalls('submitOrder');
     expect(logs).toHaveLength(1);

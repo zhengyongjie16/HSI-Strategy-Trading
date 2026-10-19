@@ -9,10 +9,7 @@ import type { OrderEconomics, OrderEconomicsObservation } from '../../types/orde
 import { exactAdd, exactCompare, exactMultiply } from '../../utils/numeric/exact.js';
 
 /** 保持 SDK 累计均价原文为成本依据；不能用 ledger 的另一个均价重写正常订单金额。 */
-export function cumulativeExecutionAmount(
-  executedPrice: string | null,
-  executedQuantity: number,
-): string {
+function cumulativeExecutionAmount(executedPrice: string | null, executedQuantity: number): string {
   return executedQuantity === 0 || executedPrice === null
     ? '0'
     : exactMultiply(executedPrice, String(executedQuantity));
@@ -22,7 +19,7 @@ export function cumulativeExecutionAmount(
  * 完整累计量才确认真实执行时间；重复 tradeId 必须同载荷，revision 后流水不属于此次观察。
  * 保持原提前匹配行为：满足当前累计量后的额外流水不倒推此次观察的执行时间。
  */
-export function matchingExecutionTime(
+function matchingExecutionTime(
   order: OrderEconomicsObservation,
   executions: ReadonlyArray<OrderExecutionLedgerFact>,
 ): number | null {
@@ -77,7 +74,7 @@ export function matchingExecutionTime(
 }
 
 /** 缺失/零终态价只能由同 broker、同量已确认事实和此次完整 ledger 精确共同证明。 */
-export function compatibleTerminalExecutionPrice(
+function compatibleTerminalExecutionPrice(
   order: OrderEconomicsObservation,
   executions: ReadonlyArray<OrderExecutionLedgerFact>,
   confirmed?: OrderExecutionPriceEvidence,

@@ -152,7 +152,7 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
     };
     expect(flow.recordCumulativeExecution(buy).admission).toBe('ADMITTED');
     expect(owner.getCostBasis('BULL.HK', true)).toEqual({ costAmount: '50', quantity: 5 });
-    owner.submitSellOrder('OFFLINE-SELL', 'BULL.HK', 'LONG', 5, [], true, buyT);
+    owner.submitSellOrder('OFFLINE-SELL', 'BULL.HK', 'LONG', 5, [], buyT);
     holds.trackOrder('OFFLINE-SELL', 'BULL.HK');
     const open: OrderCumulativeExecutionParams = {
       ...buy,
@@ -261,7 +261,6 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       orderId: 'OFFLINE-SELL',
-      source: 'STATE_CHECK',
       status: 'FILLED',
     });
     expect(io.calls).toEqual([]);

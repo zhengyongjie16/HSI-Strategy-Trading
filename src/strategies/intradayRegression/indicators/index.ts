@@ -404,16 +404,14 @@ export function updateRuntimeForCandlestickSnapshot(params: {
     return null;
   }
 
-  const runtimeState = runtime;
-
-  if (cacheSnapshot.version === runtimeState.lastProcessedVersion) {
-    return runtimeState;
+  if (cacheSnapshot.version === runtime.lastProcessedVersion) {
+    return runtime;
   }
 
   const nextLastTimestamp = cacheSnapshot.lastBarTimestamp;
-  const previousLastTimestamp = runtimeState.lastBarTimestamp;
+  const previousLastTimestamp = runtime.lastBarTimestamp;
   if (nextLastTimestamp === null || previousLastTimestamp === null) {
-    return rebuildRuntimeFromSnapshot({ runtime: runtimeState, cacheSnapshot });
+    return rebuildRuntimeFromSnapshot({ runtime, cacheSnapshot });
   }
 
   if (nextLastTimestamp === previousLastTimestamp) {
@@ -422,9 +420,9 @@ export function updateRuntimeForCandlestickSnapshot(params: {
       return null;
     }
 
-    if (runtimeState.lastBarConfirmed === false && cacheSnapshot.lastBarConfirmed === false) {
+    if (runtime.lastBarConfirmed === false && cacheSnapshot.lastBarConfirmed === false) {
       return {
-        ...runtimeState,
+        ...runtime,
         lastProcessedVersion: cacheSnapshot.version,
         activeBarConfirmed: false,
         activeBar: latestCandle,
@@ -433,11 +431,11 @@ export function updateRuntimeForCandlestickSnapshot(params: {
       };
     }
 
-    if (runtimeState.lastBarConfirmed === false && cacheSnapshot.lastBarConfirmed === true) {
-      const nextCommitted = cloneCommittedState(runtimeState.committed);
+    if (runtime.lastBarConfirmed === false && cacheSnapshot.lastBarConfirmed === true) {
+      const nextCommitted = cloneCommittedState(runtime.committed);
       const lastKdjAvailable = commitCandleToCommittedState(nextCommitted, latestCandle);
       return {
-        ...runtimeState,
+        ...runtime,
         lastProcessedVersion: cacheSnapshot.version,
         activeBarConfirmed: true,
         activeBar: null,
@@ -448,11 +446,11 @@ export function updateRuntimeForCandlestickSnapshot(params: {
       };
     }
 
-    return rebuildRuntimeFromSnapshot({ runtime: runtimeState, cacheSnapshot });
+    return rebuildRuntimeFromSnapshot({ runtime, cacheSnapshot });
   }
 
   return commitShiftedCandles({
-    runtime: runtimeState,
+    runtime,
     cacheSnapshot,
   });
 }
@@ -464,21 +462,19 @@ export function updateRuntimeForCandlestickSnapshot(params: {
  * @returns 指标快照；无有效价格时返回 null
  */
 export function buildSnapshotFromRuntime(runtime: IndicatorRuntimeState): IndicatorSnapshot | null {
-  const runtimeState = runtime;
-
-  if (runtimeState.activeBar !== null && runtimeState.activeBarConfirmed === false) {
-    const previewCommitted = cloneCommittedState(runtimeState.committed);
-    const kdjAvailable = commitCandleToCommittedState(previewCommitted, runtimeState.activeBar);
+  if (runtime.activeBar !== null && runtime.activeBarConfirmed === false) {
+    const previewCommitted = cloneCommittedState(runtime.committed);
+    const kdjAvailable = commitCandleToCommittedState(previewCommitted, runtime.activeBar);
     return buildSnapshotFromCommitted({
-      profile: runtimeState.profile,
+      profile: runtime.profile,
       committed: previewCommitted,
       kdjAvailable,
     });
   }
 
   return buildSnapshotFromCommitted({
-    profile: runtimeState.profile,
-    committed: runtimeState.committed,
-    kdjAvailable: runtimeState.lastKdjAvailable,
+    profile: runtime.profile,
+    committed: runtime.committed,
+    kdjAvailable: runtime.lastKdjAvailable,
   });
 }

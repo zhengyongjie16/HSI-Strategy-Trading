@@ -13,7 +13,7 @@ import { createSeatSwitchWorkflow } from '../../../../src/application/seatSwitch
 import type { PeriodicSwitchTaskStatus } from '../../../../src/application/seatSwitch/types.js';
 import { mergeBrokerOrderExecutionFact } from '../../../../src/domain/order/executionFact.js';
 import { orderAnalysis } from '../../../../src/domain/order/orderAnalysis.js';
-import { classifyOrdersForRebuild } from '../../../../src/domain/order/orderRecordPolicy.js';
+import { validateOrdersForRebuild } from '../../../../src/domain/order/orderRecordPolicy.js';
 import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
 import { createRiskChecker } from '../../../../src/domain/risk/index.js';
 import { createPositionLimitChecker } from '../../../../src/domain/risk/positionLimitChecker.js';
@@ -248,7 +248,6 @@ function issuedAuthorizationFields(task: PeriodicSwitchTaskData) {
   return {
     dayEpoch: task.dayEpoch,
     currentTimeMs: task.currentTimeMs,
-    readinessReceipt: task.readinessReceipt,
     canContinue: task.canContinue,
     isRouteCurrent: task.isRouteCurrent,
   };
@@ -312,7 +311,7 @@ async function createBusinessProcessor(
   const validateBatch = context.orderRecorder.validateRebuildSnapshot;
   spyOn(context.orderRecorder, 'validateRebuildSnapshot').mockImplementation((symbol, orders) => {
     validateBatch(symbol, orders);
-    classifyOrdersForRebuild(orders.filter((order) => order.symbol === symbol));
+    validateOrdersForRebuild(orders.filter((order) => order.symbol === symbol));
     for (const order of orders.filter((candidate) => candidate.symbol === symbol)) {
       mergeBrokerOrderExecutionFact(undefined, {
         brokerOrderId: order.orderId,
@@ -1678,7 +1677,7 @@ describe('monitorTaskProcessor business flow', () => {
         },
         setWarrantInfoFromCallPrice: () => {
           warrantInfoWrites += 1;
-          return { status: 'ok', isWarrant: true };
+          return { status: 'ok' };
         },
       }),
     });
@@ -1694,7 +1693,7 @@ describe('monitorTaskProcessor business flow', () => {
         activationWrites += 1;
       }
 
-      return updateSeatState(direction, nextState);
+      updateSeatState(direction, nextState);
     });
 
     const processor = await createBusinessProcessor({
@@ -1806,7 +1805,7 @@ describe('monitorTaskProcessor business flow', () => {
         validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<OrderFact>) => {
           preflightCalls += 1;
           preflightSymbols.push(symbol);
-          classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
+          validateOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
         },
       },
     );
@@ -1829,7 +1828,7 @@ describe('monitorTaskProcessor business flow', () => {
         },
         setWarrantInfoFromCallPrice: () => {
           warrantWrites += 1;
-          return { status: 'ok', isWarrant: true };
+          return { status: 'ok' };
         },
       }),
     });
@@ -1943,7 +1942,7 @@ describe('monitorTaskProcessor business flow', () => {
           if (!isCurrent()) return { status: 'ABORTED' };
 
           refreshOrdersCalls += 1;
-          classifyOrdersForRebuild(allOrders);
+          validateOrdersForRebuild(allOrders);
           return { status: 'COMMITTED', receipts: [] };
         },
       }),
@@ -1953,7 +1952,7 @@ describe('monitorTaskProcessor business flow', () => {
         },
         setWarrantInfoFromCallPrice: () => {
           warrantInfoWrites += 1;
-          return { status: 'ok', isWarrant: true };
+          return { status: 'ok' };
         },
       }),
     });
@@ -1969,7 +1968,7 @@ describe('monitorTaskProcessor business flow', () => {
         activationWrites += 1;
       }
 
-      return updateSeatState(direction, nextState);
+      updateSeatState(direction, nextState);
     });
 
     const processor = await createBusinessProcessor({
@@ -2101,14 +2100,14 @@ describe('monitorTaskProcessor business flow', () => {
             if (!isCurrent()) return { status: 'ABORTED' };
 
             refreshOrdersCalls += 1;
-            classifyOrdersForRebuild(allOrders);
+            validateOrdersForRebuild(allOrders);
             return { status: 'COMMITTED', receipts: [] };
           },
         }),
         {
           validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<OrderFact>) => {
             preflightCalls += 1;
-            classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
+            validateOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
           },
         },
       );
@@ -2121,7 +2120,7 @@ describe('monitorTaskProcessor business flow', () => {
           },
           setWarrantInfoFromCallPrice: () => {
             warrantInfoWrites += 1;
-            return { status: 'ok', isWarrant: true };
+            return { status: 'ok' };
           },
         }),
       });
@@ -2147,7 +2146,7 @@ describe('monitorTaskProcessor business flow', () => {
             activationWrites += 1;
           }
 
-          return updateSeatState(direction, nextState);
+          updateSeatState(direction, nextState);
         },
       );
 
@@ -2299,7 +2298,7 @@ describe('monitorTaskProcessor business flow', () => {
         },
         validateRebuildSnapshot: (symbol, allOrders) => {
           preflightSymbols.push(symbol);
-          classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
+          validateOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
         },
         commitRebuildSnapshot: (_targets, _orders, isCurrent, mode) => {
           expect(mode).toBe('ACTIVATION');
@@ -2335,7 +2334,7 @@ describe('monitorTaskProcessor business flow', () => {
             activationWrites += 1;
           }
 
-          return updateSeatState(direction, nextState);
+          updateSeatState(direction, nextState);
         },
       );
 
@@ -2958,7 +2957,7 @@ describe('monitorTaskProcessor business flow', () => {
         },
         setWarrantInfoFromCallPrice: () => {
           warrantInfoWrites += 1;
-          return { status: 'ok', isWarrant: true };
+          return { status: 'ok' };
         },
       }),
     });
@@ -2974,7 +2973,7 @@ describe('monitorTaskProcessor business flow', () => {
         activationWrites += 1;
       }
 
-      return updateSeatState(direction, nextState);
+      updateSeatState(direction, nextState);
     });
 
     const processor = await createBusinessProcessor({
@@ -3057,7 +3056,7 @@ describe('monitorTaskProcessor business flow', () => {
         },
         setWarrantInfoFromCallPrice: () => {
           warrantInfoWrites += 1;
-          return { status: 'ok', isWarrant: true };
+          return { status: 'ok' };
         },
       }),
     });
@@ -3073,7 +3072,7 @@ describe('monitorTaskProcessor business flow', () => {
         activationWrites += 1;
       }
 
-      return updateSeatState(direction, nextState);
+      updateSeatState(direction, nextState);
     });
 
     const processor = await createBusinessProcessor({
@@ -3152,7 +3151,7 @@ describe('monitorTaskProcessor business flow', () => {
         },
         setWarrantInfoFromCallPrice: () => {
           warrantInfoWrites += 1;
-          return { status: 'ok', isWarrant: true };
+          return { status: 'ok' };
         },
       }),
     });
@@ -3168,7 +3167,7 @@ describe('monitorTaskProcessor business flow', () => {
         activationWrites += 1;
       }
 
-      return updateSeatState(direction, nextState);
+      updateSeatState(direction, nextState);
     });
 
     const processor = await createBusinessProcessor({

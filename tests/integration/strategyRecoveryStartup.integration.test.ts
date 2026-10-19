@@ -109,7 +109,6 @@ describe('T28 recovery → startup controlled acceptance', () => {
     expect(recovery.events).toHaveLength(1);
     expect(recovery.events[0]).toMatchObject({
       orderId: 'T28-BUY',
-      source: 'RECOVERY',
       status: 'CANCELED',
       executedQuantity: 0,
       side: 'BUY',

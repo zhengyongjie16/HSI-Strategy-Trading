@@ -32,10 +32,11 @@ export function createSettlementRecorder(
     ...recorder,
     ...overrides,
     commitExecutionFact: (fact, isLong, relatedBuyOrderIds, beforeCommit) => {
-      const receipt = recorder.commitExecutionFact(fact, isLong, relatedBuyOrderIds, beforeCommit);
-      if (receipt.authoritativeFactChanged) onCommitted?.(fact, relatedBuyOrderIds);
-
-      return receipt;
+      const previous = recorder.getExecutionFact(fact.brokerOrderId);
+      recorder.commitExecutionFact(fact, isLong, relatedBuyOrderIds, beforeCommit);
+      // 提交回执已收敛为 void；权威累计事实是否推进以 owner 可观察事实对象的替换为准。
+      if (recorder.getExecutionFact(fact.brokerOrderId) !== previous)
+        onCommitted?.(fact, relatedBuyOrderIds);
     },
   };
 }

@@ -51,14 +51,14 @@ export type SettlementReadinessSpan = {
 };
 
 /** tracking 提供的进行中保护性事实；symbol 保留实际成交归属，不随席位换标改写。 */
-export type SettlementProtectionEpisode = {
+type SettlementProtectionEpisode = {
   readonly direction: 'LONG' | 'SHORT';
   readonly symbol: string;
   readonly latestExecutedTimeMs: number;
 };
 
 /** 经原 episode 规则冻结的完成边界；最终校验与提交只属于 settlement owner。 */
-export type SettlementPreparedProtectionCompletion = {
+type SettlementPreparedProtectionCompletion = {
   readonly direction: 'LONG' | 'SHORT';
   readonly boundaryExecutedTimeMs: number;
 };
@@ -75,7 +75,7 @@ export type SettlementProtectionOrderBaseline = {
 };
 
 /** daily-loss owner 准备的完整边界；durable append 成功前不得提交此投影。 */
-export type SettlementPreparedLossBoundary = {
+type SettlementPreparedLossBoundary = {
   readonly direction: 'LONG' | 'SHORT';
   readonly boundaryExecutedTimeMs: number;
   readonly orderBaselines: ReadonlyArray<SettlementProtectionOrderBaseline>;
@@ -87,7 +87,7 @@ export type SettlementProtectionCompletion = SettlementPreparedLossBoundary & {
 };
 
 /** 原 tracking 的纯资格准备与内存 episode 提交能力，不包含最终持久化业务事务。 */
-export interface SettlementProtectionEpisodes {
+interface SettlementProtectionEpisodes {
   readonly getInProgressEpisodes: () => ReadonlyArray<SettlementProtectionEpisode>;
   readonly prepareCompletion: (params: {
     readonly direction: 'LONG' | 'SHORT';
@@ -98,7 +98,7 @@ export interface SettlementProtectionEpisodes {
 }
 
 /** 精确 daily-loss 分段能力；workflow 不拥有订单累计账本或重算实现。 */
-export interface SettlementLossBoundaries {
+interface SettlementLossBoundaries {
   readonly prepareProtectionBoundary: (
     params: SettlementPreparedProtectionCompletion,
   ) => SettlementPreparedLossBoundary;
@@ -112,7 +112,7 @@ export interface SettlementCompletionPersistence {
 }
 
 /** 配置已在 composition 固定的单次清仓触发能力；是否调用及其事务顺序由 workflow 决定。 */
-export interface SettlementCooldownTriggers {
+interface SettlementCooldownTriggers {
   readonly recordLiquidationTrigger: (params: {
     readonly direction: 'LONG' | 'SHORT';
     readonly executedTimeMs: number;
@@ -120,7 +120,7 @@ export interface SettlementCooldownTriggers {
 }
 
 /** 席位 owner 的最小事实投影；ACTIVE 归属选择与冲突检查由 settlement 负责。 */
-export type SettlementSeatFact = {
+type SettlementSeatFact = {
   readonly status: 'EMPTY' | 'SEARCHING' | 'SWITCHING' | 'ACTIVATING' | 'ACTIVE';
   readonly symbol: string | null;
 };
@@ -138,7 +138,7 @@ export type SettlementAttributedSymbol = {
 };
 
 /** 精确未发布 R1/N1；来源是风险 owner，workflow 只按身份与水位授权发布。 */
-export type SettlementPreparedRiskData = {
+type SettlementPreparedRiskData = {
   readonly symbol: string;
   readonly data: {
     readonly r1: string;
@@ -147,7 +147,7 @@ export type SettlementPreparedRiskData = {
 };
 
 /** 已在 composition 绑定订单成本读取的窄风险能力，不泄漏 OrderRecorder/Trader 或 SDK。 */
-export interface SettlementRiskProjection {
+interface SettlementRiskProjection {
   readonly prepare: (
     symbol: string,
     direction: 'LONG' | 'SHORT',

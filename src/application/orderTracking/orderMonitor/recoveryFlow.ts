@@ -14,10 +14,7 @@ import {
 import { resolveOrderOwnership } from '../../../domain/order/orderOwnership.js';
 import { isOpenOrderReadStatus } from '../../../domain/order/orderReadLifecycle.js';
 import { hasProtectiveLiquidationRemark } from '../../../domain/order/orderRemark.js';
-import {
-  resolveSubmittedAtMs,
-  resolveUpdatedAtMs,
-} from '../../../domain/order/orderTrackingPolicy.js';
+import { resolveTimeMs } from '../../../domain/order/orderTrackingPolicy.js';
 import type { TrackOrderParams } from '../../../domain/order/types.js';
 import type { OrderFact } from '../../../types/trade.js';
 import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
@@ -112,7 +109,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     for (const [orderId, lifecycle] of runtime.trackedOrderLifecycles) {
       if (
         lifecycle.firstCancelAcknowledgedAtMs === undefined &&
-        lifecycle.terminalConfirmation === undefined
+        lifecycle.terminalConfirmed === undefined
       ) {
         runtime.trackedOrderLifecycles.delete(orderId);
       } else {
@@ -149,8 +146,8 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       return;
     }
 
-    const currentUpdatedAt = resolveUpdatedAtMs(current.updatedAt);
-    const nextUpdatedAt = resolveUpdatedAtMs(event.updatedAt);
+    const currentUpdatedAt = resolveTimeMs(current.updatedAt);
+    const nextUpdatedAt = resolveTimeMs(event.updatedAt);
     if (currentUpdatedAt !== null && nextUpdatedAt !== null && nextUpdatedAt >= currentUpdatedAt) {
       runtime.bootstrappingOrderEvents.set(event.orderId, event);
       return;
@@ -178,8 +175,8 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
 
     const replayEvents = [...runtime.bootstrappingOrderEvents.values()];
     replayEvents.sort((left, right) => {
-      const leftMs = resolveUpdatedAtMs(left.updatedAt) ?? 0;
-      const rightMs = resolveUpdatedAtMs(right.updatedAt) ?? 0;
+      const leftMs = resolveTimeMs(left.updatedAt) ?? 0;
+      const rightMs = resolveTimeMs(right.updatedAt) ?? 0;
       return leftMs - rightMs;
     });
     runtime.bootstrappingOrderEvents.clear();
@@ -319,7 +316,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       throw new Error(`[订单监控] 非市价订单 ${order.orderId} 缺少委托价格，无法恢复追踪`);
     }
 
-    const submittedAtMs = resolveSubmittedAtMs(order.submittedAt);
+    const submittedAtMs = resolveTimeMs(order.submittedAt);
     if (submittedAtMs === null) throw new Error('[订单监控] 恢复订单缺少真实提交时间');
 
     const executedQuantity = order.executedQuantity;
@@ -371,7 +368,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
         ownership.direction,
         submittedQuantity,
         relatedBuyOrderIds,
-        isProtectiveLiquidation,
         submittedAtMs,
       );
 
@@ -467,7 +463,6 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
               {
                 orderId: order.orderId,
                 symbol: order.symbol,
-                side: order.executionSide,
                 executionSide: order.executionSide,
                 executionPhase: order.executionPhase,
                 submittedQuantity: snapshotSubmittedQuantity,

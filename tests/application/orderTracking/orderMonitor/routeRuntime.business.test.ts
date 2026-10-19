@@ -231,7 +231,6 @@ function createTrackedOrder(
     replaceBlockedUntilAt: params.replaceBlockedUntilAt ?? null,
     quoteRetryAttempts: params.quoteRetryAttempts ?? 0,
     quoteRetryNextAt: params.quoteRetryNextAt ?? null,
-    quoteRetryExhausted: params.quoteRetryExhausted ?? false,
     replaceTempBlockedCount: params.replaceTempBlockedCount ?? 0,
     replaceResumeMode: params.replaceResumeMode ?? 'TIME_BACKOFF',
     timeoutMarketConversionPending: params.timeoutMarketConversionPending ?? false,
@@ -726,7 +725,7 @@ describe('orderMonitor route runtime', () => {
     }
   });
 
-  it('start 时即使 quoteRetryExhausted=true，只要存在 quoteRetryNextAt 仍会投影 QUOTE_RETRY timer', async () => {
+  it('start 时只要存在 quoteRetryNextAt 就会投影 QUOTE_RETRY timer', async () => {
     const runtime = createRuntimeStore();
     const now = Date.now();
     attachTrackedOrder(
@@ -742,7 +741,6 @@ describe('orderMonitor route runtime', () => {
         submittedAt: now - 1_000,
         quoteRetryAttempts: 5,
         quoteRetryNextAt: now + 5_000,
-        quoteRetryExhausted: true,
       }),
     );
     runtime.routeStatesBySymbol.set('BULL.HK', createRouteState('BULL.HK'));

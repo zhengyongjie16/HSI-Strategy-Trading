@@ -362,15 +362,7 @@ describe('chaos: api flaky recovery', () => {
       await monitor.recoverOrderTrackingFromSnapshot([]);
       monitor.startRuntime();
 
-      orderRecorder.submitSellOrder(
-        'SELL-CHAOS-001',
-        'BULL.HK',
-        'LONG',
-        100,
-        ['BUY-001'],
-        false,
-        nowMs,
-      );
+      orderRecorder.submitSellOrder('SELL-CHAOS-001', 'BULL.HK', 'LONG', 100, ['BUY-001'], nowMs);
 
       monitor.trackOrder({
         orderId: 'SELL-CHAOS-001',

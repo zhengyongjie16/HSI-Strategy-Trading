@@ -8,7 +8,6 @@ import type { MonitorSymbolNames } from '../../types/monitor.js';
 import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
 import type { SettlementFreshnessReader } from '../../types/settlement.js';
 import type { MarketDataClient } from '../../types/marketPorts.js';
-import type { Quote } from '../../types/quote.js';
 import type { SellSignal } from '../../types/signal.js';
 
 /** 静态清仓只读取席位、风险和经济协作者，不持有换标、runtime 路由或保护性完成能力。 */
@@ -58,10 +57,9 @@ export type StaticLiquidationExecutionParams = {
   readonly onDirectionSubmitted?: (direction: 'LONG' | 'SHORT') => void;
 };
 
-/** 已通过触发判定的非 protective 候选；quote 只用于提交成功后的静态风险发布。 */
+/** 已通过触发判定的非 protective 候选；只携带待提交信号，行情事实在执行上下文内复核。 */
 export type StaticLiquidationCandidate = {
   readonly signal: SellSignal;
-  readonly quote: Quote;
 };
 
 /** 候选准备明确区分跳过、等待行情和可执行，非法事实不降级为 WAIT。 */

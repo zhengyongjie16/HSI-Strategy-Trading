@@ -414,7 +414,7 @@ describe('same-owner protection recovery', () => {
     ]);
     expect(termination.getFatalState()).toEqual({ hasFatalError: false });
     const receipt = await runtime.waitForFresh();
-    expect(receipt.ready).toBe(true);
+    expect(runtime.isCurrent(receipt)).toBe(true);
     await runtime.stopAndDrain();
   });
 

@@ -40,7 +40,6 @@ export type EventHarness = {
   readonly sellTaskQueue: TaskQueue<SellTaskType>;
   readonly symbolRegistry: SymbolRegistry;
   readonly contexts: ReadonlyArray<StrategyMarketContext>;
-  readonly emitters: ReadonlyArray<StrategyEmitter>;
   readonly displays: ReadonlyArray<ReadonlyArray<StrategyDisplayItem>>;
   readonly strategy: TradingSignalStrategy;
   readonly termination: RuntimeTermination;

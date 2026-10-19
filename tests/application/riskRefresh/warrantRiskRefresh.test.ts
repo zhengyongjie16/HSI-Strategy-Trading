@@ -61,7 +61,7 @@ describe('warrant risk refresh business boundaries', () => {
       await started.promise;
       authorization.revision += 1;
       checker.clearLongWarrantInfo();
-      query.resolve([{ symbol: 'BULL.HK', category, callPrice: '19000' }]);
+      query.resolve([{ category, callPrice: '19000' }]);
       expect(await pending).toEqual({ status: 'INVALIDATED' });
       expect(guardCalls).toBe(1);
       expect(queryCalls).toBe(1);
@@ -103,7 +103,7 @@ describe('warrant risk refresh business boundaries', () => {
         });
         return true;
       }),
-    ).toEqual({ status: 'ok', isWarrant: true });
+    ).toEqual({ status: 'ok' });
     expect(events).toEqual(['guard', 'publish', 'microtask']);
     expect(checker.getWarrantDistanceInfo(true, 'BULL.HK', '20000')).toMatchObject({
       distanceDenominator: '20000',
@@ -170,19 +170,16 @@ describe('warrant risk refresh business boundaries', () => {
     });
     expect(await refresh.refreshWarrantInfoForSymbol('BULL.HK', true, () => true)).toEqual({
       status: 'ok',
-      isWarrant: true,
     });
 
     expect(riskChecker.getWarrantDistanceInfo(true, 'BULL.HK', '20000.000000000000000002')).toEqual(
       {
-        warrantType: 'BULL',
         distanceNumerator: '0.000000000000000001',
         distanceDenominator: '20000.000000000000000001',
       },
     );
     expect(riskChecker.checkWarrantRisk('BULL.HK', 'BUYCALL', '20070').allowed).toBeFalse();
     expect(riskChecker.getWarrantDistanceInfo(false, 'BEAR.HK', '19930')).toEqual({
-      warrantType: 'BEAR',
       distanceNumerator: '-70',
       distanceDenominator: '20000',
     });
@@ -239,7 +236,6 @@ describe('warrant risk refresh business boundaries', () => {
     });
     expect(await refresh.refreshWarrantInfoForSymbol('BULL.HK', true, () => false)).toEqual({
       status: 'error',
-      isWarrant: false,
       reason: 'business rejection',
     });
 
@@ -266,7 +262,6 @@ describe('warrant risk refresh business boundaries', () => {
     });
     expect(await refresh.refreshWarrantInfoForSymbol('BULL.HK', true, () => true)).toEqual({
       status: 'notWarrant',
-      isWarrant: false,
     });
     expect(checker.getWarrantDistanceInfo(true, 'BULL.HK', '20000')).toBeNull();
     expect(checker.checkRisk('BULL.HK', 'BUYCALL', '20000')).toEqual({ allowed: true });
@@ -295,7 +290,6 @@ describe('warrant risk refresh business boundaries', () => {
     });
     expect(await refresh.refreshWarrantInfoForSymbol('MISMATCH.HK', true, () => true)).toEqual({
       status: 'ok',
-      isWarrant: true,
     });
 
     expect(messages[0]?.[0]).toBe(
@@ -364,7 +358,6 @@ describe('warrant risk refresh business boundaries', () => {
       await refresh.refreshWarrantInfoForSymbol('BULL.HK', true, () => true, 'BULL.HK'),
     ).toEqual({
       status: 'ok',
-      isWarrant: true,
     });
     expect(queryCalls).toBe(2);
     expect(checker.checkRisk('BULL.HK', 'BUYCALL', '20000').allowed).toBeTrue();
@@ -390,11 +383,9 @@ describe('warrant risk refresh business boundaries', () => {
       await refresh.refreshWarrantInfoForSymbol('BULL.HK', true, () => true, 'BULL.HK'),
     ).toEqual({
       status: 'ok',
-      isWarrant: true,
     });
 
     expect(checker.getWarrantDistanceInfo(true, 'BULL.HK', '20000')).toEqual({
-      warrantType: 'BULL',
       distanceNumerator: null,
       distanceDenominator: null,
     });

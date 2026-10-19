@@ -10,7 +10,7 @@ import { isSeatActive } from './seatPolicy.js';
  * 默认行为：读取 symbolRegistry 中的多空席位状态与版本，并派生当前可消费的 ACTIVE 标的代码。
  *
  * @param symbolRegistry 席位注册表
- * @returns 席位状态、版本与当前就绪标的代码快照
+ * @returns 席位版本与当前就绪标的代码快照
  */
 export function resolveMonitorContextSeatSnapshot(
   symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>,
@@ -18,10 +18,6 @@ export function resolveMonitorContextSeatSnapshot(
   const longSeatState = symbolRegistry.getSeatState('LONG');
   const shortSeatState = symbolRegistry.getSeatState('SHORT');
   return {
-    seatState: {
-      long: longSeatState,
-      short: shortSeatState,
-    },
     seatVersion: {
       long: symbolRegistry.getSeatVersion('LONG'),
       short: symbolRegistry.getSeatVersion('SHORT'),

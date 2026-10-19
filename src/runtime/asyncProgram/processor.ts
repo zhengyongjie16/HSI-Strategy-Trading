@@ -3,24 +3,6 @@ import { formatError } from '../../utils/error/index.js';
 import type { BaseProcessorConfig, Processor } from './types.js';
 
 /**
- * 在处理器运行且当前无待执行调度时触发下一轮调度。默认行为：不满足条件时不做任何操作。
- *
- * @param running 处理器是否处于运行态
- * @param immediateHandle 当前是否已有待执行 setImmediate 句柄
- * @param scheduleNextProcess 下一轮调度函数
- * @returns 无返回值
- */
-export function scheduleWhenTaskAdded(
-  running: boolean,
-  immediateHandle: ReturnType<typeof setImmediate> | null,
-  scheduleNextProcess: () => void,
-): void {
-  if (running && immediateHandle === null) {
-    scheduleNextProcess();
-  }
-}
-
-/**
  * 创建基础任务处理器。
  * 封装 processQueue、scheduleNextProcess、start、stop、stopAndDrain、restart 的公共逻辑，
  * 供买入处理器和卖出处理器复用；先校验任务内部不变量，门禁关闭时仅跳过后续业务逻辑。
@@ -121,9 +103,7 @@ export function createBaseProcessor<TType extends string>(
     }
 
     running = true;
-    taskAddedUnregister = taskQueue.onTaskAdded(() => {
-      scheduleWhenTaskAdded(running, immediateHandle, scheduleNextProcess);
-    });
+    taskAddedUnregister = taskQueue.onTaskAdded(scheduleNextProcess);
     scheduleNextProcess();
   }
 

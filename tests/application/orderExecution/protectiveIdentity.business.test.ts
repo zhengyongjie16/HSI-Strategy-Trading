@@ -26,12 +26,9 @@ import { createSignal } from '../../../mock/factories/signalFactory.js';
 const nowMs = Date.parse('2026-10-07T02:00:00Z');
 const oldOrder: PendingSellOrderSnapshot = {
   orderId: 'PROTECTIVE-OLD',
-  symbol: 'BULL.HK',
-  side: 'SELL',
   status: 'PARTIALLY_FILLED',
   orderType: 'ELO',
   isProtectiveLiquidation: true,
-  submittedPrice: '0.9',
   submittedQuantity: 1500,
   executedQuantity: 500,
   submittedAt: nowMs - 1000,

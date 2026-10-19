@@ -7,7 +7,7 @@ import type { SymbolRegistry } from '../../types/seat.js';
 import type { PreparedStrategy } from '../../types/strategy.js';
 
 /** composition root 或离线 fixture 注入的文件元信息端口。 */
-export interface StrategyFileStatus {
+interface StrategyFileStatus {
   readonly isDirectory: () => boolean;
   readonly isFile: () => boolean;
   readonly isSymbolicLink: () => boolean;
@@ -44,25 +44,13 @@ export type StrategyLocation = {
 };
 
 /**
- * 交易日信息缓存条目。
- * 类型用途：按交易日缓存 `isTradingDay/isHalfDay`，避免重复调用交易日接口。
- * 数据来源：由 createTradingDayInfoResolver 查询并缓存。
- * 使用范围：app 启动状态初始化与运行期交易日状态更新。
- */
-export type CachedTradingDayInfo = Readonly<{
-  dateStr: string;
-  info: TradingDayInfo;
-}>;
-
-/**
  * 交易日信息解析器依赖。
- * 类型用途：创建带缓存的交易日解析函数时注入依赖。
- * 数据来源：由 app 启动组装 marketDataClient、日期键函数和错误回调。
+ * 类型用途：创建交易日解析函数时注入依赖。
+ * 数据来源：由 app 启动组装 marketDataClient 与错误回调。
  * 使用范围：仅 app 启动交易日状态初始化使用。
  */
 export interface TradingDayInfoResolverDeps {
   readonly marketDataClient: Pick<MarketDataClient, 'isTradingDay'>;
-  readonly getHKDateKey: (currentTime: Date) => string | null;
   readonly onResolveError: (err: unknown) => void;
 }
 
@@ -70,7 +58,7 @@ export interface TradingDayInfoResolverDeps {
  * 交易日信息解析函数签名。
  * 类型用途：统一交易日信息解析函数类型。
  * 数据来源：由 createTradingDayInfoResolver 创建并返回。
- * 使用范围：app 启动状态初始化与生命周期交易日状态更新。
+ * 使用范围：仅 app 启动交易日状态初始化使用。
  */
 export type TradingDayInfoResolver = (currentTime: Date) => Promise<TradingDayInfo>;
 

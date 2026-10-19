@@ -185,7 +185,6 @@ describe('distance switch timeout market conversion rebuy', () => {
       const risk = createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),

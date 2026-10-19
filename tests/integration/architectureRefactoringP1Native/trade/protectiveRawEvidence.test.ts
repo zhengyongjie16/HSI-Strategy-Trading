@@ -139,7 +139,7 @@ async function fixture(protective: boolean) {
     isProtectiveLiquidation: protective,
     orderType: native.queryObservation.orderType,
   });
-  economic.recorder.submitSellOrder(frame.orderId, frame.symbol, 'LONG', 100, [], protective, time);
+  economic.recorder.submitSellOrder(frame.orderId, frame.symbol, 'LONG', 100, [], time);
   return {
     native,
     frame,
@@ -249,9 +249,7 @@ describe('protective raw terminal price admission through registered broker ingr
           executedTime: f.frame.executionTimeMs,
         });
 
-        expect(f.events).toMatchObject([
-          { source: 'WS', status: 'CANCELED', executedQuantity: 40 },
-        ]);
+        expect(f.events).toMatchObject([{ status: 'CANCELED', executedQuantity: 40 }]);
         expect(f.durable).toHaveLength(scenario.protective ? 2 : 0);
         expect(f.economic.recorder.getPendingSellSnapshot()).toEqual([]);
         expect(f.monitor.getPendingSellOrders(f.frame.symbol)).toEqual([]);

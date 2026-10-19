@@ -189,10 +189,11 @@ describe('orderStatusQuery business flow', () => {
     },
   );
 
-  it('retries orderDetail request failures before mapping the authoritative state', async () => {
-    const orderId = 'ORDER-RETRY-THEN-FILLED';
+  const assertOrderDetailRetriesBeforeMapping = async (
+    orderId: string,
+    original: Error,
+  ): Promise<void> => {
     const f = await createQueryContext([frame(orderId, 'Filled', '100', '1.01')]);
-    const original = new Error('network unavailable');
     let attempts = 0;
     f.native.setOrderDetailBeforeReply(async () => {
       attempts++;
@@ -222,42 +223,19 @@ describe('orderStatusQuery business flow', () => {
       history: f.initialLedgerReads.history,
     });
     f.abortOwner.abort();
-  });
+  };
 
-  it('retries coded transient orderDetail errors before mapping state', async () => {
-    const orderId = 'ORDER-CODED-TRANSIENT-THEN-FILLED';
-    const f = await createQueryContext([frame(orderId, 'Filled', '100', '1.01')]);
-    const original = new Error('openapi error: code=503: service unavailable');
-    let attempts = 0;
-    f.native.setOrderDetailBeforeReply(async () => {
-      attempts++;
-      if (attempts === 1) throw original;
-    });
-    let result: Awaited<ReturnType<typeof f.check>> | null = null;
-    const error = await rejection(async () => {
-      result = await f.check(orderId);
-    });
-    expect(attempts).toBe(2);
-    expect(f.native.nativeReadCounts().detail).toBe(2);
-    if (error instanceof Error) throw error;
+  it('retries orderDetail request failures before mapping the authoritative state', async () =>
+    assertOrderDetailRetriesBeforeMapping(
+      'ORDER-RETRY-THEN-FILLED',
+      new Error('network unavailable'),
+    ));
 
-    expect(error).toBeNull();
-
-    expect(result).toMatchObject({
-      kind: 'TERMINAL',
-      closedReason: 'FILLED',
-      executedQuantity: 100,
-      executedAmount: '101',
-      executionTimeMs: null,
-      orderUpdatedAtMs: REVISION_MS,
-    });
-
-    expect(f.native.readCounts()).toEqual({
-      today: f.initialLedgerReads.today + 1,
-      history: f.initialLedgerReads.history,
-    });
-    f.abortOwner.abort();
-  });
+  it('retries coded transient orderDetail errors before mapping state', async () =>
+    assertOrderDetailRetriesBeforeMapping(
+      'ORDER-CODED-TRANSIENT-THEN-FILLED',
+      new Error('openapi error: code=503: service unavailable'),
+    ));
 
   it('maps 603001 to QUERY_FAILED NOT_FOUND', async () => {
     const f = await createQueryContext([]);

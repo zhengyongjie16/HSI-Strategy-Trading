@@ -1,9 +1,9 @@
 /**
- * classifyOrdersForRebuild 单元测试
+ * validateOrdersForRebuild 单元测试
  *
  * 功能：
- * - 验证全量订单分类器在重建阶段的状态分流行为
- * - 确保 Execution/Pending 与 Buy/Sell 四类输出正确
+ * - 验证全量订单重建预检对正成交完整性、方向归属与零成交终态的裁决
+ * - 以实际 record 转换（classifyAndConvertOrders）核对合法事实的落地结果
  */
 
 import { describe, expect, it } from 'bun:test';
@@ -11,7 +11,10 @@ import {
   OPEN_ORDER_READ_STATUSES,
   isOpenOrderReadStatus,
 } from '../../../src/constants/orderReadMetadata.js';
-import { classifyOrdersForRebuild } from '../../../src/domain/order/orderRecordPolicy.js';
+import {
+  classifyAndConvertOrders,
+  validateOrdersForRebuild,
+} from '../../../src/domain/order/orderRecordPolicy.js';
 import type { OrderFact } from '../../../src/types/trade.js';
 
 function createRawOrder(
@@ -79,9 +82,9 @@ const invalidExecutionFactCases: ReadonlyArray<{
   },
 ];
 
-describe('classifyOrdersForRebuild', () => {
-  it('splits execution records and pending orders into four groups', () => {
-    const result = classifyOrdersForRebuild([
+describe('validateOrdersForRebuild', () => {
+  it('accepts mixed execution/open orders and converts only positive execution facts to records', () => {
+    const orders = [
       createRawOrder({
         orderId: 'FILLED-BUY',
         executionSide: 'BUY',
@@ -116,23 +119,24 @@ describe('classifyOrdersForRebuild', () => {
         executedAmount: '0',
         executedQuantity: 0,
       }),
-    ]);
+    ];
 
-    expect(result.executedBuyOrders.map((order) => order.orderId)).toEqual(['FILLED-BUY']);
-    expect(result.executedSellOrders.map((order) => order.orderId)).toEqual(['FILLED-SELL']);
-    expect(result.pendingBuyOrders.map((order) => order.orderId)).toEqual(['PENDING-BUY']);
-    expect(result.pendingSellOrders.map((order) => order.orderId)).toEqual(['PENDING-SELL']);
-    expect(result.executedBuyOrders[0]).toMatchObject({
+    expect(() => {
+      validateOrdersForRebuild(orders);
+    }).not.toThrow();
+    const { buyOrders, sellOrders } = classifyAndConvertOrders(orders);
+    expect(buyOrders.map((order) => order.orderId)).toEqual(['FILLED-BUY']);
+    expect(sellOrders.map((order) => order.orderId)).toEqual(['FILLED-SELL', 'PENDING-SELL']);
+    expect(buyOrders[0]).toMatchObject({
       costAmount: '100',
       executedQuantity: 100,
       executedTime: Date.parse('2026-02-25T03:05:00.000Z'),
-      updatedAt: new Date('2026-02-25T03:05:01.000Z'),
     });
   });
 
   it('fails fast before silently skipping a malformed nonzero Unknown-side execution', () => {
-    expect(() =>
-      classifyOrdersForRebuild([
+    expect(() => {
+      validateOrdersForRebuild([
         createRawOrder({
           orderId: 'INVALID-UNKNOWN-SIDE-PRICE',
           unownedDirection: true,
@@ -141,14 +145,14 @@ describe('classifyOrdersForRebuild', () => {
           executedAmount: '0',
           executedQuantity: 100,
         }),
-      ]),
-    ).toThrow('[订单记录] 金额、数量或执行时间无效');
+      ]);
+    }).toThrow('[订单记录] 金额、数量或执行时间无效');
   });
 
   for (const statusCase of executionFactStatuses) {
     it(`fails fast before silently skipping a valid positive Unknown-side ${statusCase.label} execution`, () => {
-      expect(() =>
-        classifyOrdersForRebuild([
+      expect(() => {
+        validateOrdersForRebuild([
           createRawOrder({
             orderId: `VALID-POSITIVE-UNKNOWN-SIDE-${statusCase.label}`,
             unownedDirection: true,
@@ -157,8 +161,8 @@ describe('classifyOrdersForRebuild', () => {
             executedAmount: '100',
             executedQuantity: 100,
           }),
-        ]),
-      ).toThrow(/订单方向不可归属/);
+        ]);
+      }).toThrow(/订单方向不可归属/);
     });
   }
 
@@ -166,8 +170,8 @@ describe('classifyOrdersForRebuild', () => {
   const originalOpenCaseSuffixes = ['1', '2', '3', '4', '6', '7', '8', '9', '10', '11', '12', '13'];
   for (const [index, status] of [...OPEN_ORDER_READ_STATUSES].entries()) {
     it(`fails fast when a zero-execution Unknown-side order has OPEN status ${originalOpenCaseSuffixes[index]}`, () => {
-      expect(() =>
-        classifyOrdersForRebuild([
+      expect(() => {
+        validateOrdersForRebuild([
           createRawOrder({
             orderId: `ZERO-EXECUTION-UNKNOWN-OPEN-${originalOpenCaseSuffixes[index]}`,
             unownedDirection: true,
@@ -176,13 +180,13 @@ describe('classifyOrdersForRebuild', () => {
             executedAmount: '0',
             executedQuantity: 0,
           }),
-        ]),
-      ).toThrow(/订单方向不可归属/);
+        ]);
+      }).toThrow(/订单方向不可归属/);
     });
   }
 
-  it('keeps zero-execution terminal Unknown-side orders non-fatal and unclassified', () => {
-    const result = classifyOrdersForRebuild([
+  it('keeps zero-execution terminal Unknown-side orders non-fatal and record-free', () => {
+    const orders = [
       createRawOrder({
         orderId: 'ZERO-EXECUTION-UNKNOWN-FILLED',
         unownedDirection: true,
@@ -199,21 +203,19 @@ describe('classifyOrdersForRebuild', () => {
         executedAmount: '0',
         executedQuantity: 0,
       }),
-    ]);
+    ];
 
-    expect(result).toEqual({
-      executedBuyOrders: [],
-      executedSellOrders: [],
-      pendingBuyOrders: [],
-      pendingSellOrders: [],
-    });
+    expect(() => {
+      validateOrdersForRebuild(orders);
+    }).not.toThrow();
+    expect(classifyAndConvertOrders(orders)).toEqual({ buyOrders: [], sellOrders: [] });
   });
 
   for (const statusCase of executionFactStatuses) {
     for (const invalidExecutionFact of invalidExecutionFactCases) {
       it(`fails fast when ${statusCase.label} has ${invalidExecutionFact.label}`, () => {
-        expect(() =>
-          classifyOrdersForRebuild([
+        expect(() => {
+          validateOrdersForRebuild([
             createRawOrder({
               orderId: `INVALID-${statusCase.label}-${invalidExecutionFact.label}`,
               executionSide: 'BUY',
@@ -223,8 +225,8 @@ describe('classifyOrdersForRebuild', () => {
               executedQuantity: 100,
               ...invalidExecutionFact.overrides,
             }),
-          ]),
-        ).toThrow(
+          ]);
+        }).toThrow(
           invalidExecutionFact.label === 'NaN price' ||
             invalidExecutionFact.label === 'infinite price'
             ? 'Financial input must be plain decimal text'
@@ -234,8 +236,8 @@ describe('classifyOrdersForRebuild', () => {
     }
   }
 
-  it('separates terminal execution facts from open and zero-execution orders', () => {
-    const result = classifyOrdersForRebuild([
+  it('converts terminal and open positive executions to records while zero-execution orders produce none', () => {
+    const orders = [
       createRawOrder({
         orderId: 'PARTIAL-WITHDRAWAL-BUY',
         executionSide: 'BUY',
@@ -276,26 +278,28 @@ describe('classifyOrdersForRebuild', () => {
         executedAmount: '14',
         executedQuantity: 10,
       }),
-    ]);
+    ];
 
-    expect(result.executedBuyOrders.map((order) => order.orderId)).toEqual([
+    expect(() => {
+      validateOrdersForRebuild(orders);
+    }).not.toThrow();
+    // OPEN partial 卖单在重建发布时仍是 pending，由 recorder 重建回归单独验证。
+    const { buyOrders, sellOrders } = classifyAndConvertOrders(orders);
+    expect(buyOrders.map((order) => order.orderId)).toEqual([
       'PARTIAL-WITHDRAWAL-BUY',
       'CANCELED-BUY-WITH-EXECUTION',
     ]);
 
-    expect(result.executedSellOrders.map((order) => order.orderId)).toEqual([
+    expect(sellOrders.map((order) => order.orderId)).toEqual([
       'PARTIAL-WITHDRAWAL-SELL',
-    ]);
-    expect(result.pendingBuyOrders).toEqual([]);
-    expect(result.executedBuyOrders.map((order) => order.costAmount)).toEqual(['44', '26']);
-    expect(result.executedSellOrders.map((order) => order.costAmount)).toEqual(['36']);
-    expect(result.pendingSellOrders.map((order) => order.orderId)).toEqual([
       'OPEN-PARTIAL-SELL-WITH-EXECUTION',
     ]);
+    expect(buyOrders.map((order) => order.costAmount)).toEqual(['44', '26']);
+    expect(sellOrders.map((order) => order.costAmount)).toEqual(['36', '14']);
   });
 
   it('keeps zero-execution New, Canceled, Expired, and PartialFilled orders non-fatal', () => {
-    const result = classifyOrdersForRebuild([
+    const orders = [
       createRawOrder({
         orderId: 'NEW-ZERO-EXECUTION',
         executionSide: 'BUY',
@@ -328,13 +332,11 @@ describe('classifyOrdersForRebuild', () => {
         executedAmount: '0',
         executedQuantity: 0,
       }),
-    ]);
+    ];
 
-    expect(result.executedBuyOrders).toEqual([]);
-    expect(result.executedSellOrders).toEqual([]);
-    expect(result.pendingBuyOrders.map((order) => order.orderId)).toEqual(['NEW-ZERO-EXECUTION']);
-    expect(result.pendingSellOrders.map((order) => order.orderId)).toEqual([
-      'OPEN-PARTIAL-ZERO-EXECUTION',
-    ]);
+    expect(() => {
+      validateOrdersForRebuild(orders);
+    }).not.toThrow();
+    expect(classifyAndConvertOrders(orders)).toEqual({ buyOrders: [], sellOrders: [] });
   });
 });

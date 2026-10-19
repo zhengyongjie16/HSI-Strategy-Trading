@@ -19,7 +19,6 @@ function createEvent(): OrderStateChangedEvent {
     orderId: 'ORDER-001',
     symbol: 'BULL.HK',
     side: 'SELL',
-    source: 'WS',
     status: 'FILLED',
     monitorSymbol: 'HSI.HK',
     isLongSymbol: true,

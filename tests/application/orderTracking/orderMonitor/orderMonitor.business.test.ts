@@ -24,11 +24,36 @@ import type { QuoteUpdatedEvent } from '../../../../src/types/marketPorts.js';
 import type { Quote } from '../../../../src/types/quote.js';
 import type { DailyLossCumulativeExecutionInput } from '../../../../src/types/risk.js';
 import type { OrderStateChangedEvent } from '../../../../src/types/orderTracking.js';
+import type { OrderRecord } from '../../../../src/types/orderRecorder.js';
 import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/rateLimit.js';
 import { isInContinuousHKSession } from '../../../../src/domain/tradingSession/index.js';
 
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../recorder/executionFixture.js';
+
+/**
+ * 判断一次订单记录提交前后经济投影是否变化。
+ * recorder 的提交回执已收敛为 void；这里用可观察经济记录（买单列表或卖单记录）的前后差异证明经济是否变化。
+ */
+function economicProjectionChanged(
+  before: ReadonlyArray<OrderRecord | null>,
+  after: ReadonlyArray<OrderRecord | null>,
+): boolean {
+  if (before.length !== after.length) return true;
+
+  return after.some((record, index) => {
+    const previous = before[index];
+    if (previous === undefined || previous === null || record === null) return previous !== record;
+
+    return (
+      previous.orderId !== record.orderId ||
+      previous.symbol !== record.symbol ||
+      previous.costAmount !== record.costAmount ||
+      previous.executedQuantity !== record.executedQuantity ||
+      previous.executedTime !== record.executedTime
+    );
+  });
+}
 
 async function expectPromiseRejectsToMatch(
   operation: () => Promise<unknown>,
@@ -375,7 +400,7 @@ async function executeReplaceScenario(params: {
   readonly processTimes?: number;
 }): Promise<{
   readonly replaceCalls: number;
-  readonly submittedPrice: string | null;
+  readonly replaceSubmittedPrice: string | null;
 }> {
   const now = Date.now();
   const frame = {
@@ -458,10 +483,10 @@ async function executeReplaceScenario(params: {
 
   await monitor.stopRuntimeAndDrain();
 
-  const pendingOrders = monitor.getPendingSellOrders('BULL.HK');
+  const replaceMutations = native.nativeMutations().filter((m) => m.kind === 'REPLACE');
   return {
-    replaceCalls: native.nativeMutations().filter((m) => m.kind === 'REPLACE').length,
-    submittedPrice: pendingOrders[0]?.submittedPrice ?? null,
+    replaceCalls: replaceMutations.length,
+    replaceSubmittedPrice: replaceMutations.at(-1)?.price ?? null,
   };
 }
 
@@ -594,7 +619,7 @@ describe('orderMonitor business flow', () => {
     });
 
     expect(result.replaceCalls).toBe(1);
-    expect(Object.is(result.submittedPrice, '0.058')).toBeTrue();
+    expect(Object.is(result.replaceSubmittedPrice, '0.058')).toBeTrue();
   });
 
   it('replaces order when price diff equals threshold on upward move', async () => {
@@ -604,7 +629,7 @@ describe('orderMonitor business flow', () => {
     });
 
     expect(result.replaceCalls).toBe(1);
-    expect(Object.is(result.submittedPrice, '0.059')).toBeTrue();
+    expect(Object.is(result.replaceSubmittedPrice, '0.059')).toBeTrue();
   });
 
   it('does not replace order when price diff is lower than threshold', async () => {
@@ -614,7 +639,7 @@ describe('orderMonitor business flow', () => {
     });
 
     expect(result.replaceCalls).toBe(0);
-    expect(Object.is(result.submittedPrice, '0.059')).toBeTrue();
+    expect(result.replaceSubmittedPrice).toBeNull();
   });
 
   it('replaces order when price diff is greater than threshold', async () => {
@@ -624,7 +649,7 @@ describe('orderMonitor business flow', () => {
     });
 
     expect(result.replaceCalls).toBe(1);
-    expect(Object.is(result.submittedPrice, '0.057')).toBeTrue();
+    expect(Object.is(result.replaceSubmittedPrice, '0.057')).toBeTrue();
   });
 
   it('does not repeatedly replace when quote price does not change', async () => {
@@ -635,17 +660,17 @@ describe('orderMonitor business flow', () => {
     });
 
     expect(result.replaceCalls).toBe(0);
-    expect(Object.is(result.submittedPrice, '0.058')).toBeTrue();
+    expect(result.replaceSubmittedPrice).toBeNull();
   });
 
-  it('normalizes tracked submitted price after replace', async () => {
+  it('normalizes replace price sent to broker', async () => {
     const result = await executeReplaceScenario({
       initialPrice: '0.059',
       quotePrice: '0.05800000000000000',
     });
 
     expect(result.replaceCalls).toBe(1);
-    expect(Object.is(result.submittedPrice, '0.058')).toBeTrue();
+    expect(Object.is(result.replaceSubmittedPrice, '0.058')).toBeTrue();
   });
 
   it('allows buy order tracking above initial price when config is enabled', async () => {
@@ -1197,15 +1222,18 @@ describe('orderMonitor business flow', () => {
     await monitor.stopRuntimeAndDrain();
   });
 
-  it('does not retry cancel when timed-out sell receives PendingCancel after cancel request success', async () => {
+  const assertTimedOutSellCancelIsNotRetried = async (
+    cancelStatus: 'PendingCancel' | 'WaitToCancel',
+  ): Promise<void> => {
+    const orderId = `SELL-TIMEOUT-${cancelStatus === 'PendingCancel' ? 'PENDING-CANCEL' : 'WAIT-TO-CANCEL'}`;
     const frame = {
-      orderId: 'SELL-TIMEOUT-PENDING-CANCEL',
-      tradeId: 'SELL-TIMEOUT-PENDING-CANCEL-NO-EXECUTION',
+      orderId,
+      tradeId: `${orderId}-NO-EXECUTION`,
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: '',
       side: 'SELL' as const,
-      status: 'PendingCancel' as const,
+      status: cancelStatus,
       orderType: 'ELO' as const,
       quantity: '100',
       executedQuantity: '0',
@@ -1249,7 +1277,7 @@ describe('orderMonitor business flow', () => {
     await monitor.recoverOrderTrackingFromSnapshot([]);
     monitor.startRuntime();
     monitor.trackOrder({
-      orderId: 'SELL-TIMEOUT-PENDING-CANCEL',
+      orderId,
       symbol: 'BULL.HK',
       side: native.queryObservation.executionSide,
       executionSide: native.queryObservation.executionSide,
@@ -1284,17 +1312,20 @@ describe('orderMonitor business flow', () => {
     await monitor.stopRuntimeAndDrain();
     expect(economic.recorder.getExecutionFact(frame.orderId)).toBeNull();
     expect(economic.daily.getExecutionTimeEvidence()).toEqual([]);
-  });
+  };
 
-  it('does not retry cancel when timed-out buy receives PendingCancel after cancel request success', async () => {
+  const assertTimedOutBuyCancelIsNotRetried = async (
+    cancelStatus: 'PendingCancel' | 'WaitToCancel',
+  ): Promise<void> => {
+    const orderId = `BUY-TIMEOUT-${cancelStatus === 'PendingCancel' ? 'PENDING-CANCEL' : 'WAIT-TO-CANCEL'}`;
     const frame = {
-      orderId: 'BUY-TIMEOUT-PENDING-CANCEL',
-      tradeId: 'BUY-TIMEOUT-PENDING-CANCEL-NO-EXECUTION',
+      orderId,
+      tradeId: `${orderId}-NO-EXECUTION`,
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: '',
       side: 'BUY' as const,
-      status: 'PendingCancel' as const,
+      status: cancelStatus,
       orderType: 'ELO' as const,
       quantity: '100',
       executedQuantity: '0',
@@ -1339,7 +1370,7 @@ describe('orderMonitor business flow', () => {
     await monitor.recoverOrderTrackingFromSnapshot([]);
     monitor.startRuntime();
     monitor.trackOrder({
-      orderId: 'BUY-TIMEOUT-PENDING-CANCEL',
+      orderId,
       symbol: 'BULL.HK',
       side: native.queryObservation.executionSide,
       executionSide: native.queryObservation.executionSide,
@@ -1373,185 +1404,19 @@ describe('orderMonitor business flow', () => {
     await monitor.stopRuntimeAndDrain();
     expect(economic.recorder.getExecutionFact(frame.orderId)).toBeNull();
     expect(economic.daily.getExecutionTimeEvidence()).toEqual([]);
-  });
+  };
 
-  it('does not retry cancel when timed-out sell receives WaitToCancel after cancel request success', async () => {
-    const frame = {
-      orderId: 'SELL-TIMEOUT-WAIT-TO-CANCEL',
-      tradeId: 'SELL-TIMEOUT-WAIT-TO-CANCEL-NO-EXECUTION',
-      symbol: 'BULL.HK',
-      stockName: 'HSI RC',
-      remark: '',
-      side: 'SELL' as const,
-      status: 'WaitToCancel' as const,
-      orderType: 'ELO' as const,
-      quantity: '100',
-      executedQuantity: '0',
-      submittedPrice: '1',
-      executedPrice: '0',
-      submittedAtMs: Date.now() - 1,
-      executionTimeMs: null,
-      updatedAtMs: Date.now(),
-    };
-    const caller: { isCurrent?: () => boolean } = {};
-    const { deps, native, economic } = await createNativeDeps(
-      {
-        continuousTradingOpen: () => caller.isCurrent?.() ?? false,
+  it('does not retry cancel when timed-out sell receives PendingCancel after cancel request success', async () =>
+    assertTimedOutSellCancelIsNotRetried('PendingCancel'));
 
-        sellTimeoutSeconds: 0,
-      },
-      frame,
-    );
-    native.setCancelBeforeReply(async () => {});
-    native.setAccountBalance({
-      currency: 'HKD',
-      totalCash: '100000',
-      netAssets: '100000',
-      availableCash: '100000',
-    });
-    native.setStockPositions([]);
-    const receipt = await economic.snapshot.requestRefresh({
-      source: 'NATIVE-PENDING-CANCEL',
-      dayEpoch: 1,
-      refreshAccount: true,
-      refreshPositions: true,
-    }).result;
-    if (receipt.status !== 'COMMITTED')
-      throw new Error('pending cancel requires actual paired receipt');
+  it('does not retry cancel when timed-out buy receives PendingCancel after cancel request success', async () =>
+    assertTimedOutBuyCancelIsNotRetried('PendingCancel'));
 
-    const captured = receipt.snapshotToken;
-    caller.isCurrent = () =>
-      economic.snapshot.isCurrent(captured, { account: true, positions: true, paired: true });
-    const monitor = native.createMonitor(deps);
-    await monitor.initialize();
-    await monitor.recoverOrderTrackingFromSnapshot([]);
-    monitor.startRuntime();
-    monitor.trackOrder({
-      orderId: 'SELL-TIMEOUT-WAIT-TO-CANCEL',
-      symbol: 'BULL.HK',
-      side: native.queryObservation.executionSide,
-      executionSide: native.queryObservation.executionSide,
-      price: '1',
-      initialSubmittedPrice: '1',
-      quantity: 100,
-      isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
-      isProtectiveLiquidation: false,
-      orderType: native.queryObservation.orderType,
-    });
+  it('does not retry cancel when timed-out sell receives WaitToCancel after cancel request success', async () =>
+    assertTimedOutSellCancelIsNotRetried('WaitToCancel'));
 
-    await waitForCondition(
-      () => native.nativeReadCounts().cancel === 1,
-      'original timeout cancel native call not issued',
-      80,
-    );
-    expect(native.nativeReadCounts().cancel).toBe(1);
-    await (async () => {
-      native.emitOrderChangedFrame(frame);
-      for (let i = 0; i < 40; i++) await flushMicrotasks();
-    })();
-
-    await waitForCondition(
-      () => native.nativeReadCounts().cancel === 1,
-      'original timeout cancel native call not issued',
-      80,
-    );
-    expect(native.nativeReadCounts().cancel).toBe(1);
-    expect(native.nativeSubmitObservations()).toHaveLength(0);
-    expect(native.nativeReadCounts().detail).toBe(0);
-    await monitor.stopRuntimeAndDrain();
-    expect(economic.recorder.getExecutionFact(frame.orderId)).toBeNull();
-    expect(economic.daily.getExecutionTimeEvidence()).toEqual([]);
-  });
-
-  it('does not retry cancel when timed-out buy receives WaitToCancel after cancel request success', async () => {
-    const frame = {
-      orderId: 'BUY-TIMEOUT-WAIT-TO-CANCEL',
-      tradeId: 'BUY-TIMEOUT-WAIT-TO-CANCEL-NO-EXECUTION',
-      symbol: 'BULL.HK',
-      stockName: 'HSI RC',
-      remark: '',
-      side: 'BUY' as const,
-      status: 'WaitToCancel' as const,
-      orderType: 'ELO' as const,
-      quantity: '100',
-      executedQuantity: '0',
-      submittedPrice: '1',
-      executedPrice: '0',
-      submittedAtMs: Date.now() - 1,
-      executionTimeMs: null,
-      updatedAtMs: Date.now(),
-    };
-    const caller: { isCurrent?: () => boolean } = {};
-    const { deps, native, economic } = await createNativeDeps(
-      {
-        continuousTradingOpen: () => caller.isCurrent?.() ?? false,
-
-        buyTimeoutSeconds: 0,
-        sellTimeoutSeconds: 999,
-      },
-      frame,
-    );
-    native.setCancelBeforeReply(async () => {});
-    native.setAccountBalance({
-      currency: 'HKD',
-      totalCash: '100000',
-      netAssets: '100000',
-      availableCash: '100000',
-    });
-    native.setStockPositions([]);
-    const receipt = await economic.snapshot.requestRefresh({
-      source: 'NATIVE-PENDING-CANCEL',
-      dayEpoch: 1,
-      refreshAccount: true,
-      refreshPositions: true,
-    }).result;
-    if (receipt.status !== 'COMMITTED')
-      throw new Error('pending cancel requires actual paired receipt');
-
-    const captured = receipt.snapshotToken;
-    caller.isCurrent = () =>
-      economic.snapshot.isCurrent(captured, { account: true, positions: true, paired: true });
-    const monitor = native.createMonitor(deps);
-    await monitor.initialize();
-    await monitor.recoverOrderTrackingFromSnapshot([]);
-    monitor.startRuntime();
-    monitor.trackOrder({
-      orderId: 'BUY-TIMEOUT-WAIT-TO-CANCEL',
-      symbol: 'BULL.HK',
-      side: native.queryObservation.executionSide,
-      executionSide: native.queryObservation.executionSide,
-      price: '1',
-      initialSubmittedPrice: '1',
-      quantity: 100,
-      isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
-      isProtectiveLiquidation: false,
-      orderType: native.queryObservation.orderType,
-    });
-
-    await waitForCondition(
-      () => native.nativeReadCounts().cancel === 1,
-      'original timeout cancel native call not issued',
-      80,
-    );
-    expect(native.nativeReadCounts().cancel).toBe(1);
-    await (async () => {
-      native.emitOrderChangedFrame(frame);
-      for (let i = 0; i < 40; i++) await flushMicrotasks();
-    })();
-
-    await waitForCondition(
-      () => native.nativeReadCounts().cancel === 1,
-      'original timeout cancel native call not issued',
-      80,
-    );
-    expect(native.nativeReadCounts().cancel).toBe(1);
-    expect(native.nativeReadCounts().detail).toBe(0);
-    await monitor.stopRuntimeAndDrain();
-    expect(economic.recorder.getExecutionFact(frame.orderId)).toBeNull();
-    expect(economic.daily.getExecutionTimeEvidence()).toEqual([]);
-  });
+  it('does not retry cancel when timed-out buy receives WaitToCancel after cancel request success', async () =>
+    assertTimedOutBuyCancelIsNotRetried('WaitToCancel'));
 
   it('keeps protective sell tracked and does not submit market order before WS confirmation', async () => {
     const frame = {
@@ -2114,7 +1979,6 @@ describe('orderMonitor business flow', () => {
     expect(stateEvents).toMatchObject([
       {
         orderId: 'SELL-PROTECTIVE-TIMEOUT-DURABLE-ONCE',
-        source: 'WS',
         status: 'CANCELED',
       },
     ]);
@@ -2310,7 +2174,6 @@ describe('orderMonitor business flow', () => {
       'LONG',
       100,
       [],
-      true,
       frame.submittedAtMs,
     );
     const generation = economic.snapshot.getView().token.snapshotGeneration;
@@ -2394,10 +2257,11 @@ describe('orderMonitor business flow', () => {
             return owner.markSellCancelled(orderId);
           },
           commitExecutionFact: (fact, isLong, related, beforeCommit) => {
-            const result = owner.commitExecutionFact(fact, isLong, related, beforeCommit);
-            if (result.economicProjectionChanged) recorderCalls.push('commitExecutionFact');
-
-            return result;
+            const sellBefore = owner.getSellRecordByOrderId(fact.brokerOrderId);
+            owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const sellAfter = owner.getSellRecordByOrderId(fact.brokerOrderId);
+            if (economicProjectionChanged([sellBefore], [sellAfter]))
+              recorderCalls.push('commitExecutionFact');
           },
         }),
         observeDaily: (owner) => ({
@@ -2600,7 +2464,6 @@ describe('orderMonitor business flow', () => {
       'LONG',
       100,
       [],
-      true,
       frame.submittedAtMs,
     );
     expect(native.subscribeObservations()[0]).toContain('PRIVATE');
@@ -2713,10 +2576,11 @@ describe('orderMonitor business flow', () => {
             return owner.markSellCancelled(orderId);
           },
           commitExecutionFact: (fact, isLong, related, beforeCommit) => {
-            const result = owner.commitExecutionFact(fact, isLong, related, beforeCommit);
-            if (result.economicProjectionChanged) recorderCalls.push('commitExecutionFact');
-
-            return result;
+            const sellBefore = owner.getSellRecordByOrderId(fact.brokerOrderId);
+            owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const sellAfter = owner.getSellRecordByOrderId(fact.brokerOrderId);
+            if (economicProjectionChanged([sellBefore], [sellAfter]))
+              recorderCalls.push('commitExecutionFact');
           },
         }),
         observeDaily: (owner) => ({
@@ -2882,7 +2746,6 @@ describe('orderMonitor business flow', () => {
       'LONG',
       100,
       ['BUY-1'],
-      false,
       frame.submittedAtMs,
     );
 
@@ -4226,16 +4089,16 @@ describe('orderMonitor business flow', () => {
         observeRecorder: (owner) => ({
           ...owner,
           commitExecutionFact: (fact, isLong, related, beforeCommit) => {
-            const result = owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const buyBefore = owner.getBuyOrdersForSymbol(fact.symbol, isLong);
+            owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const buyAfter = owner.getBuyOrdersForSymbol(fact.symbol, isLong);
             if (
               fact.side === 'BUY' &&
               fact.phase === 'TERMINAL' &&
-              result.economicProjectionChanged
+              economicProjectionChanged(buyBefore, buyAfter)
             ) {
               localBuyCount += 1;
             }
-
-            return result;
           },
         }),
       },
@@ -4299,7 +4162,10 @@ describe('orderMonitor business flow', () => {
     await monitor.stopRuntimeAndDrain();
   });
 
-  it('settles filled quantity once when sell is canceled after partial fill', async () => {
+  const assertSellPartialFillSettlesOnce = async (
+    terminalStatus: 'Canceled' | 'Rejected',
+  ): Promise<void> => {
+    const orderId = `SELL-PARTIAL-${terminalStatus.toUpperCase()}`;
     const partialExecutionMs = Date.parse('2026-02-25T03:10:00.000Z');
     const terminalRevisionMs = Date.parse('2026-02-25T03:11:00.000Z');
     const economicSellCommits: Array<{ relatedBuyOrderIds: readonly string[] | null }> = [];
@@ -4311,8 +4177,8 @@ describe('orderMonitor business flow', () => {
     let partialCount = 0;
     let cancelCount = 0;
     const frame = {
-      orderId: 'SELL-PARTIAL-CANCELED',
-      tradeId: 'SELL-PARTIAL-CANCELED-EXECUTION',
+      orderId,
+      tradeId: `${orderId}-EXECUTION`,
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: '',
@@ -4345,13 +4211,13 @@ describe('orderMonitor business flow', () => {
             return result;
           },
           commitExecutionFact: (fact, isLong, related, beforeCommit) => {
-            const result = owner.commitExecutionFact(fact, isLong, related, beforeCommit);
-            if (fact.side === 'SELL' && result.economicProjectionChanged)
+            const sellBefore = owner.getSellRecordByOrderId(fact.brokerOrderId);
+            owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const sellAfter = owner.getSellRecordByOrderId(fact.brokerOrderId);
+            if (fact.side === 'SELL' && economicProjectionChanged([sellBefore], [sellAfter]))
               economicSellCommits.push({
                 relatedBuyOrderIds: related.length === 0 ? null : [...related],
               });
-
-            return result;
           },
         }),
         observeDaily: (owner) => ({
@@ -4450,7 +4316,6 @@ describe('orderMonitor business flow', () => {
       'LONG',
       200,
       ['BUY-1', 'BUY-2'],
-      false,
       frame.submittedAtMs,
     );
 
@@ -4476,7 +4341,12 @@ describe('orderMonitor business flow', () => {
 
     for (let i = 0; i < 10; i++) await flushMicrotasks();
 
-    native.emitOrderChangedFrame({ ...frame, status: 'Canceled', updatedAtMs: terminalRevisionMs });
+    native.emitOrderChangedFrame({
+      ...frame,
+      status: terminalStatus,
+      updatedAtMs: terminalRevisionMs,
+    });
+
     await waitForCondition(
       () => monitor.getPendingSellOrders('BULL.HK').length === 0,
       'original terminal SELL did not release resources',
@@ -4486,7 +4356,7 @@ describe('orderMonitor business flow', () => {
     const reads = native.readCounts();
     native.emitOrderChangedFrame({
       ...frame,
-      status: 'Canceled',
+      status: terminalStatus,
       updatedAtMs: Date.parse('2026-02-25T03:12:00.000Z'),
     });
 
@@ -4512,7 +4382,7 @@ describe('orderMonitor business flow', () => {
         executedQuantity: 100,
         executedTimeMs: partialExecutionMs,
         orderUpdatedAtMs: partialExecutionMs,
-        orderId: 'SELL-PARTIAL-CANCELED',
+        orderId,
       },
       {
         factStage: 'TERMINAL',
@@ -4523,7 +4393,7 @@ describe('orderMonitor business flow', () => {
         executedQuantity: 100,
         executedTimeMs: partialExecutionMs,
         orderUpdatedAtMs: terminalRevisionMs,
-        orderId: 'SELL-PARTIAL-CANCELED',
+        orderId,
       },
     ]);
     expect(monitor.getPendingSellOrders('BULL.HK')).toHaveLength(0);
@@ -4552,262 +4422,13 @@ describe('orderMonitor business flow', () => {
     expect(economic.holds.getHoldSymbols().has('BULL.HK')).toBe(false);
     expect(economic.snapshot.getView().token.snapshotGeneration).toBe(firstTerminalGeneration);
     expect(economic.termination.isTerminated()).toBe(false);
-  });
+  };
 
-  it('settles filled quantity once when sell is rejected after partial fill', async () => {
-    const partialExecutionMs = Date.parse('2026-02-25T03:10:00.000Z');
-    const terminalRevisionMs = Date.parse('2026-02-25T03:11:00.000Z');
-    const economicSellCommits: Array<{ relatedBuyOrderIds: readonly string[] | null }> = [];
-    const dailyLossFacts: DailyLossCumulativeExecutionInput[] = [];
-    const refreshNeeds: Array<{
-      readonly refreshAccount: boolean;
-      readonly refreshPositions: boolean;
-    }> = [];
-    let partialCount = 0;
-    let cancelCount = 0;
-    const frame = {
-      orderId: 'SELL-PARTIAL-REJECTED',
-      tradeId: 'SELL-PARTIAL-REJECTED-EXECUTION',
-      symbol: 'BULL.HK',
-      stockName: 'HSI RC',
-      remark: '',
-      side: 'SELL' as const,
-      status: 'PartialFilled' as const,
-      orderType: 'ELO' as const,
-      quantity: '200',
-      executedQuantity: '100',
-      submittedPrice: '1',
-      executedPrice: '1.05',
-      submittedAtMs: Date.parse('2026-02-25T03:06:00.000Z'),
-      executionTimeMs: partialExecutionMs,
-      updatedAtMs: partialExecutionMs,
-    };
-    const { deps, native, economic } = await createNativeDeps(
-      {
-        now: () => new Date('2026-02-25T03:15:00.000Z'),
-        observeRecorder: (owner) => ({
-          ...owner,
-          markSellPartialFilled: (id, quantity) => {
-            const result = owner.markSellPartialFilled(id, quantity);
-            if (result !== null) partialCount++;
+  it('settles filled quantity once when sell is canceled after partial fill', async () =>
+    assertSellPartialFillSettlesOnce('Canceled'));
 
-            return result;
-          },
-          markSellCancelled: (id) => {
-            const result = owner.markSellCancelled(id);
-            if (result !== null) cancelCount++;
-
-            return result;
-          },
-          commitExecutionFact: (fact, isLong, related, beforeCommit) => {
-            const result = owner.commitExecutionFact(fact, isLong, related, beforeCommit);
-            if (fact.side === 'SELL' && result.economicProjectionChanged)
-              economicSellCommits.push({
-                relatedBuyOrderIds: related.length === 0 ? null : [...related],
-              });
-
-            return result;
-          },
-        }),
-        observeDaily: (owner) => ({
-          ...owner,
-          recordCumulativeExecution: (input, beforeCommit) => {
-            dailyLossFacts.push(input);
-            return owner.recordCumulativeExecution(input, beforeCommit);
-          },
-        }),
-        onRecordSettlementRefreshNeed: (need) => {
-          refreshNeeds.push(need);
-        },
-      },
-      frame,
-    );
-    const buyFrames = [
-      {
-        ...frame,
-        orderId: 'BUY-1',
-        tradeId: 'BUY-1-EXECUTION',
-        side: 'BUY' as const,
-        status: 'Filled' as const,
-        quantity: '100',
-        executedQuantity: '100',
-        submittedPrice: '1',
-        executedPrice: '1',
-        submittedAtMs: Date.parse('2026-02-25T03:00:00.000Z'),
-        executionTimeMs: Date.parse('2026-02-25T03:00:00.000Z'),
-        updatedAtMs: Date.parse('2026-02-25T03:00:00.000Z'),
-      },
-      {
-        ...frame,
-        orderId: 'BUY-2',
-        tradeId: 'BUY-2-EXECUTION',
-        side: 'BUY' as const,
-        status: 'Filled' as const,
-        quantity: '100',
-        executedQuantity: '100',
-        submittedPrice: '1.2',
-        executedPrice: '1.2',
-        submittedAtMs: Date.parse('2026-02-25T03:05:00.000Z'),
-        executionTimeMs: Date.parse('2026-02-25T03:05:00.000Z'),
-        updatedAtMs: Date.parse('2026-02-25T03:05:00.000Z'),
-      },
-    ];
-    native.setOrderDetailReplies(buyFrames);
-    const rows = buyFrames.map((b) => ({
-      orderId: b.orderId,
-      tradeId: b.tradeId,
-      symbol: b.symbol,
-      quantity: b.executedQuantity,
-      price: b.executedPrice,
-      tradeDoneAtMs: b.executionTimeMs,
-    }));
-    native.setExecutionReplies(rows);
-    for (const buy of buyFrames) {
-      const [observation] = await native.createQueryOrdersReader(buy.orderId)();
-      if (observation === undefined) throw new Error('real BUY seed missing');
-
-      economic.flow.recordCumulativeExecution({
-        orderId: observation.orderId,
-        symbol: observation.symbol,
-        side: observation.executionSide,
-        factStage: observation.executionPhase,
-        monitorSymbol: 'HSI.HK',
-        isLongSymbol: true,
-        isProtectiveLiquidation: false,
-        executedQuantity: observation.executedQuantity,
-        executedAmount: observation.executedAmount,
-        executedPrice: observation.executedPrice,
-        executedTimeMs: observation.executionTimeMs,
-        orderUpdatedAtMs: observation.updatedAtMs,
-      });
-    }
-
-    // Original expectations below observe only the SELL, after actual BUY economics are established.
-    dailyLossFacts.length = 0;
-    refreshNeeds.length = 0;
-    native.setExecutionReplies([
-      ...rows,
-      {
-        orderId: frame.orderId,
-        tradeId: frame.tradeId,
-        symbol: frame.symbol,
-        quantity: '100',
-        price: '1.05',
-        tradeDoneAtMs: partialExecutionMs,
-      },
-    ]);
-    const monitor = native.createMonitor(deps);
-    await monitor.initialize();
-    await monitor.recoverOrderTrackingFromSnapshot([]);
-    economic.recorder.submitSellOrder(
-      frame.orderId,
-      'BULL.HK',
-      'LONG',
-      200,
-      ['BUY-1', 'BUY-2'],
-      false,
-      frame.submittedAtMs,
-    );
-
-    monitor.trackOrder({
-      orderId: frame.orderId,
-      symbol: frame.symbol,
-      side: native.queryObservation.executionSide,
-      executionSide: native.queryObservation.executionSide,
-      price: '1',
-      initialSubmittedPrice: '1',
-      quantity: 200,
-      isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
-      isProtectiveLiquidation: false,
-      orderType: native.queryObservation.orderType,
-    });
-    native.emitOrderChangedFrame(frame);
-    await waitForCondition(
-      () => dailyLossFacts.length === 1,
-      'original partial SELL economics did not arrive',
-      80,
-    );
-
-    for (let i = 0; i < 10; i++) await flushMicrotasks();
-
-    native.emitOrderChangedFrame({ ...frame, status: 'Rejected', updatedAtMs: terminalRevisionMs });
-    await waitForCondition(
-      () => monitor.getPendingSellOrders('BULL.HK').length === 0,
-      'original terminal SELL did not release resources',
-      80,
-    );
-    const firstTerminalGeneration = economic.snapshot.getView().token.snapshotGeneration;
-    const reads = native.readCounts();
-    native.emitOrderChangedFrame({
-      ...frame,
-      status: 'Rejected',
-      updatedAtMs: Date.parse('2026-02-25T03:12:00.000Z'),
-    });
-
-    await waitForCondition(
-      () =>
-        native.readCounts().today === reads.today + 1 &&
-        native.readCounts().history === reads.history + 1,
-      'original terminal replay IO not issued',
-      80,
-    );
-    await monitor.stopRuntimeAndDrain();
-    expect(partialCount).toBe(1);
-    expect(cancelCount).toBe(1);
-    expect(economicSellCommits).toHaveLength(1);
-    expect(economicSellCommits[0]?.relatedBuyOrderIds).toEqual(['BUY-1']);
-    expect(dailyLossFacts).toEqual([
-      {
-        factStage: 'OPEN',
-        direction: 'LONG',
-        symbol: 'BULL.HK',
-        side: 'SELL',
-        executedPrice: '1.05',
-        executedQuantity: 100,
-        executedTimeMs: partialExecutionMs,
-        orderUpdatedAtMs: partialExecutionMs,
-        orderId: 'SELL-PARTIAL-REJECTED',
-      },
-      {
-        factStage: 'TERMINAL',
-        direction: 'LONG',
-        symbol: 'BULL.HK',
-        side: 'SELL',
-        executedPrice: '1.05',
-        executedQuantity: 100,
-        executedTimeMs: partialExecutionMs,
-        orderUpdatedAtMs: terminalRevisionMs,
-        orderId: 'SELL-PARTIAL-REJECTED',
-      },
-    ]);
-    expect(monitor.getPendingSellOrders('BULL.HK')).toHaveLength(0);
-    expect(refreshNeeds).toEqual([
-      {
-        refreshAccount: true,
-        refreshPositions: true,
-      },
-      {
-        refreshAccount: true,
-        refreshPositions: true,
-      },
-    ]);
-
-    expect(economic.recorder.getCostBasis('BULL.HK', true)).toEqual({
-      costAmount: '120',
-      quantity: 100,
-    });
-
-    expect(economic.recorder.getSellRecordByOrderId(frame.orderId)).toMatchObject({
-      costAmount: '105',
-      executedQuantity: 100,
-      executedTime: partialExecutionMs,
-    });
-    expect(economic.recorder.getPendingSellSnapshot()).toEqual([]);
-    expect(economic.holds.getHoldSymbols().has('BULL.HK')).toBe(false);
-    expect(economic.snapshot.getView().token.snapshotGeneration).toBe(firstTerminalGeneration);
-    expect(economic.termination.isTerminated()).toBe(false);
-  });
+  it('settles filled quantity once when sell is rejected after partial fill', async () =>
+    assertSellPartialFillSettlesOnce('Rejected'));
 
   it('falls back to quantity-based local settlement when partial fill cannot be mapped to exact buy orders', async () => {
     const partialExecutionMs = Date.parse('2026-02-25T03:10:00.000Z');
@@ -4843,13 +4464,13 @@ describe('orderMonitor business flow', () => {
           ...owner,
 
           commitExecutionFact: (fact, isLong, related, beforeCommit) => {
-            const result = owner.commitExecutionFact(fact, isLong, related, beforeCommit);
-            if (fact.side === 'SELL' && result.economicProjectionChanged)
+            const sellBefore = owner.getSellRecordByOrderId(fact.brokerOrderId);
+            owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const sellAfter = owner.getSellRecordByOrderId(fact.brokerOrderId);
+            if (fact.side === 'SELL' && economicProjectionChanged([sellBefore], [sellAfter]))
               economicSellCommits.push({
                 relatedBuyOrderIds: related.length === 0 ? null : [...related],
               });
-
-            return result;
           },
         }),
         observeDaily: (owner) => ({
@@ -4948,7 +4569,6 @@ describe('orderMonitor business flow', () => {
       'LONG',
       140,
       ['BUY-A', 'BUY-B'],
-      false,
       frame.submittedAtMs,
     );
 
@@ -5754,7 +5374,6 @@ describe('orderMonitor business flow', () => {
         {
           orderId: 'SELL-REPLACE-602013-STALE-STATE-CHECK',
           status: 'WORKING',
-          submittedPrice: '1.05',
         },
       ]);
     } finally {
@@ -5983,11 +5602,11 @@ describe('orderMonitor business flow', () => {
         observeRecorder: (owner) => ({
           ...owner,
           commitExecutionFact: (fact, isLong, related, beforeCommit) => {
-            const result = owner.commitExecutionFact(fact, isLong, related, beforeCommit);
-            if (fact.side === 'SELL' && result.economicProjectionChanged)
+            const sellBefore = owner.getSellRecordByOrderId(fact.brokerOrderId);
+            owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const sellAfter = owner.getSellRecordByOrderId(fact.brokerOrderId);
+            if (fact.side === 'SELL' && economicProjectionChanged([sellBefore], [sellAfter]))
               economicSellCommits.push(related.length === 0 ? null : [...related]);
-
-            return result;
           },
         }),
         onRecordSettlementRefreshNeed: (need) => {
@@ -6081,7 +5700,6 @@ describe('orderMonitor business flow', () => {
       'LONG',
       200,
       ['BUY-1', 'BUY-2'],
-      false,
       frame.submittedAtMs,
     );
 
@@ -6167,11 +5785,13 @@ describe('orderMonitor business flow', () => {
         observeRecorder: (owner) => ({
           ...owner,
           commitExecutionFact: (fact, isLong, related, beforeCommit) => {
-            const result = owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const buyBefore = owner.getBuyOrdersForSymbol(fact.symbol, isLong);
+            owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const buyAfter = owner.getBuyOrdersForSymbol(fact.symbol, isLong);
             if (
               fact.side === 'BUY' &&
               fact.phase === 'TERMINAL' &&
-              result.economicProjectionChanged
+              economicProjectionChanged(buyBefore, buyAfter)
             ) {
               if (fact.executionTimeMs === null)
                 throw new Error('accepted BUY must retain execution time');
@@ -6182,8 +5802,6 @@ describe('orderMonitor business flow', () => {
                 executedTimeMs: fact.executionTimeMs,
               });
             }
-
-            return result;
           },
         }),
         observeDaily: (owner) => ({
@@ -6446,16 +6064,16 @@ describe('orderMonitor business flow', () => {
         observeRecorder: (owner) => ({
           ...owner,
           commitExecutionFact: (fact, isLong, related, beforeCommit) => {
-            const result = owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const buyBefore = owner.getBuyOrdersForSymbol(fact.symbol, isLong);
+            owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const buyAfter = owner.getBuyOrdersForSymbol(fact.symbol, isLong);
             if (
               fact.side === 'BUY' &&
               fact.phase === 'TERMINAL' &&
-              result.economicProjectionChanged
+              economicProjectionChanged(buyBefore, buyAfter)
             ) {
               localBuyCount += 1;
             }
-
-            return result;
           },
         }),
       },
@@ -6514,7 +6132,6 @@ describe('orderMonitor business flow', () => {
       orderId: 'BUY-DUP-FILLED',
       symbol: 'BULL.HK',
       side: 'BUY',
-      source: 'WS',
       status: 'FILLED',
       monitorSymbol: 'HSI.HK',
       isLongSymbol: true,
@@ -6570,16 +6187,16 @@ describe('orderMonitor business flow', () => {
         observeRecorder: (owner) => ({
           ...owner,
           commitExecutionFact: (fact, isLong, related, beforeCommit) => {
-            const result = owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const buyBefore = owner.getBuyOrdersForSymbol(fact.symbol, isLong);
+            owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const buyAfter = owner.getBuyOrdersForSymbol(fact.symbol, isLong);
             if (
               fact.side === 'BUY' &&
               fact.phase === 'TERMINAL' &&
-              result.economicProjectionChanged
+              economicProjectionChanged(buyBefore, buyAfter)
             ) {
               localBuyCount += 1;
             }
-
-            return result;
           },
         }),
         observeDaily: (owner) => ({
@@ -6774,8 +6391,10 @@ describe('orderMonitor business flow', () => {
         observeRecorder: (owner) => ({
           ...owner,
           commitExecutionFact: (fact, isLong, related, beforeCommit) => {
-            const result = owner.commitExecutionFact(fact, isLong, related, beforeCommit);
-            if (fact.side === 'SELL' && result.economicProjectionChanged) {
+            const sellBefore = owner.getSellRecordByOrderId(fact.brokerOrderId);
+            owner.commitExecutionFact(fact, isLong, related, beforeCommit);
+            const sellAfter = owner.getSellRecordByOrderId(fact.brokerOrderId);
+            if (fact.side === 'SELL' && economicProjectionChanged([sellBefore], [sellAfter])) {
               if (fact.executionTimeMs === null)
                 throw new Error('accepted SELL requires original execution T');
 
@@ -6785,8 +6404,6 @@ describe('orderMonitor business flow', () => {
                 executedTimeMs: fact.executionTimeMs,
               });
             }
-
-            return result;
           },
         }),
         observeDaily: (owner) => ({
@@ -6841,7 +6458,6 @@ describe('orderMonitor business flow', () => {
       'LONG',
       100,
       [],
-      true,
       frame.submittedAtMs,
     );
     expect(economic.recorder.getPendingSellSnapshot()).toHaveLength(1);
@@ -6882,7 +6498,6 @@ describe('orderMonitor business flow', () => {
     expect(orderStateEvents).toMatchObject([
       {
         orderId: 'SELL-PUBLIC-REPLACE-TERMINAL-GATEWAY',
-        source: 'STATE_CHECK',
         status: 'CANCELED',
         isProtectiveLiquidation: true,
         executedQuantity: 40,

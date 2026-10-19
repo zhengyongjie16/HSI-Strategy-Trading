@@ -50,7 +50,6 @@ export type PendingOrder = {
   /** SDK 对市价单等合法订单可返回 null；不得伪造为零价格。 */
   readonly submittedPrice: string | null;
   readonly quantity: number;
-  readonly executedQuantity: number;
   readonly status: OrderReadStatus;
   readonly orderType: OrderReadType;
 };
@@ -100,11 +99,3 @@ export type OrderStateCheckResult =
       readonly kind: 'QUERY_FAILED';
       readonly errorCode: string | null;
     };
-
-/** 待成交订单的真实缓存读取能力；forceRefresh 语义和重试策略仍由既有 owner 负责。 */
-export interface PendingOrderReader {
-  readonly getPendingOrders: (
-    symbols?: ReadonlyArray<string> | null,
-    forceRefresh?: boolean,
-  ) => Promise<ReadonlyArray<PendingOrder>>;
-}

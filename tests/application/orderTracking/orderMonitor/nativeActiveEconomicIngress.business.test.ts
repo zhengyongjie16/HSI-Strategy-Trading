@@ -86,7 +86,7 @@ async function setup(protective: boolean, persistProgress: () => void) {
   });
 
   if (protective)
-    f.recorder.submitSellOrder('buy', 'BULL.HK', 'LONG', 100, [], true, executionTimeMs - 1000);
+    f.recorder.submitSellOrder('buy', 'BULL.HK', 'LONG', 100, [], executionTimeMs - 1000);
 
   return { f, ingress, monitor, closed };
 }

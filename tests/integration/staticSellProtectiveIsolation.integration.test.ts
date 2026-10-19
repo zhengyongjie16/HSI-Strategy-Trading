@@ -494,7 +494,6 @@ async function createHarness(
       logger,
     }),
     seatActivationDispatcher: { dispatchCurrentActivatingSeats: () => {} },
-    reportFatalError: termination.reportFatalError,
   });
   const rebuild = createRebuildTradingDayState({
     snapshot,

@@ -182,7 +182,6 @@ export function neutralLegacyCapability(key: string): boolean {
       'wholeLotQuantity',
       'compareRatios',
       'canonicalDecimal',
-      'requireCanonicalDecimal',
       'formatDecimal',
       'formatRatio',
       'safeQuantityNumber',

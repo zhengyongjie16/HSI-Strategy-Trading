@@ -33,6 +33,9 @@ function createLoggerStub(): Logger {
   };
 }
 
+/** 中性列表项不再携带牛熊类型；harness 保留创建时类型以模拟 adapter 按 request.types 过滤。 */
+const warrantTypesByItem = new WeakMap<object, 'BULL' | 'BEAR'>();
+
 function createWarrantInfo(
   params: Readonly<{
     symbol: string;
@@ -42,16 +45,15 @@ function createWarrantInfo(
     callPrice: string;
   }>,
 ): Awaited<ReturnType<MarketQuoteContext['warrantList']>>[number] {
-  return {
+  const item = {
     symbol: params.symbol,
-    name: params.symbol,
-    lastDone: '0.1',
     toCallPrice: params.apiDistanceRatio,
     turnover: params.turnover,
     callPrice: params.callPrice,
-    warrantType: params.warrantType === 'BULL' ? 'Bull' : 'Bear',
-    status: 'NORMAL',
+    status: 'NORMAL' as const,
   };
+  warrantTypesByItem.set(item, params.warrantType);
+  return item;
 }
 
 /** 中性查询端口，只记录实际 finder request，不制造 SDK monetary DTO。 */
@@ -61,9 +63,10 @@ function createWarrantQuoteHarness() {
   const port: MarketQuoteContext = createQuoteContextDouble({
     warrantList: async (request) => {
       calls.push(request);
-      return (lists.get(request.symbol) ?? []).filter((item) =>
-        request.types.includes(item.warrantType === 'Bull' ? 'BULL' : 'BEAR'),
-      );
+      return (lists.get(request.symbol) ?? []).filter((item) => {
+        const warrantType = warrantTypesByItem.get(item);
+        return warrantType !== undefined && request.types.includes(warrantType);
+      });
     },
   });
   return {

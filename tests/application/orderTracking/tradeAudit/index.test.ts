@@ -19,7 +19,6 @@ function createEvent(overrides: Partial<OrderStateChangedEvent> = {}): OrderStat
     orderId: 'ORDER-001',
     symbol: 'BULL.HK',
     side: 'BUY',
-    source: 'WS',
     status: 'FILLED',
     monitorSymbol: 'HSI.HK',
     isLongSymbol: true,
@@ -37,18 +36,13 @@ function formatAuditTime(date: Date): string {
 
 describe('createOrderTradeAudit', () => {
   it.each([
-    { side: 'BUY' as const, isLongSymbol: true, action: 'BUYCALL', source: 'WS' as const },
-    { side: 'BUY' as const, isLongSymbol: false, action: 'BUYPUT', source: 'API' as const },
-    {
-      side: 'SELL' as const,
-      isLongSymbol: true,
-      action: 'SELLCALL',
-      source: 'STATE_CHECK' as const,
-    },
-    { side: 'SELL' as const, isLongSymbol: false, action: 'SELLPUT', source: 'RECOVERY' as const },
+    { side: 'BUY' as const, isLongSymbol: true, action: 'BUYCALL' },
+    { side: 'BUY' as const, isLongSymbol: false, action: 'BUYPUT' },
+    { side: 'SELL' as const, isLongSymbol: true, action: 'SELLCALL' },
+    { side: 'SELL' as const, isLongSymbol: false, action: 'SELLPUT' },
   ])(
-    'synchronously appends $action from the existing $source event',
-    ({ side, isLongSymbol, action, source }) => {
+    'synchronously appends $action from the existing order event',
+    ({ side, isLongSymbol, action }) => {
       const records: PersistableTradeRecord[] = [];
       const audit = createOrderTradeAudit({
         expectedMonitorSymbol: 'HSI.HK',
@@ -57,7 +51,7 @@ describe('createOrderTradeAudit', () => {
         },
         toHongKongTimeIso: formatAuditTime,
       });
-      const event = Object.freeze(createEvent({ side, isLongSymbol, source }));
+      const event = Object.freeze(createEvent({ side, isLongSymbol }));
 
       audit(event, recordedAt);
       expect(records).toEqual([

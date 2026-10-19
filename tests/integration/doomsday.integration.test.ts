@@ -83,11 +83,8 @@ async function createPendingDoomsdayOrder(
   const fact = native.queryObservation;
   return {
     orderId: fact.orderId,
-    symbol: fact.symbol,
-    side: fact.executionSide,
     status: fact.status,
     orderType: fact.orderType,
-    submittedPrice: fact.price,
     submittedQuantity: fact.quantity,
     executedQuantity: fact.executedQuantity,
     submittedAt: fact.submittedAt.getTime(),
@@ -134,7 +131,6 @@ async function createPendingCutoffOrder(
     orderType: fact.orderType,
     submittedPrice: input.submittedPrice,
     quantity: fact.quantity,
-    executedQuantity: fact.executedQuantity,
   };
 }
 
@@ -636,7 +632,7 @@ describe('doomsday integration', () => {
       },
       snapshot: snapshotOf(stateFixtures),
       dayLifecycleManager: {
-        tick: async () => ({ nextRetryAtMs: null, pendingOpenRebuild: false }),
+        tick: async () => ({ nextRetryAtMs: null }),
       },
       now: () => currentTime,
     };

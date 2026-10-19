@@ -140,10 +140,6 @@ afterAll(async () => {
     quote: quoteContextNewCalls.length,
     dotenv: dotenvConfigCalls.length,
   }).toEqual(beforeCalls);
-
-  originalConsoleLog(
-    '[module-restore-proof] dailyIndicatorAnalysis: prehook stable exports -> reinstall dotenv/longbridge/auth; fresh identity verified; factory/auth/dotenv invocation delta=0',
-  );
 });
 
 describe('dailyIndicatorAnalysis index entry flow', () => {

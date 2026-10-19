@@ -56,7 +56,6 @@ test('actual registered SDK terminal callbacks reach samectx complete dual ledge
         {
           orderId: original.orderId,
           symbol: original.symbol,
-          side: original.executionSide,
           executionSide: original.executionSide,
           executionPhase: original.executionPhase,
           submittedQuantity: original.quantity,

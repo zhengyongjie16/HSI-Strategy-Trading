@@ -124,10 +124,7 @@ function createStaticLiquidationCandidate(params: {
 
   return {
     kind: 'CANDIDATE',
-    candidate: {
-      signal,
-      quote: tradingQuote,
-    },
+    candidate: { signal },
   };
 }
 
@@ -371,11 +368,7 @@ export function createStaticLiquidationExecutor(
       if (!isSeatCurrent(direction) || executionResult.executedOrderIds.length !== 1) continue;
 
       const isLongDirection = direction === 'LONG';
-      monitorContext.orderRecorder.clearBuyOrders(
-        candidate.signal.symbol,
-        isLongDirection,
-        candidate.quote,
-      );
+      monitorContext.orderRecorder.clearBuyOrders(candidate.signal.symbol, isLongDirection);
       const prepared = monitorContext.riskChecker.prepareUnrealizedLossData(
         monitorContext.orderRecorder,
         candidate.signal.symbol,

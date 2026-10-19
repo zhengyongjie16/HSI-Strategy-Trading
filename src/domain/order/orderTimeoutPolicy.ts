@@ -4,7 +4,7 @@ import {
   ORDER_MONITOR_CANCEL_RETRY_BASE_DELAY_MS,
   ORDER_MONITOR_CANCEL_RETRY_MAX_DELAY_MS,
 } from '../../constants/index.js';
-import { isClosedStatus } from './orderTrackingPolicy.js';
+import { isTerminalOrderReadStatus } from './orderReadLifecycle.js';
 import type {
   OrderMonitorTrackedOrder,
   SellTimeoutResolution,
@@ -35,7 +35,7 @@ export function isSupportedTerminalCloseReason(
   }
 }
 
-export function resolveRemainingQuantityForConversion(
+function resolveRemainingQuantityForConversion(
   order: TrackedOrder,
   queriedExecutedQuantity: number | null,
 ): number | null {
@@ -60,7 +60,7 @@ export function canHandleClosedTimeoutRoute(order: OrderMonitorTrackedOrder): bo
 }
 
 export function canAttemptTimeoutHandling(order: OrderMonitorTrackedOrder, now: number): boolean {
-  if (isClosedStatus(order.status) && !canHandleClosedTimeoutRoute(order)) {
+  if (isTerminalOrderReadStatus(order.status) && !canHandleClosedTimeoutRoute(order)) {
     return false;
   }
 

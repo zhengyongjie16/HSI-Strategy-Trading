@@ -160,19 +160,6 @@ export function canonicalDecimal(value: string): string {
 }
 
 /**
- * 检查现有 V1 规范十进制拼写；字段正负限制仍由 durable owner 验证。
- * @param value 待验证的原始文本
- * @returns 原始规范文本；非规范拼写立即失败，不归一化历史文本
- */
-export function requireCanonicalDecimal(value: string): string {
-  if (canonicalDecimal(value) !== value) {
-    throw new TypeError('Noncanonical durable decimal text');
-  }
-
-  return value;
-}
-
-/**
  * 验证字段位数属于库可表达的整数范围，不自设更小的业务上限。
  * @param places 字段小数位数
  * @returns 无；非法内部契约立即失败

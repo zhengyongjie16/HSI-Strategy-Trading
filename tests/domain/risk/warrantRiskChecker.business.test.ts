@@ -110,12 +110,10 @@ describe('warrantRiskChecker business boundaries', () => {
     checker.setWarrantInfoFromCallPrice('BEAR.HK', '20000', false, 'BEAR.HK');
     expect(checker.checkWarrantDistanceLiquidation('BULL.HK', true, '20060')).toMatchObject({
       shouldLiquidate: true,
-      distancePercent: '0.30',
     });
 
     expect(checker.checkWarrantDistanceLiquidation('BEAR.HK', false, '19940')).toMatchObject({
       shouldLiquidate: true,
-      distancePercent: '-0.30',
     });
 
     expect(
@@ -151,19 +149,16 @@ describe('warrantRiskChecker business boundaries', () => {
     });
     checker.setWarrantInfoFromCallPrice('BULL.HK', '300', true);
     expect(checker.getWarrantDistanceInfo(true, 'BULL.HK', '301')).toEqual({
-      warrantType: 'BULL',
       distanceNumerator: '1',
       distanceDenominator: '300',
     });
     checker.setWarrantInfoFromCallPrice('BEAR.HK', '300', false);
     expect(checker.getWarrantDistanceInfo(false, 'BEAR.HK', '299')).toEqual({
-      warrantType: 'BEAR',
       distanceNumerator: '-1',
       distanceDenominator: '300',
     });
 
     expect(checker.getWarrantDistanceInfo(true, 'BULL.HK', null)).toEqual({
-      warrantType: 'BULL',
       distanceNumerator: null,
       distanceDenominator: null,
     });
@@ -178,13 +173,11 @@ describe('warrantRiskChecker business boundaries', () => {
     checker.setWarrantInfoFromCallPrice('BULL.HK', '20000.000000000000000001', true);
     checker.setWarrantInfoFromCallPrice('BEAR.HK', '20000.000000000000000001', false);
     expect(checker.getWarrantDistanceInfo(true, 'BULL.HK', '20000.000000000000000002')).toEqual({
-      warrantType: 'BULL',
       distanceNumerator: '0.000000000000000001',
       distanceDenominator: '20000.000000000000000001',
     });
 
     expect(checker.getWarrantDistanceInfo(false, 'BEAR.HK', '20000')).toEqual({
-      warrantType: 'BEAR',
       distanceNumerator: '-0.000000000000000001',
       distanceDenominator: '20000.000000000000000001',
     });
@@ -239,7 +232,6 @@ describe('warrantRiskChecker business boundaries', () => {
     expect(() => checker.setWarrantInfoFromCallPrice('BULL.HK', 'NaN', true)).toThrow(TypeError);
     expect(() => checker.checkRisk('BULL.HK', 'BUYCALL', '2e4')).toThrow(TypeError);
     expect(checker.getWarrantDistanceInfo(true, 'BULL.HK', '20000')).toEqual({
-      warrantType: 'BULL',
       distanceNumerator: '0',
       distanceDenominator: '20000',
     });
@@ -253,7 +245,6 @@ describe('warrantRiskChecker business boundaries', () => {
     checker.setWarrantInfoFromCallPrice('BULL.HK', '20000', true, 'BULL.HK');
     expect(checker.setWarrantInfoFromCallPrice('BULL.HK', '0', true, 'BULL.HK')).toEqual({
       status: 'error',
-      isWarrant: false,
       reason: '回收价无效（0），无法设置牛熊证信息',
     });
     const result = checker.checkRisk('BULL.HK', 'BUYCALL', '20000');

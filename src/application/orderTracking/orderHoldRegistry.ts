@@ -17,7 +17,6 @@
  */
 
 import { isOpenOrderReadStatus } from '../../domain/order/orderReadLifecycle.js';
-import type { OrderHoldSymbolsChangedEvent } from '../../types/orderHold.js';
 import type { OrderFact } from '../../types/trade.js';
 import type { OrderHoldRegistry } from './types.js';
 
@@ -31,15 +30,15 @@ export function createOrderHoldRegistry(): OrderHoldRegistry {
   const orderIdToSymbol = new Map<string, string>();
   const orderIdsBySymbol = new Map<string, Set<string>>();
   const holdSymbols = new Set<string>();
-  const listeners = new Set<(event: OrderHoldSymbolsChangedEvent) => void>();
+  const listeners = new Set<() => void>();
 
   /**
-   * 广播订单保留集合的 symbol 粒度变化。
-   * 只有 holdSymbols 真正发生新增或移除时才发事件，避免订阅 owner 收到重复 retain 变化。
+   * 广播订单保留集合变化。
+   * 只有 holdSymbols 真正发生新增或移除时才发通知，避免订阅 owner 收到重复 retain 变化。
    */
-  function emitOrderHoldSymbolsChanged(event: OrderHoldSymbolsChangedEvent): void {
+  function emitOrderHoldSymbolsChanged(): void {
     for (const listener of listeners) {
-      listener(event);
+      listener();
     }
   }
 
@@ -68,7 +67,7 @@ export function createOrderHoldRegistry(): OrderHoldRegistry {
     const shouldEmitAdded = !holdSymbols.has(symbol);
     holdSymbols.add(symbol);
     if (shouldEmitAdded) {
-      emitOrderHoldSymbolsChanged({ symbol, action: 'ADDED' });
+      emitOrderHoldSymbolsChanged();
     }
   }
 
@@ -93,7 +92,7 @@ export function createOrderHoldRegistry(): OrderHoldRegistry {
     if (symbolOrders.size === 0) {
       orderIdsBySymbol.delete(symbol);
       holdSymbols.delete(symbol);
-      emitOrderHoldSymbolsChanged({ symbol, action: 'REMOVED' });
+      emitOrderHoldSymbolsChanged();
     }
   }
 
@@ -126,9 +125,7 @@ export function createOrderHoldRegistry(): OrderHoldRegistry {
   /**
    * 订阅订单保留集合变化事件。
    */
-  function onOrderHoldSymbolsChanged(
-    listener: (event: OrderHoldSymbolsChangedEvent) => void,
-  ): () => void {
+  function onOrderHoldSymbolsChanged(listener: () => void): () => void {
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
@@ -143,8 +140,9 @@ export function createOrderHoldRegistry(): OrderHoldRegistry {
     orderIdToSymbol.clear();
     orderIdsBySymbol.clear();
     holdSymbols.clear();
-    for (const symbol of removedSymbols) {
-      emitOrderHoldSymbolsChanged({ symbol, action: 'REMOVED' });
+    // 清空后仍按被移除标的逐个发无参通知，保持与原来相同的通知次数与时序。
+    for (const _removedSymbol of removedSymbols) {
+      emitOrderHoldSymbolsChanged();
     }
   }
 

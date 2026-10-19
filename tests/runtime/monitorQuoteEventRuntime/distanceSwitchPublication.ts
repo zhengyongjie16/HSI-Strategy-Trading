@@ -53,7 +53,6 @@ type DistancePublicationFixture = Readonly<{
     advanceCalls: number;
     brokerCalls: number;
     retains: number;
-    releases: number;
     listeners: number;
   }>;
   emit: (event: QuoteUpdatedEvent) => void;
@@ -76,7 +75,6 @@ export async function createDistanceSwitchPublicationFixture(
   let advanceCalls = 0;
   let brokerCalls = 0;
   let retains = 0;
-  let releases = 0;
   const stateFixtures = createRuntimeStateFixtures({
     tradingTimeState: { canTrade: true, isHalfDay: false },
     lifecycleState: { isTradingEnabled: true },
@@ -136,7 +134,6 @@ export async function createDistanceSwitchPublicationFixture(
   const riskChecker = createRiskCheckerDouble({
     getWarrantDistanceInfo: () =>
       createWarrantDistanceInfoDouble({
-        warrantType: 'BULL',
         distanceNumerator: '0.1',
         distanceDenominator: '100',
       }),
@@ -235,9 +232,7 @@ export async function createDistanceSwitchPublicationFixture(
     retainSymbols: async () => {
       retains += 1;
     },
-    releaseRetain: async () => {
-      releases += 1;
-    },
+    releaseRetain: async () => {},
   };
   const receiver = createSwitchWakeupRuntime({
     logger: { error: () => {} },
@@ -291,7 +286,7 @@ export async function createDistanceSwitchPublicationFixture(
       releaseStage.resolve(null);
     },
     getPublication: () => publication,
-    getCounts: () => ({ advanceCalls, brokerCalls, retains, releases, listeners: listeners.size }),
+    getCounts: () => ({ advanceCalls, brokerCalls, retains, listeners: listeners.size }),
     emit: (event: QuoteUpdatedEvent) => {
       for (const listener of listeners) listener(event);
     },

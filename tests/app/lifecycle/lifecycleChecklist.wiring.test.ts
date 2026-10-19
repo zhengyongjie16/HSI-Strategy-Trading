@@ -6,8 +6,8 @@ import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { describe, expect, it, spyOn } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import { LIFECYCLE_CHECKLIST } from '../../../src/app/lifecycle/lifecycleChecklist.js';
-import { validateLifecycleChecklist } from '../../../src/app/lifecycle/lifecycleChecklistValidation.js';
+import { LIFECYCLE_CHECKLIST } from './lifecycleChecklist.js';
+import { validateLifecycleChecklist } from './lifecycleChecklistValidation.js';
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import { createSelectedStrategy } from '../../../src/app/startup/createSelectedStrategy.js';
 import { createAsyncRuntime } from '../../../src/app/runtime/createAsyncRuntime.js';
@@ -41,7 +41,7 @@ import {
 } from '../../helpers/testDoubles.js';
 import type { RuntimeAssemblyResources } from '../../../src/app/types.js';
 import type { CleanupPhase } from '../../../src/types/cleanup.js';
-import type { LifecycleChecklistObservation } from '../../../src/app/lifecycle/types.js';
+import type { LifecycleChecklistObservation } from './types.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 
 /** 仅读取指定接线文件的 AST；不建 symbol graph，也不执行源码。 */

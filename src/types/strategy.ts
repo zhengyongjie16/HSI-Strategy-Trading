@@ -1,4 +1,3 @@
-import type { CandlestickPeriod } from './marketPorts.js';
 import type { NormalizedCandle } from './data.js';
 import type { Logger } from './logger.js';
 import type { RuntimeClock, RuntimeScheduler } from './runtime.js';
@@ -12,7 +11,6 @@ import type { SignalType } from './signal.js';
  */
 export type StrategyCandlestickSnapshot = {
   readonly symbol: string;
-  readonly period: CandlestickPeriod;
   readonly version: number;
   readonly initialized: boolean;
   readonly lastBarTimestamp: number | null;
@@ -27,7 +25,7 @@ export type StrategyCandlestickSnapshot = {
  * 使用范围：StrategyMarketContext.seats、普通候选生成与 SELL 初始授权。
  * 语义约束：这是观察时点的快照，不是后续执行时的持仓保证；延迟验证保存的 emitter 使用 origin 中的初始买单事实。
  */
-export type StrategySeatFact = {
+type StrategySeatFact = {
   readonly direction: 'LONG' | 'SHORT';
   readonly symbol: string;
 

@@ -294,13 +294,6 @@ afterEach(async () => {
 });
 
 describe('createOrderMonitor route hooks integration', () => {
-  it('真实装配路径不再依赖旧 quoteFlow 模块文件', async () => {
-    await loadActualCreateOrderMonitor();
-    const { deps, native } = await createDeps();
-
-    expect(() => native.createMonitor(deps)).not.toThrow();
-  });
-
   it('真实装配路径在恢复完成后触发 TRACKED wakeup', async () => {
     const capturedWakeups: CapturedRouteWakeup[] = [];
     await loadCreateOrderMonitorWithCapturedRouteWakeups(capturedWakeups);

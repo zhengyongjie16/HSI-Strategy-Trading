@@ -1,4 +1,8 @@
+import type { CandleData } from '../../../src/types/data.js';
 import type { StrategyDeps } from '../../../src/types/strategy.js';
+
+/** 策略数学 fixture 的 K 线输入：OHLCV 可选事实加上运行期 timestamp，供冻结为 NormalizedCandle 快照。 */
+export type FixtureCandle = CandleData & { readonly timestamp?: number };
 
 /** 显式对象配置 fixture，保留可注入的非法数值边界。 */
 export type ConfigFixture = {

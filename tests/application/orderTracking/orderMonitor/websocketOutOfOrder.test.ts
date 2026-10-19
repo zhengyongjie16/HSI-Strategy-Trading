@@ -46,10 +46,11 @@ describe('chaos: websocket out-of-order and duplicate pushes', () => {
       observeRecorder: (owner) => ({
         ...owner,
         commitExecutionFact: (...args) => {
-          const receipt = owner.commitExecutionFact(...args);
-          if (receipt.economicProjectionChanged) localSellCount += 1;
-
-          return receipt;
+          const fact = args[0];
+          const previous = owner.getSellRecordByOrderId(fact.brokerOrderId);
+          owner.commitExecutionFact(...args);
+          // 提交回执已收敛为 void；卖单经济记录被真实替换才计一次经济投影。
+          if (owner.getSellRecordByOrderId(fact.brokerOrderId) !== previous) localSellCount += 1;
         },
         markSellFilled: (...args) => {
           markSellFilledCount += 1;
@@ -131,7 +132,6 @@ describe('chaos: websocket out-of-order and duplicate pushes', () => {
         isLongSymbol ? 'LONG' : 'SHORT',
         fact.quantity,
         [],
-        false,
         fact.submittedAt.getTime(),
       );
 

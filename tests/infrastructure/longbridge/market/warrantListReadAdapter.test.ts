@@ -85,7 +85,6 @@ describe('warrant list read adapter', () => {
     ]);
 
     expect(result[0]).toMatchObject({
-      lastDone: '0.0700000000000000000001',
       callPrice: '20000.1234567890123456789',
       toCallPrice: '0.003500000000000000001',
       turnover: '300000.000000000000000001',

@@ -101,6 +101,7 @@ describe('createGlobalStateDomain', () => {
   it('midnightClear 同步取消与失效，但必须等待账户及持仓两项已发 IO 都落定', async () => {
     let resolveAccount: ((value: AccountSnapshot) => void) | undefined;
     let resolvePositions: ((value: ReadonlyArray<Position>) => void) | undefined;
+    let accountIssued = false;
     const accountRead = new Promise<AccountSnapshot>((resolve) => {
       resolveAccount = resolve;
     });
@@ -109,7 +110,10 @@ describe('createGlobalStateDomain', () => {
     });
     const snapshot = await createSnapshotFixture({
       readPort: {
-        getAccountSnapshot: () => accountRead,
+        getAccountSnapshot: () => {
+          accountIssued = true;
+          return accountRead;
+        },
         getStockPositions: () => positionsRead,
       },
     });
@@ -121,7 +125,7 @@ describe('createGlobalStateDomain', () => {
       refreshPositions: true,
     });
     await Promise.resolve();
-    expect(snapshot.getStatus().inFlight).toBe(true);
+    expect(accountIssued).toBeTrue();
     const states = createRuntimeStates();
     const timeReference = states.tradingTimeState;
     const calendarReference = states.tradingCalendarState;

@@ -369,8 +369,6 @@ export function createAccountPositionSnapshot(
       const receipt = Object.freeze({
         status: 'COMMITTED' as const,
         snapshotToken: token,
-        refreshedAccount: batch.refreshAccount,
-        refreshedPositions: batch.refreshPositions,
         view,
       });
       const committedParticipants = batch.participants.filter(
@@ -515,8 +513,6 @@ export function createAccountPositionSnapshot(
     getStatus: () =>
       Object.freeze({
         admission,
-        inFlight: inFlight !== null,
-        pending: pending.some((participant) => !participant.settled),
         token,
       }),
     isCurrent: (candidate, components) =>

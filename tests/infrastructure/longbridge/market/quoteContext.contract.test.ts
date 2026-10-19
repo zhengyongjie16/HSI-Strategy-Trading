@@ -5,6 +5,7 @@
  * - 验证 QuoteContext Mock 契约与调用行为。
  */
 import { describe, expect, it } from 'bun:test';
+import assert from 'node:assert/strict';
 import {
   Market,
   Period,
@@ -166,9 +167,7 @@ describe('QuoteContext mock contract', () => {
 
     await quoteCtx.quote(['700.HK']);
 
-    expect(async () => {
-      await quoteCtx.quote(['700.HK']);
-    }).toThrow('quote call failed by rule');
+    await assert.rejects(quoteCtx.quote(['700.HK']), /quote call failed by rule/);
 
     const logs = quoteCtx.getCalls('quote');
     expect(logs).toHaveLength(2);

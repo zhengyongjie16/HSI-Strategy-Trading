@@ -7,10 +7,6 @@ import type { Signal } from '../../types/signal.js';
  * 使用范围：席位快照规则与运行时消费方；不承担 MonitorContext 的装配与状态写入。
  */
 export type MonitorContextSeatSnapshot = Readonly<{
-  seatState: {
-    readonly long: SeatState;
-    readonly short: SeatState;
-  };
   seatVersion: {
     readonly long: number;
     readonly short: number;
@@ -186,7 +182,7 @@ export type PeriodicSeatBlockSource =
  * 类型用途：描述状态机从撤单到完成的各个步骤。
  * 使用范围：domain/seat 与 application/seatSwitch使用。
  */
-export type SwitchStage =
+type SwitchStage =
   'CANCEL_PENDING' | 'SELL_OUT' | 'BIND_NEW' | 'WAIT_QUOTE' | 'REBUY' | 'COMPLETE' | 'FAILED';
 
 /**

@@ -278,7 +278,6 @@ test('same native tracking owners wait for real position subscription ack before
       'LONG',
       100,
       ['LONG-BUY'],
-      true,
       T + 100,
     );
     expect(monitor.hasPendingProtectiveLiquidationOrders('LONG')).toBeTrue();

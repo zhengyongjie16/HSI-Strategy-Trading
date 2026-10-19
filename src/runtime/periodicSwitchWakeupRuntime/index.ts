@@ -270,7 +270,6 @@ export function createPeriodicSwitchWakeupRuntime(
         const data: PeriodicSwitchTaskData = {
           ...baseline,
           currentTimeMs: deps.now().getTime(),
-          readinessReceipt: receipt,
           canContinue,
           isRouteCurrent,
         };

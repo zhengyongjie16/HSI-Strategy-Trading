@@ -12,7 +12,6 @@ export type OrderStateChangedEvent = Readonly<{
   orderId: string;
   symbol: string | null;
   side: 'BUY' | 'SELL' | null;
-  source: 'API' | 'WS' | 'STATE_CHECK' | 'RECOVERY';
   status: OrderClosedReason;
   monitorSymbol: string | null;
   isLongSymbol: boolean | null;

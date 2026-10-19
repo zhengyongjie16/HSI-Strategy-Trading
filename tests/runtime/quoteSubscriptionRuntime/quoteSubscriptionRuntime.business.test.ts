@@ -10,7 +10,6 @@ import { describe, expect, it } from 'bun:test';
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createQuoteSubscriptionRuntime } from '../../../src/runtime/quoteSubscriptionRuntime/index.js';
 import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
-import type { OrderHoldSymbolsChangedEvent } from '../../../src/types/orderHold.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import {
@@ -36,13 +35,13 @@ function createRuntimeStates(): RuntimeStateFixtures {
 
 function createOrderHoldEventSource(initialSymbols: ReadonlyArray<string>) {
   const holdSymbols = new Set(initialSymbols);
-  const listeners = new Set<(event: OrderHoldSymbolsChangedEvent) => void>();
+  const listeners = new Set<() => void>();
 
   return {
     tradeRuntime: {
       orderHoldRegistry: {
         getHoldSymbols: () => new Set(holdSymbols),
-        onOrderHoldSymbolsChanged: (listener: (event: OrderHoldSymbolsChangedEvent) => void) => {
+        onOrderHoldSymbolsChanged: (listener: () => void) => {
           listeners.add(listener);
           return () => {
             listeners.delete(listener);
@@ -53,13 +52,13 @@ function createOrderHoldEventSource(initialSymbols: ReadonlyArray<string>) {
     add(symbol: string): void {
       holdSymbols.add(symbol);
       for (const listener of listeners) {
-        listener({ symbol, action: 'ADDED' });
+        listener();
       }
     },
     remove(symbol: string): void {
       holdSymbols.delete(symbol);
       for (const listener of listeners) {
-        listener({ symbol, action: 'REMOVED' });
+        listener();
       }
     },
   };

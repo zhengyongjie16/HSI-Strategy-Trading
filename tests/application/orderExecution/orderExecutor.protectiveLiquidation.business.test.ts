@@ -250,15 +250,11 @@ describe('orderExecutor protective-liquidation contract', () => {
     expect(executionError.message).toContain('末日清仓');
   });
 
-  it('rejects a cross-day doomsday command before quote, position, broker, or tracking work', async () => {
+  const assertDoomsdayCommandRejectedBeforeWork = async (triggerTime: Date): Promise<void> => {
     const currentTime = new Date('2026-07-10T07:56:00.000Z');
     const harness = await createDoomsdayAuthorizationHarness({ initialTime: currentTime });
     const result = await harness.orderExecutor.executeDoomsdayClearanceSignals(
-      [
-        createDoomsdayAuthorizationCommand({
-          triggerTime: new Date('2026-07-09T07:56:00.000Z'),
-        }),
-      ],
+      [createDoomsdayAuthorizationCommand({ triggerTime })],
       () => true,
     );
 
@@ -283,42 +279,13 @@ describe('orderExecutor protective-liquidation contract', () => {
       submitOrderCalls: 0,
       trackedOrderCount: 0,
     });
-  });
+  };
 
-  it('rejects an invalid-time doomsday command before quote, position, broker, or tracking work', async () => {
-    const currentTime = new Date('2026-07-10T07:56:00.000Z');
-    const harness = await createDoomsdayAuthorizationHarness({ initialTime: currentTime });
-    const result = await harness.orderExecutor.executeDoomsdayClearanceSignals(
-      [
-        createDoomsdayAuthorizationCommand({
-          triggerTime: new Date(Number.NaN),
-        }),
-      ],
-      () => true,
-    );
+  it('rejects a cross-day doomsday command before quote, position, broker, or tracking work', async () =>
+    assertDoomsdayCommandRejectedBeforeWork(new Date('2026-07-09T07:56:00.000Z')));
 
-    expect(result).toEqual({
-      executedOrderIds: [],
-      reevaluationSymbols: [],
-      unresolvedQuoteSymbols: [],
-    });
-
-    expect({
-      finalQuoteReadCount: harness.getFinalQuoteReadCount(),
-      throttleCount: harness.getThrottleCount(),
-      mutationPermitCount: harness.getMutationPermitCount(),
-      stockPositionsCalls: harness.native.accountReadCounts().positions,
-      submitOrderCalls: harness.native.nativeSubmitObservations().length,
-      trackedOrderCount: harness.getTrackedOrderCount(),
-    }).toEqual({
-      finalQuoteReadCount: 0,
-      throttleCount: 0,
-      mutationPermitCount: 0,
-      stockPositionsCalls: 0,
-      submitOrderCalls: 0,
-      trackedOrderCount: 0,
-    });
-  });
+  it('rejects an invalid-time doomsday command before quote, position, broker, or tracking work', async () =>
+    assertDoomsdayCommandRejectedBeforeWork(new Date(Number.NaN)));
 
   it('does not invoke the broker when a same-day doomsday command becomes cross-day after its final quote', async () => {
     const currentTime = new Date('2026-07-10T07:56:00.000Z');
@@ -403,7 +370,7 @@ describe('orderExecutor protective-liquidation contract', () => {
       orderRecorder: createOrderRecorderDouble({
         commitExecutionFact: (...args) => {
           localRecordCount += 1;
-          return createOrderRecorderDouble().commitExecutionFact(...args);
+          createOrderRecorderDouble().commitExecutionFact(...args);
         },
         submitSellOrder: () => {
           localRecordCount += 1;

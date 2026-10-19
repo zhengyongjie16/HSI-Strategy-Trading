@@ -22,7 +22,7 @@ import {
 
 function createWarrantCheckerStub(): WarrantRiskChecker {
   return {
-    setWarrantInfoFromCallPrice: () => ({ status: 'ok', isWarrant: true }),
+    setWarrantInfoFromCallPrice: () => ({ status: 'ok' }),
     publishWarrantInfo: () => {},
     checkRisk: () => ({ allowed: true }),
     checkWarrantDistanceLiquidation: () => ({ shouldLiquidate: false }),
@@ -118,8 +118,6 @@ describe('risk rule composition business flow', () => {
     });
 
     expect(checker.getUnrealizedLossMetrics('BULL.HK', '90')).toEqual({
-      r1: '100.000000000000000002',
-      n1: 1,
       r2: '90',
       unrealizedPnL: '-10.000000000000000002',
     });
@@ -142,8 +140,6 @@ describe('risk rule composition business flow', () => {
       positionLimitChecker: createPositionLimitCheckerStub(),
     });
     expect(checker.getUnrealizedLossMetrics('BULL.HK', null)).toEqual({
-      r1: '10',
-      n1: 0,
       r2: '0',
       unrealizedPnL: '-10',
     });
@@ -239,8 +235,6 @@ describe('risk rule composition business flow', () => {
 
     const metrics = checker.getUnrealizedLossMetrics('BULL.HK', '12');
     expect(metrics).toEqual({
-      r1: '1000',
-      n1: 100,
       r2: '1200',
       unrealizedPnL: '200',
     });

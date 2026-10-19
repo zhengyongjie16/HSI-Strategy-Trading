@@ -12,13 +12,12 @@ import {
   projectRecords,
   projectSlices,
 } from '../../../domain/order/executionProjection.js';
-import { classifyOrdersForRebuild } from '../../../domain/order/orderRecordPolicy.js';
+import { validateOrdersForRebuild } from '../../../domain/order/orderRecordPolicy.js';
 import type { OwnedExecutionFact } from '../../../domain/order/types.js';
 import type {
   BrokerOrderExecutionFact,
   OrderExecutionAdmission,
   OrderFactBatchCommitResult,
-  OrderFactCommitReceipt,
   OrderProjectionTarget,
   OrderRecorder,
 } from '../../../types/orderRecorder.js';
@@ -52,10 +51,10 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     isLongSymbol: boolean,
     relatedBuyOrderIds: ReadonlyArray<string>,
     beforeCommit: () => OrderExecutionAdmission,
-  ): OrderFactCommitReceipt {
+  ): void {
     const sequence = nextProjectionSequence();
     const previous = executionFacts.get(fact.brokerOrderId);
-    const prepared = prepareExecutionCommit(
+    const entry = prepareExecutionCommit(
       fact,
       isLongSymbol,
       previous,
@@ -63,18 +62,17 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
       sequence,
     );
     const staged = new Map(executionFacts);
-    staged.set(fact.brokerOrderId, prepared.entry);
-    const merged = prepared.entry.fact;
+    staged.set(fact.brokerOrderId, entry);
+    const merged = entry.fact;
+    const authoritativeFactChanged = merged !== previous?.fact;
     const economicInputChanged =
       merged.cumulativeQuantity !== previous?.fact.cumulativeQuantity ||
       exactCompare(merged.cumulativeAmount, previous.fact.cumulativeAmount) !== 0 ||
       merged.executionTimeMs !== previous.fact.executionTimeMs ||
       merged.phase !== previous.fact.phase;
     const associationChanged =
-      previous?.relatedBuyOrderIds.length !== prepared.entry.relatedBuyOrderIds.length ||
-      previous.relatedBuyOrderIds.some(
-        (id, index) => id !== prepared.entry.relatedBuyOrderIds[index],
-      );
+      previous?.relatedBuyOrderIds.length !== entry.relatedBuyOrderIds.length ||
+      previous.relatedBuyOrderIds.some((id, index) => id !== entry.relatedBuyOrderIds[index]);
     // broker revision 水位不是经济变化；无需重算列表，也不制造新成交后的刷新需求。
     const next =
       economicInputChanged || associationChanged
@@ -82,9 +80,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
         : storage.getBuyOrdersList(fact.symbol, isLongSymbol);
     const previousSell = storage.getSellRecordByOrderId(fact.brokerOrderId);
     const sell =
-      prepared.entry.fact.side === 'SELL' && prepared.entry.economicQuantity > 0
-        ? factToRecord(prepared.entry.fact)
-        : null;
+      entry.fact.side === 'SELL' && entry.economicQuantity > 0 ? factToRecord(entry.fact) : null;
     const changed =
       projectionChanged(storage.getBuyOrdersList(fact.symbol, isLongSymbol), next) ||
       (sell !== null &&
@@ -94,22 +90,15 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     // 经济覆盖不证明 durable/episode 义务已完成；纯重复也先经过同步准入与持久化。
     // 完整候选先成功，再同步准入/durable；封存抑制不写事实、覆盖、序列、列表或 stale。
     const admission: unknown = beforeCommit();
-    if (admission === 'SUPPRESSED')
-      return {
-        brokerOrderId: fact.brokerOrderId,
-        authoritativeFactChanged: false,
-        executionAdvanced: false,
-        economicProjectionChanged: false,
-      };
+    if (admission === 'SUPPRESSED') return;
 
     if (admission !== 'ADMITTED' && admission !== 'DUPLICATE')
       throw new Error('[订单记录] 缺少明确同步成交准入');
 
-    if (!prepared.receipt.authoritativeFactChanged && !changed && !associationChanged)
-      return { ...prepared.receipt, economicProjectionChanged: false };
+    if (!authoritativeFactChanged && !changed && !associationChanged) return;
 
     projectionSequence = sequence;
-    executionFacts.set(fact.brokerOrderId, prepared.entry);
+    executionFacts.set(fact.brokerOrderId, entry);
     if (economicInputChanged || associationChanged)
       (isLongSymbol ? storage.setBuyOrdersListForLong : storage.setBuyOrdersListForShort)(
         fact.symbol,
@@ -123,8 +112,6 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
         refreshAccount: true,
         refreshPositions: true,
       });
-
-    return { ...prepared.receipt, economicProjectionChanged: changed };
   }
 
   /** 全 batch 归属/累计事实预检；controlled rebuild 才重建基线并放下旧 clear scope。 */
@@ -144,7 +131,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
         throw new Error('[订单记录] API batch 归属冲突');
 
       unique.set(target.symbol, target);
-      classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === target.symbol));
+      validateOrdersForRebuild(allOrders.filter((order) => order.symbol === target.symbol));
     }
 
     const sequence = nextProjectionSequence();
@@ -156,7 +143,6 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
       }
     }
 
-    const receipts: OrderFactCommitReceipt[] = [];
     for (const order of allOrders) {
       const target = unique.get(order.symbol);
       if (target === undefined) continue;
@@ -168,15 +154,15 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
         [],
         sequence,
       );
-      const fact = prepared.entry.fact;
-      let entry = prepared.entry;
+      const fact = prepared.fact;
+      let entry = prepared;
       if (mode === 'REBUILD' && fact.phase === 'TERMINAL' && fact.cumulativeQuantity > 0) {
         const executionTimeMs = fact.executionTimeMs;
         if (executionTimeMs === null)
           throw new Error('[订单记录] rebuild execution lacks trusted time');
 
         entry = Object.freeze({
-          ...prepared.entry,
+          ...prepared,
           economicQuantity: fact.cumulativeQuantity,
           projectionSlices: Object.freeze([
             Object.freeze({
@@ -190,7 +176,6 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
       }
 
       staged.set(order.orderId, entry);
-      receipts.push(prepared.receipt);
     }
 
     const lists = [...unique.values()].map((target) => ({
@@ -199,13 +184,11 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     }));
     if (!isCurrent()) return { status: 'ABORTED' };
 
-    const changedSymbols = new Set(
-      lists
-        .filter(({ target, next }) =>
-          projectionChanged(storage.getBuyOrdersList(target.symbol, target.isLongSymbol), next),
-        )
-        .map(({ target }) => target.symbol),
-    );
+    // 逐标的调用 projectionChanged 做同一金额/数量精确比较；返回值不参与输出，
+    // 保留调用是为维持与旧实现相同的比较顺序。
+    for (const { target, next } of lists)
+      projectionChanged(storage.getBuyOrdersList(target.symbol, target.isLongSymbol), next);
+
     projectionSequence = sequence;
     executionFacts.clear();
     for (const [id, entry] of staged) executionFacts.set(id, entry);
@@ -222,16 +205,11 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     }
 
     // ACTIVATION/REBUILD 是受控覆盖基线，不以新 brokerId 推造在线成交及全局 stale。
-    return {
-      status: 'COMMITTED',
-      receipts: receipts.map((receipt) => {
-        const entry = staged.get(receipt.brokerOrderId);
-        if (entry === undefined)
-          throw new Error('[订单记录] published receipt lacks staged broker identity');
+    for (const [brokerOrderId, entry] of staged)
+      if (brokerOrderId !== entry.fact.brokerOrderId)
+        throw new Error('[订单记录] staged fact identity mismatch');
 
-        return { ...receipt, economicProjectionChanged: changedSymbols.has(entry.fact.symbol) };
-      }),
-    };
+    return { status: 'COMMITTED' };
   }
 
   /** 仅标记当前幸存经济范围为 cleared；SELL 过滤消除的范围仍可因合法修订重新筛选。 */
@@ -300,18 +278,10 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
           }),
       ]),
     validateRebuildSnapshot: (symbol, allOrders) => {
-      classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
+      validateOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
     },
     getBuyOrdersForSymbol: storage.getBuyOrdersList,
-    submitSellOrder: (
-      orderId,
-      symbol,
-      direction,
-      quantity,
-      relatedBuyOrderIds,
-      isProtectiveLiquidation,
-      submittedAtMs,
-    ) => {
+    submitSellOrder: (orderId, symbol, direction, quantity, relatedBuyOrderIds, submittedAtMs) => {
       if (
         !Number.isSafeInteger(quantity) ||
         quantity <= 0 ||
@@ -327,8 +297,6 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
         direction,
         submittedQuantity: quantity,
         relatedBuyOrderIds,
-        isProtectiveLiquidation,
-        submittedAt: submittedAtMs,
       });
     },
     updatePendingSell: storage.updatePendingSell,

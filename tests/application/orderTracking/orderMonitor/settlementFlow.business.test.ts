@@ -87,7 +87,6 @@ function createTrackedProtectiveSell(orderId: string): OrderMonitorTrackedOrder 
     replaceBlockedUntilAt: null,
     quoteRetryAttempts: 0,
     quoteRetryNextAt: null,
-    quoteRetryExhausted: false,
     replaceTempBlockedCount: 0,
     replaceResumeMode: 'TIME_BACKOFF',
     timeoutMarketConversionPending: false,
@@ -141,7 +140,6 @@ function createHarness(failPersistence = false) {
     readonly orderId: string;
     readonly quantity: number;
     readonly relatedBuyOrderIds: ReadonlyArray<string>;
-    readonly protective: boolean;
     readonly submittedAtMs: number;
   }> = [];
   const persistenceError = new Error('protective progress persistence failed');
@@ -179,16 +177,8 @@ function createHarness(failPersistence = false) {
       return owner.markSellCancelled(orderId);
     },
     submitSellOrder: (...args: Parameters<typeof owner.submitSellOrder>) => {
-      const [
-        orderId,
-        _symbol,
-        _direction,
-        quantity,
-        relatedBuyOrderIds,
-        protective,
-        submittedAtMs,
-      ] = args;
-      followUps.push({ orderId, quantity, relatedBuyOrderIds, protective, submittedAtMs });
+      const [orderId, _symbol, _direction, quantity, relatedBuyOrderIds, submittedAtMs] = args;
+      followUps.push({ orderId, quantity, relatedBuyOrderIds, submittedAtMs });
       owner.submitSellOrder(...args);
     },
   };
@@ -226,7 +216,6 @@ function createHarness(failPersistence = false) {
       'LONG',
       100,
       [],
-      true,
       PROTECTIVE_EXECUTION_TIME_MS - 60000,
     );
   }
@@ -452,7 +441,6 @@ describe('settlementFlow business flow', () => {
         orderId,
         symbol: 'BULL.HK',
         side: 'BUY',
-        source: 'WS',
         status: 'FILLED',
         monitorSymbol: 'HSI.HK',
         isLongSymbol: true,
@@ -523,7 +511,6 @@ describe('settlementFlow business flow', () => {
       'LONG',
       140,
       ['BUY-A', 'BUY-B'],
-      false,
       PROTECTIVE_EXECUTION_TIME_MS - 120000,
     );
     harness.commits.length = 0;
@@ -560,7 +547,6 @@ describe('settlementFlow business flow', () => {
         orderId,
         symbol: 'BULL.HK',
         side: 'SELL',
-        source: 'WS',
         status: 'CANCELED',
         monitorSymbol: 'HSI.HK',
         isLongSymbol: true,
@@ -621,7 +607,6 @@ describe('settlementFlow business flow', () => {
       'LONG',
       200,
       ['BUY-A', 'BUY-B'],
-      false,
       PROTECTIVE_EXECUTION_TIME_MS - 60000,
     );
     const pending = harness.recorder.getPendingSellSnapshot();
@@ -647,7 +632,6 @@ describe('settlementFlow business flow', () => {
         orderId,
         quantity: 200,
         relatedBuyOrderIds: ['BUY-A', 'BUY-B'],
-        protective: false,
         submittedAtMs: PROTECTIVE_EXECUTION_TIME_MS - 60000,
       },
     ]);
@@ -736,7 +720,6 @@ describe('settlementFlow business flow', () => {
         orderId,
         symbol: 'BULL.OLD.HK',
         side: 'SELL',
-        source: 'WS',
         status: 'FILLED',
         monitorSymbol: 'HSI.HK',
         isLongSymbol: true,
@@ -764,7 +747,6 @@ describe('settlementFlow business flow', () => {
       'LONG',
       100,
       [],
-      false,
       PROTECTIVE_EXECUTION_TIME_MS - 60000,
     );
     harness.runtime.trackedOrderIdsBySymbol.set('BULL.HK', new Set([orderId]));
@@ -874,15 +856,7 @@ it('真实旧 boundary 准入抑制同量45→46高 revision：Daily/O/durable/b
     daily.prepareProtectionBoundary({ direction: 'LONG', boundaryExecutedTimeMs: now.getTime() }),
   );
 
-  recorder.submitSellOrder(
-    initial.orderId,
-    initial.symbol,
-    'LONG',
-    100,
-    [],
-    true,
-    now.getTime() - 1000,
-  );
+  recorder.submitSellOrder(initial.orderId, initial.symbol, 'LONG', 100, [], now.getTime() - 1000);
   const before = {
     fact: recorder.getExecutionFact(initial.orderId),
     cost: recorder.getCostBasis(initial.symbol, true),

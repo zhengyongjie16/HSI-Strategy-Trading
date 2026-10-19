@@ -20,7 +20,6 @@ import type {
 } from '../../types/risk.js';
 import type { RuntimeTermination } from '../../types/runtime.js';
 import type { SymbolRegistry } from '../../types/seat.js';
-import type { OrderHoldSymbolsChangedEvent } from '../../types/orderHold.js';
 import type { OrderRecorder } from '../../types/orderRecorder.js';
 import type { OrderStateChangedEvent } from '../../types/orderTracking.js';
 import type { PendingOrder } from '../../types/orderReadMetadata.js';
@@ -81,7 +80,6 @@ export type TodayOrderForPendingCache = Readonly<{
   side: PendingOrder['side'];
   submittedPrice: string | null;
   quantity: number;
-  executedQuantity: number;
   status: PendingOrder['status'];
   orderType: PendingOrder['orderType'];
 }>;
@@ -92,7 +90,7 @@ export type TodayOrderForPendingCache = Readonly<{
  * 数据来源：生产环境由 Longbridge TradeContext 提供；测试可直接提供最小 double。
  * 使用范围：仅 OrderCacheManagerDeps。
  */
-export interface TodayOrdersReader {
+interface TodayOrdersReader {
   todayOrders: () => Promise<unknown>;
 }
 
@@ -224,10 +222,8 @@ export interface OrderHoldRegistry {
   /** 获取当前需要持续订阅的标的集合 */
   getHoldSymbols: () => ReadonlySet<string>;
 
-  /** 订阅订单保留标的集合变化事件 */
-  onOrderHoldSymbolsChanged: (
-    listener: (event: OrderHoldSymbolsChangedEvent) => void,
-  ) => Unsubscribe;
+  /** 订阅订单保留集合变化；listener 按当前保留集重新 reconcile，不消费事件载荷。 */
+  onOrderHoldSymbolsChanged: (listener: () => void) => Unsubscribe;
 
   /** 清空内部 map/set */
   clear: () => void;

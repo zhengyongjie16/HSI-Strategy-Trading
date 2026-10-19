@@ -245,7 +245,6 @@ async function createTrackedOrder(params: {
     replaceBlockedUntilAt: null,
     quoteRetryAttempts: 0,
     quoteRetryNextAt: null,
-    quoteRetryExhausted: false,
     replaceTempBlockedCount: 0,
     replaceResumeMode: 'TIME_BACKOFF',
     timeoutMarketConversionPending: params.timeoutMarketConversionPending ?? false,

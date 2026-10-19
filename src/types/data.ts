@@ -39,9 +39,6 @@ export type NormalizedCandle = {
  * 使用范围：共享指标数学模块与策略等；全项目可引用。
  */
 export type CandleData = {
-  /** K 线时间戳（毫秒） */
-  readonly timestamp?: number;
-
   /** 最高价 */
   readonly high?: CandleValue;
 

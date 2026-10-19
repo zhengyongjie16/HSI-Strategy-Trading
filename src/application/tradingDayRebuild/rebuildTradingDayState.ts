@@ -209,7 +209,7 @@ function rebuildUnrealizedLossCache(
   dailyLossTracker: DailyLossTracker,
   targets: Parameters<OrderRecorder['commitRebuildSnapshot']>[0],
   isCurrent: () => boolean,
-): boolean {
+): void {
   const preparedStates = targets.map((target) =>
     monitorContext.riskChecker.prepareUnrealizedLossData(
       monitorContext.orderRecorder,
@@ -220,13 +220,11 @@ function rebuildUnrealizedLossCache(
   );
 
   // 两方向都只准备候选；原 token 和全部席位身份最终复核后，同步发布，无 await 间隙。
-  if (!isCurrent()) return false;
+  if (!isCurrent()) return;
 
   for (const prepared of preparedStates) {
     monitorContext.riskChecker.publishUnrealizedLossData(prepared);
   }
-
-  return true;
 }
 
 /**
@@ -295,7 +293,6 @@ export function createRebuildTradingDayState(
               {
                 symbol: seatState.symbol,
                 isLongSymbol: direction === 'LONG',
-                quote: quotesMap.get(seatState.symbol) ?? null,
               },
             ]
           : [],

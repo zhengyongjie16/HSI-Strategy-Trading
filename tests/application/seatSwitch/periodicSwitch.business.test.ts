@@ -153,7 +153,6 @@ function createPeriodicHarness(params: HarnessParams): {
     riskChecker: createRiskCheckerDouble({
       getWarrantDistanceInfo: () =>
         createWarrantDistanceInfoDouble({
-          warrantType: 'BULL',
           distanceNumerator: params.distanceNumerator ?? '0.1',
           distanceDenominator: params.distanceDenominator ?? '100',
         }),
@@ -995,7 +994,6 @@ describe('periodic auto-switch regression', () => {
         side: 'BUY',
         submittedPrice: '1',
         quantity: 100,
-        executedQuantity: 0,
         status: pendingStatus,
         orderType: 'ELO',
       },
@@ -1005,7 +1003,6 @@ describe('periodic auto-switch regression', () => {
         side: 'SELL',
         submittedPrice: '1',
         quantity: 100,
-        executedQuantity: 0,
         status: pendingStatus,
         orderType: 'ELO',
       },
@@ -1037,7 +1034,6 @@ describe('periodic auto-switch regression', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),

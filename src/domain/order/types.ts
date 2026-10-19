@@ -8,7 +8,6 @@ import type { Quote } from '../../types/quote.js';
 import type {
   BrokerOrderExecutionFact,
   OrderExecutionRecordObservation,
-  OrderFactCommitReceipt,
   OrderFilteringEngine,
   OrderOwnership,
   OrderRecord,
@@ -49,12 +48,9 @@ export type FilteringState = {
 /** tracked 旧卖单的中性事实；旧 protective 身份为必填，不由新请求推断或覆盖。 */
 export type PendingSellOrderSnapshot = {
   readonly orderId: string;
-  readonly symbol: string;
   readonly isProtectiveLiquidation: boolean;
-  readonly side: 'BUY' | 'SELL';
   readonly status: OrderReadStatus;
   readonly orderType: OrderReadType;
-  readonly submittedPrice: string | null;
   readonly submittedQuantity: number;
   readonly executedQuantity: number;
   readonly submittedAt: number;
@@ -62,7 +58,6 @@ export type PendingSellOrderSnapshot = {
 
 /** 新卖出需求与旧挂单事实，供共享执行器初次规划及最终 permit 复核。 */
 export type SellMergeDecisionInput = {
-  readonly symbol: string;
   readonly pendingOrders: ReadonlyArray<PendingSellOrderSnapshot>;
   readonly newOrderQuantity: number;
   readonly newOrderType: OrderReadType;
@@ -238,19 +233,6 @@ export type OrderStatistics = {
 };
 
 /**
- * 订单重建分类结果。
- * 类型用途：启动/开盘重建阶段在单标的维度将全量订单按生命周期、有效成交事实与买卖方向分流。
- * 数据来源：由 classifyOrdersForRebuild 从 OrderFact 转换得到。
- * 使用范围：orderRecorder 重建链路内部使用。
- */
-export type OrderRebuildClassification<T extends OrderExecutionRecordObservation> = {
-  readonly executedBuyOrders: ReadonlyArray<OrderRecord>;
-  readonly executedSellOrders: ReadonlyArray<OrderRecord>;
-  readonly pendingBuyOrders: ReadonlyArray<T>;
-  readonly pendingSellOrders: ReadonlyArray<T>;
-};
-
-/**
  * 日内亏损回算所需的订单分析依赖。
  * 类型用途：纯订单分析能力集合，供装配层注入 dailyLossTracker，不包含 recorder 状态或经济提交能力。
  * 数据来源：domain/order/orderAnalysis 的无状态函数组合。
@@ -269,7 +251,7 @@ export interface OrderDailyLossAnalysisDeps {
 }
 
 /** 同 broker identity 的已消费增量范围；主动 clear 仅作用于当时实际存活的范围。 */
-export type ExecutionProjectionSlice = {
+type ExecutionProjectionSlice = {
   readonly quantity: number;
   readonly executionTimeMs: number;
   readonly admittedSequence: number;
@@ -290,12 +272,6 @@ export type ProjectionSliceInput = {
   readonly brokerOrderId: string;
   readonly entry: OwnedExecutionFact;
   readonly slice: ExecutionProjectionSlice;
-};
-
-/** 同步预检后待发布的经济变化；失败前不修改任何事实或列表。 */
-export type PreparedExecutionCommit = {
-  readonly entry: OwnedExecutionFact;
-  readonly receipt: OrderFactCommitReceipt;
 };
 
 /**
@@ -353,7 +329,6 @@ export type MonotonicOrderFact = Readonly<{
 export type KnownOrderFact = {
   readonly orderId: string;
   readonly symbol: string;
-  readonly side: 'BUY' | 'SELL';
   readonly executionSide: 'BUY' | 'SELL';
   readonly executionPhase: 'OPEN' | 'TERMINAL' | null;
   readonly submittedQuantity: number;
@@ -371,7 +346,7 @@ export type KnownOrderFact = {
  * 数据来源：orderOps 与 route runtime 相关运行态更新。
  * 使用范围：orderMonitor 目录内部。
  */
-export type ReplaceResumeMode = 'TIME_BACKOFF' | 'WAIT_WS_ONLY';
+type ReplaceResumeMode = 'TIME_BACKOFF' | 'WAIT_WS_ONLY';
 
 /**
  * 已确认终态原因。
@@ -461,9 +436,6 @@ export type OrderMonitorTrackedOrder = TrackedOrder & {
 
   /** 下次允许重试 quote 的时间戳（毫秒） */
   quoteRetryNextAt: number | null;
-
-  /** quote retry 是否已耗尽（仅用于诊断，不作为 replace/timer owner 真值） */
-  quoteRetryExhausted: boolean;
 
   /** 卖单超时后是否已进入“等待终态确认后转市价”阶段 */
   timeoutMarketConversionPending: boolean;

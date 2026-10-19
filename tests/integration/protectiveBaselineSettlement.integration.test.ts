@@ -219,7 +219,7 @@ function track(h: Awaited<ReturnType<typeof harness>>, timeout: boolean) {
   if (tracked === undefined) throw new Error('real OrderOps did not track sell');
 
   tracked.timeoutMarketConversionPending = timeout;
-  f.recorder.submitSellOrder(h.sell.orderId, h.sell.symbol, 'LONG', 100, [], true, T - 2000);
+  f.recorder.submitSellOrder(h.sell.orderId, h.sell.symbol, 'LONG', 100, [], T - 2000);
   f.holds.trackOrder(h.sell.orderId, h.sell.symbol);
   return tracked;
 }
@@ -322,7 +322,7 @@ for (const mode of ['direct', 'timeout'] as const)
           monitorSymbol: 'HSI.HK',
           isProtectiveLiquidation: true,
         });
-        f.recorder.submitSellOrder(sell.orderId, sell.symbol, 'LONG', 100, [], true, T - 2000);
+        f.recorder.submitSellOrder(sell.orderId, sell.symbol, 'LONG', 100, [], T - 2000);
         f.holds.trackOrder(sell.orderId, sell.symbol);
         native.emitOrderChanged();
         await Promise.race([
@@ -481,7 +481,7 @@ test('C2 delayed old terminal uses adjudicated durable T2 and sealed duplicate o
     // 明确模拟已恢复 completed boundary、但同订单终态资源还需补关的组合状态。
     f.runtime.closedOrderIds.delete(sell.orderId);
     f.runtime.trackedOrders.set(sell.orderId, tracked);
-    f.recorder.submitSellOrder(sell.orderId, sell.symbol, 'LONG', 100, [], true, T - 2000);
+    f.recorder.submitSellOrder(sell.orderId, sell.symbol, 'LONG', 100, [], T - 2000);
     f.holds.trackOrder(sell.orderId, sell.symbol);
     expect(f.flow.settleOrder(terminal(newer)).handled).toBe(true);
     expect(f.episode.getInProgressEpisodes()).toEqual([]);

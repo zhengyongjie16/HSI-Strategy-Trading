@@ -72,12 +72,12 @@ export function getHKTime(date: Date | null | undefined): HKTime | null {
 }
 
 /**
- * 将非空时间转换为香港日历日期键。
+ * 获取非空 Date 的港股日期键（UTC+8，YYYY-MM-DD）。
  *
- * @param date 待转换的时间对象
- * @returns UTC+8 下 YYYY-MM-DD 格式的日期键
+ * @param date 已确认非空的时间对象
+ * @returns YYYY-MM-DD 格式日期键
  */
-function buildHKDateKey(date: Date): string {
+export function getRequiredHKDateKey(date: Date): string {
   const { year, month, day } = getHongKongDateTimeParts(date);
   return `${year}-${month}-${day}`;
 }
@@ -94,17 +94,7 @@ export function getHKDateKey(date: Date | null | undefined): string | null {
     return null;
   }
 
-  return buildHKDateKey(date);
-}
-
-/**
- * 获取非空 Date 的港股日期键（UTC+8，YYYY-MM-DD）。
- *
- * @param date 已确认非空的时间对象
- * @returns YYYY-MM-DD 格式日期键
- */
-export function getRequiredHKDateKey(date: Date): string {
-  return buildHKDateKey(date);
+  return getRequiredHKDateKey(date);
 }
 
 /**

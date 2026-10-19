@@ -562,17 +562,9 @@ export interface SettlementFlow {
   settleOrder: (params: FinalizeOrderSettlementParams) => FinalizeOrderSettlementResult;
 }
 
-/** 首次权威终态确认元数据；在资源结算之前保存，跨重复观察与恢复重试保持幂等。 */
-type OrderTerminalConfirmation = {
-  readonly source: FinalizeOrderSettlementParams['source'];
-  readonly closedReason: OrderClosedReason;
-  readonly confirmedAtMs: number | null;
-  readonly orderUpdatedAtMs: number | null;
-};
-
 /**
  * tracking owner 的生命周期与观测元数据。
- * state 为 null 表示尚未追踪或恢复重置；ACK 与确认元数据仅随全量运行态重置清除。
+ * state 为 null 表示尚未追踪或恢复重置；ACK 与终态确认标记仅随全量运行态重置清除。
  * 首个 ACK 的 null 时间表示诊断时钟无效，不得拿后续 ACK 补造 duration。
  */
 export type TrackedOrderLifecycle = {
@@ -589,7 +581,9 @@ export type TrackedOrderLifecycle = {
   /** 已结算 SELL 最终未成交完；真实 MO 后继存在时由后继结果覆盖操作结论。 */
   readonly settledWithRemainder?: boolean;
   readonly firstCancelAcknowledgedAtMs?: number | null;
-  readonly terminalConfirmation?: OrderTerminalConfirmation;
+
+  /** 首个权威终态已确认；仅作存在标记，诊断字段由确认当时的 observed 事实导出。 */
+  readonly terminalConfirmed?: true;
 };
 
 /** 真实订单事实 owner 的被动观测依赖，不持有独立订单表或改变推进结果。 */

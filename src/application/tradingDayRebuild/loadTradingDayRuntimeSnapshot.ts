@@ -205,7 +205,7 @@ function assertSameRevisionTerminalAmountHasDurableEvidence(
  * 创建交易日运行时快照加载函数（工厂）。
  * 注入依赖后返回 loadTradingDayRuntimeSnapshot，用于启动初始化与开盘重建时加载账户、持仓、订单、席位与行情快照。
  *
- * @param deps 依赖注入（marketDataClient、trader、lastState、tradingConfig、symbolRegistry、dailyLossTracker、tradeLogHydrator、reportFatalError）
+ * @param deps 依赖注入（marketDataClient、trader、lastState、tradingConfig、symbolRegistry、dailyLossTracker、tradeLogHydrator）
  * @returns 接收 LoadTradingDayRuntimeSnapshotParams 的异步函数，返回全量订单与行情快照供重建使用
  */
 export function createLoadTradingDayRuntimeSnapshot(
@@ -484,7 +484,6 @@ export function createLoadTradingDayRuntimeSnapshot(
       Readonly<{
         orderId: string;
         direction: ProtectiveLiquidationDirection;
-        symbol: string;
         executedQuantity: number;
       }>
     > = [];
@@ -526,7 +525,6 @@ export function createLoadTradingDayRuntimeSnapshot(
         protectiveExecutedOrders.push({
           orderId: order.orderId,
           direction,
-          symbol: order.symbol,
           executedQuantity,
         });
       }

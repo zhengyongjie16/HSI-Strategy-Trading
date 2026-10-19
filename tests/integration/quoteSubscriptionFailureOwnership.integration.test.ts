@@ -15,7 +15,6 @@ import { createQuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscript
 import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import type { Position } from '../../src/types/account.js';
-import type { OrderHoldSymbolsChangedEvent } from '../../src/types/orderHold.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
 import {
   createAccountSnapshotDouble,
@@ -91,7 +90,7 @@ async function createOwnershipHarness(params: {
   let positions = params.positions ?? [];
   let positionReads = 0;
   const holdSymbols = new Set(params.orderHolds);
-  const holdListeners = new Set<(event: OrderHoldSymbolsChangedEvent) => void>();
+  const holdListeners = new Set<() => void>();
   const actualSubscriptions = new Set<string>();
   const subscribed: string[][] = [];
   const unsubscribed: string[][] = [];
@@ -245,11 +244,11 @@ async function createOwnershipHarness(params: {
     setPositions: (next: ReadonlyArray<Position>) => {
       positions = next;
     },
-    changeOrderHold: (symbol: string, action: OrderHoldSymbolsChangedEvent['action']) => {
+    changeOrderHold: (symbol: string, action: 'ADDED' | 'REMOVED') => {
       if (action === 'ADDED') holdSymbols.add(symbol);
       else holdSymbols.delete(symbol);
 
-      for (const listener of holdListeners) listener({ symbol, action });
+      for (const listener of holdListeners) listener();
     },
     stop: async () => {
       await postTrade.stopAndDrain();

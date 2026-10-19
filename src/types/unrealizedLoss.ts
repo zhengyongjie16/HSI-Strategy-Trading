@@ -30,12 +30,6 @@ export type PreparedUnrealizedLossData = {
  * 使用范围：行情展示、风控任务等；全项目可引用。
  */
 export type UnrealizedLossMetrics = {
-  /** r1: 调整后的开仓成本 */
-  readonly r1: string;
-
-  /** n1: 持仓数量 */
-  readonly n1: number;
-
   /** r2: 当前持仓市值 */
   readonly r2: string;
 

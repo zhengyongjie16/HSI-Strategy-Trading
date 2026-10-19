@@ -16,7 +16,6 @@ describe('trading day info resolver', () => {
           throw thrownError;
         },
       },
-      getHKDateKey: () => '2026-03-09',
       onResolveError: (error) => {
         resolveErrors.push(error);
       },

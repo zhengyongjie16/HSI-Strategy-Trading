@@ -13,19 +13,8 @@ import { createSelectedStrategy } from './startup/createSelectedStrategy.js';
 import { createDiagnosticObserver } from '../infrastructure/diagnostics/index.js';
 import { syncMonitorContextSymbolNames } from './context/createMonitorContext.js';
 import { DEFAULT_RUN_APP_DEPS } from './runAppDeps.js';
+import { SYSTEM_RUNTIME_CLOCK, SYSTEM_RUNTIME_SCHEDULER } from '../infrastructure/time/index.js';
 import type { AppEnvironmentParams, RunAppDeps, RuntimeAssemblyResources } from './types.js';
-import type { RuntimeClock, RuntimeScheduler } from '../types/runtime.js';
-
-const SYSTEM_RUNTIME_CLOCK: RuntimeClock = {
-  now: () => new Date(),
-};
-
-const SYSTEM_RUNTIME_SCHEDULER: RuntimeScheduler = {
-  scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-  clearTimer: (handle) => {
-    clearTimeout(handle);
-  },
-};
 
 /**
  * 构造 app 运行期统一环境快照。

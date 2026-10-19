@@ -97,6 +97,7 @@ describe('P1 snapshot cross-source targets', () => {
   it('cancels old seat admission before midnight domain drain and never repopulates cleared truth', async () => {
     const accounts = Promise.withResolvers<AccountSnapshot>();
     const positions = Promise.withResolvers<ReadonlyArray<Position>>();
+    let issuedReads = 0;
     const owner = createAccountPositionSnapshot({
       clock: { now: () => new Date() },
       diagnostics: createDiagnosticObserverDouble(),
@@ -106,13 +107,19 @@ describe('P1 snapshot cross-source targets', () => {
         throw error;
       },
       readPort: {
-        getAccountSnapshot: () => accounts.promise,
-        getStockPositions: () => positions.promise,
+        getAccountSnapshot: () => {
+          issuedReads += 1;
+          return accounts.promise;
+        },
+        getStockPositions: () => {
+          issuedReads += 1;
+          return positions.promise;
+        },
       },
     });
     const seat = owner.requestRefresh({ ...request, source: 'SEAT_ACTIVATION' });
     await flushMicrotasks();
-    expect(owner.getStatus().inFlight).toBe(true);
+    expect(issuedReads).toBe(2);
     const clear = owner.requestClear({ reason: 'DAY_CUT', dayEpoch: 2 });
     const state = createState();
     const domain = createGlobalStateDomain({

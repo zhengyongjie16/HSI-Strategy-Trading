@@ -24,7 +24,6 @@ function known(order: OrderFact): KnownOrderFact {
   return {
     orderId: order.orderId,
     symbol: order.symbol,
-    side: order.executionSide,
     executionSide: order.executionSide,
     executionPhase: order.executionPhase,
     submittedQuantity: order.quantity,

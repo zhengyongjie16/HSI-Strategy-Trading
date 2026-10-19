@@ -40,7 +40,7 @@ function assertExecutionPayload(fact: Omit<BrokerOrderExecutionFact, 'phase'>): 
 }
 
 /** 验证完整中立累计事实；缺失可信 execution 时间不得用 revision 代替。 */
-export function assertBrokerOrderExecutionFact(fact: BrokerOrderExecutionFact): void {
+function assertBrokerOrderExecutionFact(fact: BrokerOrderExecutionFact): void {
   assertExecutionPayload(fact);
   if (!['OPEN', 'TERMINAL'].includes(fact.phase)) throw new Error('[订单事实] phase 无效');
 }

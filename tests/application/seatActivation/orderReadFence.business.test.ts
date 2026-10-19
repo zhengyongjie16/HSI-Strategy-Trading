@@ -174,7 +174,7 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
       () => true,
     );
     await entered.promise;
-    const receipt = recorder.commitExecutionFact(
+    recorder.commitExecutionFact(
       {
         brokerOrderId: shortSell.orderId,
         symbol: shortSell.symbol,
@@ -200,7 +200,6 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
           orderId: shortSell.orderId,
         }).admission,
     );
-    expect(receipt.economicProjectionChanged).toBe(true);
     expect(needs).toEqual(['execution']);
     oldRead.resolve([longBuy, shortBuy]);
     expect(await handling).toEqual({ status: 'processed' });
@@ -215,7 +214,7 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
     expect(context.symbolRegistry.getSeatState('SHORT').status).toBe('ACTIVE');
 
     // API 已消费事实在同一 owner 在线重放不重复成本/数量/日损；正常事实准入仍执行。
-    const replay = recorder.commitExecutionFact(
+    recorder.commitExecutionFact(
       {
         brokerOrderId: longBuy.orderId,
         symbol: longBuy.symbol,
@@ -241,7 +240,6 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
           orderId: longBuy.orderId,
         }).admission,
     );
-    expect(replay.economicProjectionChanged).toBe(false);
     expect(recorder.getCostBasis('BULL.HK', true)).toEqual({ costAmount: '60', quantity: 5 });
     expect(context.dailyLossTracker.getLossOffset('LONG')).toBe('0');
     expect(needs).toEqual(['execution']);

@@ -650,7 +650,9 @@ describe('orderMonitor orderOps', () => {
     }).toThrow(/monitorSymbol.*期望=HSI\.HK/);
   });
 
-  it('cancelOrder retries repeated request failures and rethrows ExternalApiRequestError', async () => {
+  const assertCancelRetriesExternalFailure = async (
+    params: Readonly<{ orderId: string; code: string | null; cause: Error }>,
+  ): Promise<void> => {
     const runtime = createRuntimeStore();
     const mutationPort = { ...createTradeMutationPortDouble() };
     let cancelCallCount = 0;
@@ -660,8 +662,8 @@ describe('orderMonitor orderOps', () => {
         kind: 'RETRYABLE_EXTERNAL_ERROR',
         operation: 'TradeContext.cancelOrder',
         requestAttempted: true,
-        code: null,
-        cause: new Error('network unavailable'),
+        code: params.code,
+        cause: params.cause,
       };
     };
     const orderOps = createOrderOps({
@@ -686,7 +688,7 @@ describe('orderMonitor orderOps', () => {
     });
 
     try {
-      await orderOps.cancelOrder('ORDER-CANCEL-RETRY', { kind: 'ORDER_FACT' });
+      await orderOps.cancelOrder(params.orderId, { kind: 'ORDER_FACT' });
       expect.unreachable();
     } catch (error) {
       expect(error).toMatchObject({
@@ -695,54 +697,21 @@ describe('orderMonitor orderOps', () => {
       });
       expect(cancelCallCount).toBeGreaterThan(1);
     }
-  });
+  };
 
-  it('cancelOrder retries coded transient rate-limit errors', async () => {
-    const runtime = createRuntimeStore();
-    const mutationPort = { ...createTradeMutationPortDouble() };
-    let cancelCallCount = 0;
-    mutationPort.cancelOrder = async () => {
-      cancelCallCount += 1;
-      return {
-        kind: 'RETRYABLE_EXTERNAL_ERROR',
-        operation: 'TradeContext.cancelOrder',
-        requestAttempted: true,
-        code: '429',
-        cause: new Error('openapi error: code=429: rate limit exceeded'),
-      };
-    };
-    const orderOps = createOrderOps({
-      wait: wait,
-      logger: createLoggerDouble(),
-      termination: { isTerminated: () => false, reportFatalError: () => {} },
-      runtime,
-      monitorConfig: TEST_MONITOR_CONFIG,
-      tradeMutationPort: mutationPort,
-      rateLimiter: createRateLimiter(),
-      cacheManager: createCacheManager(),
-      orderHoldRegistry: createOrderHoldRegistry(),
-      orderRecorder: createOrderRecorderDouble(),
-      recordCumulativeExecution: () => {},
-      orderStatusQuery: {
-        checkOrderState: async () => ({
-          kind: 'QUERY_FAILED' as const,
-          errorCode: '603001',
-        }),
-      },
-      triggerRoute: () => {},
-    });
+  it('cancelOrder retries repeated request failures and rethrows ExternalApiRequestError', async () =>
+    assertCancelRetriesExternalFailure({
+      orderId: 'ORDER-CANCEL-RETRY',
+      code: null,
+      cause: new Error('network unavailable'),
+    }));
 
-    try {
-      await orderOps.cancelOrder('ORDER-CANCEL-CODED-TRANSIENT', { kind: 'ORDER_FACT' });
-      expect.unreachable();
-    } catch (error) {
-      expect(error).toMatchObject({
-        name: 'ExternalApiRequestError',
-        operation: 'TradeContext.cancelOrder',
-      });
-      expect(cancelCallCount).toBeGreaterThan(1);
-    }
-  });
+  it('cancelOrder retries coded transient rate-limit errors', async () =>
+    assertCancelRetriesExternalFailure({
+      orderId: 'ORDER-CANCEL-CODED-TRANSIENT',
+      code: '429',
+      cause: new Error('openapi error: code=429: rate limit exceeded'),
+    }));
 
   it('cancelOrder 在暂态失败后的重试前重新授权，授权失效时不再次调用 SDK', async () => {
     const runtime = createRuntimeStore();
@@ -901,7 +870,14 @@ describe('orderMonitor orderOps', () => {
     );
   });
 
-  it('replaceOrderPrice retries coded transient service errors', async () => {
+  const assertReplacePriceRetriesExternalFailure = async (
+    params: Readonly<{
+      orderId: string;
+      code: string | null;
+      cause: Error;
+      quantity: number | null;
+    }>,
+  ): Promise<void> => {
     const runtime = createRuntimeStore();
     const mutationPort = { ...createTradeMutationPortDouble() };
     let replaceCallCount = 0;
@@ -912,8 +888,8 @@ describe('orderMonitor orderOps', () => {
         kind: 'RETRYABLE_EXTERNAL_ERROR',
         operation: 'TradeContext.replaceOrder',
         requestAttempted: true,
-        code: '503',
-        cause: new Error('openapi error: code=503: service unavailable'),
+        code: params.code,
+        cause: params.cause,
       };
     };
     const orderOps = createOrderOps({
@@ -937,95 +913,52 @@ describe('orderMonitor orderOps', () => {
       triggerRoute: () => {},
     });
     orderOps.trackOrder({
+      orderId: params.orderId,
+      symbol: 'BULL.HK',
+      side: nativeWorkingBuy.executionSide,
+      executionSide: 'BUY',
+      price: '1.01',
+      initialSubmittedPrice: '1.01',
+      quantity: 100,
+      initialStatus: nativeWorkingBuy.status,
+      isLongSymbol: true,
+      monitorSymbol: 'HSI.HK',
+      isProtectiveLiquidation: false,
+      orderType: nativeWorkingBuy.orderType,
+    });
+
+    try {
+      await orderOps.replaceOrderPrice(
+        params.orderId,
+        '1.23',
+        { kind: 'ORDER_FACT' },
+        params.quantity,
+      );
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: 'ExternalApiRequestError',
+        operation: 'TradeContext.replaceOrder',
+      });
+      expect(replaceCallCount).toBeGreaterThan(1);
+    }
+  };
+
+  it('replaceOrderPrice retries coded transient service errors', async () =>
+    assertReplacePriceRetriesExternalFailure({
       orderId: 'ORDER-REPLACE-CODED-TRANSIENT',
-      symbol: 'BULL.HK',
-      side: nativeWorkingBuy.executionSide,
-      executionSide: 'BUY',
-      price: '1.01',
-      initialSubmittedPrice: '1.01',
-      quantity: 100,
-      initialStatus: nativeWorkingBuy.status,
-      isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
-      isProtectiveLiquidation: false,
-      orderType: nativeWorkingBuy.orderType,
-    });
+      code: '503',
+      cause: new Error('openapi error: code=503: service unavailable'),
+      quantity: null,
+    }));
 
-    try {
-      await orderOps.replaceOrderPrice('ORDER-REPLACE-CODED-TRANSIENT', '1.23', {
-        kind: 'ORDER_FACT',
-      });
-      expect.unreachable();
-    } catch (error) {
-      expect(error).toMatchObject({
-        name: 'ExternalApiRequestError',
-        operation: 'TradeContext.replaceOrder',
-      });
-      expect(replaceCallCount).toBeGreaterThan(1);
-    }
-  });
-
-  it('replaceOrderPrice retries repeated request failures and rethrows ExternalApiRequestError', async () => {
-    const runtime = createRuntimeStore();
-    const mutationPort = { ...createTradeMutationPortDouble() };
-    let replaceCallCount = 0;
-    mutationPort.replaceOrder = async (_command, onRemoteIssued) => {
-      onRemoteIssued();
-      replaceCallCount += 1;
-      return {
-        kind: 'RETRYABLE_EXTERNAL_ERROR',
-        operation: 'TradeContext.replaceOrder',
-        requestAttempted: true,
-        code: null,
-        cause: new Error('network unavailable'),
-      };
-    };
-    const orderOps = createOrderOps({
-      wait: wait,
-      logger: createLoggerDouble(),
-      termination: { isTerminated: () => false, reportFatalError: () => {} },
-      runtime,
-      monitorConfig: TEST_MONITOR_CONFIG,
-      tradeMutationPort: mutationPort,
-      rateLimiter: createRateLimiter(),
-      cacheManager: createCacheManager(),
-      orderHoldRegistry: createOrderHoldRegistry(),
-      orderRecorder: createOrderRecorderDouble(),
-      recordCumulativeExecution: () => {},
-      orderStatusQuery: {
-        checkOrderState: async () => ({
-          kind: 'QUERY_FAILED' as const,
-          errorCode: '603001',
-        }),
-      },
-      triggerRoute: () => {},
-    });
-    orderOps.trackOrder({
+  it('replaceOrderPrice retries repeated request failures and rethrows ExternalApiRequestError', async () =>
+    assertReplacePriceRetriesExternalFailure({
       orderId: 'ORDER-REPLACE-RETRY',
-      symbol: 'BULL.HK',
-      side: nativeWorkingBuy.executionSide,
-      executionSide: 'BUY',
-      price: '1.01',
-      initialSubmittedPrice: '1.01',
-      quantity: 100,
-      initialStatus: nativeWorkingBuy.status,
-      isLongSymbol: true,
-      monitorSymbol: 'HSI.HK',
-      isProtectiveLiquidation: false,
-      orderType: nativeWorkingBuy.orderType,
-    });
-
-    try {
-      await orderOps.replaceOrderPrice('ORDER-REPLACE-RETRY', '1.23', { kind: 'ORDER_FACT' }, 1000);
-      expect.unreachable();
-    } catch (error) {
-      expect(error).toMatchObject({
-        name: 'ExternalApiRequestError',
-        operation: 'TradeContext.replaceOrder',
-      });
-      expect(replaceCallCount).toBeGreaterThan(1);
-    }
-  });
+      code: null,
+      cause: new Error('network unavailable'),
+      quantity: 1000,
+    }));
 
   it('replaceOrderPrice 在暂态失败后的重试前重新授权，授权失效时不再次调用 SDK', async () => {
     const runtime = createRuntimeStore();

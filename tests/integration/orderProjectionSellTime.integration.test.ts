@@ -48,8 +48,8 @@ function commit(
   o: OrderFact,
   related: ReadonlyArray<string> = [],
 ) {
-  if (related.length === 0)
-    return f.flow.recordCumulativeExecution({
+  if (related.length === 0) {
+    f.flow.recordCumulativeExecution({
       orderId: o.orderId,
       symbol: o.symbol,
       side: o.executionSide,
@@ -63,11 +63,13 @@ function commit(
       executedTimeMs: o.executionTimeMs,
       orderUpdatedAtMs: o.updatedAtMs,
     });
+    return;
+  }
 
   if (o.executionTimeMs === null || o.executedPrice === null)
     throw new Error('fixture must have full execution facts');
 
-  return f.recorder.commitExecutionFact(
+  f.recorder.commitExecutionFact(
     {
       brokerOrderId: o.orderId,
       symbol: o.symbol,
@@ -142,8 +144,6 @@ function assertRiskProjection(
   // 价格 5 的独立整数 oracle，不用生产 exact helper 构造期望金额。
   const expectedR2 = BigInt(expectedN1) * 5n;
   expect(riskChecker.getUnrealizedLossMetrics('BULL.HK', '5')).toEqual({
-    r1: expectedR1,
-    n1: expectedN1,
     r2: String(expectedR2),
     unrealizedPnL: String(expectedR2 - BigInt(expectedR1)),
   });

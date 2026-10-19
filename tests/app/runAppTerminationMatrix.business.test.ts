@@ -23,6 +23,7 @@ import type {
   AppEnvironmentParams,
 } from '../../src/app/types.js';
 import type { RuntimeTermination } from '../../src/types/runtime.js';
+import type { AccountPositionSnapshot } from '../../src/types/accountPosition.js';
 import type { CreateTradeRuntimeDeps } from '../../src/app/runtime/types.js';
 import type { StrategyDeps, TradingSignalStrategy } from '../../src/types/strategy.js';
 import type { Processor } from '../../src/runtime/asyncProgram/types.js';
@@ -172,14 +173,13 @@ async function harness(
 
       return runtime;
     },
-    loadStartupSnapshot: async () => {
-      const snapshot = resources.current?.snapshot;
-      if (snapshot === undefined) throw new Error('post-gate snapshot was not acquired');
-
+    loadStartupSnapshot: async ({ snapshot }) => {
+      // runApp 传入的正是 PostGateRuntime.snapshot；契约只声明读取能力，这里需驱动真实 refresh 批次。
+      const canonicalSnapshot = snapshot as AccountPositionSnapshot;
       const timerCount = h.timers.length;
-      const refresh = snapshot.requestRefresh({
+      const refresh = canonicalSnapshot.requestRefresh({
         source: 'TEST_STARTUP',
-        dayEpoch: snapshot.getView().token.dayEpoch,
+        dayEpoch: canonicalSnapshot.getView().token.dayEpoch,
         refreshAccount: true,
         refreshPositions: true,
       });
@@ -220,7 +220,7 @@ async function harness(
       monitorTaskProcessor: idleProcessor(),
     }),
     createLifecycleRuntime: () => ({
-      tick: async () => ({ nextRetryAtMs: null, pendingOpenRebuild: false }),
+      tick: async () => ({ nextRetryAtMs: null }),
     }),
     createTimeWakeupRuntime: (params) =>
       createTimeWakeupRuntime({

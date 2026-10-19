@@ -29,6 +29,7 @@ import type {
   PeriodicSwitchRouteBaseline,
   PeriodicSwitchTaskAuthorization,
 } from '../../../src/types/periodicSwitch.js';
+import type { SettlementReadinessReceipt } from '../../../src/types/settlement.js';
 import { calculateTradingDurationDueAtMs } from '../../../src/domain/tradingSession/index.js';
 
 let termination: ReturnType<typeof createTerminationRuntime>;
@@ -186,7 +187,6 @@ function createSubscriptionHarness(settlement: PostTradeConsistencyRuntime) {
         orderId: 'order-1',
         symbol: 'BULL.HK',
         side: 'SELL',
-        source: 'WS',
         status: 'FILLED',
         monitorSymbol: 'HSI.HK',
         isLongSymbol: true,
@@ -337,6 +337,7 @@ async function flushDispatch(): Promise<void> {
 function expectTickTask(
   task: ScheduledTask | undefined,
   expected: Omit<PeriodicSwitchRouteBaseline, 'dayEpoch'>,
+  readinessReceipt: SettlementReadinessReceipt,
 ): void {
   expect(task).toBeDefined();
   if (task === undefined) {
@@ -344,7 +345,8 @@ function expectTickTask(
   }
 
   expect(task.type).toBe('AUTO_SYMBOL_TICK');
-  expect(task.data.dayEpoch).toBe(task.data.readinessReceipt.snapshotToken.dayEpoch);
+  // 任务携带的 day epoch 必须与当次授权凭据的 snapshot day epoch 一致。
+  expect(task.data.dayEpoch).toBe(readinessReceipt.snapshotToken.dayEpoch);
   expect(task.data.canContinue()).toBe(true);
   expect(task.data.isRouteCurrent()).toBe(true);
   expect(task.dedupeKey).toBe(`AUTO_SYMBOL_TICK:${expected.direction}`);
@@ -363,19 +365,28 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     await flushDispatch();
 
     expect(harness.tasks).toHaveLength(2);
-    expectTickTask(harness.tasks[0], {
-      direction: 'LONG',
-      symbol: 'BULL.HK',
-      seatVersion: 1,
-      lastSeatActivatedAt: 1_000,
-    });
+    const readinessReceipt = await harness.subscriptions.postTradeConsistencyRuntime.waitForFresh();
+    expectTickTask(
+      harness.tasks[0],
+      {
+        direction: 'LONG',
+        symbol: 'BULL.HK',
+        seatVersion: 1,
+        lastSeatActivatedAt: 1_000,
+      },
+      readinessReceipt,
+    );
 
-    expectTickTask(harness.tasks[1], {
-      direction: 'SHORT',
-      symbol: 'BEAR.HK',
-      seatVersion: 2,
-      lastSeatActivatedAt: 1_500,
-    });
+    expectTickTask(
+      harness.tasks[1],
+      {
+        direction: 'SHORT',
+        symbol: 'BEAR.HK',
+        seatVersion: 2,
+        lastSeatActivatedAt: 1_500,
+      },
+      readinessReceipt,
+    );
     expect(harness.tasks.map((task) => task.data.currentTimeMs)).toEqual([400_000, 400_000]);
   });
 
@@ -1108,6 +1119,7 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     await flushDispatch();
     harness.tasks.length = 0;
     const baseline = harness.getAuthorization('LONG');
+    const readinessReceipt = await harness.subscriptions.postTradeConsistencyRuntime.waitForFresh();
     harness.runtime.markWaitingEmpty(baseline);
     harness.runtime.replanRouteAfterTask({ ...baseline, taskTimeMs: 400_000, status: 'processed' });
     harness.runtime.replanRouteAfterTask({
@@ -1133,13 +1145,16 @@ describe('PeriodicSwitchWakeupRuntime', () => {
 
     harness.subscriptions.emitOrder();
     await flushDispatch();
-    expect(harness.tasks[1]?.data.readinessReceipt).toBe(baseline.readinessReceipt);
+    // order 重派复用同一份 settlement 完成凭据，不为任务重新签发授权。
+    expect(await harness.subscriptions.postTradeConsistencyRuntime.waitForFresh()).toBe(
+      readinessReceipt,
+    );
+
     harness.runtime.replanRouteAfterTask({
       ...harness.getAuthorization('LONG'),
       taskTimeMs: 400_000,
       status: 'processed',
     });
-    const beforeFreshToken = harness.snapshot.getView().token;
     await harness.subscriptions.emitFresh();
 
     expect(harness.tasks).toHaveLength(3);
@@ -1155,15 +1170,7 @@ describe('PeriodicSwitchWakeupRuntime', () => {
     const freshTask = harness.tasks[2];
     if (freshTask === undefined) throw new Error('real fresh event must issue a task');
 
-    expect(freshTask.data.readinessReceipt.settlementVersion).toBe(
-      baseline.readinessReceipt.settlementVersion + 1,
-    );
-
-    // ordinary commit 已推进 canonical revision，但没有改写原 settlement 完成凭据。
-    expect(freshTask.data.readinessReceipt.snapshotToken.commitRevision).toBe(
-      beforeFreshToken.commitRevision + 1,
-    );
-    expect(freshTask.data.readinessReceipt.snapshotToken).toBe(harness.snapshot.getView().token);
+    // 旧授票不会被新水位续期，只有真实 fresh 重派的任务可继续。
     expect(baseline.canContinue()).toBe(false);
     expect(baseline.isRouteCurrent()).toBe(true);
     expect(freshTask.data.canContinue()).toBe(true);

@@ -25,8 +25,6 @@ function makeOrder(orderId: string, costAmount: string, quantity: number): Order
     costAmount,
     executedQuantity: quantity,
     executedTime: Date.now(),
-    submittedAt: undefined,
-    updatedAt: undefined,
   };
 }
 

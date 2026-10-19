@@ -15,6 +15,7 @@ const TO_CALL_PRICE = '0.0035000000000000000000000001';
 const TURNOVER = '9876543210987654321.123456789';
 const LAST_DONE = '0.1234567890123456789012345678';
 const FINANCIAL_FIELDS = ['callPrice', 'toCallPrice', 'turnover', 'lastDone'] as const;
+const LIST_OUTPUT_FIELDS = ['callPrice', 'toCallPrice', 'turnover'] as const;
 
 describe('Longbridge quoteFinancialMapper boundary', () => {
   it('preserves all four high-significant native SDK texts without a second financial rounding', () => {
@@ -35,17 +36,13 @@ describe('Longbridge quoteFinancialMapper boundary', () => {
     expect(sdk.lastDone.toString()).toBe(LAST_DONE);
     expect(mapWarrantListItem(sdk)).toEqual({
       symbol: 'BULL.HK',
-      name: '高精度牛证',
-      warrantType: 7,
       status: 'NORMAL',
       callPrice: CALL_PRICE,
       toCallPrice: TO_CALL_PRICE,
       turnover: TURNOVER,
-      lastDone: LAST_DONE,
     });
 
     expect(mapWarrantQuote({ symbol: sdk.symbol, callPrice: sdk.callPrice, category: 1 })).toEqual({
-      symbol: 'BULL.HK',
       callPrice: CALL_PRICE,
       category: 1,
     });
@@ -73,7 +70,6 @@ describe('Longbridge quoteFinancialMapper boundary', () => {
     expect(undefinedQuote.callPrice).toBeUndefined();
     expect(nullQuote.callPrice).toBeNull();
     const absentList = mapWarrantListItem({ symbol: 'BULL.HK' });
-    expect(absentList.lastDone).toBeUndefined();
     expect(absentList.toCallPrice).toBeUndefined();
     expect(absentList.turnover).toBeUndefined();
     expect(Object.hasOwn(absentList, 'callPrice')).toBe(false);
@@ -84,7 +80,6 @@ describe('Longbridge quoteFinancialMapper boundary', () => {
       turnover: null,
       callPrice: undefined,
     });
-    expect(unknownList.lastDone).toBeNull();
     expect(unknownList.toCallPrice).toBeUndefined();
     expect(unknownList.turnover).toBeNull();
     expect(Object.hasOwn(unknownList, 'callPrice')).toBe(true);
@@ -96,7 +91,7 @@ describe('Longbridge quoteFinancialMapper boundary', () => {
       turnover: null,
       callPrice: null,
     });
-    for (const field of FINANCIAL_FIELDS) expect(nullList[field]).toBeNull();
+    for (const field of LIST_OUTPUT_FIELDS) expect(nullList[field]).toBeNull();
   });
 
   it('preserves observed native-negative-zero text but does not fabricate a sign discarded by the actual SDK', () => {
@@ -112,7 +107,7 @@ describe('Longbridge quoteFinancialMapper boundary', () => {
       turnover: { toString: () => '-0' },
       lastDone: '-000.00',
     });
-    for (const field of FINANCIAL_FIELDS) expect(signed[field]).toBe('-0');
+    for (const field of LIST_OUTPUT_FIELDS) expect(signed[field]).toBe('-0');
 
     const zero = mapWarrantListItem({
       symbol: 'BULL.HK',
@@ -121,7 +116,7 @@ describe('Longbridge quoteFinancialMapper boundary', () => {
       turnover: new Decimal('0'),
       lastDone: new Decimal('0'),
     });
-    for (const field of FINANCIAL_FIELDS) expect(zero[field]).toBe('0');
+    for (const field of LIST_OUTPUT_FIELDS) expect(zero[field]).toBe('0');
   });
 
   it('rejects number financial bridges independently for every consumed warrant field', () => {
@@ -148,6 +143,10 @@ describe('Longbridge quoteFinancialMapper boundary', () => {
     expect(() =>
       mapWarrantListItem({ symbol: 'BULL.HK', lastDone: { toString: () => 12 } }),
     ).toThrow(/toString must return text/);
+    expect(() => mapWarrantListItem({ symbol: 'BULL.HK', lastDone: 'NaN' })).toThrow();
+    expect(() => mapWarrantListItem({ symbol: 'BULL.HK', warrantType: { kind: 'BULL' } })).toThrow(
+      /Warrant enum field must be a scalar/,
+    );
     expect(() => new Decimal('NaN')).toThrow();
     expect(() => new Decimal('Infinity')).toThrow();
   });
@@ -171,5 +170,6 @@ describe('Longbridge quoteFinancialMapper boundary', () => {
     expect(captured).toBe(original);
     expect(() => mapWarrantQuote({ callPrice: new Decimal('1') })).toThrow(/identity missing/);
     expect(() => mapWarrantListItem({ symbol: 'BULL.HK', name: 12 })).toThrow(/name must be text/);
+    expect(() => mapWarrantListItem({ symbol: 'BULL.HK', name: null })).not.toThrow();
   });
 });

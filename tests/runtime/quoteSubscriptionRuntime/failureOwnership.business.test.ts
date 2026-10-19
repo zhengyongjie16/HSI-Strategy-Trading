@@ -10,7 +10,6 @@ import { createQuoteSubscriptionRuntime } from '../../../src/runtime/quoteSubscr
 import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import type { Position } from '../../../src/types/account.js';
-import type { OrderHoldSymbolsChangedEvent } from '../../../src/types/orderHold.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import {
   createAccountSnapshotDouble,
@@ -53,7 +52,7 @@ describe('POSITION_HOLD 失败不转移给普通事件', () => {
       });
       const actual = new Set<string>();
       const holds = new Set<string>();
-      const listeners = new Set<(event: OrderHoldSymbolsChangedEvent) => void>();
+      const listeners = new Set<() => void>();
       const fatalErrors: unknown[] = [];
       const subscriptions: string[][] = [];
       const unsubscriptions: string[][] = [];
@@ -126,7 +125,7 @@ describe('POSITION_HOLD 失败不转移给普通事件', () => {
         expect(stateFixtures.quoteSubscriptionState.allTradingSymbols).toEqual(actual);
         expect(actual.has('NEXT.HK')).toBe(stage === 'unsubscribe');
         holds.add('ORDER.HK');
-        for (const listener of listeners) listener({ symbol: 'ORDER.HK', action: 'ADDED' });
+        for (const listener of listeners) listener();
 
         const ordinary = runtime.waitForAdmission(['ORDER.HK']);
         release.resolve();

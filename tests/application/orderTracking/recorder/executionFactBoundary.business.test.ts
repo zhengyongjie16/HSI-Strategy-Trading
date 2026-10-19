@@ -71,8 +71,6 @@ describe('OrderRecorder execution-fact boundary', () => {
         costAmount: '100',
         executedQuantity: 100,
         executedTime: 1_000,
-        submittedAt: undefined,
-        updatedAt: undefined,
       };
       storage.setBuyOrdersListForLong(SYMBOL, [valid]);
       const before = storage.getBuyOrdersList(SYMBOL, true);

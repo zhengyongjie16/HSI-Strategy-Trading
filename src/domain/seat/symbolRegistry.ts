@@ -280,7 +280,7 @@ export function createSymbolRegistry(monitor: SeatRegistryConfig): SymbolRegistr
 
       return null;
     },
-    updateSeatState(direction: 'LONG' | 'SHORT', nextState: RuntimeWritableSeatState): SeatState {
+    updateSeatState(direction: 'LONG' | 'SHORT', nextState: RuntimeWritableSeatState): void {
       const seatEntry = resolveSeatEntry(seatStore, direction);
       const previousState = seatEntry.state;
       const previousVersion = seatEntry.lastEventVersion;
@@ -299,12 +299,11 @@ export function createSymbolRegistry(monitor: SeatRegistryConfig): SymbolRegistr
       );
       emitSeatTruthChanged({ direction }, listenerErrors);
       throwIfListenerErrors(listenerErrors);
-      return seatEntry.state;
     },
     updateSeatStateWithVersionBump(
       direction: 'LONG' | 'SHORT',
       nextState: RuntimeWritableSeatState,
-    ): { readonly seatState: SeatState; readonly seatVersion: number } {
+    ): { readonly seatVersion: number } {
       const seatEntry = resolveSeatEntry(seatStore, direction);
       const previousState = seatEntry.state;
       const previousStateEventVersion = seatEntry.lastEventVersion;
@@ -324,7 +323,7 @@ export function createSymbolRegistry(monitor: SeatRegistryConfig): SymbolRegistr
       );
       emitSeatTruthChanged({ direction }, listenerErrors);
       throwIfListenerErrors(listenerErrors);
-      return { seatState: seatEntry.state, seatVersion: seatEntry.version };
+      return { seatVersion: seatEntry.version };
     },
     onSeatStateChanged(listener: SeatStateChangedListener): () => void {
       listeners.add(listener);

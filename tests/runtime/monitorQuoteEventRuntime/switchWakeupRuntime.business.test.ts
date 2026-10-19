@@ -419,7 +419,6 @@ describe('switchWakeupRuntime', () => {
       orderId: `order-${symbol}`,
       symbol,
       side: 'BUY',
-      source: 'WS',
       status: 'FILLED',
       monitorSymbol: 'HSI.HK',
       isLongSymbol: true,

@@ -97,7 +97,7 @@ export const createUnrealizedLossMonitor = (
     // 已确认 orderId 属于原 tracker；失效不取消/重提，不让旧工作清买单或发布风险/episode。
     if (!context.isCurrent()) return true;
 
-    orderRecorder.clearBuyOrders(symbol, isLong, quote);
+    orderRecorder.clearBuyOrders(symbol, isLong);
     const prepared = riskChecker.prepareUnrealizedLossData(
       orderRecorder,
       symbol,

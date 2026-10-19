@@ -13,7 +13,7 @@ import { createWarrantListCache } from '../../infrastructure/longbridge/market/w
 import { createSymbolRegistry } from '../../domain/seat/symbolRegistry.js';
 import { createSeatDiagnosticRuntime } from '../../runtime/seatDiagnosticRuntime/index.js';
 import { logger } from '../../infrastructure/logger/index.js';
-import { getHKDateKey, getRequiredHKDateKey } from '../../utils/time/index.js';
+import { getRequiredHKDateKey } from '../../utils/time/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { createTradingDayInfoResolver } from '../startup/tradingDayInfoResolver.js';
@@ -81,7 +81,6 @@ function createPreGateRuntimeFactory(
 
     const resolveTradingDayInfo = createTradingDayInfoResolver({
       marketDataClient,
-      getHKDateKey,
       onResolveError: (err: unknown) => {
         logger.warn('启动交易日信息解析失败，运行期将继续解析', formatError(err));
       },

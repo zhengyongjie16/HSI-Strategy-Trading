@@ -84,5 +84,5 @@ export type StartupSeatSearchDeps = Pick<
 
 /** 启动补席用例；无候选计数，异常复原 EMPTY 但不计数并原样抛出，供恢复 owner 重试。 */
 export interface StartupSeatSearch {
-  readonly searchSeat: (params: SearchOnEventParams) => Promise<string | null>;
+  readonly searchSeat: (params: SearchOnEventParams) => Promise<void>;
 }

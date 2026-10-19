@@ -61,7 +61,6 @@ export function createPendingOrdersAdapter(context: unknown): PendingOrdersAdapt
               ? '-0'
               : price,
           quantity,
-          executedQuantity,
         };
       });
     },

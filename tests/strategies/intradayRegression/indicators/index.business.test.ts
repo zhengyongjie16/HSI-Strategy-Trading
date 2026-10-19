@@ -48,7 +48,6 @@ function buildIndicatorSnapshot(
 ) {
   const cacheSnapshot: StrategyCandlestickSnapshot = {
     symbol: 'HSI.HK',
-    period: 'MIN_1',
     version: 1,
     candles: normalizeCandles(candles),
     lastBarTimestamp: null,

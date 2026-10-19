@@ -78,7 +78,6 @@ test('actual native pending BUY/SELL status/type map once; original symbol filte
     orderType: 'ELO',
     submittedPrice: '1.000000000000000001',
     quantity: 100,
-    executedQuantity: 0,
   });
 
   expect(rows[1]).toMatchObject({
@@ -119,7 +118,6 @@ test('neutral cache rejects numeric SDK-shaped direction/status/type without acc
     orderType: 'ELO',
     submittedPrice: '1',
     quantity: 100,
-    executedQuantity: 0,
   };
   for (const invalid of [
     { ...valid, side: 1 },

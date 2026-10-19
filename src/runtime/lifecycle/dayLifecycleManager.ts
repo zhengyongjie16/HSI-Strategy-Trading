@@ -192,7 +192,6 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
   function buildTickResult(): DayLifecycleTickResult {
     return {
       nextRetryAtMs: nextMidnightRetryAtMs ?? nextRetryAtMs,
-      pendingOpenRebuild: mutableState.pendingOpenRebuild,
     };
   }
 

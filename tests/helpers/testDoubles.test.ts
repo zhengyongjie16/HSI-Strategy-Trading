@@ -55,19 +55,13 @@ describe('shared financial fact doubles', () => {
   it('accepts neutral query overrides without projecting call prices or absent facts', async () => {
     const callPrice = '20000.1234567890123456789';
     const context = createQuoteContextDouble({
-      warrantQuote: async (symbols) => symbols.map((symbol) => ({ symbol, callPrice })),
+      warrantQuote: async () => [{ callPrice }],
     });
-    expect(await context.warrantQuote(['BULL.HK'])).toEqual([{ symbol: 'BULL.HK', callPrice }]);
+    expect(await context.warrantQuote(['BULL.HK'])).toEqual([{ callPrice }]);
     const absent = createQuoteContextDouble({
-      warrantQuote: async () => [
-        { symbol: 'NULL.HK', callPrice: null },
-        { symbol: 'MISSING.HK', callPrice: undefined },
-      ],
+      warrantQuote: async () => [{ callPrice: null }, { callPrice: undefined }],
     });
-    expect(await absent.warrantQuote([])).toEqual([
-      { symbol: 'NULL.HK', callPrice: null },
-      { symbol: 'MISSING.HK', callPrice: undefined },
-    ]);
+    expect(await absent.warrantQuote([])).toEqual([{ callPrice: null }, { callPrice: undefined }]);
     expect(await createQuoteContextDouble().warrantQuote([])).toEqual([]);
   });
 

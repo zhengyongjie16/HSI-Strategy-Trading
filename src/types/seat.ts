@@ -176,7 +176,7 @@ type SeatTruthChangedEvent = Readonly<{
 export type SeatTruthChangedListener = (event: SeatTruthChangedEvent) => void;
 
 /** 同一席位 truth 的只读能力；普通授权、display 与 runtime 只读取原 state/version/归属。 */
-export interface SeatReader {
+interface SeatReader {
   /** 获取席位状态 */
   readonly getSeatState: (direction: 'LONG' | 'SHORT') => SeatState;
 
@@ -191,25 +191,24 @@ export interface SeatReader {
 }
 
 /** 既有席位状态机的同步 mutation 能力；寻标、换标、激活与日切共享同一 SymbolRegistry。 */
-export interface SeatWriter {
+interface SeatWriter {
   /** 更新席位状态 */
   readonly updateSeatState: (
     direction: 'LONG' | 'SHORT',
     nextState: RuntimeWritableSeatState,
-  ) => SeatState;
+  ) => void;
 
   /** 原子更新席位状态并递增席位版本号 */
   readonly updateSeatStateWithVersionBump: (
     direction: 'LONG' | 'SHORT',
     nextState: RuntimeWritableSeatState,
   ) => {
-    readonly seatState: SeatState;
     readonly seatVersion: number;
   };
 }
 
 /** 权威席位 mutation 完成后的事件订阅；不向 runtime 暴露 state 集合或更新入口。 */
-export interface SeatEvents {
+interface SeatEvents {
   /** 订阅席位状态变化事件 */
   readonly onSeatStateChanged: (listener: (event: SeatStateChangedEvent) => void) => Unsubscribe;
 

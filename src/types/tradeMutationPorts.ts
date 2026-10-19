@@ -41,7 +41,7 @@ export type TradeReplaceCommand = Readonly<{
 }>;
 
 /** adapter 单次远程请求的事实元数据；operation 保留真实 SDK method 名。 */
-export type TradeMutationOperation =
+type TradeMutationOperation =
   'TradeContext.submitOrder' | 'TradeContext.replaceOrder' | 'TradeContext.cancelOrder';
 
 /** adapter 单次远程请求的事实元数据；未发出的 preflight 不进入此协议。 */

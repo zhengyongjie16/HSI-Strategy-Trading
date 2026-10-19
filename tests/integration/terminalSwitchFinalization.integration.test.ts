@@ -197,7 +197,6 @@ describe('terminal switch finalization integration', () => {
         }
 
         return createWarrantDistanceInfoDouble({
-          warrantType: 'BULL',
           distanceNumerator: '0.1',
           distanceDenominator: '100',
         });

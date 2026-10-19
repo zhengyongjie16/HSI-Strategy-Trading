@@ -11,7 +11,7 @@ export type SnapshotToken = {
 };
 
 /** 读取所依赖的组件；成对读取不冒充券商远端原子快照。 */
-export type SnapshotComponents = {
+type SnapshotComponents = {
   readonly account: boolean;
   readonly positions: boolean;
   readonly paired?: boolean;
@@ -41,8 +41,6 @@ export type SnapshotRefreshReceipt =
   | {
       readonly status: 'COMMITTED';
       readonly snapshotToken: SnapshotToken;
-      readonly refreshedAccount: boolean;
-      readonly refreshedPositions: boolean;
       readonly view: AccountPositionSnapshotView;
     }
   | { readonly status: 'ABORTED' };
@@ -57,16 +55,14 @@ export type SnapshotRefreshHandle = {
 };
 
 /** 日切/终止清理请求；日切 epoch 由生命周期指定，重入不重复推进。 */
-export type SnapshotClearRequest = {
+type SnapshotClearRequest = {
   readonly reason: 'DAY_CUT' | 'STOP';
   readonly dayEpoch: number;
 };
 
 /** 用于诊断和 drain 的单 owner 状态，不暴露内部集合。 */
-export type SnapshotCommitStatus = {
+type SnapshotCommitStatus = {
   readonly admission: 'OPEN' | 'REBUILD' | 'CLOSED';
-  readonly inFlight: boolean;
-  readonly pending: boolean;
   readonly token: SnapshotToken;
 };
 
@@ -85,12 +81,12 @@ export interface AccountPositionSnapshotReader {
 }
 
 /** 由唯一 snapshot owner 执行的刷新参与能力；不公开独立 commit 或第二份 snapshot。 */
-export interface AccountPositionSnapshotRefresh {
+interface AccountPositionSnapshotRefresh {
   readonly requestRefresh: (request: SnapshotRefreshRequest) => SnapshotRefreshHandle;
 }
 
 /** 同一 canonical snapshot 的失效、重建、关门及 drain 能力；消费方只取实际方法。 */
-export interface AccountPositionSnapshotLifecycle {
+interface AccountPositionSnapshotLifecycle {
   readonly invalidate: () => void;
 
   readonly invalidateAccount: () => void;

@@ -415,7 +415,6 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
           isLong ? 'LONG' : 'SHORT',
           disposition.followUpQuantity,
           relatedBuyOrderIds,
-          protective,
           tracked.submittedAt,
         );
       }
@@ -437,7 +436,6 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       orderId: params.orderId,
       symbol,
       side,
-      source: params.source,
       status: params.closedReason,
       monitorSymbol,
       isLongSymbol: isLong ?? null,

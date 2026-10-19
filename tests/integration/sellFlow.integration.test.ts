@@ -293,8 +293,6 @@ async function seedStorageFromNative(
     costAmount: order.executedAmount,
     executedQuantity: order.executedQuantity,
     executedTime: order.executionTimeMs,
-    submittedAt: order.submittedAt,
-    updatedAt: order.updatedAt ?? undefined,
   };
   const rows = [...storage.getBuyOrdersList(symbol, isLong), record];
   if (isLong) storage.setBuyOrdersListForLong(symbol, rows);
@@ -360,8 +358,6 @@ function createRecordedBuyOrder(
     costAmount: String(executedQuantity),
     executedQuantity,
     executedTime: Date.parse('2026-02-25T03:00:00.000Z'),
-    submittedAt: undefined,
-    updatedAt: undefined,
   };
 }
 
@@ -815,8 +811,6 @@ describe('sell-flow integration', () => {
       direction: 'LONG',
       submittedQuantity: 100,
       relatedBuyOrderIds: [occupiedOrder.orderId],
-      submittedAt: Date.now(),
-      isProtectiveLiquidation: false,
     });
 
     const sellOrderLinks: Array<{ orderId: string; related: readonly string[] }> = [];
@@ -1157,8 +1151,6 @@ describe('sell-flow integration', () => {
             filledQuantity: 0,
             relatedBuyOrderIds: ['BUY-OLD'],
             status: 'pending',
-            isProtectiveLiquidation: false,
-            submittedAt,
           },
         ],
         updatePendingSell: (orderId, params) => {
@@ -1262,8 +1254,6 @@ describe('sell-flow integration', () => {
                 filledQuantity: 0,
                 relatedBuyOrderIds: ['BUY-OLD'],
                 status: 'pending',
-                isProtectiveLiquidation: false,
-                submittedAt: submittedAtMs,
               },
             ]
           : [],
@@ -1538,8 +1528,6 @@ describe('sell-flow integration', () => {
             filledQuantity: 0,
             relatedBuyOrderIds: ['BUY-OLD'],
             status: 'pending',
-            isProtectiveLiquidation: false,
-            submittedAt,
           },
         ],
         updatePendingSell: (orderId, params) => {
@@ -1751,8 +1739,6 @@ describe('sell-flow integration', () => {
             filledQuantity: 0,
             relatedBuyOrderIds: ['BUY-OLD'],
             status: 'pending',
-            isProtectiveLiquidation: false,
-            submittedAt,
           },
         ],
         updatePendingSell: () => {

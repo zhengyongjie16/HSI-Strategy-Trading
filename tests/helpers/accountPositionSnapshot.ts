@@ -90,7 +90,6 @@ export function createSettlementFreshnessFixture(
       const receipt: SettlementReadinessReceipt = {
         snapshotToken: snapshot.getView().token,
         settlementVersion: 0,
-        ready: true,
       };
       if (!isSnapshotReady(receipt)) {
         throw new Error('测试尚未发布成对 canonical 基线');

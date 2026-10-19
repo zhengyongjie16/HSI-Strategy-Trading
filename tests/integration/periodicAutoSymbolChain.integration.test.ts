@@ -226,7 +226,6 @@ describe('periodic auto-symbol full chain integration', () => {
     const riskChecker = createRiskCheckerDouble({
       getWarrantDistanceInfo: () =>
         createWarrantDistanceInfoDouble({
-          warrantType: 'BULL',
           distanceNumerator: '0.1',
           distanceDenominator: '100',
         }),
@@ -517,7 +516,6 @@ describe('periodic auto-symbol full chain integration', () => {
     const riskChecker = createRiskCheckerDouble({
       getWarrantDistanceInfo: () =>
         createWarrantDistanceInfoDouble({
-          warrantType: 'BULL',
           distanceNumerator: '0.1',
           distanceDenominator: '100',
         }),
@@ -789,7 +787,6 @@ describe('periodic auto-symbol full chain integration', () => {
     const riskChecker = createRiskCheckerDouble({
       getWarrantDistanceInfo: () =>
         createWarrantDistanceInfoDouble({
-          warrantType: 'BULL',
           distanceNumerator: '0.1',
           distanceDenominator: '100',
         }),
@@ -1061,7 +1058,6 @@ describe('periodic auto-symbol full chain integration', () => {
     const riskChecker = createRiskCheckerDouble({
       getWarrantDistanceInfo: () =>
         createWarrantDistanceInfoDouble({
-          warrantType: 'BULL',
           distanceNumerator: '0.1',
           distanceDenominator: '100',
         }),

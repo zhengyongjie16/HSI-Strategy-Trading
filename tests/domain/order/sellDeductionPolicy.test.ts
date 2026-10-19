@@ -22,8 +22,6 @@ function createOrder(params: {
     costAmount: params.costAmount,
     executedQuantity: params.executedQuantity ?? 100,
     executedTime: params.executedTime,
-    submittedAt: undefined,
-    updatedAt: undefined,
   };
 }
 

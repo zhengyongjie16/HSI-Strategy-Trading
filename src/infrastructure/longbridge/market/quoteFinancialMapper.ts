@@ -78,7 +78,6 @@ export function mapWarrantQuote(
 
   const category = mapWarrantEnum(value['category']);
   return {
-    symbol: value['symbol'],
     ...('callPrice' in value ? { callPrice: mapOptionalQuoteDecimal(value['callPrice']) } : {}),
     ...(category === undefined ? {} : { category }),
   };
@@ -95,18 +94,23 @@ export function mapWarrantListItem(
   if (!isRecord(value) || typeof value['symbol'] !== 'string')
     throw new TypeError('Warrant list identity missing');
 
+  // name/lastDone/warrantType 不再输出为列表事实，仍按原顺序校验原始 SDK 字段，拒绝输入行为不变。
   const name = value['name'];
   if (name !== undefined && name !== null && typeof name !== 'string')
     throw new TypeError('Warrant name must be text');
 
+  mapOptionalQuoteDecimal(value['lastDone']);
+  const toCallPrice = mapOptionalQuoteDecimal(value['toCallPrice']);
+  const turnover = mapOptionalQuoteDecimal(value['turnover']);
+  const callPrice = 'callPrice' in value ? mapOptionalQuoteDecimal(value['callPrice']) : undefined;
+  mapWarrantEnum(value['warrantType']);
+  const status = mapWarrantStatus(value['status']);
+
   return {
     symbol: value['symbol'],
-    ...(name === undefined ? {} : { name }),
-    lastDone: mapOptionalQuoteDecimal(value['lastDone']),
-    toCallPrice: mapOptionalQuoteDecimal(value['toCallPrice']),
-    turnover: mapOptionalQuoteDecimal(value['turnover']),
-    ...('callPrice' in value ? { callPrice: mapOptionalQuoteDecimal(value['callPrice']) } : {}),
-    warrantType: mapWarrantEnum(value['warrantType']),
-    status: mapWarrantStatus(value['status']),
+    toCallPrice,
+    turnover,
+    ...('callPrice' in value ? { callPrice } : {}),
+    status,
   };
 }

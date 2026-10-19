@@ -22,7 +22,6 @@ export function createMacdState(
   signalPeriod: number = 9,
 ): MacdStreamState {
   return {
-    fastPeriod,
     slowPeriod,
     signalPeriod,
     fastEmaState: initEmaStreamState(fastPeriod),
@@ -43,7 +42,6 @@ export function createMacdState(
  */
 export function cloneMacdState(state: MacdStreamState): MacdStreamState {
   return {
-    fastPeriod: state.fastPeriod,
     slowPeriod: state.slowPeriod,
     signalPeriod: state.signalPeriod,
     fastEmaState: cloneEmaState(state.fastEmaState),

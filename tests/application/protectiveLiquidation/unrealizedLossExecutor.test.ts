@@ -28,7 +28,7 @@ import {
 
 function createWarrantCheckerStub(): WarrantRiskChecker {
   return {
-    setWarrantInfoFromCallPrice: () => ({ status: 'ok', isWarrant: true }),
+    setWarrantInfoFromCallPrice: () => ({ status: 'ok' }),
     publishWarrantInfo: () => {},
     checkRisk: () => ({ allowed: true }),
     checkWarrantDistanceLiquidation: () => ({ shouldLiquidate: false }),

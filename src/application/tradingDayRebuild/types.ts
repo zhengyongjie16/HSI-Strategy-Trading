@@ -30,12 +30,12 @@ import type { Position } from '../../types/account.js';
 import type { PostTradeSettlementWorkflow } from '../postTradeSettlement/types.js';
 
 /** loader 使用的席位激活投递能力；由 composition 注入，不依赖具体 runtime。 */
-export interface RebuildSeatActivationDispatcher {
+interface RebuildSeatActivationDispatcher {
   readonly dispatchCurrentActivatingSeats: () => void;
 }
 
 /** 整轮重建完成前必须等待的订阅真相对账能力；不负责启动订阅 owner。 */
-export interface RebuildQuoteSubscriptions {
+interface RebuildQuoteSubscriptions {
   readonly reconcileFromCurrentTruth: () => Promise<void>;
 }
 
@@ -129,7 +129,7 @@ export type LoadTradingDayRuntimeSnapshotResult =
 /**
  * loadTradingDayRuntimeSnapshot 的外部依赖。
  * 类型用途：封装行情客户端、交易、配置及辅助服务，作为 loadTradingDayRuntimeSnapshot 的入参。
- * 数据来源：由启动流程或开盘重建调用方组装传入；reportFatalError 必须来自真实 termination，禁止默认 no-op。
+ * 数据来源：由启动流程或开盘重建调用方组装传入。
  * 使用范围：仅交易日重建用例及其装配方使用。
  */
 export interface LoadTradingDayRuntimeSnapshotDeps {
@@ -151,7 +151,6 @@ export interface LoadTradingDayRuntimeSnapshotDeps {
   readonly protectionRecovery: SettlementProtectionRecovery;
   readonly startupSeatSearch: StartupSeatSearch;
   readonly seatActivationDispatcher: RebuildSeatActivationDispatcher;
-  readonly reportFatalError: (error: unknown) => void;
 }
 
 /**
@@ -294,14 +293,8 @@ export type StartupSnapshotResult =
       quotesMap: ReadonlyMap<string, Quote | null>;
       now: Date;
     }>
-  | Readonly<{
-      kind: 'API_RETRY_PENDING';
-      now: Date;
-    }>
-  | Readonly<{
-      kind: 'ABORTED';
-      now: Date;
-    }>;
+  | Readonly<{ kind: 'API_RETRY_PENDING' }>
+  | Readonly<{ kind: 'ABORTED' }>;
 
 /**
  * 启动快照加载参数。

@@ -7,15 +7,7 @@ import type { RuntimeStateFixtures, RuntimeStateOverrides } from './types.js';
  * 场景函数命名：run* / assert*；工厂用 create 前缀。
  */
 import type { MonitorContextAssembly } from '../../src/app/context/types.js';
-import type { AccountPositionSnapshotReader } from '../../src/types/accountPosition.js';
-import { createSnapshotFixture } from './accountPositionSnapshot.js';
-import {
-  createAccountSnapshotDouble,
-  createAccountPositionSnapshotReaderDouble,
-  createMonitorContextDouble,
-  createPositionDouble,
-  createSymbolRegistryDouble,
-} from './testDoubles.js';
+import { createMonitorContextDouble, createSymbolRegistryDouble } from './testDoubles.js';
 
 /**
  * 将异步处理器上报的 fatal 错误重新抛出，使非 fatal 场景测试不会静默吞错。
@@ -160,27 +152,3 @@ export function createMonitorContext(
   );
 }
 
-/**
- * 用真实 H owner 发布 BULL.HK/BEAR.HK 成对事实，并只暴露显式只读能力。
- * RuntimeStateFixtures 不承载金融事实；该初始化 receipt 也不签 settlement ready。
- *
- * @returns 真实已初始化事实的 reader，不提供 update、refresh 或默认 current 判定
- */
-export async function createSnapshotWithPositionsFixture(): Promise<AccountPositionSnapshotReader> {
-  const snapshot = await createSnapshotFixture({
-    account: createAccountSnapshotDouble('100000'),
-    positions: [
-      createPositionDouble({ symbol: 'BULL.HK', quantity: 500, availableQuantity: 500 }),
-      createPositionDouble({ symbol: 'BEAR.HK', quantity: 300, availableQuantity: 300 }),
-    ],
-  });
-  const reader = createAccountPositionSnapshotReaderDouble({
-    getView: snapshot.getView,
-    isCurrent: snapshot.isCurrent,
-  });
-  return {
-    ...reader,
-    getAvailablePosition: snapshot.getAvailablePosition,
-    getStatus: snapshot.getStatus,
-  };
-}

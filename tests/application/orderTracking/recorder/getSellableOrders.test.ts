@@ -8,19 +8,10 @@ import { createLoggerDouble } from '../../../helpers/testDoubles.js';
  * - 验证待成交占用过滤、额外排除与整笔截断
  */
 
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { createOrderStorage } from '../../../../src/application/orderTracking/recorder/orderStorage.js';
 import type { OrderStorage } from '../../../../src/application/orderTracking/recorder/types.js';
 import type { OrderRecord } from '../../../../src/types/orderRecorder.js';
-
-mock.module('../../../src/infrastructure/logger/index.js', () => ({
-  logger: {
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  },
-}));
 
 function makeOrder(
   orderId: string,
@@ -35,8 +26,6 @@ function makeOrder(
     costAmount,
     executedQuantity: quantity,
     executedTime,
-    submittedAt: undefined,
-    updatedAt: undefined,
   };
 }
 
@@ -154,8 +143,6 @@ describe('selectSellableOrders', () => {
       direction: 'LONG',
       submittedQuantity: 100,
       relatedBuyOrderIds: ['O1'],
-      isProtectiveLiquidation: false,
-      submittedAt: Date.now(),
     });
 
     const result = storage.selectSellableOrders({

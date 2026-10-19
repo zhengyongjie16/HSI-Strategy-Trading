@@ -8,7 +8,7 @@ import type { DiagnosticObserver } from '../../types/diagnostics.js';
 import type { RuntimeClock } from '../../types/runtime.js';
 
 /** 只安排 owner pump 的注入调度能力；不创建第二个 runtime 或全局调度器。 */
-export interface SnapshotPumpScheduler {
+interface SnapshotPumpScheduler {
   readonly schedule: (callback: () => void) => void;
 }
 

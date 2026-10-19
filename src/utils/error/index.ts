@@ -2,16 +2,6 @@ import { inspect } from 'node:util';
 import { isRecord } from '../helpers/index.js';
 
 /**
- * 类型保护：检查是否为 Error 实例（内部使用）。
- *
- * @param value 待检查值
- * @returns 如果是 Error 实例返回 true
- */
-function isError(value: unknown): value is Error {
-  return value instanceof Error;
-}
-
-/**
  * 类型保护：检查是否为类似错误的对象（内部使用）。
  *
  * @param value 待检查值
@@ -46,7 +36,7 @@ export function formatError(err: unknown): string {
     return err;
   }
 
-  if (isError(err)) {
+  if (err instanceof Error) {
     return err.message || err.name || 'Error';
   }
 

@@ -7,7 +7,6 @@ import type { SnapshotToken } from './accountPosition.js';
 export type SettlementReadinessReceipt = {
   readonly snapshotToken: SnapshotToken;
   readonly settlementVersion: number;
-  readonly ready: true;
 };
 
 /** 生命周期中断或内部不变量失败；消费者只按明确原因取消原等待，不吞掉其他失败。 */

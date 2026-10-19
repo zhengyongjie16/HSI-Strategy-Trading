@@ -6,12 +6,13 @@ import type { Logger } from '../../types/logger.js';
  * 负责解析唯一 monitor/global 两级交易配置。
  */
 import type { TradingConfig } from '../../types/config.js';
-import { createConfigValidationError, getBooleanConfig, getNumberConfig } from '../utils.js';
 import {
-  parseFailFastBoundedNumberConfig,
-  parseMonitorConfig,
-  parseTradingOrderType,
-} from './utils.js';
+  createConfigValidationError,
+  getBooleanConfig,
+  getNumberConfig,
+  parseOrderTypeConfig,
+} from '../utils.js';
+import { parseFailFastBoundedNumberConfig, parseMonitorConfig } from './utils.js';
 
 /**
  * 解析唯一监控标的配置。
@@ -83,8 +84,8 @@ export function createTradingConfig({
     'AFTERNOON_OPENING_PROTECTION_MINUTES',
     0,
   );
-  const tradingOrderType = parseTradingOrderType(env, 'TRADING_ORDER_TYPE', 'ELO');
-  const liquidationOrderType = parseTradingOrderType(env, 'LIQUIDATION_ORDER_TYPE', 'MO');
+  const tradingOrderType = parseOrderTypeConfig(env, 'TRADING_ORDER_TYPE', 'ELO');
+  const liquidationOrderType = parseOrderTypeConfig(env, 'LIQUIDATION_ORDER_TYPE', 'MO');
 
   return {
     monitor,

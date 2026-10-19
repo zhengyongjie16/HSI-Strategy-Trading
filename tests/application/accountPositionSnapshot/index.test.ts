@@ -262,7 +262,6 @@ describe('canonical snapshot', () => {
     expect(drained).toBe(true);
     expect(fatal).toEqual([fault]);
     expect(owner.getStatus().admission).toBe('CLOSED');
-    expect(owner.getStatus().inFlight).toBe(false);
     expect(owner.getView().token.commitRevision).toBe(0);
     expect(owner.getView().token.dayEpoch).toBe(2);
   });

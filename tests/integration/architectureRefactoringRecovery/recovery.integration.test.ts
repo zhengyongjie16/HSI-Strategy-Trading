@@ -422,7 +422,6 @@ async function createOfflineRecovery(
       logger,
     }),
     seatActivationDispatcher: dispatcher,
-    reportFatalError: termination.reportFatalError,
   });
   const rebuild = createRebuildTradingDayState({
     snapshot,
@@ -1164,7 +1163,7 @@ describe('P0 offline V1 full recovery baseline', () => {
       expect(sell.executionTimeMs).toBe(fixture.boundaryMs);
       expect(sell.updatedAtMs).toBe(fixture.revisionMs);
       expect(sell.updatedAtMs - fixture.boundaryMs).toBe(30_000);
-      const factReceipt = state.recorder.commitExecutionFact(
+      state.recorder.commitExecutionFact(
         {
           brokerOrderId: sell.orderId,
           symbol: sell.symbol,
@@ -1190,8 +1189,13 @@ describe('P0 offline V1 full recovery baseline', () => {
             orderUpdatedAtMs: sell.updatedAtMs,
           }).admission,
       );
-      expect(factReceipt.authoritativeFactChanged).toBe(false);
-      expect(factReceipt.economicProjectionChanged).toBe(false);
+
+      // 同一查询事实在恢复期已由 durable progress 建立；提交后仍保持恢复出的权威累计事实。
+      expect(state.recorder.getExecutionFact(sell.orderId)).toMatchObject({
+        cumulativeQuantity: sell.executedQuantity,
+        cumulativeAmount: sell.executedAmount,
+        updatedAtMs: fixture.revisionMs,
+      });
       const replay = state.daily.recordCumulativeExecution(
         {
           factStage: 'TERMINAL',

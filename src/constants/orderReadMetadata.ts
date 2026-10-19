@@ -14,7 +14,7 @@ export const OPEN_ORDER_READ_STATUSES: ReadonlySet<OrderReadStatus> = new Set([
   'CANCELLATION_REQUESTED',
   'CANCELLATION_PENDING',
 ]);
-export const TERMINAL_ORDER_READ_STATUSES: ReadonlySet<OrderReadStatus> = new Set([
+const TERMINAL_ORDER_READ_STATUSES: ReadonlySet<OrderReadStatus> = new Set([
   'FILLED',
   'REJECTED',
   'CANCELED',

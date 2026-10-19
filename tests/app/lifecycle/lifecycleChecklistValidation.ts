@@ -1,9 +1,9 @@
 /**
- * 生命周期清单纯校验。
+ * 生命周期清单纯校验（测试侧独立实现）。
  * 只比较声明、实际 acquisition 登记与调用 trace；不执行资源动作、不排序或生成执行计划。
  */
-import { CLEANUP_PHASE_ORDER } from '../../constants/cleanup.js';
-import type { CleanupPhase } from '../../types/cleanup.js';
+import { CLEANUP_PHASE_ORDER } from '../../../src/constants/cleanup.js';
+import type { CleanupPhase } from '../../../src/types/cleanup.js';
 import type {
   LifecycleChecklist,
   LifecycleChecklistGroup,

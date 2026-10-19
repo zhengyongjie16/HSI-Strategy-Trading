@@ -7,7 +7,6 @@
  */
 import { describe, expect, it } from 'bun:test';
 
-import type { CandleData } from '../../../../src/types/data.js';
 import type { IndicatorUsageProfile } from '../../../../src/strategies/intradayRegression/profile/types.js';
 import type { StrategyCandlestickSnapshot } from '../../../../src/types/strategy.js';
 import {
@@ -18,6 +17,7 @@ import {
 import { buildStrategyDisplay } from '../../../../src/strategies/intradayRegression/display.js';
 import { projectVerificationSampleValues } from '../../../../src/strategies/intradayRegression/verification/sampleRules.js';
 import { createIndicatorUsageProfileDouble, normalizeCandles } from '../indicatorFixtures.js';
+import type { FixtureCandle } from '../types.js';
 
 function createCandle(params: {
   readonly timestamp: number;
@@ -26,7 +26,7 @@ function createCandle(params: {
   readonly lowOffset?: number;
   readonly openOffset?: number;
   readonly volume?: number;
-}): CandleData {
+}): FixtureCandle {
   const highOffset = params.highOffset ?? 0.4;
   const lowOffset = params.lowOffset ?? 0.6;
   const openOffset = params.openOffset ?? 0.2;
@@ -44,9 +44,9 @@ function createTrendCandles(
   length: number,
   startClose: number,
   step: number,
-): ReadonlyArray<CandleData> {
+): ReadonlyArray<FixtureCandle> {
   const baseTimestamp = 1_710_000_000_000;
-  const candles: CandleData[] = [];
+  const candles: FixtureCandle[] = [];
   for (let index = 0; index < length; index += 1) {
     candles.push(
       createCandle({
@@ -61,7 +61,7 @@ function createTrendCandles(
 }
 
 function createCacheSnapshot(params: {
-  readonly candles: ReadonlyArray<CandleData>;
+  readonly candles: ReadonlyArray<FixtureCandle>;
   readonly version: number;
   readonly lastBarConfirmed: boolean;
 }): StrategyCandlestickSnapshot {
@@ -72,7 +72,6 @@ function createCacheSnapshot(params: {
       : null;
   return {
     symbol: 'HSI.HK',
-    period: 'MIN_1',
     version: params.version,
     candles: normalizeCandles(params.candles),
     lastBarTimestamp,
@@ -82,7 +81,7 @@ function createCacheSnapshot(params: {
 }
 
 function buildIndicatorSnapshot(
-  candles: ReadonlyArray<CandleData>,
+  candles: ReadonlyArray<FixtureCandle>,
   profile: IndicatorUsageProfile,
 ) {
   const runtime = bootstrapIndicatorRuntime({
@@ -105,7 +104,7 @@ function buildIndicatorSnapshot(
 function expectRuntimeSnapshotEqualsFull(params: {
   readonly profile: IndicatorUsageProfile;
   readonly runtimeSnapshot: ReturnType<typeof buildSnapshotFromRuntime>;
-  readonly candles: ReadonlyArray<CandleData>;
+  readonly candles: ReadonlyArray<FixtureCandle>;
 }): void {
   const fullSnapshot = buildIndicatorSnapshot(params.candles, params.profile);
   expect(params.runtimeSnapshot).toEqual(fullSnapshot);
@@ -154,7 +153,7 @@ describe('indicators/runtime incremental business flow', () => {
       },
     });
     const baseTs = 1_710_100_000_000;
-    const candles: ReadonlyArray<CandleData> = [
+    const candles: ReadonlyArray<FixtureCandle> = [
       { close: null, high: 1, low: 1, volume: 1, timestamp: baseTs },
       { close: 100, high: 100.2, low: 99.8, volume: 1_000, timestamp: baseTs + 60_000 },
       { close: 0, high: 100.2, low: 99.8, volume: 1_000, timestamp: baseTs + 120_000 },
@@ -207,13 +206,6 @@ describe('indicators/runtime incremental business flow', () => {
     const runtimeSnapshot = buildSnapshotFromRuntime(runtime);
     const fullSnapshot = buildIndicatorSnapshot(candles, profile);
     expect(runtimeSnapshot).toEqual(fullSnapshot);
-    expect(runtimeSnapshot?.rsi?.[6]).toBe(fullSnapshot?.rsi?.[6]);
-    expect(runtimeSnapshot?.mfi).toBe(fullSnapshot?.mfi);
-    expect(runtimeSnapshot?.adx).toBe(fullSnapshot?.adx);
-    expect(runtimeSnapshot?.ema?.[7]).toBe(fullSnapshot?.ema?.[7]);
-    expect(runtimeSnapshot?.psy?.[13]).toBe(fullSnapshot?.psy?.[13]);
-    expect(runtimeSnapshot?.macd?.dif).toBe(fullSnapshot?.macd?.dif);
-    expect(runtimeSnapshot?.kdj?.k).toBe(fullSnapshot?.kdj?.k);
   });
 
   it('updates snapshot incrementally on active bar updates, confirmation, replay and same-tick shift', () => {

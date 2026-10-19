@@ -148,6 +148,7 @@ async function createFixture() {
   });
   const account = native.createAccountService({ rateLimiter: createRateLimiterDouble() });
   let snapshotReadBarrier: Promise<void> | null = null;
+  let snapshotReadIssued = 0;
   const snapshot = createAccountPositionSnapshot({
     clock: { now: () => new Date() },
     diagnostics: createDiagnosticObserverDouble(),
@@ -155,11 +156,13 @@ async function createFixture() {
     scheduler: { schedule: queueMicrotask },
     readPort: {
       getAccountSnapshot: async () => {
+        snapshotReadIssued += 1;
         if (snapshotReadBarrier !== null) await snapshotReadBarrier;
 
         return account.getAccountSnapshot();
       },
       getStockPositions: async () => {
+        snapshotReadIssued += 1;
         if (snapshotReadBarrier !== null) await snapshotReadBarrier;
 
         return account.getStockPositions();
@@ -333,6 +336,7 @@ async function createFixture() {
     monitorCalls: () => monitorCalls,
     monitorResults: () => [...monitorResults],
     setPosition,
+    snapshotReadIssued: () => snapshotReadIssued,
     deferSnapshotReads: () => {
       const barrier = createDeferred();
       snapshotReadBarrier = barrier.promise;
@@ -629,7 +633,8 @@ describe('risk original owner supersession without another quote', () => {
       await delayed.entered;
       f.settlement.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: true });
       expect(f.settlement.isCurrent(originalReceipt)).toBe(false);
-      await waitUntil(() => f.snapshot.getStatus().inFlight);
+      const issuedBefore = f.snapshotReadIssued();
+      await waitUntil(() => f.snapshotReadIssued() > issuedBefore);
       delayed.release();
       await waitUntil(() => f.monitorResults().length === 1);
       await Bun.sleep(0);

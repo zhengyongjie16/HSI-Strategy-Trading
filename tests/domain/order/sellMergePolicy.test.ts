@@ -5,12 +5,9 @@ import type { PendingSellOrderSnapshot } from '../../../src/domain/order/types.j
 
 const pending: PendingSellOrderSnapshot = {
   orderId: 'OLD',
-  symbol: 'BULL.HK',
-  side: 'SELL',
   status: 'WORKING',
   orderType: 'ELO',
   isProtectiveLiquidation: true,
-  submittedPrice: '0.9',
   submittedQuantity: 1500,
   executedQuantity: 500,
   submittedAt: 1000,
@@ -18,7 +15,6 @@ const pending: PendingSellOrderSnapshot = {
 
 function decide(orders: ReadonlyArray<PendingSellOrderSnapshot>, protective = false) {
   return resolveSellMergeDecision({
-    symbol: pending.symbol,
     pendingOrders: orders,
     newOrderQuantity: 1000,
     newOrderType: 'ELO',

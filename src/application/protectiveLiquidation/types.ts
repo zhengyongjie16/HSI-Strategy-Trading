@@ -46,7 +46,7 @@ export interface ProtectiveLiquidationAttempt {
 }
 
 /** 原 settlement owner 的只读就绪能力；protective 不签发 readiness 或制造 settlement stale。 */
-export interface ProtectiveLiquidationConsistencyPort extends Pick<
+interface ProtectiveLiquidationConsistencyPort extends Pick<
   SettlementFreshnessReader,
   'waitForFresh' | 'isCurrent'
 > {

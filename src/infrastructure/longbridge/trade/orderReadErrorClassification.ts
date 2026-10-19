@@ -83,7 +83,7 @@ export function extractErrorCode(err: unknown, depth: number = 0): string | null
  * @param err 错误对象
  * @returns 错误消息文本
  */
-export function extractErrorMessage(err: unknown): string {
+function extractErrorMessage(err: unknown): string {
   if (err instanceof Error) {
     return err.message;
   }

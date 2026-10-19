@@ -9,11 +9,10 @@ description: Use when writing, refactoring, or reviewing TypeScript modules in t
 
 - 编写、重构或审查本仓库 TypeScript 模块时使用本规范；所有规则与必要示例均在本文件中。
 - 只读审查：按适用规则判断符合性，不把仅实际改码时要求执行的流程项判为违规。
-- 实际改码：落实代码组织与注释要求；交付前必须依次运行 `bun format` → `bun lint` → `bun type-check`，修复全部问题。
+- 实际改码：落实代码组织与注释要求；交付前必须依次运行 `bun lint:fix` → `bun type-check`，修复全部问题。
 
 ## 类型与不可变数据
 
-- 文件名使用 camelCase，`config/` 下文件除外。
 - 数据结构用 `type`，属性默认 `readonly`（包括嵌套数据），数组用 `ReadonlyArray<T>`；确需可变状态时才放宽，并明确可变边界。
 - 行为契约（层间能力边界、依赖注入契约）用 `interface`，由实现对象满足契约；联合、交叉、映射、条件及函数签名类型用 `type`。
 - 禁止重复别名 `type A = B` 和基础类型等价重命名 `type Price = number`，直接使用原类型。允许按需使用品牌类型建立真实类型区分，避免同基础类型的不同语义参数混用，不必给所有基本类型加品牌。

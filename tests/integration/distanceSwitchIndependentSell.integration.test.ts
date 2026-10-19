@@ -154,7 +154,6 @@ async function fixture(available = 40) {
   const risk = createRiskCheckerDouble({
     getWarrantDistanceInfo: () =>
       createWarrantDistanceInfoDouble({
-        warrantType: 'BULL',
         distanceNumerator: '0.1',
         distanceDenominator: '100',
       }),
@@ -293,15 +292,7 @@ async function fixture(available = 40) {
     orderType: 'ELO',
   });
 
-  f.recorder.submitSellOrder(
-    'OLD',
-    original.symbol,
-    'LONG',
-    100 - available,
-    ['BUY-OLD'],
-    false,
-    T,
-  );
+  f.recorder.submitSellOrder('OLD', original.symbol, 'LONG', 100 - available, ['BUY-OLD'], T);
   const advance = () =>
     workflow.advancePendingSwitch({
       direction: 'LONG',

@@ -18,8 +18,30 @@ import { createExecutionFixture } from '../application/orderTracking/recorder/ex
 
 import { waitUntil } from '../helpers/asyncProgram.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import type { BrokerOrderExecutionFact } from '../../src/types/orderRecorder.js';
 
 const EXECUTION_MS = Date.parse('2026-03-13T02:00:01.000Z');
+
+/**
+ * 判断 recorder 存储的累计执行事实是否推进。
+ * @param before 提交前该订单的累计事实，无记录时为 null
+ * @param after 提交后该订单的累计事实，无记录时为 null
+ * @returns 新增事实或任一累计字段变化时为 true
+ */
+function isAuthoritativeFactChanged(
+  before: BrokerOrderExecutionFact | null,
+  after: BrokerOrderExecutionFact | null,
+): boolean {
+  if (after === null) return false;
+
+  if (before === null) return true;
+
+  return (
+    after.cumulativeQuantity !== before.cumulativeQuantity ||
+    after.cumulativeAmount !== before.cumulativeAmount ||
+    after.updatedAtMs !== before.updatedAtMs
+  );
+}
 
 describe('protective-liquidation integration', () => {
   it('records protective episode progress + local sell update after protective liquidation fill event', async () => {
@@ -101,10 +123,12 @@ describe('protective-liquidation integration', () => {
         return {
           ...recorder,
           commitExecutionFact: (...args) => {
-            const receipt = commit(...args);
-            if (args[0].side === 'SELL' && receipt.authoritativeFactChanged) commitSellCount++;
-
-            return receipt;
+            const before = recorder.getExecutionFact(args[0].brokerOrderId);
+            commit(...args);
+            const after = recorder.getExecutionFact(args[0].brokerOrderId);
+            // 以 recorder 存储的累计事实是否推进判定权威事实变化，不依赖已移除的内部收据。
+            if (args[0].side === 'SELL' && isAuthoritativeFactChanged(before, after))
+              commitSellCount++;
           },
           markSellFilled: (...args) => {
             markSellFilledCount++;
@@ -153,7 +177,7 @@ describe('protective-liquidation integration', () => {
       await monitor.initialize();
       await monitor.recoverOrderTrackingFromSnapshot([]);
       expect(native.subscriptionMembership()).toEqual(['PRIVATE']);
-      f.recorder.submitSellOrder('PL-001', 'BULL.HK', 'LONG', 200, [], true, EXECUTION_MS - 1000);
+      f.recorder.submitSellOrder('PL-001', 'BULL.HK', 'LONG', 200, [], EXECUTION_MS - 1000);
       monitor.trackOrder({
         orderId: 'PL-001',
         symbol: 'BULL.HK',

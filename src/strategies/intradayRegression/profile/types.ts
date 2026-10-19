@@ -47,14 +47,6 @@ export type VerificationIndicator =
   'K' | 'D' | 'J' | 'MACD' | 'DIF' | 'DEA' | 'ADX' | `EMA:${number}` | `PSY:${number}`;
 
 /**
- * 指标展示项。
- * 类型用途：定义监控日志输出顺序中的单个技术指标展示项。
- * 数据来源：由 indicatorProfile.displayPlan 编译生成。
- * 使用范围：当前策略的显示投影。
- */
-export type DisplayIndicatorItem = Exclude<ProfileIndicator, 'price' | 'changePercent'>;
-
-/**
  * 监控标的指标画像。
  * 类型用途：描述单标的在运行期需要计算、校验、延迟验证和展示的指标范围，是全链路唯一输入。
  * 数据来源：策略 prepare 阶段由 signalConfig + verificationConfig 生成。
@@ -83,5 +75,5 @@ export type IndicatorUsageProfile = {
   };
 
   /** 指标展示计划（最终展示顺序） */
-  readonly displayPlan: ReadonlyArray<DisplayIndicatorItem>;
+  readonly displayPlan: ReadonlyArray<ProfileIndicator>;
 };

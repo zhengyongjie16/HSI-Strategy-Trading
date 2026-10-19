@@ -823,7 +823,6 @@ describe('full business simulation integration', () => {
       candlestickUpdatedEvents.emit({
         symbol: monitorConfig.monitorSymbol,
         period: 'MIN_1',
-        snapshot: candlestickSnapshot,
       });
 
       await Bun.sleep(80);
@@ -963,7 +962,6 @@ describe('full business simulation integration', () => {
         }
 
         return createWarrantDistanceInfoDouble({
-          warrantType: 'BULL',
           distanceNumerator: '1',
           distanceDenominator: '1000',
         });

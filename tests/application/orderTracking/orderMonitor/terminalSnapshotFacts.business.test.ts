@@ -26,7 +26,6 @@ function createKnownFact(overrides: Partial<KnownOrderFact> = {}): KnownOrderFac
   return {
     orderId: 'ORDER-TERMINAL-FACT-BOUNDARY',
     symbol: 'BULL.HK',
-    side: 'BUY',
     executionSide: 'BUY',
     executionPhase: 'OPEN',
     submittedQuantity: 100,
@@ -72,14 +71,11 @@ function createProtectiveSellKnownFact(): Pick<
 }
 
 describe('orderMonitor terminal snapshot raw fact boundary', () => {
-  for (const [ordinarySide, sideText] of [
-    ['BUY', 'BUY'],
-    ['BUY', 'SELL'],
-  ] as const) {
+  for (const sideText of ['BUY', 'SELL'] as const) {
     it(`rejects ordinary ${sideText} terminal execution advance without a raw broker revision`, () => {
       expect(() => {
         normalizeTerminalStateSnapshot(
-          createKnownFact({ side: ordinarySide, executionSide: sideText }),
+          createKnownFact({ executionSide: sideText }),
           createTerminalState({ orderUpdatedAtMs: null }),
         );
       }).toThrow(/正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision/);
@@ -88,7 +84,7 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
     it(`rejects ordinary ${sideText} terminal execution advance with a stale raw broker revision`, () => {
       expect(() => {
         normalizeTerminalStateSnapshot(
-          createKnownFact({ side: ordinarySide, executionSide: sideText }),
+          createKnownFact({ executionSide: sideText }),
           createTerminalState({
             executionTimeMs: FIRST_EXECUTION_MS - 1,
             orderUpdatedAtMs: FIRST_REVISION_MS - 1,

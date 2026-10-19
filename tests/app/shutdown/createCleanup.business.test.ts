@@ -163,37 +163,6 @@ describe('cleanup business flow', () => {
     ]);
   });
 
-  it('resets market data runtime at the end of cleanup', async () => {
-    const steps: string[] = [];
-    const cleanup = createCleanup();
-    registerCleanupSteps(cleanup, steps);
-
-    await cleanup.execute();
-
-    expect(steps).toEqual([
-      'abortWaiting',
-      'timeWakeupRuntime',
-      'businessEventProgram',
-      'tradingRiskEventRuntime',
-      'monitorQuoteEventRuntime',
-      'monitorDisplayRuntime',
-      'tradingQuoteDisplayRuntime',
-      'switchWakeupRuntime',
-      'periodicSwitchWakeupRuntime',
-      'autoSearchWakeupRuntime',
-      'seatActivationDispatcher',
-      'monitorTask',
-      'seatRuntimeCleanupDispatcher',
-      'buy',
-      'sell',
-      'stopOrderMonitorRuntimeAndDrain',
-      'unsubscribeTraderListener',
-      'postTradeConsistencyRuntime',
-      'quoteSubscriptionRuntime',
-      'resetMarketData',
-    ]);
-  });
-
   it('continues remaining cleanup steps and throws aggregate error when one step fails', async () => {
     const steps: string[] = [];
     const monitorContext = createMonitorContextDouble({

@@ -161,7 +161,7 @@ describe('startup rebuild', () => {
     let rebuilds = 0;
     const result = await executeStartupRebuild({
       ...harness.params,
-      startupSnapshot: { kind: 'API_RETRY_PENDING', now: harness.params.now },
+      startupSnapshot: { kind: 'API_RETRY_PENDING' },
       rebuildTradingDayState: async () => {
         rebuilds += 1;
         return { status: 'ABORTED' };

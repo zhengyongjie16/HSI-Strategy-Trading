@@ -20,7 +20,7 @@ import type { RuntimeStateFixtures } from '../../helpers/types.js';
 
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { TIME } from '../../../src/constants/index.js';
-import { classifyOrdersForRebuild } from '../../../src/domain/order/orderRecordPolicy.js';
+import { validateOrdersForRebuild } from '../../../src/domain/order/orderRecordPolicy.js';
 import { createRebuildTradingDayState } from '../../../src/application/tradingDayRebuild/rebuildTradingDayState.js';
 import {
   captureSeatActivationCarryover,
@@ -87,8 +87,6 @@ function createBuyOrder(executedTime: number, symbol: string): OrderRecord {
     costAmount: '100',
     executedQuantity: 100,
     executedTime,
-    submittedAt: new Date(executedTime),
-    updatedAt: new Date(executedTime),
   };
 }
 
@@ -104,12 +102,12 @@ function createMonitorContext(params: {
     symbolRegistry,
     orderRecorder: {
       validateRebuildSnapshot: (symbol: string, allOrders: ReadonlyArray<OrderFact>) => {
-        classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
+        validateOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
       },
       commitRebuildSnapshot: ((targets, allOrders, isCurrent, mode) => {
         expect(mode).toBe('REBUILD');
         for (const target of targets) {
-          classifyOrdersForRebuild(allOrders.filter((order) => order.symbol === target.symbol));
+          validateOrdersForRebuild(allOrders.filter((order) => order.symbol === target.symbol));
         }
 
         if (!isCurrent()) return { status: 'ABORTED' };
@@ -591,7 +589,7 @@ describe('createRebuildTradingDayState', () => {
         activationWrites += 1;
       }
 
-      return updateSeatState(direction, nextState);
+      updateSeatState(direction, nextState);
     });
     const monitorContext = createMonitorContext({
       symbolRegistry: registry,
@@ -680,7 +678,7 @@ describe('createRebuildTradingDayState', () => {
           activationWrites += 1;
         }
 
-        return updateSeatState(direction, nextState);
+        updateSeatState(direction, nextState);
       });
       const monitorContext = createMonitorContext({
         symbolRegistry: registry,

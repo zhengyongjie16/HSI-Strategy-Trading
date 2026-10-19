@@ -16,7 +16,7 @@ import {
 } from '../../utils/numeric/exact.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import type { TradeSubmitCommand } from '../../types/tradeMutationPorts.js';
-import type { Signal, OrderTypeConfig } from '../../types/signal.js';
+import type { Signal } from '../../types/signal.js';
 import type { CancelOrderOutcome } from '../../types/orderCancellation.js';
 import type { OrderActionAuthorization, SellMergeDecision } from '../../domain/order/types.js';
 import { buildOrderRemark } from '../../domain/order/orderRemark.js';
@@ -289,16 +289,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
   });
 
   /**
-   * 根据全局配置与信号属性解析最终订单类型。
-   *
-   * @param signal 交易信号
-   * @returns Longbridge 订单类型
-   */
-  function resolveOrderType(signal: Signal): OrderTypeConfig {
-    return resolveOrderTypeConfig(signal, globalConfig);
-  }
-
-  /**
    * 提交订单并在成功后登记运行态追踪。
    *
    * @param params 提交参数
@@ -479,7 +469,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           return (
             side !== 'SELL' ||
             resolveSellMergeDecision({
-              symbol,
               pendingOrders: orderMonitor.getPendingSellOrders(symbol),
               newOrderQuantity: finalSubmittedQuantity,
               newOrderType: orderTypeParam,
@@ -559,7 +548,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
               direction,
               finalSubmittedQuantity,
               sellRelatedBuyOrderIds,
-              isProtectiveLiquidation,
               submittedAtMs,
             );
           }
@@ -638,7 +626,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       return submitDoomsdayClearanceSell(command, authorizeOrderAction);
     }
 
-    const orderTypeConfig = resolveOrderType(signal);
+    const orderTypeConfig = resolveOrderTypeConfig(signal, globalConfig);
     const orderType = getOrderTypeFromConfig(orderTypeConfig);
     const isProtectiveLiquidation = isLiquidationSignal(signal);
     const remark = buildOrderRemark(isProtectiveLiquidation);
@@ -681,7 +669,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
       const pendingSellOrders = orderMonitor.getPendingSellOrders(symbol);
       const decision = resolveSellMergeDecision({
-        symbol,
         pendingOrders: pendingSellOrders,
         newOrderQuantity: submittedQuantity,
         newOrderType: orderType,
@@ -721,7 +708,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           }
 
           const currentDecision = resolveSellMergeDecision({
-            symbol,
             pendingOrders: orderMonitor.getPendingSellOrders(symbol),
             newOrderQuantity: submittedQuantity,
             newOrderType: orderType,
@@ -771,7 +757,6 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
               hasSameSellMergeDecisionFacts(
                 decision,
                 resolveSellMergeDecision({
-                  symbol,
                   pendingOrders: orderMonitor.getPendingSellOrders(symbol),
                   newOrderQuantity: submittedQuantity,
                   newOrderType: orderType,

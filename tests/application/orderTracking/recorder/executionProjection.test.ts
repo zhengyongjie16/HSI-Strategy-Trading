@@ -115,7 +115,7 @@ function commit(
   if (input.executionTimeMs === null)
     throw new Error('positive projection fixture needs independent execution time');
 
-  return f.recorder.commitExecutionFact(
+  f.recorder.commitExecutionFact(
     input,
     true,
     [],
@@ -139,9 +139,7 @@ describe('one order owner projection', () => {
     const f = await fixture();
     const buy = fact('buy', 'BUY', 100, '100', 1000);
     expect(baseline(f, [raw(buy, '1')], f.token, 'ACTIVATION').status).toBe('COMMITTED');
-    const receipt = commit(f, buy, '1');
-    expect(receipt.authoritativeFactChanged).toBe(false);
-    expect(receipt.economicProjectionChanged).toBe(false);
+    commit(f, buy, '1');
     expect(f.recorder.getCostBasis('A.HK', true)).toEqual({ costAmount: '100', quantity: 100 });
     expect(f.sink.getStatus().staleVersion).toBe(0);
     expect(f.snapshot.isCurrent(f.token, { account: true, positions: true, paired: true })).toBe(
@@ -161,17 +159,21 @@ describe('one order owner projection', () => {
     expect(f.recorder.getBuyOrdersForSymbol('A.HK', true).map((order) => order.orderId)).toEqual([
       'b',
     ]);
-    expect(commit(f, a, '1').economicProjectionChanged).toBe(false);
-    expect(commit(f, sell, '1.5').economicProjectionChanged).toBe(false);
-    const revised = commit(f, { ...a, cumulativeAmount: '300', updatedAtMs: BASE + 1300 }, '3');
-    expect(revised.executionAdvanced).toBe(false);
-    expect(revised.economicProjectionChanged).toBe(true);
+    const eliminated = f.recorder.getBuyOrdersForSymbol('A.HK', true);
+    commit(f, a, '1');
+    commit(f, sell, '1.5');
+    expect(f.recorder.getBuyOrdersForSymbol('A.HK', true)).toEqual(eliminated);
+    // 合法金额修订只重跑过滤，不推进累计数量。
+    expect(f.recorder.getExecutionFact('a')?.cumulativeQuantity).toBe(100);
+    commit(f, { ...a, cumulativeAmount: '300', updatedAtMs: BASE + 1300 }, '3');
+    expect(f.recorder.getExecutionFact('a')?.cumulativeQuantity).toBe(100);
     expect(f.recorder.getBuyOrdersForSymbol('A.HK', true).map((order) => order.orderId)).toEqual([
       'a',
     ]);
     commit(f, fact('sell2', 'SELL', 100, '100', 1400), '1');
     expect(f.recorder.getBuyOrdersForSymbol('A.HK', true)).toEqual([]);
-    expect(commit(f, sell, '1.5').economicProjectionChanged).toBe(false);
+    commit(f, sell, '1.5');
+    expect(f.recorder.getBuyOrdersForSymbol('A.HK', true)).toEqual([]);
     expect(f.sink.getStatus().staleVersion).toBe(2);
   });
 
@@ -180,9 +182,9 @@ describe('one order owner projection', () => {
     const open = { ...fact('open', 'BUY', 100, '100', 1000), phase: 'OPEN' as const };
     commit(f, open, '1');
     expect(f.recorder.getBuyOrdersForSymbol('A.HK', true)).toEqual([]);
-    const terminal = commit(f, { ...open, phase: 'TERMINAL', updatedAtMs: BASE + 1100 }, '1');
-    expect(terminal.executionAdvanced).toBe(false);
-    expect(terminal.economicProjectionChanged).toBe(true);
+    commit(f, { ...open, phase: 'TERMINAL', updatedAtMs: BASE + 1100 }, '1');
+    expect(f.recorder.getExecutionFact('open')?.cumulativeQuantity).toBe(100);
+    expect(f.recorder.getCostBasis('A.HK', true)).toEqual({ costAmount: '100', quantity: 100 });
     f.snapshot.invalidate();
     const beforeDaily = f.daily.getExecutionTimeEvidence();
     expect(

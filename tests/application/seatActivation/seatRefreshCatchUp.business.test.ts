@@ -89,7 +89,7 @@ async function createCatchUpFixture() {
   spyOn(context.symbolRegistry, 'updateSeatState').mockImplementation((direction, seat) => {
     if (seat.status === 'ACTIVE') activatedTokens.push(snapshot.getView().token);
 
-    return updateSeatState(direction, seat);
+    updateSeatState(direction, seat);
   });
 
   spyOn(context.riskChecker, 'publishUnrealizedLossData').mockImplementation((candidate) => {
@@ -255,7 +255,7 @@ describe('SEAT_REFRESH 已提交后的分阶段追赶', () => {
         updatedAtMs: executedTimeMs,
         phase: 'TERMINAL',
       };
-      const committed = fixture.recorder.commitExecutionFact(
+      fixture.recorder.commitExecutionFact(
         fact,
         true,
         [],
@@ -272,7 +272,7 @@ describe('SEAT_REFRESH 已提交后的分阶段追赶', () => {
             orderId: 'NEW-BUY',
           }).admission,
       );
-      expect(committed.economicProjectionChanged).toBe(true);
+
       expect(fixture.snapshot.getView().token.snapshotGeneration).toBe(
         oldToken.snapshotGeneration + 1,
       );

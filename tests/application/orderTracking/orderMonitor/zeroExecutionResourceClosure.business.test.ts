@@ -70,7 +70,7 @@ async function setup(status: 'Canceled' | 'Rejected' | 'Filled') {
     monitorSymbol: 'HSI.HK',
     isProtectiveLiquidation: true,
   });
-  f.recorder.submitSellOrder('ZERO-RESOURCE', 'BULL.HK', 'LONG', 100, [], true, now - 60_000);
+  f.recorder.submitSellOrder('ZERO-RESOURCE', 'BULL.HK', 'LONG', 100, [], now - 60_000);
 
   return { f, native };
 }

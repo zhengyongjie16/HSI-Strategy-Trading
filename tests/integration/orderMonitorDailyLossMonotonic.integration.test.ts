@@ -114,7 +114,7 @@ async function realEventChain(
     monitorSymbol: 'HSI.HK',
     isProtectiveLiquidation: true,
   });
-  f.recorder.submitSellOrder(orderId, 'BULL.HK', 'LONG', 100, [], true, revisionMs - 10);
+  f.recorder.submitSellOrder(orderId, 'BULL.HK', 'LONG', 100, [], revisionMs - 10);
   return createProductionEventFlow({
     diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
@@ -196,7 +196,6 @@ describe('order monitor cumulative execution integration', () => {
       'LONG',
       100,
       buyOrders.map((o) => o.orderId),
-      false,
       revisionMs - 500,
     );
     expect(f.recorder.getPendingSellSnapshot()).toHaveLength(1);

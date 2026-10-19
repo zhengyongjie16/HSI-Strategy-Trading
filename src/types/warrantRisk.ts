@@ -3,7 +3,7 @@ import type { SignalType } from './signal.js';
 
 /**
  * 牛熊证类型。
- * 类型用途：区分牛证（做多）与熊证（做空），用于 RiskCheckResult、WarrantDistanceInfo 等字段。
+ * 类型用途：区分牛证（做多）与熊证（做空），用于 RiskCheckResult、WarrantInfo 等字段。
  * 数据来源：Longbridge 行情静态信息或 RiskChecker 解析。
  * 使用范围：RiskChecker、UI/监控展示等；全项目可引用。
  */
@@ -16,9 +16,6 @@ export type BullBearWarrantType = 'BULL' | 'BEAR';
  * 使用范围：RiskChecker、UI/监控展示；全项目可引用。
  */
 export type WarrantDistanceInfo = {
-  /** 牛熊证类型 */
-  readonly warrantType: BullBearWarrantType;
-
   /** 距回收价比例的精确十进制分子，尚未乘以百分比单位 100 */
   readonly distanceNumerator: string | null;
 
@@ -33,10 +30,10 @@ export type WarrantDistanceInfo = {
  * 使用范围：同步风险检查、风险刷新用例、调用方与 UI；全项目可引用。
  */
 export type WarrantRefreshResult =
-  | { readonly status: 'ok'; readonly isWarrant: true }
-  | { readonly status: 'notWarrant'; readonly isWarrant: false }
-  | { readonly status: 'error'; readonly isWarrant: false; readonly reason: string }
-  | { readonly status: 'skipped'; readonly isWarrant: false };
+  | { readonly status: 'ok' }
+  | { readonly status: 'notWarrant' }
+  | { readonly status: 'error'; readonly reason: string }
+  | { readonly status: 'skipped' };
 
 /**
  * 牛熊证距回收价清仓判定结果。
@@ -47,12 +44,6 @@ export type WarrantRefreshResult =
 export type WarrantDistanceLiquidationResult = {
   /** 是否触发清仓 */
   readonly shouldLiquidate: boolean;
-
-  /** 牛熊证类型 */
-  readonly warrantType?: BullBearWarrantType;
-
-  /** 清仓结果的终态展示百分比文本，不作为比例风控的状态或判定输入 */
-  readonly distancePercent?: string | null;
 
   /** 判定原因 */
   readonly reason?: string;

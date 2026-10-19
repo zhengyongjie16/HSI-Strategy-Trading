@@ -58,6 +58,7 @@ it('does not double a projected BUY during a real account wait and preserves tot
     updatedAt: new Date(1030),
   };
   const account = Promise.withResolvers<AccountSnapshot>();
+  let issuedReads = 0;
   const positions: ReadonlyArray<Position> = [
     {
       accountChannel: 'cash',
@@ -75,8 +76,14 @@ it('does not double a projected BUY during a real account wait and preserves tot
     dayEpoch: 1,
     scheduler: { schedule: queueMicrotask },
     readPort: {
-      getAccountSnapshot: () => account.promise,
-      getStockPositions: async () => positions,
+      getAccountSnapshot: () => {
+        issuedReads += 1;
+        return account.promise;
+      },
+      getStockPositions: async () => {
+        issuedReads += 1;
+        return positions;
+      },
     },
     reportFatalError: (error) => {
       throw error;
@@ -103,16 +110,15 @@ it('does not double a projected BUY during a real account wait and preserves tot
   });
   await Promise.resolve();
   await Promise.resolve();
-  expect(snapshot.getStatus().inFlight).toBe(true);
+  // 前置条件：账户与持仓两个读取都已发出且均未完成，确实处在真实账户等待中。
+  expect(issuedReads).toBe(2);
   for (let replay = 0; replay < 2; replay += 1) {
-    const receipt = recorder.commitExecutionFact(buy, true, [], () => 'DUPLICATE');
-    expect(receipt.authoritativeFactChanged).toBe(false);
-    expect(receipt.executionAdvanced).toBe(false);
-    expect(receipt.economicProjectionChanged).toBe(false);
+    recorder.commitExecutionFact(buy, true, [], () => 'DUPLICATE');
   }
 
   expect(completed).toBe(false);
   expect(io.refreshNeeds).toHaveLength(refreshCountAfterBaseline);
+  expect(recorder.getBuyOrdersForSymbol('WAIT.HK', true)).toHaveLength(1);
   expect(recorder.getCostBasis('WAIT.HK', true)).toEqual({
     costAmount: '100.0000000000000001',
     quantity: 100,

@@ -170,7 +170,6 @@ function createLongSwitchAdmissionHarness(params: {
     riskChecker: createRiskCheckerDouble({
       getWarrantDistanceInfo: () =>
         createWarrantDistanceInfoDouble({
-          warrantType: 'BULL',
           distanceNumerator: '0.1',
           distanceDenominator: '100',
         }),
@@ -373,7 +372,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       },
       getWarrantDistanceInfo: () =>
         createWarrantDistanceInfoDouble({
-          warrantType: 'BULL',
           distanceNumerator: '0.1',
           distanceDenominator: '100',
         }),
@@ -1099,7 +1097,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -1188,7 +1185,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '2',
             distanceDenominator: '100',
           }),
@@ -1280,7 +1276,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -1372,7 +1367,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '2',
             distanceDenominator: '100',
           }),
@@ -1471,7 +1465,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -1587,7 +1580,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -1723,7 +1715,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -1940,7 +1931,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -2090,7 +2080,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -2237,7 +2226,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -2327,7 +2315,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         orderType: 'ELO',
         submittedPrice: '1',
         quantity: 100,
-        executedQuantity: 0,
       },
       {
         orderId: 'OTHER-SYMBOL-BUY',
@@ -2337,7 +2324,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         orderType: 'ELO',
         submittedPrice: '1',
         quantity: 100,
-        executedQuantity: 0,
       },
       {
         orderId: 'CLOSED-SAME-SYMBOL-BUY',
@@ -2347,7 +2333,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
         orderType: 'ELO',
         submittedPrice: '1',
         quantity: 100,
-        executedQuantity: 100,
       },
     ];
     const canceledOrderIds: string[] = [];
@@ -2410,7 +2395,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -2585,7 +2569,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -2732,7 +2715,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -2902,7 +2884,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -3066,7 +3047,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -3217,7 +3197,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -3380,7 +3359,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -3519,7 +3497,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -3701,7 +3678,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -3860,7 +3836,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -3999,7 +3974,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BULL',
             distanceNumerator: '0.1',
             distanceDenominator: '100',
           }),
@@ -4115,7 +4089,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       orderRecorder: createOrderRecorderDouble(),
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () => ({
-          warrantType: 'BULL',
           distanceNumerator: '0.20000000000000000001',
           distanceDenominator: '100',
         }),
@@ -4215,7 +4188,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BEAR',
             distanceNumerator: '-0.1',
             distanceDenominator: '100',
           }),
@@ -4308,7 +4280,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BEAR',
             distanceNumerator: '-2',
             distanceDenominator: '100',
           }),
@@ -4399,7 +4370,6 @@ describe('autoSymbolManager switchStateMachine business flow', () => {
       riskChecker: createRiskCheckerDouble({
         getWarrantDistanceInfo: () =>
           createWarrantDistanceInfoDouble({
-            warrantType: 'BEAR',
             distanceNumerator: '-0.1',
             distanceDenominator: '100',
           }),

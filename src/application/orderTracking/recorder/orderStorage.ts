@@ -31,9 +31,7 @@ import type {
   SellableOrderResult,
   SellableOrderSelectParams,
 } from '../../../types/orderRecorder.js';
-import type { Quote } from '../../../types/quote.js';
 
-import { formatSymbolDisplayFromQuote } from '../../../utils/display/index.js';
 import type { OrderStorage } from './types.js';
 
 /**
@@ -103,14 +101,11 @@ export const createOrderStorage = (logger: Logger): OrderStorage => {
   }
 
   /** 清空指定标的的买入订单记录（用于保护性清仓） */
-  const clearBuyOrders = (symbol: string, isLongSymbol: boolean, quote?: Quote | null): void => {
+  const clearBuyOrders = (symbol: string, isLongSymbol: boolean): void => {
     const positionType = isLongSymbol ? LONG_DIRECTION_NAME : SHORT_DIRECTION_NAME;
     setBuyOrdersList(symbol, [], isLongSymbol);
 
-    // 使用 formatSymbolDisplayFromQuote 格式化标的显示
-    const symbolDisplay = formatSymbolDisplayFromQuote(quote, symbol);
-
-    logger.info(`[现存订单记录] 清空${positionType} ${symbolDisplay}的所有买入记录（保护性清仓）`);
+    logger.info(`[现存订单记录] 清空${positionType} ${symbol}的所有买入记录（保护性清仓）`);
   };
 
   /**

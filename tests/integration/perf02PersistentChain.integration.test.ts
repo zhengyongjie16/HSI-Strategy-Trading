@@ -271,8 +271,6 @@ async function runDelayedSampleScenario(
   emitCandle(chain, params.baseNowMs, params.goodClose, params.high, params.low, false);
   chain.marketController.flushAllEvents();
   await flushHost();
-  const sameVersionSource = chain.marketDataClient.getCandlestickSnapshot(SYMBOL, PERIOD);
-  if (sameVersionSource === null) throw new Error('expected same-version source snapshot');
 
   chain.setNow(params.baseNowMs + 150_000);
   if (params.includeSameVersionNotification) {
@@ -282,7 +280,6 @@ async function runDelayedSampleScenario(
     hostListener({
       symbol: SYMBOL,
       period: PERIOD,
-      snapshot: sameVersionSource,
     });
     await flushHost();
   }
@@ -583,7 +580,7 @@ describe('PERF-02 真实持久化全链路', () => {
       if (afterPush === null) throw new Error('expected snapshot after push');
 
       expect(events).toHaveLength(1);
-      expect(events[0]?.snapshot).toBe(afterPush);
+      expect(events[0]).toEqual({ symbol: SYMBOL, period: PERIOD });
       expect(afterPush.version).toBe(2);
       expect(afterPush.lastBarConfirmed).toBeFalse();
       const firstContext = chain.eventHarness.contexts[0];
@@ -606,7 +603,7 @@ describe('PERF-02 真实持久化全链路', () => {
       if (confirmed === null) throw new Error('expected confirmed snapshot');
 
       expect(events).toHaveLength(2);
-      expect(events[1]?.snapshot).toBe(confirmed);
+      expect(events[1]).toEqual({ symbol: SYMBOL, period: PERIOD });
       expect(confirmed.version).toBe(beforeConfirmation.version + 1);
       expect(confirmed.lastBarConfirmed).toBeTrue();
       expect(confirmed.candles).toBe(beforeConfirmationCandles);
@@ -646,7 +643,7 @@ describe('PERF-02 真实持久化全链路', () => {
       );
       expect(chain.eventHarness.contexts[2]?.candlesticks.candles.at(-1)?.close).toBe(52);
       expect(events).toHaveLength(4);
-      expect(events.at(-1)?.snapshot).toBe(authoritativeLatest);
+      expect(events.at(-1)).toEqual({ symbol: SYMBOL, period: PERIOD });
       expect(chain.fatalErrors).toEqual([]);
     } finally {
       chain.removeMarketDataObserver();

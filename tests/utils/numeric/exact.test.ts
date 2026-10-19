@@ -206,10 +206,6 @@ async function registerExactTests(): Promise<void> {
       expect(numeric.canonicalDecimal('1000000000000000000000.001')).toBe(
         '1000000000000000000000.001',
       );
-      expect(numeric.requireCanonicalDecimal('0.3')).toBe('0.3');
-      for (const value of ['0.30', '1e3', '-0', '+1', '01']) {
-        expect(() => numeric.requireCanonicalDecimal(value)).toThrow();
-      }
     });
 
     test('财务 toNumber 毒针与 clone 全局配置隔离', () => {
@@ -368,7 +364,7 @@ if (process.env['EXACT_NUMERIC_TEST_CHILD'] === '1') {
       expect(output).toMatch(/\b10 pass\b/);
       expect(output).toMatch(/\b0 fail\b/);
       const assertionCount = /\b(\d+) expect\(\) calls\b/.exec(output)?.[1];
-      expect(Number(assertionCount)).toBeGreaterThanOrEqual(4095);
+      expect(Number(assertionCount)).toBeGreaterThanOrEqual(4089);
     } finally {
       rmSync(isolationRoot, { recursive: true, force: true });
     }

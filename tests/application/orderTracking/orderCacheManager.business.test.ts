@@ -68,7 +68,6 @@ describe('orderCacheManager business flow', () => {
         side: 'BUY',
         submittedPrice: '1.23',
         quantity: 1000,
-        executedQuantity: 0,
         status: 'WORKING',
         orderType: 'ELO',
       },

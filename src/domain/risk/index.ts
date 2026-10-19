@@ -60,7 +60,7 @@ export function createRiskChecker(deps: RiskCheckerDeps): RiskChecker {
       r2 = exactMultiply(currentPrice, String(n1));
     }
 
-    return { r1, n1, r2, unrealizedPnL: exactSubtract(r2, r1) };
+    return { r2, unrealizedPnL: exactSubtract(r2, r1) };
   }
 
   /** 买入订单前综合风险检查，按顺序执行：账户数据有效性 → 港币可用现金 → 持仓市值限制。 */

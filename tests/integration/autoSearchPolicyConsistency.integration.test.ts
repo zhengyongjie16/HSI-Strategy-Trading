@@ -86,7 +86,6 @@ function createSwitch(
     orderRecorder: createOrderRecorderDouble(),
     riskChecker: createRiskCheckerDouble({
       getWarrantDistanceInfo: (isLongSymbol) => ({
-        warrantType: isLongSymbol ? 'BULL' : 'BEAR',
         distanceNumerator: isLongSymbol ? '0.1' : '-0.1',
         distanceDenominator: '100',
       }),
@@ -120,20 +119,12 @@ async function runStartup(
   });
 }
 
-function item(
-  symbol: string,
-  ratio: string,
-  turnover: string,
-  direction: 'LONG' | 'SHORT',
-): MarketWarrantListItem {
+function item(symbol: string, ratio: string, turnover: string): MarketWarrantListItem {
   return {
     symbol,
-    name: symbol,
-    lastDone: '0.07',
     callPrice: '20000.1234567890123456789',
     toCallPrice: ratio,
     turnover,
-    warrantType: direction === 'LONG' ? 'BULL' : 'BEAR',
     status: 'NORMAL',
   };
 }
@@ -146,9 +137,9 @@ describe('three-entry shared candidate policy', () => {
       const near = direction === 'LONG' ? '0.003499999999999999999' : '-0.003499999999999999999';
       const far = direction === 'LONG' ? '0.0022' : '-0.0022';
       const rows = [
-        item('LOWER.HK', far, '3000000', direction),
-        item('TIE.HK', near, '2000000.000000000000000001', direction),
-        item('BEST.HK', near, '2000000.000000000000000002', direction),
+        item('LOWER.HK', far, '3000000'),
+        item('TIE.HK', near, '2000000.000000000000000001'),
+        item('BEST.HK', near, '2000000.000000000000000002'),
       ];
       let queries = 0;
       const { candidateSearch } = createCandidateSearch(config, async () => {
@@ -230,8 +221,8 @@ describe('three-entry shared candidate policy', () => {
   it('keeps primary-layer selection independent of the safe/danger trigger side', async () => {
     const config = createMonitorConfigDouble({ autoSearchConfig: getDefaultAutoSearchConfig() });
     const { candidateSearch } = createCandidateSearch(config, async () => [
-      item('PRIMARY.HK', '0.003500000000000000001', '2000000', 'LONG'),
-      item('DEGRADED.HK', '0.003499999999999999999', '9000000', 'LONG'),
+      item('PRIMARY.HK', '0.003500000000000000001', '2000000'),
+      item('DEGRADED.HK', '0.003499999999999999999', '9000000'),
     ]);
     const before = await candidateSearch.findCandidate({
       direction: 'LONG',

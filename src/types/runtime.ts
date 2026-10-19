@@ -25,7 +25,7 @@ export interface RuntimeScheduler {
  * 数据来源：由 composition root 的 RuntimeTermination owner 维护。
  * 使用范围：运行时终止门禁、app 主流程与清理结果处理。
  */
-export type RuntimeFatalState =
+type RuntimeFatalState =
   | {
       readonly hasFatalError: false;
     }

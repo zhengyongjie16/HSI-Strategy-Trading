@@ -118,7 +118,7 @@ async function createGateIntegrationContext(
       positions: [],
     }),
     dayLifecycleManager: {
-      tick: async () => ({ nextRetryAtMs: null, pendingOpenRebuild: false }),
+      tick: async () => ({ nextRetryAtMs: null }),
     },
     now: params.currentTime,
   };

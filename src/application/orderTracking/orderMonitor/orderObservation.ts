@@ -50,17 +50,12 @@ export function recordOrderTerminalConfirmation(
   params: OrderTerminalConfirmationParams,
 ): void {
   const lifecycle = resolveLifecycle(deps, params.orderId);
-  if (lifecycle.terminalConfirmation !== undefined) return;
+  if (lifecycle.terminalConfirmed !== undefined) return;
 
   const confirmedAtMs = observationTimeMs(deps.now);
   deps.runtime.trackedOrderLifecycles.set(params.orderId, {
     ...lifecycle,
-    terminalConfirmation: {
-      source: params.source,
-      closedReason: params.closedReason,
-      confirmedAtMs,
-      orderUpdatedAtMs: params.orderUpdatedAtMs,
-    },
+    terminalConfirmed: true,
   });
   const tracked = deps.runtime.trackedOrders.get(params.orderId);
   const fields = {

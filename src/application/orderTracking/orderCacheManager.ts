@@ -72,8 +72,7 @@ function isValidTodayOrder(order: unknown): order is TodayOrderForPendingCache {
     isValidOrderStatus(order['status']) &&
     isValidOrderType(order['orderType']) &&
     isValidNullableOrderPrice(order['submittedPrice']) &&
-    isSafeOrderQuantity(order['quantity']) &&
-    isSafeOrderQuantity(order['executedQuantity'])
+    isSafeOrderQuantity(order['quantity'])
   );
 }
 
@@ -168,7 +167,6 @@ export const createOrderCacheManager = (deps: OrderCacheManagerDeps): OrderCache
         side: order.side,
         submittedPrice: order.submittedPrice,
         quantity: order.quantity,
-        executedQuantity: order.executedQuantity,
         status: order.status,
         orderType: order.orderType,
       });

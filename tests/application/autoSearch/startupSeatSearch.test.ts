@@ -85,9 +85,7 @@ describe('startup seat search policy', () => {
       symbol: 'NEW.HK',
       callPrice: '20000.1234567890123456789',
     }));
-    expect(
-      await search.searchSeat({ direction: 'LONG', currentTime, canContinue: () => true }),
-    ).toBe('NEW.HK');
+    await search.searchSeat({ direction: 'LONG', currentTime, canContinue: () => true });
 
     expect(registry.getSeatState('LONG')).toMatchObject({
       symbol: 'NEW.HK',
@@ -114,7 +112,7 @@ describe('startup seat search policy', () => {
     });
     const successor = registry.getSeatState('LONG');
     pending.resolve(null);
-    expect(await running).toBeNull();
+    await running;
     expect(registry.getSeatState('LONG')).toEqual(successor);
   });
 });

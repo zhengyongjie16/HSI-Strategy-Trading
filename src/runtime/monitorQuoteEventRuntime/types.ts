@@ -57,7 +57,7 @@ interface MonitorQuoteFreshnessDeps extends SettlementFreshnessReader {
  * 数据来源：默认静态清仓执行器或测试注入替身。
  * 使用范围：仅 monitorQuoteEventRuntime 模块内部使用。
  */
-export type MonitorQuoteEventExecutor = (params: {
+type MonitorQuoteEventExecutor = (params: {
   readonly monitorContext: Pick<MonitorSymbolNames, 'longSymbolName' | 'shortSymbolName'> & {
     readonly config: MonitorConfig;
     readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
