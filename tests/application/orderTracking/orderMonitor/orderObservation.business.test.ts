@@ -23,7 +23,6 @@ import { createExecutionFixture } from '../recorder/executionFixture.js';
 async function createHarness(side: 'BUY' | 'SELL' = 'SELL') {
   const native = await createBrokerIngressFixture({
     orderId: 'OBSERVED-ORDER',
-    tradeId: 'NO-EXECUTION',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -34,7 +33,6 @@ async function createHarness(side: 'BUY' | 'SELL' = 'SELL') {
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs: 1,
-    executionTimeMs: null,
     updatedAtMs: 50_000,
   });
   native.setCancelBeforeReply(async () => {});
@@ -82,7 +80,6 @@ async function createHarness(side: 'BUY' | 'SELL' = 'SELL') {
     recordCumulativeExecution: (params) => {
       flow.recordCumulativeExecution(params);
     },
-    getExecutionTimeEvidence: economic.daily.getExecutionTimeEvidence,
     triggerRoute: () => {},
   });
   orderOps.trackOrder({
@@ -276,7 +273,6 @@ describe('order observation authoritative boundaries', () => {
     const h = await createHarness('BUY');
     const snapshot = await createBrokerIngressFixture({
       orderId: 'OBSERVED-ORDER',
-      tradeId: 'NO-EXECUTION',
       symbol: 'OLD_BULL.HK',
       stockName: 'OLD',
       remark: '',
@@ -287,7 +283,6 @@ describe('order observation authoritative boundaries', () => {
       submittedPrice: '1',
       executedPrice: '0',
       submittedAtMs: 1,
-      executionTimeMs: null,
       updatedAtMs: 49_000,
     });
     const recoveryOrder = snapshot.queryObservation;

@@ -139,7 +139,6 @@ export function createExecutionFixture(
   const recorderDeps = {
     logger: createLoggerDouble(),
     rateLimiter,
-    getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: sink,
   };
   const recorderOwner =

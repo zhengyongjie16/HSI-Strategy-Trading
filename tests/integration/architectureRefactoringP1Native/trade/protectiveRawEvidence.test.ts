@@ -36,7 +36,6 @@ async function fixture(protective: boolean) {
   const time = Date.parse('2026-07-13T02:00:00.000Z');
   const frame = {
     orderId: 'RAW-TERMINAL',
-    tradeId: 'RAW-EXECUTION',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: protective ? 'HSI|PL' : 'HSI',
@@ -48,7 +47,6 @@ async function fixture(protective: boolean) {
     submittedPrice: '1',
     executedPrice: '1',
     submittedAtMs: time,
-    executionTimeMs: time + 100,
     updatedAtMs: time + 150,
   };
   const native = await createBrokerIngressFixture(frame);
@@ -164,7 +162,6 @@ function observations(f: Awaited<ReturnType<typeof fixture>>) {
     tracked: f.monitor.getPendingSellOrders(f.frame.symbol),
     holds: [...f.economic.holds.getHoldSymbols()],
     protectivePending: f.monitor.hasPendingProtectiveLiquidationOrders('LONG'),
-    daily: f.economic.daily.getExecutionTimeEvidence(),
     loss: f.economic.daily.getLossOffset('LONG'),
     episode: f.economic.episode.getInProgressEpisodes(),
     durable: f.durable,
@@ -193,14 +190,13 @@ describe('protective raw terminal price admission through registered broker ingr
         phase: 'OPEN',
         cumulativeQuantity: 40,
         cumulativeAmount: '40',
-        executionTimeMs: f.frame.executionTimeMs,
+        executionTimeMs: f.frame.updatedAtMs,
         updatedAtMs: f.frame.updatedAtMs,
       });
       expect(f.durable).toHaveLength(scenario.protective ? 1 : 0);
       expect(f.monitor.getPendingSellOrders(f.frame.symbol)).toHaveLength(1);
       expect(f.economic.holds.getHoldSymbols().has(f.frame.symbol)).toBe(true);
       const before = observations(f);
-      const reads = f.native.readCounts();
 
       // ledger 保持完整且完全匹配；唯一变量是当前终态原价，不是缺 execution T。
       f.native.emitOrderChangedFrame({
@@ -213,18 +209,15 @@ describe('protective raw terminal price admission through registered broker ingr
       await waitForIngress(
         () => f.fatalReports.length > 0 || f.events.length > before.events.length,
       );
-      expect(f.native.readCounts()).toEqual({ today: reads.today + 1, history: reads.history + 1 });
       expect(f.native.nativeMutations()).toEqual([]);
       expect(f.secondaryErrors).toEqual([]);
 
       if (scenario.rejected) {
         expect(f.fatalReports).toHaveLength(1);
         const originalError = f.fatalReports[0];
-        expect(originalError).toBeInstanceOf(TypeError);
-        expect(originalError).toHaveProperty(
-          'message',
-          '[orderMapper] invalid cumulative execution quantity/price',
-        );
+        // 缺价终态现在到达业务合并，由保护性 SELL 的原始观察校验拒绝，不再由 mapper 一律拒绝。
+        expect(originalError).toBeInstanceOf(Error);
+        expect(originalError).toMatchObject({ message: expect.stringContaining('保护性 SELL') });
         const fatal = f.termination.getFatalState();
         expect(fatal.hasFatalError).toBe(true);
         if (!fatal.hasFatalError) throw new Error('missing latched fatal');
@@ -239,14 +232,14 @@ describe('protective raw terminal price admission through registered broker ingr
           phase: 'TERMINAL',
           cumulativeQuantity: 40,
           cumulativeAmount: '40',
-          executionTimeMs: f.frame.executionTimeMs,
+          executionTimeMs: f.frame.updatedAtMs,
           updatedAtMs: f.frame.updatedAtMs + 50,
         });
 
         expect(f.economic.recorder.getSellRecordByOrderId(f.frame.orderId)).toMatchObject({
           costAmount: '40',
           executedQuantity: 40,
-          executedTime: f.frame.executionTimeMs,
+          executedTime: f.frame.updatedAtMs,
         });
 
         expect(f.events).toMatchObject([{ status: 'CANCELED', executedQuantity: 40 }]);

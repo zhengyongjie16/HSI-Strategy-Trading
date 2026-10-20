@@ -9,7 +9,6 @@ import { expect, test } from 'bun:test';
 import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
 import { createOrderCacheManager } from '../../../../src/application/orderTracking/orderCacheManager.js';
 import { API } from '../../../../src/constants/index.js';
-import { orderEconomics } from '../../../../src/domain/order/orderEconomics.js';
 import {
   createBrokerIngressFixture,
   type BrokerIngressInput,
@@ -17,7 +16,6 @@ import {
 
 const original: BrokerIngressInput = {
   orderId: 'PENDING-BUY',
-  tradeId: 'PENDING-TRADE',
   symbol: 'BULL.HK',
   stockName: 'SDK',
   remark: '',
@@ -29,12 +27,11 @@ const original: BrokerIngressInput = {
   submittedPrice: '1.000000000000000001',
   executedPrice: '0',
   submittedAtMs: 100,
-  executionTimeMs: null,
   updatedAtMs: 200,
 };
 
 test('actual native pending BUY/SELL status/type map once; original symbol filter/cache TTL/forced refresh remain', async () => {
-  const native = await createBrokerIngressFixture(original, orderEconomics);
+  const native = await createBrokerIngressFixture(original);
   const frames: ReadonlyArray<BrokerIngressInput> = [
     original,
     {

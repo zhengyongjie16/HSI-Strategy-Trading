@@ -1,3 +1,5 @@
+import { recalculateDailyLoss } from '../../helpers/dailyLossRecalculation.js';
+
 /**
  * DailyLoss 全量重算的真实 owner 预检与同步发布回归。
  * 使用实际归属、金额、边界与双方向过滤路径，证明 prepare 无写、失败不污染已有基线，
@@ -8,7 +10,11 @@ import { describe, expect, it } from 'bun:test';
 import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
 import type { MonitorConfig } from '../../../src/types/config.js';
-import type { DailyLossTracker, DailyLossTrackerDeps } from '../../../src/types/risk.js';
+import type {
+  DailyLossOrderSnapshot,
+  DailyLossTracker,
+  DailyLossTrackerDeps,
+} from '../../../src/types/risk.js';
 import type { OrderFact } from '../../../src/types/trade.js';
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 
@@ -30,7 +36,7 @@ function order(params: {
   readonly executedAmount: string;
   readonly quantity?: number;
   readonly executedAtMs?: number;
-}): OrderFact {
+}): OrderFact & DailyLossOrderSnapshot {
   const quantity = params.quantity ?? 100;
   const executedAtMs = params.executedAtMs ?? executionTimeMs;
   return {
@@ -103,7 +109,6 @@ function inspect(owner: DailyLossTracker) {
   return {
     longOffset: owner.getLossOffset('LONG'),
     shortOffset: owner.getLossOffset('SHORT'),
-    evidence: owner.getExecutionTimeEvidence(),
     longBaseline: owner.prepareProtectionBoundary({
       direction: 'LONG',
       boundaryExecutedTimeMs: now.getTime(),
@@ -116,7 +121,7 @@ function inspect(owner: DailyLossTracker) {
 }
 
 function seed(owner: DailyLossTracker): void {
-  owner.recalculateFromAllOrders(seedOrders, monitor, now, undefined, relatedTradingSymbols);
+  recalculateDailyLoss(owner, seedOrders, monitor, now, undefined, relatedTradingSymbols);
   expect(owner.getLossOffset('LONG')).toBe('-15');
   expect(owner.getLossOffset('SHORT')).toBe('-50');
   owner.commitProtectionBoundary(
@@ -163,7 +168,7 @@ const nextOrders = [
   }),
 ];
 
-function candidateOrders(): ReadonlyArray<OrderFact> {
+function candidateOrders(): ReadonlyArray<DailyLossOrderSnapshot> {
   return [...seedOrders, ...nextOrders];
 }
 
@@ -198,7 +203,6 @@ describe('DailyLoss rebuild preparation', () => {
     expect(warnings).toEqual([
       '[日内亏损追踪] 未归属订单: 当日成交5笔, 未归属1笔, 样例=UNRELATED.HK:UNRELATED RC',
     ]);
-    expect(owner.getExecutionTimeEvidence()).toEqual([]);
     expect(owner.getLossOffset('LONG')).toBe('0');
     owner.publishRecalculation(prepared);
     expect(owner.getLossOffset('LONG')).toBe('-15');
@@ -253,9 +257,10 @@ describe('DailyLoss rebuild preparation', () => {
           durableCalls += 1;
         },
       ).admission,
-    ).toBe('SUPPRESSED');
-    expect(durableCalls).toBe(0);
-    expect(inspect(owner)).toEqual(before);
+    ).toBe('ADMITTED');
+    expect(durableCalls).toBe(1);
+    expect(owner.getLossOffset('LONG')).toBe(before.longOffset);
+    expect(owner.getLossOffset('SHORT')).toBe(before.shortOffset);
   });
 
   it('finishes both-direction financial projection before issuing a candidate', () => {
@@ -322,10 +327,9 @@ describe('DailyLoss rebuild preparation', () => {
     expect(prepared.isCurrent()).toBe(true);
     expect(inspect(owner)).toEqual(before);
     owner.publishRecalculation(prepared);
-    reference.recalculateFromAllOrders(orders, monitor, now, boundaries, relatedTradingSymbols);
+    recalculateDailyLoss(reference, orders, monitor, now, boundaries, relatedTradingSymbols);
     expect(owner.getLossOffset('LONG')).toBe('-70.00000000000000000000000001');
     expect(owner.getLossOffset('SHORT')).toBe('-45');
-    expect(owner.getExecutionTimeEvidence()).toHaveLength(8);
     expect(inspect(owner)).toEqual(inspect(reference));
     expect(prepared.isCurrent()).toBe(false);
     const committed = inspect(owner);
@@ -388,7 +392,6 @@ describe('DailyLoss rebuild preparation', () => {
       owner.publishRecalculation(prepared);
     }).toThrow('stale');
     expect(inspect(owner)).toEqual(cleared);
-    expect(owner.getExecutionTimeEvidence()).toEqual([]);
     expect(owner.getLossOffset('LONG')).toBe('0');
     expect(owner.getLossOffset('SHORT')).toBe('0');
   });

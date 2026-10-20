@@ -12,7 +12,6 @@ import type {
 import type { TradingConfig } from '../../types/config.js';
 import type { MarketDataClient } from '../../types/marketPorts.js';
 import type { OrderDetailReadPort } from '../../types/orderDetailReadPorts.js';
-import type { OrderExecutionLedgerPort } from '../../types/orderExecutionLedger.js';
 import type { OrderPushPort } from '../../types/orderPushPorts.js';
 import type {
   DailyLossTracker,
@@ -242,7 +241,6 @@ export type OrderMonitorDeps = {
   readonly requestExternalApi: ExternalApiRequest;
   readonly logger: Logger;
   readonly orderDetailReadPort: OrderDetailReadPort;
-  readonly executionLedgerPort: OrderExecutionLedgerPort;
   readonly orderPushPort: OrderPushPort;
   readonly tradeMutationPort: TradeMutationPort;
   readonly rateLimiter: RateLimiter;

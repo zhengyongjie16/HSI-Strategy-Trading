@@ -26,7 +26,6 @@ import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 async function fixture() {
   const native = await createBrokerIngressFixture({
     orderId: 'RESOURCE',
-    tradeId: 'E',
     symbol: 'BULL.HK',
     stockName: 'SDK',
     remark: '',
@@ -37,7 +36,6 @@ async function fixture() {
     submittedPrice: '9.2',
     executedPrice: '0',
     submittedAtMs: 1700000000000,
-    executionTimeMs: 1700000000100,
     updatedAtMs: 1700000000200,
   });
   const runtime: OrderMonitorRuntimeStore = {
@@ -66,7 +64,6 @@ async function fixture() {
       nowMonotonicMs: nowMonotonicMs,
       logger: createLoggerDouble(),
     }),
-    getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: {
       recordSettlementRefreshNeed: () => {
         staleCalls++;
@@ -104,7 +101,6 @@ async function fixture() {
     cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
     recordCumulativeExecution: () => {},
     triggerRoute: () => {},
-    getExecutionTimeEvidence: () => [],
   });
   ops.trackOrder({
     orderId: 'RESOURCE',
@@ -175,7 +171,6 @@ describe('zero execution actual shared resource settlement', () => {
       orderUpdatedAtMs: null,
     };
     const normalized = normalizeTerminalStateSnapshot(f.tracked, raw);
-    const beforeEvidence = f.daily.getExecutionTimeEvidence();
     const infoLogs: string[] = [];
     const originalInfo = logger.info;
     spyOn(logger, 'info').mockImplementation((message) => {
@@ -202,7 +197,6 @@ describe('zero execution actual shared resource settlement', () => {
       expect(f.hold.getHoldSymbols().has('BULL.HK')).toBe(false);
       expect(f.recorder.getExecutionFact('RESOURCE')).toBeNull();
       expect(f.recorder.getBuyOrdersForSymbol('BULL.HK', true)).toEqual([]);
-      expect(f.daily.getExecutionTimeEvidence()).toEqual(beforeEvidence);
       expect(f.counts()).toEqual({
         staleCalls: 0,
         durableCalls: 0,

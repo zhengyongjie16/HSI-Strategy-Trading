@@ -67,7 +67,6 @@ async function createNativeBuyIngress(): Promise<NativeBuyIngress> {
   const id = `BUY-FIXTURE-${++nativeFixtureId}`;
   const ingress = await createBrokerIngressFixture({
     orderId: id,
-    tradeId: id + '-trade',
     symbol: 'BULL.HK',
     stockName: 'BULL.HK',
     remark: '',
@@ -78,7 +77,6 @@ async function createNativeBuyIngress(): Promise<NativeBuyIngress> {
     submittedPrice: '5',
     executedPrice: '0',
     submittedAtMs: Date.parse('2026-07-10T07:00:00.000Z'),
-    executionTimeMs: null,
     updatedAtMs: Date.parse('2026-07-10T07:00:30.000Z'),
   });
   ingress.setAccountBalance({

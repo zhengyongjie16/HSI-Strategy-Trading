@@ -1,3 +1,4 @@
+import { recalculateDailyLoss } from '../../helpers/dailyLossRecalculation.js';
 import {
   createLoggerDouble,
   createAccountSnapshotDouble,
@@ -13,6 +14,7 @@ import {
 import { describe, expect, it, spyOn } from 'bun:test';
 import { createOrderRecorder } from '../../../src/application/orderTracking/recorder/index.js';
 import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
+import type { DailyLossOrderSnapshot } from '../../../src/types/risk.js';
 import type { OrderFact } from '../../../src/types/trade.js';
 
 import { createMonitorContext } from '../../helpers/asyncProgram.js';
@@ -27,7 +29,7 @@ function createExecutedOrder(params: {
   readonly amount: string;
   readonly timeMs: number;
   readonly stockName: string;
-}): OrderFact {
+}): OrderFact & DailyLossOrderSnapshot {
   return {
     orderId: params.orderId,
     symbol: params.symbol,
@@ -71,7 +73,6 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
           throw new Error('本测试只授权已捕获 query 输入');
         },
       },
-      getExecutionTimeEvidence: base.dailyLossTracker.getExecutionTimeEvidence,
       settlementRefreshNeedRecorder: {
         recordSettlementRefreshNeed: () => {
           needs.push('execution');
@@ -107,7 +108,7 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
       timeMs: now.getTime() - 3000,
       stockName: 'HSI RC',
     });
-    context.dailyLossTracker.recalculateFromAllOrders([shortBuy], context.config, now);
+    recalculateDailyLoss(context.dailyLossTracker, [shortBuy], context.config, now);
     recorder.commitRebuildSnapshot(
       [{ symbol: 'BEAR.HK', isLongSymbol: false }],
       [shortBuy],

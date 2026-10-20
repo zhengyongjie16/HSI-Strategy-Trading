@@ -28,7 +28,6 @@ import type {
   OrderMonitor,
   OrderMonitorDeps,
 } from '../../../../src/application/orderTracking/types.js';
-import { orderEconomics } from '../../../../src/domain/order/orderEconomics.js';
 import type { AccountServiceDeps } from '../../../../src/types/accountReadPorts.js';
 import type { OrderExecutor } from '../../../../src/types/orderExecutionPorts.js';
 import type { OrderPushPort } from '../../../../src/types/orderPushPorts.js';
@@ -56,7 +55,7 @@ export async function createBrokerIngressFixture(
         deps: Omit<AccountServiceDeps, 'accountReadPort'>,
       ) => ReturnType<typeof createAccountService>;
       createStateQuery: (
-        deps: Omit<OrderStatusQueryDeps, 'orderDetailReadPort' | 'executionLedgerPort'>,
+        deps: Omit<OrderStatusQueryDeps, 'orderDetailReadPort'>,
       ) => ReturnType<typeof createOrderStatusQuery>;
       createExecutor: (
         deps: Omit<OrderExecutorDeps, 'tradeMutationPort' | 'readSellPositions'>,
@@ -68,19 +67,15 @@ export async function createBrokerIngressFixture(
           Readonly<{ rateLimiter: Pick<RateLimiter, 'throttle'> }>,
       ) => OrderRecorder;
       createMonitor: (
-        deps: Omit<
-          OrderMonitorDeps,
-          'orderDetailReadPort' | 'executionLedgerPort' | 'tradeMutationPort' | 'orderPushPort'
-        >,
+        deps: Omit<OrderMonitorDeps, 'orderDetailReadPort' | 'tradeMutationPort' | 'orderPushPort'>,
       ) => OrderMonitor;
       createOperations: (
-        deps: Omit<OrderOpsDeps, 'tradeMutationPort' | 'orderStatusQuery'> &
-          Pick<OrderStatusQueryDeps, 'getExecutionTimeEvidence'>,
+        deps: Omit<OrderOpsDeps, 'tradeMutationPort' | 'orderStatusQuery'>,
       ) => OrderOps;
       createRoute: (deps: Omit<RouteProcessorDeps, 'tradeMutationPort'>) => RouteProcessor;
     }>
 > {
-  const facts = await createSdkFixture(input, orderEconomics);
+  const facts = await createSdkFixture(input);
   const { ports } = facts;
   return {
     ...facts,
@@ -91,10 +86,7 @@ export async function createBrokerIngressFixture(
       }),
     createApiManager: (deps) =>
       createOrderAPIManager({
-        orderSnapshotReadPort: ports.createOrderSnapshotReadPort({
-          ...deps,
-          executionLedgerPort: facts.executionLedgerPort,
-        }),
+        orderSnapshotReadPort: ports.createOrderSnapshotReadPort(deps),
       }),
     createTradeRuntime: (deps) =>
       createTradeRuntime({
@@ -107,7 +99,6 @@ export async function createBrokerIngressFixture(
       createOrderStatusQuery({
         ...deps,
         orderDetailReadPort: ports.createOrderDetailReadPort(),
-        executionLedgerPort: facts.executionLedgerPort,
       }),
     createExecutor: (deps) =>
       createOrderExecutor({
@@ -118,31 +109,20 @@ export async function createBrokerIngressFixture(
     createPushPort: ports.createOrderPushPort,
     createQueryOrdersReader: (orderId = facts.queryObservation.orderId) => {
       const detailReader = ports.createOrderDetailReadPort();
-      return async () => {
-        const detail = await detailReader.read(orderId);
-        // 保留已返回事实的预检阶段；坏 DTO 不触发后继 ledger。
-        const inspected = detail.decode([]);
-        const executions = await facts.executionLedgerPort.todayExecutions({
-          orderId: inspected.orderId,
-        });
-        return [detail.decode(executions)];
-      };
+      return async () => [await detailReader.read(orderId)];
     },
     createRecorder: (deps) =>
       createOrderRecorder({
         logger: createLoggerDouble(),
-        getExecutionTimeEvidence: deps.getExecutionTimeEvidence,
         settlementRefreshNeedRecorder: deps.settlementRefreshNeedRecorder,
         orderSnapshotReadPort: ports.createOrderSnapshotReadPort({
           rateLimiter: deps.rateLimiter,
-          executionLedgerPort: facts.executionLedgerPort,
         }),
       }),
     createMonitor: (deps) =>
       createOrderMonitor({
         ...deps,
         orderDetailReadPort: ports.createOrderDetailReadPort(),
-        executionLedgerPort: facts.executionLedgerPort,
         orderPushPort: ports.createOrderPushPort(),
         tradeMutationPort: ports.createTradeMutationPort(),
       }),
@@ -153,9 +133,7 @@ export async function createBrokerIngressFixture(
         orderStatusQuery: createOrderStatusQuery({
           requestExternalApi: wrapExternalApiRequest,
           orderDetailReadPort: ports.createOrderDetailReadPort(),
-          executionLedgerPort: facts.executionLedgerPort,
           rateLimiter: deps.rateLimiter,
-          getExecutionTimeEvidence: deps.getExecutionTimeEvidence,
         }),
       }),
     createRoute: (deps) =>

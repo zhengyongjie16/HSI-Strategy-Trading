@@ -3,12 +3,12 @@ import { wrapExternalApiRequest } from '../../externalApi/index.js';
 /** 同一原context订单快照IO边界；core只接收已验证观察，不解析SDK对象。 */
 import { OrderSide, type Order, type TradeContext } from 'longbridge';
 import { isValidatedOrderStatus, isValidatedOrderType } from './orderValidation.js';
+import { isHongKongSymbol } from '../../../utils/marketScope.js';
 import { isRecord } from '../../../utils/helpers/index.js';
 import { canonicalDecimal } from '../../../utils/numeric/exact.js';
 import type { RateLimiter } from '../../../types/rateLimit.js';
-import type { OrderExecutionLedgerPort } from '../../../types/orderExecutionLedger.js';
 import type { OrderSnapshotReadPort } from '../../../types/orderSnapshotReadPorts.js';
-import type { OrderEconomics } from '../../../types/orderEconomics.js';
+import type { OrderFact } from '../../../types/trade.js';
 import { mapBrokerOrder } from './orderMapper.js';
 
 /**
@@ -76,12 +76,25 @@ function isValidOrderSide(value: unknown): value is OrderSide {
   }
 }
 
-function assertValidOrder(value: unknown, operation: string): asserts value is Order {
-  if (!isRecord(value)) {
+/** 市场范围过滤前只校验订单身份；坏 symbol 结构由 marketScope 直接抛出，不静默忽略。 */
+function assertOrderIdentity(
+  value: unknown,
+  operation: string,
+): asserts value is Readonly<{ orderId: string; symbol: string }> {
+  if (
+    !isRecord(value) ||
+    typeof value['orderId'] !== 'string' ||
+    value['orderId'].length === 0 ||
+    typeof value['symbol'] !== 'string' ||
+    value['symbol'].length === 0
+  ) {
     throw new TypeError(`[订单记录] ${operation} 订单数据结构无效`);
   }
+}
 
+function assertValidOrder(value: unknown, operation: string): asserts value is Order {
   if (
+    !isRecord(value) ||
     typeof value['orderId'] !== 'string' ||
     value['orderId'].length === 0 ||
     typeof value['symbol'] !== 'string' ||
@@ -103,28 +116,54 @@ function assertValidOrder(value: unknown, operation: string): asserts value is O
   }
 }
 
-function assertValidOrders(
-  orders: ReadonlyArray<unknown>,
-  operation: string,
-): asserts orders is ReadonlyArray<Order> {
-  for (const order of orders) {
-    assertValidOrder(order, operation);
-  }
+// SDK snapshot的原nullable/省略revision同为缺失；不spread原生class，不为正成交造revision。
+function mapSnapshotOrder(order: Order): OrderFact {
+  return mapBrokerOrder({
+    orderId: order.orderId,
+    symbol: order.symbol,
+    stockName: order.stockName,
+    side: order.side,
+    status: order.status,
+    orderType: order.orderType,
+    remark: order.remark,
+    price: order.price,
+    quantity: order.quantity,
+    executedPrice: order.executedPrice,
+    executedQuantity: order.executedQuantity,
+    submittedAt: order.submittedAt,
+    updatedAt: order.updatedAt ?? null,
+  });
 }
 
 /**
- * 只装配批准SDK读能力；原四读顺序/limiter/retry与返回后结构验证保持。非pure-conversion/data能力。
+ * 先按市场范围过滤明确非HK订单，再执行严格数值/状态映射：
+ * 跨市场订单（含碎股小数数量）不属于本系统管理范围，不得因结构差异升级为拒绝。
+ */
+function mapScopedOrders(
+  raw: ReadonlyArray<unknown>,
+  operation: string,
+): ReadonlyArray<OrderFact> {
+  const scope: OrderFact[] = [];
+  for (const order of raw) {
+    assertOrderIdentity(order, operation);
+    if (!isHongKongSymbol(order.symbol)) continue;
+
+    assertValidOrder(order, operation);
+    scope.push(mapSnapshotOrder(order));
+  }
+
+  return scope;
+}
+
+/**
+ * 只装配批准SDK读能力；原两读顺序/limiter/retry与返回后结构验证保持。非pure-conversion/data能力。
  * @param context 原SDKcontext，不创建第二上下文
- * @param deps 原limiter与同context真实ledger
+ * @param deps 原limiter
  * @returns 实际快照IO port，历史优先策略仍由原core owner决定
  */
 export function createOrderSnapshotReadAdapter(
   context: unknown,
-  deps: Readonly<{
-    rateLimiter: Pick<RateLimiter, 'throttle'>;
-    executionLedgerPort: OrderExecutionLedgerPort;
-  }>,
-  economics: OrderEconomics,
+  deps: Readonly<{ rateLimiter: Pick<RateLimiter, 'throttle'> }>,
 ): OrderSnapshotReadPort {
   if (
     !isRecord(context) ||
@@ -134,7 +173,7 @@ export function createOrderSnapshotReadAdapter(
     throw new TypeError('[OrderSnapshotReadAdapter] missing injected SDK snapshot capability');
 
   const ctx = context as Pick<TradeContext, 'historyOrders' | 'todayOrders'>;
-  const { rateLimiter, executionLedgerPort } = deps;
+  const { rateLimiter } = deps;
   return {
     fetchSnapshots: async () => {
       await rateLimiter.throttle();
@@ -146,7 +185,8 @@ export function createOrderSnapshotReadAdapter(
           }),
       });
       assertOrderArray(historyOrdersRaw, 'TradeContext.historyOrders');
-      assertValidOrders(historyOrdersRaw, 'TradeContext.historyOrders');
+      // 历史结构先验证再发下一次读：坏返回不得先驱动后续 IO。
+      const historyOrders = mapScopedOrders(historyOrdersRaw, 'TradeContext.historyOrders');
 
       await rateLimiter.throttle();
       const todayOrdersRaw: unknown = await wrapExternalApiRequest({
@@ -154,42 +194,8 @@ export function createOrderSnapshotReadAdapter(
         request: () => ctx.todayOrders(),
       });
       assertOrderArray(todayOrdersRaw, 'TradeContext.todayOrders');
-      assertValidOrders(todayOrdersRaw, 'TradeContext.todayOrders');
+      const todayOrders = mapScopedOrders(todayOrdersRaw, 'TradeContext.todayOrders');
 
-      await rateLimiter.throttle();
-      const historyExecutions = await wrapExternalApiRequest({
-        operation: 'TradeContext.historyExecutions',
-        request: () => executionLedgerPort.historyExecutions({ endAt: new Date() }),
-      });
-      await rateLimiter.throttle();
-      const todayExecutions = await wrapExternalApiRequest({
-        operation: 'TradeContext.todayExecutions',
-        request: () => executionLedgerPort.todayExecutions(),
-      });
-      const executions = [...historyExecutions, ...todayExecutions];
-      // SDK snapshot的原nullable/省略revision同为缺失；不spread原生class，不为正成交造revision。
-      const mapSnapshotOrder = (order: Order) =>
-        mapBrokerOrder(
-          {
-            orderId: order.orderId,
-            symbol: order.symbol,
-            stockName: order.stockName,
-            side: order.side,
-            status: order.status,
-            orderType: order.orderType,
-            remark: order.remark,
-            price: order.price,
-            quantity: order.quantity,
-            executedPrice: order.executedPrice,
-            executedQuantity: order.executedQuantity,
-            submittedAt: order.submittedAt,
-            updatedAt: order.updatedAt ?? null,
-          },
-          executions,
-          economics,
-        );
-      const historyOrders = Array.from(historyOrdersRaw, mapSnapshotOrder);
-      const todayOrders = Array.from(todayOrdersRaw, mapSnapshotOrder);
       return { historyOrders, todayOrders };
     },
   };

@@ -210,8 +210,11 @@ export type BrokerOrderExecutionFact = {
   readonly phase: 'OPEN' | 'TERMINAL';
 };
 
-/** 已由SDK mapper验证的累计观察最小输入；不携带未消费的SDK side/status/orderType。 */
-export type OrderExecutionTimeObservation = {
+/**
+ * 已验证累计事实 + 原订单提交时间；成本投影/重建只消费已验证累计事实，
+ * 原提交时间仅供日损重算（保护边界后的零基线证明），均不读取SDK订单元数据。
+ */
+export type OrderExecutionRecordObservation = {
   readonly orderId: string;
   readonly symbol: string;
   readonly executionSide: 'BUY' | 'SELL';
@@ -220,27 +223,7 @@ export type OrderExecutionTimeObservation = {
   readonly executionTimeMs: number | null;
   readonly updatedAtMs: number;
   readonly executionPhase: 'OPEN' | 'TERMINAL';
-};
-
-/**
- * 已验证累计事实 + 原订单提交时间；成本投影/重建只消费已验证累计事实，
- * 原提交时间仅供日损重算（保护边界后的零基线证明），均不读取SDK订单元数据。
- */
-export type OrderExecutionRecordObservation = OrderExecutionTimeObservation &
-  Readonly<{ submittedAt: Date }>;
-
-/** 从已成功提交事实或 durable progress/baseline 提供的可信执行时间证据，revision 独立保存。 */
-export type OrderExecutionTimeEvidence = {
-  readonly brokerOrderId: string;
-  readonly symbol: string;
-  readonly side: 'BUY' | 'SELL';
-  readonly cumulativeQuantity: number;
-  readonly cumulativeAmount: string;
-  readonly lastExecutionTimeMs: number;
-  readonly orderRevisionMs: number;
-
-  /** V1 boundary baseline 未持久化 phase，显式未知；不得补造 OPEN/TERMINAL。 */
-  readonly phase: 'OPEN' | 'TERMINAL' | null;
+  readonly submittedAt: Date;
 };
 
 /** 同步成交准入；封存/非当日抑制与已准入事实的纯重复明确区分，重复仍允许首次经济投影。 */

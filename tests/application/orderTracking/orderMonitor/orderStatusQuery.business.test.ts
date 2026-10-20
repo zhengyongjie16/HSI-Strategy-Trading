@@ -1,11 +1,12 @@
+/**
+ * orderStatusQuery：只读 orderDetail 的权威状态映射。
+ * 不读取 execution/ledger；正成交 T 只使用本次订单观察的 updatedAt 代理。
+ */
+import { expect, describe, it } from 'bun:test';
 import { wrapExternalApiRequest } from '../../../../src/infrastructure/externalApi/index.js';
-
-/** 单订单权威查询：原23例经实际 SDK 读取与 mapper；查询任务的 abort owner 跨 await 保持不变。 */
-
-import { describe, expect, it } from 'bun:test';
-import { createRateLimiterDouble } from '../../../helpers/testDoubles.js';
 import type { BrokerIngressInput } from '../../../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { createRateLimiterDouble } from '../../../helpers/testDoubles.js';
 
 const SUBMITTED_MS = Date.parse('2026-02-25T03:00:00.000Z');
 const REVISION_MS = Date.parse('2026-02-25T03:00:10.000Z');
@@ -18,7 +19,6 @@ function frame(
 ): BrokerIngressInput {
   return {
     orderId,
-    tradeId: orderId + '-trade',
     symbol: 'BULL.HK',
     stockName: 'BULL',
     remark: '',
@@ -30,7 +30,6 @@ function frame(
     submittedPrice: '1',
     executedPrice,
     submittedAtMs: SUBMITTED_MS,
-    executionTimeMs: null,
     updatedAtMs: REVISION_MS,
   };
 }
@@ -39,18 +38,14 @@ function frame(
 async function createQueryContext(frames: ReadonlyArray<BrokerIngressInput>) {
   const native = await createBrokerIngressFixture(frame('QUERY-SETUP', 'New'));
   native.setOrderDetailReplies(frames);
-  native.setExecutionReplies([]);
   const abortOwner = new AbortController();
   const query = native.createStateQuery({
     requestExternalApi: wrapExternalApiRequest,
     rateLimiter: createRateLimiterDouble(),
-    getExecutionTimeEvidence: () => [],
   });
-  const initialLedgerReads = native.readCounts();
   return {
     native,
     abortOwner,
-    initialLedgerReads,
     check: (orderId: string) => query.checkOrderState(orderId, () => !abortOwner.signal.aborted),
   };
 }
@@ -89,12 +84,11 @@ describe('orderStatusQuery business flow', () => {
         expect(result.closedReason).toBe(testCase.expectedReason);
         expect(result.executedQuantity).toBe(100);
         expect(result.executedAmount).toBe('101');
-        expect(result.executionTimeMs).toBeNull();
+        expect(result.executionTimeMs).toBe(REVISION_MS);
         expect(result.orderUpdatedAtMs).toBe(REVISION_MS);
       }
 
       expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
-      expect(f.native.readCounts().today - f.initialLedgerReads.today).toBe(1);
       f.abortOwner.abort();
     }
   });
@@ -114,7 +108,7 @@ describe('orderStatusQuery business flow', () => {
       expect(withdrawal.closedReason).toBe('CANCELED');
       expect(withdrawal.executedQuantity).toBe(20);
       expect(withdrawal.executedAmount).toBe('20.4');
-      expect(withdrawal.executionTimeMs).toBeNull();
+      expect(withdrawal.executionTimeMs).toBe(REVISION_MS);
     }
 
     expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 2 });
@@ -155,9 +149,8 @@ describe('orderStatusQuery business flow', () => {
         expect(await f.check('ORDER-TERMINAL-UPDATED-AT')).toMatchObject({
           kind: 'TERMINAL',
           orderUpdatedAtMs: expectedUpdatedAtMs,
-          executionTimeMs: null,
+          executionTimeMs: expectedUpdatedAtMs,
         });
-        expect(f.native.readCounts().today - f.initialLedgerReads.today).toBe(2);
       } else if (updatedAt === null) {
         // 仅零成交的 null revision 可使用提交版本；执行 T 仍未知。正成交没有 revision 必须先拒绝。
         expect(await f.check('ORDER-OPEN-UPDATED-AT')).toMatchObject({
@@ -170,7 +163,6 @@ describe('orderStatusQuery business flow', () => {
           await rejection(() => f.check('ORDER-TERMINAL-UPDATED-AT')),
           '[orderMapper] executed order lacks independent broker revision',
         );
-        expect(f.native.readCounts().today - f.initialLedgerReads.today).toBe(1);
       } else {
         expectMapperFailure(
           await rejection(() => f.check('ORDER-OPEN-UPDATED-AT')),
@@ -181,7 +173,6 @@ describe('orderStatusQuery business flow', () => {
           await rejection(() => f.check('ORDER-TERMINAL-UPDATED-AT')),
           '[orderMapper] invalid updatedAt',
         );
-        expect(f.native.readCounts()).toEqual(f.initialLedgerReads);
       }
 
       expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 2 });
@@ -214,13 +205,8 @@ describe('orderStatusQuery business flow', () => {
       closedReason: 'FILLED',
       executedQuantity: 100,
       executedAmount: '101',
-      executionTimeMs: null,
+      executionTimeMs: REVISION_MS,
       orderUpdatedAtMs: REVISION_MS,
-    });
-
-    expect(f.native.readCounts()).toEqual({
-      today: f.initialLedgerReads.today + 1,
-      history: f.initialLedgerReads.history,
     });
     f.abortOwner.abort();
   };
@@ -247,7 +233,6 @@ describe('orderStatusQuery business flow', () => {
     });
     expect(await f.check('ORDER-NOT-EXIST')).toEqual({ kind: 'QUERY_FAILED', errorCode: '603001' });
     expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
-    expect(f.native.readCounts()).toEqual(f.initialLedgerReads);
     f.abortOwner.abort();
   });
 
@@ -271,7 +256,6 @@ describe('orderStatusQuery business flow', () => {
     expect(caught.cause).toBe(original);
     expect(attempts).toBeGreaterThan(1);
     expect(f.native.nativeReadCounts().detail).toBe(attempts);
-    expect(f.native.readCounts()).toEqual(f.initialLedgerReads);
     f.abortOwner.abort();
   });
 
@@ -288,7 +272,6 @@ describe('orderStatusQuery business flow', () => {
     expect(caught.name).not.toBe('ExternalApiRequestError');
     expect(caught.message).toContain('500001');
     expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
-    expect(f.native.readCounts()).toEqual(f.initialLedgerReads);
     f.abortOwner.abort();
   });
 
@@ -302,12 +285,11 @@ describe('orderStatusQuery business flow', () => {
       expect(result.status).toBe('CANCELLATION_PENDING');
       expect(result.executedQuantity).toBe(20);
       expect(result.executedAmount).toBe('20.2');
-      expect(result.executionTimeMs).toBeNull();
+      expect(result.executionTimeMs).toBe(REVISION_MS);
       expect(result.updatedAtMs).toBe(REVISION_MS);
     }
 
     expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
-    expect(f.native.readCounts().today - f.initialLedgerReads.today).toBe(1);
     f.abortOwner.abort();
   });
 });

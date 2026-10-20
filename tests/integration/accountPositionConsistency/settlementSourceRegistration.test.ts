@@ -60,7 +60,6 @@ it('distinguishes initial controlled coverage from online changed facts at the r
   const owner = createOrderRecorder({
     logger: createLoggerDouble(),
     orderSnapshotReadPort: io.broker,
-    getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: settlement,
   });
   const baseline: OrderFact = {

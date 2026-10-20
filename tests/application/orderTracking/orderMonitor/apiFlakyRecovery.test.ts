@@ -144,7 +144,6 @@ describe('chaos: api flaky recovery', () => {
     const nowMs = Date.parse('2026-02-25T03:00:00.000Z');
     const fixture = await createBrokerIngressFixture({
       orderId: 'BUY-001',
-      tradeId: 'BUY-001-T',
       symbol: 'BULL.HK',
       stockName: 'BULL',
       remark: '',
@@ -156,7 +155,6 @@ describe('chaos: api flaky recovery', () => {
       submittedPrice: '1',
       executedPrice: '1',
       submittedAtMs: nowMs - 2000,
-      executionTimeMs: nowMs - 1000,
       updatedAtMs: nowMs - 500,
     });
     const dailyLossTracker = createDailyLossTrackerDouble();
@@ -219,7 +217,6 @@ describe('chaos: api flaky recovery', () => {
     const orderRecorder = fixture.createRecorder({
       logger: createLoggerDouble(),
       rateLimiter: createRateLimiterDouble(),
-      getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
       settlementRefreshNeedRecorder: postTrade,
     });
     dailyLossTracker.publishRecalculation(
@@ -255,7 +252,7 @@ describe('chaos: api flaky recovery', () => {
     expect(nativeBuy).toMatchObject({
       executedQuantity: 100,
       executedAmount: '100',
-      executionTimeMs: nowMs - 1000,
+      executionTimeMs: nowMs - 500,
       updatedAtMs: nowMs - 500,
     });
 
@@ -265,7 +262,7 @@ describe('chaos: api flaky recovery', () => {
         symbol: nativeBuy.symbol,
         side: nativeBuy.executionSide,
         cumulativeQuantity: nativeBuy.executedQuantity,
-        cumulativeAmount: nativeBuy.executedAmount,
+        cumulativeAmount: nativeBuy.executedAmount!,
         executionTimeMs: nativeBuy.executionTimeMs,
         updatedAtMs: nativeBuy.updatedAtMs,
         phase: nativeBuy.executionPhase,

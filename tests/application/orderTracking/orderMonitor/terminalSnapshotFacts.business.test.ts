@@ -78,7 +78,7 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
           createKnownFact({ executionSide: sideText }),
           createTerminalState({ orderUpdatedAtMs: null }),
         );
-      }).toThrow(/正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision/);
+      }).toThrow(/订单观察缺少有效 broker revision|保护性 SELL 存在成交事实但本次观察缺少有效成交价|保护性 SELL 存在成交事实但本次观察缺少有效 broker revision/);
     });
 
     it(`rejects ordinary ${sideText} terminal execution advance with a stale raw broker revision`, () => {
@@ -90,7 +90,7 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
             orderUpdatedAtMs: FIRST_REVISION_MS - 1,
           }),
         );
-      }).toThrow(/broker revision.*倒退/);
+      }).toThrow(/累计数量推进但 revision 倒退/);
     });
   }
 
@@ -126,7 +126,7 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
     }).toThrow(/累计成交量超过有效委托数量/);
   });
 
-  it('allows a protective SELL terminal without new execution to close from an established fact', () => {
+  it('rejects a protective SELL terminal without raw facts even when a known fact is established', () => {
     const knownFact = createProtectiveSellKnownFact();
     const terminalState = createTerminalState({
       executedQuantity: 40,
@@ -138,27 +138,21 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
 
     expect(() => {
       assertProtectiveSellRawTerminalStateFactsReady(knownFact, terminalState);
-    }).not.toThrow();
+    }).toThrow(/保护性 SELL 存在成交事实但本次观察缺少有效成交价/);
 
-    const normalized = normalizeTerminalStateSnapshot(knownFact, terminalState, true);
-
-    expect(normalized).toMatchObject({
-      closedReason: 'CANCELED',
-      executedQuantity: 40,
-      executedPrice: '1.02',
-      executedTimeMs: FIRST_REVISION_MS,
-      orderUpdatedAtMs: FIRST_REVISION_MS,
-    });
+    expect(() => {
+      normalizeTerminalStateSnapshot(knownFact, terminalState, true);
+    }).toThrow();
   });
 
-  it('records a protective terminal lifecycle close without advancing DailyLoss execution', () => {
+  it('records a protective terminal lifecycle close from complete raw facts without advancing DailyLoss execution', () => {
     const knownFact = createProtectiveSellKnownFact();
     const terminalState = createTerminalState({
       executedQuantity: 40,
-      executedAmount: '40.8',
-      executionTimeMs: null,
-      executedPrice: null,
-      orderUpdatedAtMs: null,
+      executedAmount: '41.2',
+      executedPrice: '1.03',
+      executionTimeMs: FIRST_REVISION_MS + 1,
+      orderUpdatedAtMs: FIRST_REVISION_MS + 1,
     });
     assertProtectiveSellRawTerminalStateFactsReady(knownFact, terminalState);
     const normalized = normalizeTerminalStateSnapshot(knownFact, terminalState, true);
@@ -225,6 +219,6 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
 
     expect(() => {
       assertProtectiveSellRawTerminalStateFactsReady(knownFact, terminalState);
-    }).toThrow(/正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision/);
+    }).toThrow(/订单观察缺少有效 broker revision|保护性 SELL 存在成交事实但本次观察缺少有效成交价|保护性 SELL 存在成交事实但本次观察缺少有效 broker revision/);
   });
 });

@@ -8,6 +8,7 @@
  */
 import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
+import { isHongKongSymbol } from '../../utils/marketScope.js';
 import {
   compareRatios,
   exactAdd,
@@ -617,6 +618,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
   ): Promise<OrderActionResult> {
     const { signal, side } = command;
     const symbol = signal.symbol;
+
+    // 最简市场门禁：非港股不进入任何报价、持仓读取、合并或原生提交副作用。
+    if (!isHongKongSymbol(symbol)) {
+      logger.warn(
+        `[订单提交] 非港股标的禁止交易，跳过: ${formatSymbolDisplay(symbol, signal.symbolName ?? null)}`,
+      );
+      return { kind: 'SKIPPED' };
+    }
 
     if (!authorizeOrderAction('executeSignals') || !canExecuteSignal(signal, 'submitTargetOrder')) {
       return { kind: 'SKIPPED' };

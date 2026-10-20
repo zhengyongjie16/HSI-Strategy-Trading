@@ -71,7 +71,6 @@ function readSubmittedQuantity(
 async function createNativeExecutionFixture() {
   return createBrokerIngressFixture({
     orderId: 'FINAL-QUOTE-NATIVE',
-    tradeId: 'NO-EXECUTION',
     symbol: 'BULL.HK',
     stockName: 'BULL',
     remark: '',
@@ -83,7 +82,6 @@ async function createNativeExecutionFixture() {
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs: EXECUTION_NOW_MS,
-    executionTimeMs: null,
     updatedAtMs: EXECUTION_NOW_MS,
   });
 }
@@ -208,7 +206,6 @@ async function createSellExecutionFixture(params: {
   const pendingOrders = params.pendingSellOrders ?? [];
   const detailFrames = pendingOrders.map((order) => ({
     orderId: order.orderId,
-    tradeId: 'FINAL-QUOTE-' + order.orderId,
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -220,7 +217,6 @@ async function createSellExecutionFixture(params: {
     submittedPrice: order.orderType === 'MO' ? '0' : '1',
     executedPrice: '0',
     submittedAtMs: order.submittedAt,
-    executionTimeMs: null,
     updatedAtMs: currentTime.getTime(),
   }));
   native.setOrderDetailReplies(detailFrames);
@@ -249,7 +245,6 @@ async function createSellExecutionFixture(params: {
       authority.economic.flow.recordCumulativeExecution(input);
     },
     triggerRoute() {},
-    getExecutionTimeEvidence: () => [],
   });
   for (const order of pendingOrders) {
     authority.economic.recorder.submitSellOrder(
@@ -321,7 +316,7 @@ async function createSellExecutionFixture(params: {
           closedReason: terminal.closedReason,
           source: 'STATE_CHECK',
           executedPrice: terminal.executedPrice,
-          executedAmount: terminal.executedAmount,
+          executedAmount: terminal.executedAmount ?? '0',
           executedQuantity: terminal.executedQuantity,
           executedTimeMs: terminal.executionTimeMs,
           orderUpdatedAtMs: terminal.orderUpdatedAtMs,
@@ -333,9 +328,7 @@ async function createSellExecutionFixture(params: {
       return outcome;
     },
     getPendingSellOrders: () =>
-      pendingOrders.filter((order) =>
-        authority.economic.runtime.trackedOrders.has(order.orderId),
-      ),
+      pendingOrders.filter((order) => authority.economic.runtime.trackedOrders.has(order.orderId)),
     replaceOrderPriceWithPermit: operations.replaceOrderPriceWithPermit,
   };
 

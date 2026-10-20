@@ -48,6 +48,7 @@ import {
 import { createRuntimeStates, waitUntil } from '../helpers/asyncProgram.js';
 import { createHarness, prepareFixture } from '../strategies/intradayRegression/runtimeFixtures.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { toRecalculationOrders } from './recalculationOrders.js';
 
 /** 装配真实下单、订单终态和刷新流程；唯一可控阻塞位于账户服务的上游请求。 */
 async function createExecutionFixture(smartCloseEnabled = false) {
@@ -68,7 +69,6 @@ async function createExecutionFixture(smartCloseEnabled = false) {
   }).create(h.deps);
   const native = await createBrokerIngressFixture({
     orderId: 'LOCAL-BUY',
-    tradeId: 'LOCAL-BUY-T',
     symbol: 'BULL.HK',
     stockName: 'HSI BULL',
     remark: 'HSI',
@@ -79,7 +79,6 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     submittedPrice: '2',
     executedPrice: '2',
     submittedAtMs: generatedAtMs - 2000,
-    executionTimeMs: generatedAtMs - 1000,
     updatedAtMs: generatedAtMs - 500,
   });
   native.setAccountBalance({
@@ -169,7 +168,6 @@ async function createExecutionFixture(smartCloseEnabled = false) {
   const orderRecorder = native.createRecorder({
     logger: createLoggerDouble(),
     rateLimiter,
-    getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: postTrade,
   });
 
@@ -346,7 +344,7 @@ async function createExecutionFixture(smartCloseEnabled = false) {
   );
   expect(rebuilt.status).toBe('COMMITTED');
   const prepared = dailyLossTracker.prepareRecalculationFromAllOrders(
-    [native.queryObservation],
+    toRecalculationOrders([native.queryObservation]),
     config,
     new Date(generatedAtMs),
     undefined,
@@ -469,20 +467,9 @@ describe('single active strategy execution integration', () => {
       if (!protectionId) throw new Error('保护清仓未登记真实挂单');
 
       // 真实订单监控根据累计成交事实推进 stale；不直接调用 recordSettlementRefreshNeed。
-      f.native.setExecutionReplies([
-        {
-          orderId: protectionId,
-          tradeId: 'PROTECTION-T',
-          symbol: 'BULL.HK',
-          quantity: '100',
-          price: '1',
-          tradeDoneAtMs: f.generatedAtMs + 1000,
-        },
-      ]);
 
       f.native.emitOrderChangedFrame({
         orderId: protectionId,
-        tradeId: 'PROTECTION-T',
         symbol: 'BULL.HK',
         stockName: 'HSI BULL',
         remark: 'HSI',
@@ -494,7 +481,6 @@ describe('single active strategy execution integration', () => {
         submittedPrice: '1',
         executedPrice: '1',
         submittedAtMs: f.generatedAtMs,
-        executionTimeMs: f.generatedAtMs + 1000,
         updatedAtMs: f.generatedAtMs + 1000,
       });
       await Bun.sleep(0);

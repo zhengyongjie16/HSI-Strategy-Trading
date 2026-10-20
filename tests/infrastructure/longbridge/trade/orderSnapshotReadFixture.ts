@@ -3,8 +3,6 @@ import { Decimal, OrderSide, OrderStatus, OrderType } from 'longbridge';
 import type { BrokerOrderSdkFields } from '../../../../src/infrastructure/longbridge/trade/types.js';
 import type { OrderSnapshotReadPort } from '../../../../src/types/orderSnapshotReadPorts.js';
 import { createOrderSnapshotReadAdapter } from '../../../../src/infrastructure/longbridge/trade/orderSnapshotReadAdapter.js';
-import { createExecutionLedgerAdapter } from '../../../../src/infrastructure/longbridge/trade/executionLedgerAdapter.js';
-import type { OrderEconomics } from '../../../../src/types/orderEconomics.js';
 
 function order(id: string, revision: number): BrokerOrderSdkFields {
   return {
@@ -26,7 +24,6 @@ function order(id: string, revision: number): BrokerOrderSdkFields {
 
 /** 原生 context 与 adapter 留在 infra；调用方只驱动真实快照 port，不在此装配 core owner。 */
 export function createNativeSnapshotReadFixture(
-  orderEconomics: OrderEconomics,
   historyOrderIdFault?: Error,
 ): {
   readonly port: OrderSnapshotReadPort;
@@ -54,30 +51,15 @@ export function createNativeSnapshotReadFixture(
       laterReads++;
       return [order('DUP', 200), order('DUP', 250)];
     },
-    historyExecutions: async () => {
-      calls.push('historyExecutions');
-      laterReads++;
-      return [];
-    },
-    todayExecutions: async () => {
-      calls.push('todayExecutions');
-      laterReads++;
-      return [];
-    },
   };
   return {
-    port: createOrderSnapshotReadAdapter(
-      context,
-      {
-        rateLimiter: {
-          throttle: async () => {
-            calls.push('throttle');
-          },
+    port: createOrderSnapshotReadAdapter(context, {
+      rateLimiter: {
+        throttle: async () => {
+          calls.push('throttle');
         },
-        executionLedgerPort: createExecutionLedgerAdapter(context),
       },
-      orderEconomics,
-    ),
+    }),
     calls,
     getLaterReadCount: () => laterReads,
   };

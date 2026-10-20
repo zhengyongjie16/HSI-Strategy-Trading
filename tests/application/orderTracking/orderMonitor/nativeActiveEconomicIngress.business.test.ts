@@ -27,7 +27,6 @@ async function flush() {
 async function setup(protective: boolean, persistProgress: () => void) {
   const ingress = await createBrokerIngressFixture({
     orderId: 'buy',
-    tradeId: 'execution',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -38,7 +37,6 @@ async function setup(protective: boolean, persistProgress: () => void) {
     submittedPrice: '1',
     executedPrice: price,
     submittedAtMs: executionTimeMs - 60_000,
-    executionTimeMs,
     updatedAtMs,
   });
   const f = createExecutionFixture({ nowMs: executionTimeMs, persistProgress });
@@ -104,17 +102,9 @@ test('registered SDK terminal keeps exact amount and independent T, replay after
     quantity: 100,
   });
 
-  expect(owner.f.daily.getExecutionTimeEvidence()[0]).toMatchObject({
-    lastExecutionTimeMs: executionTimeMs,
-    orderRevisionMs: updatedAtMs,
-    phase: 'TERMINAL',
-  });
   expect(owner.closed).toHaveLength(1);
-  expect(owner.closed[0]?.executedTimeMs).toBe(executionTimeMs);
+  expect(owner.closed[0]?.executedTimeMs).toBe(updatedAtMs);
   expect(owner.f.snapshot.getView().token.snapshotGeneration).toBe(generation + 1);
-  const counts = owner.ingress.readCounts();
-  expect(counts.today).toBeGreaterThan(1);
-  expect(counts.history).toBeGreaterThan(0);
   owner.ingress.emitOrderChanged();
   await flush();
   expect(owner.closed).toHaveLength(1);
@@ -139,7 +129,6 @@ test('registered native protective durable fault keeps exact identity and leaves
 
   expect(fatal.error).toBe(fault);
   expect(owner.f.recorder.getExecutionFact('buy')).toBeNull();
-  expect(owner.f.daily.getExecutionTimeEvidence()).toEqual([]);
   expect(owner.closed).toEqual([]);
   expect(owner.f.snapshot.getView().token.snapshotGeneration).toBe(generation);
   expect(owner.f.recorder.getPendingSellSnapshot()).toHaveLength(1);

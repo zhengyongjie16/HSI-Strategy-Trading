@@ -1,3 +1,5 @@
+import { recalculateDailyLoss } from '../../helpers/dailyLossRecalculation.js';
+
 /**
  * dailyLossTracker 分段业务测试
  *
@@ -32,7 +34,7 @@ function createExecutedOrder(params: {
   readonly executedQuantity: number;
   readonly updatedAtMs: number;
   readonly executionTimeMs: number;
-}): OrderFact {
+}): OrderFact & DailyLossOrderSnapshot {
   return {
     orderId: params.orderId,
     symbol: params.symbol,
@@ -214,7 +216,7 @@ describe('dailyLossTracker segment flow', () => {
 
     for (const testCase of cases) {
       const tracker = createSegmentTracker();
-      tracker.recalculateFromAllOrders(
+      recalculateDailyLoss(tracker,
         [
           createExecutedOrder({
             status: 'FILLED',
@@ -262,9 +264,16 @@ describe('dailyLossTracker segment flow', () => {
         },
       ]);
 
-      expect(() => {
+      const restore = () => {
         tracker.restoreProtectionBoundary(prepared);
-      }, testCase.name).not.toThrow();
+      };
+
+      if (
+        testCase.name === 'prefers TERMINAL over OPEN when all numeric fields tie' ||
+        testCase.name === 'filters snapshots after the boundary first'
+      )
+        expect(restore, testCase.name).not.toThrow();
+      else expect(restore, testCase.name).toThrow(/regression|累计数量倒退/);
     }
   });
 
@@ -322,7 +331,7 @@ describe('dailyLossTracker segment flow', () => {
     }
 
     const live = createSegmentTracker();
-    live.recalculateFromAllOrders(
+    recalculateDailyLoss(live,
       currentOrders,
       createMonitor(),
       new Date(currentUpdatedAtMs),
@@ -336,11 +345,11 @@ describe('dailyLossTracker segment flow', () => {
     live.commitProtectionBoundary(prepared);
     expect(live.getLossOffset('LONG')).toBe('-60');
 
-    live.recalculateFromAllOrders(currentOrders, createMonitor(), new Date(currentUpdatedAtMs));
+    recalculateDailyLoss(live, currentOrders, createMonitor(), new Date(currentUpdatedAtMs));
     expect(live.getLossOffset('LONG')).toBe('-60');
 
     const restarted = createSegmentTracker();
-    restarted.recalculateFromAllOrders(
+    recalculateDailyLoss(restarted,
       currentOrders,
       createMonitor(),
       new Date(currentUpdatedAtMs),
@@ -632,7 +641,7 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     const restarted = createSegmentTracker();
-    restarted.recalculateFromAllOrders(
+    recalculateDailyLoss(restarted,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -687,7 +696,7 @@ describe('dailyLossTracker segment flow', () => {
   it('blocks restart when a persisted baseline identity conflicts with the current order', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -730,7 +739,7 @@ describe('dailyLossTracker segment flow', () => {
   it('blocks restart when a determinable pre-boundary order baseline is omitted', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -764,7 +773,7 @@ describe('dailyLossTracker segment flow', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
     const afterBoundaryMs = boundaryMs + 1;
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -808,7 +817,7 @@ describe('dailyLossTracker segment flow', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
     const finalExecutionMs = boundaryMs + 60_000;
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         // 业务事实为边界前 40@10、边界后累计 100@1600；RawOrder 只能给出折叠后的最终总值。
         {
@@ -870,7 +879,7 @@ describe('dailyLossTracker segment flow', () => {
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
     const preBoundaryExecutionMs = boundaryMs - 60_000;
     const finalExecutionMs = boundaryMs + 60_000;
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         // 业务事实为边界前 40@10、边界后累计 100@1600；RawOrder 只保留边界后的最终累计值。
         {
@@ -940,7 +949,7 @@ describe('dailyLossTracker segment flow', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
     const finalExecutionMs = boundaryMs + 60_000;
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         {
           ...createExecutedOrder({
@@ -1030,7 +1039,7 @@ describe('dailyLossTracker segment flow', () => {
       });
       // 负向场景故意损坏中性事实输入，不放宽领域 Date 契约。
       Reflect.set(unprovenOrder, 'submittedAt', testCase.resolveSubmittedAt(boundaryMs));
-      tracker.recalculateFromAllOrders(
+      recalculateDailyLoss(tracker,
         [
           unprovenOrder,
           createExecutedOrder({
@@ -1075,7 +1084,7 @@ describe('dailyLossTracker segment flow', () => {
   it('blocks crash-gap completion when a collapsed startup order cannot reconstruct the boundary baseline', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -1111,7 +1120,7 @@ describe('dailyLossTracker segment flow', () => {
     const partialTimeMs = Date.parse('2026-03-03T01:00:00.000Z');
     const boundaryMs = Date.parse('2026-03-03T01:10:00.000Z');
 
-    tracker.recalculateFromAllOrders([], monitor, now);
+    recalculateDailyLoss(tracker, [], monitor, now);
     tracker.recordCumulativeExecution({
       factStage: 'TERMINAL',
       direction: 'LONG',
@@ -1187,7 +1196,7 @@ describe('dailyLossTracker segment flow', () => {
     const partialTimeMs = Date.parse('2026-03-03T01:00:00.000Z');
     const boundaryMs = Date.parse('2026-03-03T01:10:00.000Z');
 
-    tracker.recalculateFromAllOrders([], monitor, now);
+    recalculateDailyLoss(tracker, [], monitor, now);
     tracker.recordCumulativeExecution({
       factStage: 'TERMINAL',
       direction: 'LONG',
@@ -1281,7 +1290,7 @@ describe('dailyLossTracker segment flow', () => {
     const recalculatedTracker = createSegmentTracker();
 
     for (const tracker of [runtimeTracker, recalculatedTracker]) {
-      tracker.recalculateFromAllOrders([partialBuy], monitor, now);
+      recalculateDailyLoss(tracker, [partialBuy], monitor, now);
       commitPreparedBoundary(tracker, {
         direction: 'LONG',
         boundaryExecutedTimeMs: boundaryMs,
@@ -1311,7 +1320,7 @@ describe('dailyLossTracker segment flow', () => {
       orderUpdatedAtMs: boundaryMs + 2,
       orderId: 'sell-runtime-recalc',
     });
-    recalculatedTracker.recalculateFromAllOrders([finalBuy, newSell], monitor, now);
+    recalculateDailyLoss(recalculatedTracker, [finalBuy, newSell], monitor, now);
 
     expect(recalculatedTracker.getLossOffset('LONG')).toBe(runtimeTracker.getLossOffset('LONG'));
     expect(recalculatedTracker.getLossOffset('LONG')).toBe('-60');
@@ -1323,7 +1332,7 @@ describe('dailyLossTracker segment flow', () => {
     const now = new Date('2026-03-03T02:00:00.000Z');
     const executionTimeMs = Date.parse('2026-03-03T01:00:00.000Z');
 
-    tracker.recalculateFromAllOrders([], monitor, now);
+    recalculateDailyLoss(tracker, [], monitor, now);
     tracker.recordCumulativeExecution({
       factStage: 'TERMINAL',
       direction: 'LONG',
@@ -1369,7 +1378,7 @@ describe('dailyLossTracker segment flow', () => {
     const now = new Date('2026-03-03T02:00:00.000Z');
     const revisionMs = Date.parse('2026-03-03T01:00:00.000Z');
 
-    tracker.recalculateFromAllOrders([], monitor, now);
+    recalculateDailyLoss(tracker, [], monitor, now);
     tracker.recordCumulativeExecution({
       factStage: 'TERMINAL',
       direction: 'LONG',
@@ -1403,7 +1412,7 @@ describe('dailyLossTracker segment flow', () => {
     const now = new Date('2026-03-03T02:00:00.000Z');
     const executionTimeMs = Date.parse('2026-03-03T01:00:00.000Z');
 
-    tracker.recalculateFromAllOrders([], monitor, now);
+    recalculateDailyLoss(tracker, [], monitor, now);
     tracker.recordCumulativeExecution({
       factStage: 'TERMINAL',
       direction: 'LONG',
@@ -1452,7 +1461,7 @@ describe('dailyLossTracker segment flow', () => {
     const executionTimeMs = Date.parse('2026-03-03T01:00:00.000Z');
     const boundaryMs = Date.parse('2026-03-03T01:10:00.000Z');
 
-    tracker.recalculateFromAllOrders([], monitor, now);
+    recalculateDailyLoss(tracker, [], monitor, now);
     tracker.recordCumulativeExecution({
       factStage: 'TERMINAL',
       direction: 'LONG',
@@ -1503,7 +1512,7 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -1556,7 +1565,7 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -1598,7 +1607,7 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -1658,7 +1667,7 @@ describe('dailyLossTracker segment flow', () => {
 
     for (const identityChange of identityChanges) {
       const tracker = createSegmentTracker();
-      tracker.recalculateFromAllOrders([], monitor, now);
+      recalculateDailyLoss(tracker, [], monitor, now);
       tracker.recordCumulativeExecution({
         factStage: 'TERMINAL',
         direction: 'LONG',
@@ -1718,7 +1727,7 @@ describe('dailyLossTracker segment flow', () => {
       }),
     ];
 
-    tracker.recalculateFromAllOrders(initialOrders, monitor, now);
+    recalculateDailyLoss(tracker, initialOrders, monitor, now);
     expect(tracker.getLossOffset('LONG')).toBe('-10');
 
     const conflictingOrder1 = createExecutedOrder({
@@ -1735,12 +1744,12 @@ describe('dailyLossTracker segment flow', () => {
       executionTimeMs: Date.parse('2026-03-03T01:02:00.000Z'),
     });
     expect(() => {
-      tracker.recalculateFromAllOrders([conflictingOrder1], monitor, now);
+      recalculateDailyLoss(tracker, [conflictingOrder1], monitor, now);
     }).toThrow(/CONFLICT-ID.*identity mismatch/);
 
     expect(tracker.getLossOffset('LONG')).toBe('-10');
 
-    tracker.recalculateFromAllOrders(initialOrders, monitor, now);
+    recalculateDailyLoss(tracker, initialOrders, monitor, now);
     expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
@@ -1751,7 +1760,7 @@ describe('dailyLossTracker segment flow', () => {
     const boundaryMs = Date.parse('2026-03-03T01:00:00.000Z');
     const executionMs = boundaryMs + 1_000;
 
-    tracker.recalculateFromAllOrders([], monitor, now);
+    recalculateDailyLoss(tracker, [], monitor, now);
     tracker.recordCumulativeExecution({
       factStage: 'TERMINAL',
       direction: 'LONG',
@@ -1820,7 +1829,7 @@ describe('dailyLossTracker segment flow', () => {
       executionTimeMs: executionMs,
     });
     expect(() => {
-      tracker.recalculateFromAllOrders([conflictingOrder2], monitor, now);
+      recalculateDailyLoss(tracker, [conflictingOrder2], monitor, now);
     }).toThrow('[订单事实] 同 revision 同量同阶段的累计经济或执行时间冲突');
 
     expect(tracker.getLossOffset('LONG')).toBe('-10');
@@ -1838,9 +1847,9 @@ describe('dailyLossTracker segment flow', () => {
         orderId: 'BOUNDARY-IGNORED-BUY-ID',
       }),
     ).toEqual({
-      admission: 'SUPPRESSED',
-      authoritativeFactChanged: false,
-      executionAdvanced: false,
+      admission: 'ADMITTED',
+      authoritativeFactChanged: true,
+      executionAdvanced: true,
     });
 
     expect(tracker.getLossOffset('LONG')).toBe('-10');
@@ -1852,7 +1861,7 @@ describe('dailyLossTracker segment flow', () => {
     const now = new Date('2026-03-03T02:00:00.000Z');
     const boundaryMs = Date.parse('2026-03-03T01:10:00.000Z');
 
-    tracker.recalculateFromAllOrders([], monitor, now);
+    recalculateDailyLoss(tracker, [], monitor, now);
     for (const [suffix, executedTimeMs] of [
       ['before', boundaryMs - 1],
       ['at', boundaryMs],
@@ -1899,7 +1908,7 @@ describe('dailyLossTracker segment flow', () => {
     const now = new Date('2026-03-03T02:00:00.000Z');
     const boundaryMs = Date.parse('2026-03-03T01:10:00.000Z');
 
-    tracker.recalculateFromAllOrders([], monitor, now);
+    recalculateDailyLoss(tracker, [], monitor, now);
     tracker.recordCumulativeExecution({
       factStage: 'TERMINAL',
       direction: 'LONG',
@@ -1952,7 +1961,7 @@ describe('dailyLossTracker segment flow', () => {
     const now = new Date('2026-03-03T02:00:00.000Z');
     const boundaryMs = Date.parse('2026-03-03T01:10:00.000Z');
 
-    tracker.recalculateFromAllOrders([], monitor, now);
+    recalculateDailyLoss(tracker, [], monitor, now);
     for (const [direction, symbol] of [
       ['LONG', 'BULL.HK'],
       ['SHORT', 'BEAR.HK'],
@@ -2036,7 +2045,7 @@ describe('dailyLossTracker segment flow', () => {
     const resumedTracker = createSegmentTracker();
     const rebuiltTracker = createSegmentTracker();
 
-    resumedTracker.recalculateFromAllOrders([buyOrder, partialSellOrder], monitor, now);
+    recalculateDailyLoss(resumedTracker, [buyOrder, partialSellOrder], monitor, now);
     resumedTracker.recordCumulativeExecution({
       factStage: 'TERMINAL',
       direction: 'LONG',
@@ -2048,7 +2057,7 @@ describe('dailyLossTracker segment flow', () => {
       orderUpdatedAtMs: finalSellOrder.updatedAt?.getTime() ?? 0,
       orderId: finalSellOrder.orderId,
     });
-    rebuiltTracker.recalculateFromAllOrders([buyOrder, finalSellOrder], monitor, now);
+    recalculateDailyLoss(rebuiltTracker, [buyOrder, finalSellOrder], monitor, now);
 
     expect(resumedTracker.getLossOffset('LONG')).toBe(rebuiltTracker.getLossOffset('LONG'));
     expect(resumedTracker.getLossOffset('LONG')).toBe('-100');
@@ -2059,7 +2068,7 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -2143,7 +2152,7 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -2258,7 +2267,7 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const firstBoundaryMs = Date.parse('2026-03-03T01:10:00.000Z');
 
-    tracker.recalculateFromAllOrders([], monitor, now);
+    recalculateDailyLoss(tracker, [], monitor, now);
 
     commitPreparedBoundary(tracker, {
       direction: 'LONG',
@@ -2299,14 +2308,14 @@ describe('dailyLossTracker segment flow', () => {
     expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
-  it('recalculateFromAllOrders respects external protectionBoundaryByDirection at startup', () => {
+  it('prepareRecalculationFromAllOrders respects external protectionBoundaryByDirection at startup', () => {
     const tracker = createSegmentTracker();
     const monitor = createMonitor();
     const protectionBoundaryByDirection = new Map<'LONG', number>([
       ['LONG', Date.parse('2026-03-03T01:10:00.000Z')],
     ]);
 
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -2369,12 +2378,12 @@ describe('dailyLossTracker segment flow', () => {
     expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
-  it('recalculateFromAllOrders keeps same-day in-memory protection boundary when no boundary is passed', () => {
+  it('prepareRecalculationFromAllOrders keeps same-day in-memory protection boundary when no boundary is passed', () => {
     const tracker = createSegmentTracker();
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -2414,7 +2423,7 @@ describe('dailyLossTracker segment flow', () => {
     });
     expect(tracker.getLossOffset('LONG')).toBe('0');
 
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -2476,12 +2485,12 @@ describe('dailyLossTracker segment flow', () => {
     expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
-  it('recalculateFromAllOrders includes canceled order executed part to keep restart consistency', () => {
+  it('prepareRecalculationFromAllOrders includes canceled order executed part to keep restart consistency', () => {
     const tracker = createSegmentTracker();
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    tracker.recalculateFromAllOrders(
+    recalculateDailyLoss(tracker,
       [
         createExecutedOrder({
           orderId: 'buy-filled',
@@ -2517,7 +2526,7 @@ describe('dailyLossTracker segment flow', () => {
     expect(tracker.getLossOffset('LONG')).toBe('-10');
   });
 
-  it('recalculateFromAllOrders fails fast when a relevant in-day executed order cannot be owned', () => {
+  it('prepareRecalculationFromAllOrders fails fast when a relevant in-day executed order cannot be owned', () => {
     const tracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
       ...orderAnalysis,
@@ -2542,7 +2551,7 @@ describe('dailyLossTracker segment flow', () => {
       executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
     });
     expect(() => {
-      tracker.recalculateFromAllOrders(
+      recalculateDailyLoss(tracker,
         [conflictingOrder3],
         monitor,
         now,
@@ -2598,19 +2607,19 @@ describe('dailyLossTracker segment flow', () => {
         updatedAtMs: Date.parse('2026-03-03T01:01:00.000Z'),
         executionTimeMs: Date.parse('2026-03-03T01:01:00.000Z'),
       });
-      tracker.recalculateFromAllOrders([validBuy, validSell], monitor, now);
+      recalculateDailyLoss(tracker, [validBuy, validSell], monitor, now);
 
       expect(tracker.getLossOffset('LONG')).toBe('-10');
 
       const validOrder = testCase.side === 'BUY' ? validBuy : validSell;
-      const invalidOrder: OrderFact = {
+      const invalidOrder: OrderFact & DailyLossOrderSnapshot = {
         ...validOrder,
         orderId: `ordinary-${testCase.side}-missing-updated-at`,
         updatedAt: testCase.updatedAt,
       };
 
       expect(() => {
-        tracker.recalculateFromAllOrders([invalidOrder], monitor, now);
+        recalculateDailyLoss(tracker, [invalidOrder], monitor, now);
       }).toThrow(/缺少有效更新时间.*ordinary-/);
 
       expect(tracker.getLossOffset('LONG')).toBe('-10');
@@ -2641,7 +2650,7 @@ describe('dailyLossTracker segment flow', () => {
       executionTimeMs: Date.parse('2026-03-02T01:00:00.000Z'),
     });
     expect(() => {
-      tracker.recalculateFromAllOrders(
+      recalculateDailyLoss(tracker,
         [conflictingOrder4],
         monitor,
         new Date('2026-03-03T02:00:00.000Z'),
@@ -2655,7 +2664,7 @@ describe('dailyLossTracker segment flow', () => {
     const tracker = createSegmentTracker();
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
-    const externalUnfilledOrder: OrderFact = {
+    const externalUnfilledOrder: OrderFact & DailyLossOrderSnapshot = {
       ...createExecutedOrder({
         status: 'FILLED',
         executionStatus: 'FILLED',
@@ -2690,7 +2699,7 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     expect(() => {
-      tracker.recalculateFromAllOrders([externalUnfilledOrder, historicalOwnedOrder], monitor, now);
+      recalculateDailyLoss(tracker, [externalUnfilledOrder, historicalOwnedOrder], monitor, now);
     }).not.toThrow();
     expect(tracker.getLossOffset('LONG')).toBe('0');
   });
@@ -2729,11 +2738,16 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     expect(() => {
-      tracker.recalculateFromAllOrders([inDayBuy, historicalSell], monitor, now);
+      recalculateDailyLoss(tracker, [inDayBuy, historicalSell], monitor, now);
     }).not.toThrow();
 
-    expect(tracker.getExecutionTimeEvidence().map((item) => item.brokerOrderId)).toEqual([
-      'in-day-late-execution',
-    ]);
+    expect(
+      tracker
+        .prepareProtectionBoundary({
+          direction: 'LONG',
+          boundaryExecutedTimeMs: now.getTime(),
+        })
+        .orderBaselines.map((baseline) => baseline.orderId),
+    ).toEqual(['in-day-late-execution']);
   });
 });

@@ -1,7 +1,6 @@
 import type { AccountReadPort } from './accountReadPorts.js';
 import type { Position } from './account.js';
 import type { OrderDetailReadPort } from './orderDetailReadPorts.js';
-import type { OrderExecutionLedgerPort } from './orderExecutionLedger.js';
 import type { OrderPushPort } from './orderPushPorts.js';
 import type { OrderSnapshotReadPort } from './orderSnapshotReadPorts.js';
 import type { PendingOrder } from './orderReadMetadata.js';
@@ -15,14 +14,10 @@ export interface BrokerAccess {
     readonly todayOrders: () => Promise<ReadonlyArray<PendingOrder>>;
   };
   readonly createAccountReadPort: () => AccountReadPort;
-  readonly createExecutionLedgerPort: () => OrderExecutionLedgerPort;
   readonly createOrderPushPort: () => OrderPushPort;
   readonly createOrderDetailReadPort: () => OrderDetailReadPort;
   readonly createOrderSnapshotReadPort: (
-    deps: Readonly<{
-      rateLimiter: Pick<RateLimiter, 'throttle'>;
-      executionLedgerPort: OrderExecutionLedgerPort;
-    }>,
+    deps: Readonly<{ rateLimiter: Pick<RateLimiter, 'throttle'> }>,
   ) => OrderSnapshotReadPort;
   readonly createSellPositionReader: () => (symbol: string) => Promise<ReadonlyArray<Position>>;
 }

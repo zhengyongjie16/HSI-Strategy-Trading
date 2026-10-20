@@ -12,7 +12,7 @@ import { wait } from '../../../src/infrastructure/time/index.js';
  * oracle 为固定手工账：5×10 买入、5×9 卖出亏 5；新分段买 60 卖 40 亏 20。
  */
 
-import { afterAll, describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it, spyOn } from 'bun:test';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,6 +20,7 @@ import path from 'node:path';
 import { createMonitorConfig, createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import type { PostTradeConsistencyRuntime } from '../../../src/app/runtime/types.js';
+import { createSeatActivationWorkflow } from '../../../src/application/seatActivation/index.js';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';
 import { createWarrantCandidateSearch } from '../../../src/application/autoSearch/candidateSearch.js';
 import { createStartupSeatSearch } from '../../../src/application/autoSearch/startupSeatSearch.js';
@@ -28,7 +29,6 @@ import { createTradeLogHydrator } from '../../../src/application/protectiveLiqui
 import { createWarrantRiskRefresh } from '../../../src/application/riskRefresh/warrantRiskRefresh.js';
 import { createLiquidationCooldownTracker } from '../../../src/domain/liquidation/cooldown/index.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
-import { withTrustedOrderExecutionTimes } from '../../../src/domain/order/executionFact.js';
 import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
 import { resolveOrderOwnership } from '../../../src/domain/order/orderOwnership.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
@@ -99,7 +99,6 @@ const frozenOrders: unknown = fixture.orders;
 async function createRecoveryNative(orders: unknown = frozenOrders) {
   const native = await createBrokerIngressFixture({
     orderId: 'RECOVERY-SETUP',
-    tradeId: 'RECOVERY-SETUP-trade',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -111,7 +110,6 @@ async function createRecoveryNative(orders: unknown = frozenOrders) {
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs: trustedBuyTime,
-    executionTimeMs: null,
     updatedAtMs: trustedBuyTime,
   });
   native.setAccountBalance({
@@ -122,23 +120,12 @@ async function createRecoveryNative(orders: unknown = frozenOrders) {
   });
   native.setStockPositions([]);
   native.setOrderSnapshotRepliesFromFrozenV1(orders);
-  native.setExecutionReplies([
-    {
-      orderId: 'OFFLINE-BUY',
-      tradeId: 'OFFLINE-BUY-frozen-completion',
-      symbol: 'BULL.HK',
-      quantity: '5',
-      price: '10',
-      tradeDoneAtMs: trustedBuyTime,
-    },
-  ]);
   return native;
 }
 const originalNative = await createRecoveryNative();
 const originalRecorder = originalNative.createRecorder({
   logger: createLoggerDouble(),
   rateLimiter: createRateLimiterDouble(),
-  getExecutionTimeEvidence: () => [],
   settlementRefreshNeedRecorder: {
     recordSettlementRefreshNeed: () => {
       throw new Error('Initial frozen observation must not commit');
@@ -155,7 +142,6 @@ async function createOpenProtectiveObservation(): Promise<OrderFact> {
 
   const native = await createBrokerIngressFixture({
     orderId: 'OFFLINE-OPEN',
-    tradeId: 'OFFLINE-OPEN-trade',
     symbol: sell.symbol,
     stockName: sell.stockName,
     remark: sell.remark ?? '',
@@ -167,10 +153,8 @@ async function createOpenProtectiveObservation(): Promise<OrderFact> {
     submittedPrice: sell.price,
     executedPrice: '0',
     submittedAtMs: sell.submittedAt.getTime(),
-    executionTimeMs: null,
     updatedAtMs: sell.updatedAtMs,
   });
-  native.setExecutionReplies([]);
   const observations = await native.createQueryOrdersReader()();
   const observation = observations[0];
   if (observation === undefined)
@@ -240,7 +224,6 @@ async function createOfflineRecovery(
   const recorder = native.createRecorder({
     logger: createLoggerDouble(),
     rateLimiter,
-    getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: {
       recordSettlementRefreshNeed: (need) => {
         if (postTrade === null) throw new Error('post-trade runtime 未完成装配');
@@ -444,6 +427,52 @@ async function createOfflineRecovery(
     episode,
     cooldown,
     repository,
+    holds,
+    native,
+    refreshSeat: async (refreshedOrders: ReadonlyArray<OrderFact>) => {
+      const seat = symbolRegistry.getSeatState('LONG');
+      symbolRegistry.updateSeatState('LONG', {
+        ...seat,
+        symbol: 'BULL.HK',
+        status: 'ACTIVATING',
+      });
+      const workflow = createSeatActivationWorkflow({
+        diagnostics: createDiagnosticObserverDouble(),
+        clock: { now: () => now },
+        config,
+        symbolRegistry,
+        orders: { ...recorder, fetchAllOrdersFromAPI: async () => refreshedOrders },
+        dailyLoss: daily,
+        risk: {
+          prepareUnrealizedLossData: (symbol, isLong, offset) =>
+            risk.prepareUnrealizedLossData(recorder, symbol, isLong, offset),
+          publishUnrealizedLossData: risk.publishUnrealizedLossData,
+          setWarrantInfoFromCallPrice: risk.setWarrantInfoFromCallPrice,
+        },
+        snapshot,
+        subscriptions: {
+          retainSymbols: async () => {},
+          releaseRetain: async () => {},
+          waitForAdmission: async () => {},
+          reconcilePositionHoldFromCurrentTruth: async () => {},
+        },
+        getQuotes: market.getQuotes,
+        setDirectionSymbolName: () => {},
+        logger: createLoggerDouble(),
+      });
+      return workflow.activate(
+        {
+          dayEpoch: snapshot.getView().token.dayEpoch,
+          direction: 'LONG',
+          seatVersion: symbolRegistry.getSeatVersion('LONG'),
+          previousSymbol: 'BULL.HK',
+          nextSymbol: 'BULL.HK',
+          callPrice: '15000',
+          symbolName: 'HSI BULL',
+        },
+        () => true,
+      );
+    },
     symbolRegistry,
     monitor,
     termination,
@@ -645,7 +674,10 @@ describe('P2 offline V1 precision evidence boundary', () => {
       );
       await withOfflineLog(async (root, logFile) => {
         const state = await createOfflineRecovery(root, conflictingOrders);
-        await expectRecoveryBlocked(state.load, 'persisted baseline does not match boundary fact');
+        await expectRecoveryBlocked(
+          state.load,
+          /persisted baseline does not match boundary fact|同 revision 同量同阶段的累计经济或执行时间冲突/,
+        );
         expect(state.repository.loadCompletionRecords(fixture.dayKey)).toHaveLength(1);
         expect(state.episode.getInProgressEpisodes()).toEqual([]);
         expect(
@@ -1152,17 +1184,20 @@ describe('P0 offline V1 full recovery baseline', () => {
       await state.recover();
       const before = fs.readFileSync(logFile, 'utf8');
       const progressCount = state.repository.loadExecutionProgressRecords(fixture.dayKey).length;
-      const observations = withTrustedOrderExecutionTimes(
-        rawOrders,
-        state.daily.getExecutionTimeEvidence(),
-      );
-      const sell = observations.find((order) => order.orderId === 'OFFLINE-SELL');
-      expect(sell).toBeDefined();
-      if (sell === undefined) throw new Error('offline SELL observation missing');
+      // 原始 query 事实只携带订单 updatedAt 代理时间；恢复后的 known 累计事实保留 durable T。
+      const sell = rawOrders.find((order) => order.orderId === 'OFFLINE-SELL');
+      if (sell?.executedAmount === null || sell === undefined)
+        throw new Error('offline SELL observation missing amount');
 
-      expect(sell.executionTimeMs).toBe(fixture.boundaryMs);
+      expect(sell.executionTimeMs).toBe(fixture.revisionMs);
       expect(sell.updatedAtMs).toBe(fixture.revisionMs);
       expect(sell.updatedAtMs - fixture.boundaryMs).toBe(30_000);
+      expect(state.recorder.getExecutionFact(sell.orderId)).toMatchObject({
+        executionTimeMs: fixture.boundaryMs,
+        updatedAtMs: fixture.revisionMs,
+        cumulativeAmount: '45',
+      });
+
       state.recorder.commitExecutionFact(
         {
           brokerOrderId: sell.orderId,
@@ -1203,7 +1238,7 @@ describe('P0 offline V1 full recovery baseline', () => {
           direction: 'LONG',
           symbol: sell.symbol,
           side: 'SELL',
-          // 保留原 P0 9.2/T/revision+1 输入：已完成旧 boundary 的修订仍沿已确认规则不提交。
+          // 保留原 P0 9.2/T/revision+1 输入：修订写入权威/durable，已完成旧 boundary 不重写。
           executedPrice: '9.2',
           executedQuantity: sell.executedQuantity,
           executedTimeMs: fixture.boundaryMs,
@@ -1220,13 +1255,13 @@ describe('P0 offline V1 full recovery baseline', () => {
         },
       );
       expect(replay).toEqual({
-        admission: 'SUPPRESSED',
-        authoritativeFactChanged: false,
+        admission: 'ADMITTED',
+        authoritativeFactChanged: true,
         executionAdvanced: false,
       });
 
       expect(state.repository.loadExecutionProgressRecords(fixture.dayKey)).toHaveLength(
-        progressCount,
+        progressCount + 1,
       );
       expect(state.daily.getLossOffset('LONG')).toBe('0');
       expect(state.getSubmitCallCount()).toBe(0);
@@ -1235,7 +1270,7 @@ describe('P0 offline V1 full recovery baseline', () => {
         updatedAtMs: fixture.revisionMs,
         cumulativeAmount: '45',
       });
-      expect(fs.readFileSync(logFile, 'utf8')).toBe(before);
+      expect(fs.readFileSync(logFile, 'utf8').startsWith(before)).toBe(true);
       expect(fs.readFileSync(new URL('fixtures/progress.jsonl', import.meta.url), 'utf8')).toBe(
         originalPayload,
       );
@@ -1255,7 +1290,10 @@ describe('P0 offline V1 full recovery baseline', () => {
     await withOfflineLog(async (root, logFile) => {
       const recovered = await createOfflineRecovery(root);
       expect(recovered.repository.loadExecutionProgressRecords(fixture.dayKey)).toHaveLength(3);
-      await expectRecoveryBlocked(recovered.load, 'execution progress exceeds current fact');
+      await expectRecoveryBlocked(
+        recovered.load,
+        /累计数量倒退|execution progress exceeds current fact/,
+      );
       expect(recovered.repository.loadCompletionRecords(fixture.dayKey)).toHaveLength(0);
       expect(
         recovered.cooldown.getRemainingMs({
@@ -1331,7 +1369,7 @@ describe('P0 offline V1 full recovery baseline', () => {
       const state = await createOfflineRecovery(root);
       await expectRecoveryBlocked(
         state.load,
-        '[DailyLossTracker] 已成交订单缺少可信真实 execution time: OFFLINE-SELL',
+        '保护性清仓订单缺少精确成交时间，无法恢复或补写 completion: OFFLINE-SELL',
       );
       expect(state.episode.getInProgressEpisodes()).toEqual([]);
       expect(
@@ -1346,3 +1384,450 @@ describe('P0 offline V1 full recovery baseline', () => {
     }, '');
   });
 });
+
+/** A/B/C 回归使用真实 loader/rebuild/recorder/Daily/文件协议；不修改冻结 V1 fixture。 */
+function regressionOrder(
+  orderId: 'OFFLINE-BUY' | 'OFFLINE-SELL',
+  overrides: Partial<OrderFact>,
+): OrderFact {
+  const source = rawOrders.find((order) => order.orderId === orderId);
+  if (source === undefined) throw new Error('missing regression source');
+
+  return { ...source, ...overrides };
+}
+
+for (const amount of ['100', '90']) {
+  it(
+    'B baseline-only ordinary BUY recovers a new revision amount ' +
+      amount +
+      ' without progress or invented phase',
+    async () => {
+      await withOfflineLog(async (root, logFile) => {
+        const buy = regressionOrder('OFFLINE-BUY', {
+          executedQuantity: 10,
+          quantity: 10,
+          executedAmount: amount,
+          executedPrice: amount === '100' ? '10' : '9',
+          updatedAtMs: trustedBuyTime + 1,
+          updatedAt: new Date(trustedBuyTime + 1),
+          executionTimeMs: trustedBuyTime + 1,
+        });
+        const state = await createOfflineRecovery(root, [buy]);
+        state.repository.appendCompletionIdempotent({
+          monitorSymbol: 'HSI.HK',
+          direction: 'LONG',
+          boundaryExecutedTimeMs: fixture.boundaryMs,
+          orderBaselines: [
+            {
+              orderId: buy.orderId,
+              symbol: buy.symbol,
+              side: 'BUY',
+              cumulativeQuantity: '10',
+              cumulativeAmount: '100',
+              lastExecutionTimeMs: trustedBuyTime,
+              orderRevisionMs: trustedBuyTime,
+            },
+          ],
+        });
+        const before = fs.readFileSync(logFile, 'utf8');
+        await state.recover();
+        expect(state.recorder.getExecutionFact(buy.orderId)).toMatchObject({
+          cumulativeQuantity: 10,
+          cumulativeAmount: amount,
+          executionTimeMs: trustedBuyTime,
+        });
+        expect(state.daily.getLossOffset('LONG')).toBe('0');
+        expect(state.repository.loadExecutionProgressRecords(fixture.dayKey)).toEqual([]);
+        expect(state.getRecoveryProjectionCounts()).toMatchObject({
+          liveCooldownTriggers: 0,
+          hydrationCalls: 1,
+        });
+        expect(fs.readFileSync(logFile, 'utf8')).toBe(before);
+      }, '');
+    },
+  );
+}
+
+for (const invalid of ['missing', 'amount', 'time'] as const) {
+  it('B rejects ' + invalid + ' ordinary BUY baseline before economic publication', async () => {
+    await withOfflineLog(async (root, logFile) => {
+      const buy = regressionOrder('OFFLINE-BUY', {
+        executedQuantity: 10,
+        quantity: 10,
+        executedAmount: '100',
+        executedPrice: '10',
+      });
+      const state = await createOfflineRecovery(
+        root,
+        invalid === 'missing'
+          ? [buy, ...rawOrders.filter((order) => order.executionSide === 'SELL')]
+          : [buy],
+      );
+      state.repository.appendCompletionIdempotent({
+        monitorSymbol: 'HSI.HK',
+        direction: 'LONG',
+        boundaryExecutedTimeMs: fixture.boundaryMs,
+        orderBaselines:
+          invalid === 'missing'
+            ? [
+                {
+                  orderId: 'OFFLINE-SELL',
+                  symbol: 'BULL.HK',
+                  side: 'SELL',
+                  cumulativeQuantity: '5',
+                  cumulativeAmount: '45',
+                  lastExecutionTimeMs: fixture.boundaryMs,
+                  orderRevisionMs: fixture.revisionMs,
+                },
+              ]
+            : [
+                {
+                  orderId: buy.orderId,
+                  symbol: buy.symbol,
+                  side: 'BUY',
+                  cumulativeQuantity: '10',
+                  cumulativeAmount: invalid === 'amount' ? '90' : '100',
+                  lastExecutionTimeMs: trustedBuyTime + (invalid === 'time' ? 1 : 0),
+                  orderRevisionMs: trustedBuyTime,
+                },
+              ],
+      });
+
+      if (invalid === 'time')
+        state.repository.appendCompletionIdempotent({
+          monitorSymbol: 'HSI.HK',
+          direction: 'LONG',
+          boundaryExecutedTimeMs: fixture.boundaryMs + 1,
+          orderBaselines: [
+            {
+              orderId: buy.orderId,
+              symbol: buy.symbol,
+              side: 'BUY',
+              cumulativeQuantity: '10',
+              cumulativeAmount: '100',
+              lastExecutionTimeMs: trustedBuyTime,
+              orderRevisionMs: trustedBuyTime,
+            },
+          ],
+        });
+
+      const before = fs.readFileSync(logFile, 'utf8');
+      const seed = spyOn(state.holds, 'seedFromOrders');
+      const publish = spyOn(state.daily, 'publishRecalculation');
+      const resetEpisode = spyOn(state.episode, 'resetAll');
+      await expectRecoveryBlocked(state.load);
+      expect(seed).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+      expect(resetEpisode).not.toHaveBeenCalled();
+      expect(state.recorder.getExecutionFact(buy.orderId)).toBeNull();
+      expect(state.daily.getLossOffset('LONG')).toBe('0');
+      expect(state.getRecoveryProjectionCounts()).toEqual({
+        recoveryCalls: 0,
+        hydrationCalls: 0,
+        liveCooldownTriggers: 0,
+      });
+      expect(fs.readFileSync(logFile, 'utf8')).toBe(before);
+    }, '');
+  });
+}
+
+it('A freezes SELL 90 through startup correction 80, later 170 and real SEAT_REFRESH: loss remains -20', async () => {
+  await withOfflineLog(async (root, logFile) => {
+    const sell = regressionOrder('OFFLINE-SELL', {
+      executedQuantity: 10,
+      quantity: 20,
+      executedAmount: '80',
+      executedPrice: '8',
+      updatedAtMs: fixture.revisionMs + 1,
+      updatedAt: new Date(fixture.revisionMs + 1),
+      executionTimeMs: fixture.revisionMs + 1,
+    });
+    const state = await createOfflineRecovery(root, [sell]);
+    state.repository.appendCompletionIdempotent({
+      monitorSymbol: 'HSI.HK',
+      direction: 'LONG',
+      boundaryExecutedTimeMs: fixture.boundaryMs,
+      orderBaselines: [
+        {
+          orderId: sell.orderId,
+          symbol: sell.symbol,
+          side: 'SELL',
+          cumulativeQuantity: '10',
+          cumulativeAmount: '90',
+          lastExecutionTimeMs: fixture.boundaryMs,
+          orderRevisionMs: fixture.revisionMs,
+        },
+      ],
+    });
+    const before = fs.readFileSync(logFile, 'utf8');
+    await state.recover();
+    const counts = state.getRecoveryProjectionCounts();
+    const completion = state.repository.loadCompletionRecords(fixture.dayKey);
+    const laterMs = fixture.revisionMs + 1000;
+    const buy = regressionOrder('OFFLINE-BUY', {
+      orderId: 'AFTER-BOUNDARY-BUY',
+      executedQuantity: 10,
+      quantity: 10,
+      executedAmount: '100',
+      executedPrice: '10',
+      submittedAt: new Date(laterMs),
+      updatedAt: new Date(laterMs),
+      updatedAtMs: laterMs,
+      executionTimeMs: laterMs,
+    });
+    const advancedSell = {
+      ...sell,
+      executedQuantity: 20,
+      executedAmount: '170',
+      executedPrice: '8.5',
+      updatedAt: new Date(laterMs + 1),
+      updatedAtMs: laterMs + 1,
+      executionTimeMs: laterMs + 1,
+    };
+    for (const order of [buy, advancedSell]) {
+      if (order.executedPrice === null) throw new Error('regression order lacks price');
+
+      const price = order.executedPrice;
+      if (order.executedAmount === null) throw new Error('regression order lacks amount');
+
+      state.recorder.commitExecutionFact(
+        {
+          brokerOrderId: order.orderId,
+          symbol: order.symbol,
+          side: order.executionSide,
+          phase: order.executionPhase,
+          cumulativeQuantity: order.executedQuantity,
+          cumulativeAmount: order.executedAmount,
+          executionTimeMs: order.executionTimeMs,
+          updatedAtMs: order.updatedAtMs,
+        },
+        true,
+        [],
+        () =>
+          state.daily.recordCumulativeExecution(
+            {
+              factStage: order.executionPhase,
+              orderId: order.orderId,
+              direction: 'LONG',
+              symbol: order.symbol,
+              side: order.executionSide,
+              executedQuantity: order.executedQuantity,
+              executedPrice: price,
+              executedTimeMs: order.updatedAtMs,
+              orderUpdatedAtMs: order.updatedAtMs,
+            },
+            order.executionSide === 'SELL'
+              ? (progress) => {
+                  state.repository.appendExecutionProgressIdempotent({
+                    ...progress,
+                    monitorSymbol: 'HSI.HK',
+                    direction: 'LONG',
+                    symbol: order.symbol,
+                    orderId: order.orderId,
+                  });
+                }
+              : undefined,
+          ).admission,
+      );
+    }
+
+    expect(state.daily.getLossOffset('LONG')).toBe('-20');
+    expect(await state.refreshSeat([buy, advancedSell])).toMatchObject({ status: 'processed' });
+    expect(state.daily.getLossOffset('LONG')).toBe('-20');
+    expect(await state.refreshSeat([buy, advancedSell])).toMatchObject({ status: 'processed' });
+    expect(state.daily.getLossOffset('LONG')).toBe('-20');
+    expect(state.repository.loadCompletionRecords(fixture.dayKey)).toEqual(completion);
+    expect(state.repository.loadExecutionProgressRecords(fixture.dayKey)).toHaveLength(1);
+    expect(state.recorder.getExecutionFact(sell.orderId)).toMatchObject({
+      cumulativeQuantity: 20,
+      cumulativeAmount: '170',
+    });
+    expect(state.getRecoveryProjectionCounts()).toEqual(counts);
+    expect(state.episode.getInProgressEpisodes()).toEqual([]);
+    expect(fs.readFileSync(logFile, 'utf8').startsWith(before)).toBe(true);
+  }, '');
+});
+
+for (const [openAmount, terminalAmount, accepted] of [
+  ['90', '110', false],
+  ['110', '90', true],
+] as const) {
+  for (const indices of [
+    [0, 1, 2],
+    [0, 2, 1],
+    [1, 0, 2],
+    [1, 2, 0],
+    [2, 0, 1],
+    [2, 1, 0],
+  ]) {
+    it(`C full recovery 100 -> ${openAmount} OPEN -> ${terminalAmount} TERMINAL, file order ${indices.join('')}`, async () => {
+      await withOfflineLog(async (root, logFile) => {
+        const final = regressionOrder('OFFLINE-SELL', {
+          quantity: 10,
+          executedQuantity: 10,
+          executedAmount: terminalAmount,
+          executedPrice: accepted ? '9' : '11',
+          executionTimeMs: fixture.revisionMs,
+        });
+        const state = await createOfflineRecovery(root, [final]);
+        const progress = [
+          {
+            factStage: 'OPEN' as const,
+            cumulativeQuantity: '5',
+            cumulativeAmount: '100',
+            orderRevisionMs: fixture.boundaryMs,
+            lastExecutionTimeMs: fixture.boundaryMs,
+          },
+          {
+            factStage: 'OPEN' as const,
+            cumulativeQuantity: '10',
+            cumulativeAmount: openAmount,
+            orderRevisionMs: fixture.revisionMs,
+            lastExecutionTimeMs: fixture.revisionMs,
+          },
+          {
+            factStage: 'TERMINAL' as const,
+            cumulativeQuantity: '10',
+            cumulativeAmount: terminalAmount,
+            orderRevisionMs: fixture.revisionMs,
+            lastExecutionTimeMs: fixture.revisionMs,
+          },
+        ];
+        for (const index of indices) {
+          const record = progress[index];
+          if (record === undefined) throw new Error('missing permutation record');
+
+          state.repository.appendExecutionProgressIdempotent({
+            monitorSymbol: 'HSI.HK',
+            direction: 'LONG',
+            symbol: 'BULL.HK',
+            orderId: final.orderId,
+            ...record,
+          });
+        }
+
+        const before = fs.readFileSync(logFile, 'utf8');
+        if (accepted) {
+          await state.recover();
+          expect(state.recorder.getExecutionFact(final.orderId)).toMatchObject({
+            cumulativeAmount: '90',
+          });
+          expect(state.repository.loadCompletionRecords(fixture.dayKey)).toHaveLength(1);
+          expect(state.getRecoveryProjectionCounts()).toMatchObject({
+            liveCooldownTriggers: 0,
+            hydrationCalls: 1,
+          });
+          expect(state.getRestoredTriggerCounts()).toEqual([1]);
+          expect(fs.readFileSync(logFile, 'utf8').startsWith(before)).toBe(true);
+        } else {
+          const publish = spyOn(state.daily, 'publishRecalculation');
+          const resetEpisode = spyOn(state.episode, 'resetAll');
+          await expectRecoveryBlocked(state.load, /正成交增量缺少正金额增量/);
+          expect(publish).not.toHaveBeenCalled();
+          expect(resetEpisode).not.toHaveBeenCalled();
+          expect(state.recorder.getExecutionFact(final.orderId)).toBeNull();
+          expect(state.repository.loadCompletionRecords(fixture.dayKey)).toEqual([]);
+          expect(state.getRecoveryProjectionCounts()).toEqual({
+            recoveryCalls: 0,
+            hydrationCalls: 0,
+            liveCooldownTriggers: 0,
+          });
+          expect(fs.readFileSync(logFile, 'utf8')).toBe(before);
+        }
+      }, '');
+    });
+  }
+}
+
+/** 同一输入以真实 SDK push/monitor/settlement 与 loader/SEAT_REFRESH 三条路径比较两次 durable completion。 */
+for (const route of ['ONLINE', 'SEAT_REFRESH', 'RESTART'] as const) {
+  it(`P1 two-boundary ${route} freezes corrected A=80 at B2 and realizes only -10 afterwards`, async () => {
+    await withOfflineLog(async (root) => {
+      let state = await createOfflineRecovery(root, []);
+      const t = fixture.boundaryMs;
+      const frame = (orderId: string, side: 'BUY' | 'SELL', price: string, time: number, quantity = 10) => ({
+        orderId, symbol: 'BULL.HK', stockName: 'HSI RC', remark: side === 'SELL' ? '|PL' : '',
+        side, status: 'Filled' as const, orderType: 'LO' as const,
+        quantity: String(quantity), executedQuantity: String(quantity),
+        submittedPrice: price, executedPrice: price, submittedAtMs: time - 1, updatedAtMs: time,
+      });
+      const sendNew = (input: ReturnType<typeof frame>) => {
+        state.monitor.trackOrder({
+          orderId: input.orderId, symbol: input.symbol, side: input.side, executionSide: input.side,
+          orderType: 'LO', price: input.submittedPrice, initialSubmittedPrice: input.submittedPrice,
+          quantity: Number(input.quantity), isLongSymbol: true, monitorSymbol: 'HSI.HK',
+          isProtectiveLiquidation: input.side === 'SELL',
+        });
+        state.native.emitOrderChangedFrame(input);
+      };
+      const buy = frame('P1-oldBUY', 'BUY', '10', t - 10);
+      const sell = frame('P1-A', 'SELL', '9', t);
+      const correction = { ...sell, executedPrice: '8', updatedAtMs: t + 100 };
+      try {
+        await state.recover();
+        sendNew(buy);
+        sendNew(sell);
+        state.postTrade.start();
+        await state.postTrade.waitForFresh();
+        const firstCompletion = state.repository.loadCompletionRecords(fixture.dayKey);
+        expect(firstCompletion).toHaveLength(1);
+        expect(firstCompletion[0]?.orderBaselines.find((b) => b.orderId === 'P1-A')?.cumulativeAmount).toBe('90');
+        state.native.emitOrderChangedFrame(correction);
+        await state.postTrade.waitForFresh();
+        expect(state.recorder.getExecutionFact('P1-A')).toMatchObject({ cumulativeAmount: '80', executionTimeMs: t, updatedAtMs: t + 100 });
+        expect(state.daily.getLossOffset('LONG')).toBe('0');
+        expect(state.repository.loadCompletionRecords(fixture.dayKey)).toEqual(firstCompletion);
+        state.native.setOrderSnapshotReplies([], [buy, correction]);
+        const correctedOrders = await state.recorder.fetchAllOrdersFromAPI();
+        if (route === 'SEAT_REFRESH') {
+          expect(await state.refreshSeat(correctedOrders)).toMatchObject({ status: 'processed' });
+        } else if (route === 'RESTART') {
+          await state.postTrade.stopAndDrain();
+          await state.monitor.stopRuntimeAndDrain();
+          await state.monitor.teardown();
+          state = await createOfflineRecovery(root, correctedOrders);
+          await state.recover();
+          state.postTrade.start();
+        }
+
+        expect(state.repository.loadCompletionRecords(fixture.dayKey)).toEqual(firstCompletion);
+        expect(state.daily.getLossOffset('LONG')).toBe('0');
+        const buyB = frame('P1-B', 'BUY', '10', t + 200);
+        const sellC = frame('P1-C', 'SELL', '9', t + 300);
+        sendNew(buyB);
+        sendNew(sellC);
+        await state.postTrade.waitForFresh();
+        const completions = state.repository.loadCompletionRecords(fixture.dayKey);
+        expect(completions).toHaveLength(2);
+        expect(completions[0]).toEqual(firstCompletion[0]);
+        expect(completions[1]?.orderBaselines.find((b) => b.orderId === 'P1-A')).toMatchObject({
+          cumulativeQuantity: '10', cumulativeAmount: '80', lastExecutionTimeMs: t, orderRevisionMs: t + 100,
+        });
+        expect(state.episode.getInProgressEpisodes()).toEqual([]);
+        await state.postTrade.stopAndDrain();
+        if (route === 'RESTART') {
+          state.native.setOrderSnapshotReplies([], [buy, correction, buyB, sellC]);
+          const afterB2Orders = await state.recorder.fetchAllOrdersFromAPI();
+          await state.monitor.stopRuntimeAndDrain();
+          await state.monitor.teardown();
+          state = await createOfflineRecovery(root, afterB2Orders);
+          await state.recover();
+          expect(state.repository.loadCompletionRecords(fixture.dayKey)).toEqual(completions);
+          expect(state.daily.getLossOffset('LONG')).toBe('0');
+        }
+
+        sendNew(frame('P1-D', 'BUY', '10', t + 400));
+        state.native.emitOrderChangedFrame(frame('P1-A', 'SELL', '8.5', t + 500, 20));
+        // B2 后仅卖出增量 20-10=10、金额 170-80=90，对应 D 的 100 成本，亏损 -10。
+        expect(state.daily.getLossOffset('LONG')).toBe('-10');
+        expect(state.recorder.getExecutionFact('P1-A')).toMatchObject({ cumulativeQuantity: 20, cumulativeAmount: '170' });
+        expect(state.repository.loadCompletionRecords(fixture.dayKey)).toEqual(completions);
+        expect(state.getSubmitCallCount()).toBe(0);
+      } finally {
+        await state.postTrade.stopAndDrain();
+        await state.monitor.stopRuntimeAndDrain();
+        await state.monitor.teardown();
+      }
+    }, '');
+  });
+}

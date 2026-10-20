@@ -33,7 +33,9 @@ function fact(
   };
 }
 
-function raw(input: BrokerOrderExecutionFact, price: string): OrderFact {
+type RawOrder = OrderFact & Readonly<{ executedAmount: string }>;
+
+function raw(input: BrokerOrderExecutionFact, price: string): RawOrder {
   return {
     orderId: input.brokerOrderId,
     symbol: input.symbol,
@@ -85,7 +87,7 @@ async function fixture() {
 
 function baseline(
   f: ReturnType<typeof createExecutionFixture>,
-  orders: ReadonlyArray<OrderFact>,
+  orders: ReadonlyArray<RawOrder>,
   capturedToken: SnapshotToken,
   mode: 'ACTIVATION' | 'REBUILD',
 ) {
@@ -186,13 +188,11 @@ describe('one order owner projection', () => {
     expect(f.recorder.getExecutionFact('open')?.cumulativeQuantity).toBe(100);
     expect(f.recorder.getCostBasis('A.HK', true)).toEqual({ costAmount: '100', quantity: 100 });
     f.snapshot.invalidate();
-    const beforeDaily = f.daily.getExecutionTimeEvidence();
     expect(
       baseline(f, [raw(fact('late', 'BUY', 100, '200', 1200), '2')], f.token, 'ACTIVATION').status,
     ).toBe('ABORTED');
     expect(f.recorder.getExecutionFact('late')).toBeNull();
     expect(f.recorder.getCostBasis('A.HK', true)?.quantity).toBe(100);
-    expect(f.daily.getExecutionTimeEvidence()).toEqual(beforeDaily);
   });
 
   test('clear scope blocks then-current projected portion but not later increment; corrections do not resurrect it', async () => {

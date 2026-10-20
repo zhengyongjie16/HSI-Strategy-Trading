@@ -65,7 +65,6 @@ async function createPendingDoomsdayOrder(
 ): Promise<PendingSellOrderSnapshot> {
   const native = await createBrokerIngressFixture({
     orderId,
-    tradeId: `T-${orderId}`,
     symbol: 'BULL.HK',
     stockName: 'BULL',
     remark: '',
@@ -77,7 +76,6 @@ async function createPendingDoomsdayOrder(
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs,
-    executionTimeMs: null,
     updatedAtMs: submittedAtMs,
   });
   const fact = native.queryObservation;
@@ -107,7 +105,6 @@ async function createPendingCutoffOrder(
 ): Promise<PendingOrder> {
   const native = await createBrokerIngressFixture({
     orderId: input.orderId,
-    tradeId: 'T-' + input.orderId,
     symbol: input.symbol,
     stockName: input.symbol,
     remark: '',
@@ -119,7 +116,6 @@ async function createPendingCutoffOrder(
     submittedPrice: input.submittedPrice ?? '0',
     executedPrice: '0',
     submittedAtMs: BUY_CUTOFF_TEST_NOW.getTime(),
-    executionTimeMs: null,
     updatedAtMs: BUY_CUTOFF_TEST_NOW.getTime(),
   });
   const fact = native.queryObservation;

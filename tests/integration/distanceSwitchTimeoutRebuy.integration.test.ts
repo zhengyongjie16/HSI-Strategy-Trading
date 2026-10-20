@@ -78,7 +78,6 @@ describe('distance switch timeout market conversion rebuy', () => {
       h.setNow(T);
       const original = {
         orderId: 'S1',
-        tradeId: 'S1-EXECUTION',
         symbol: 'OLD_BULL.HK',
         stockName: 'HSI RC',
         remark: 'HSI',
@@ -90,7 +89,6 @@ describe('distance switch timeout market conversion rebuy', () => {
         submittedPrice: '2',
         executedPrice: '0',
         submittedAtMs: T,
-        executionTimeMs: null,
         updatedAtMs: T,
       };
       const native = await createBrokerIngressFixture(original);
@@ -332,26 +330,11 @@ describe('distance switch timeout market conversion rebuy', () => {
           timer.callback();
 
         await cancelIssued.promise;
-        const rows =
-          parentFill === 0
-            ? []
-            : [
-                {
-                  orderId: 'S1',
-                  tradeId: 'S1-EXECUTION',
-                  symbol: original.symbol,
-                  quantity: '40',
-                  price: '2',
-                  tradeDoneAtMs: T + 1100,
-                },
-              ];
-        native.setExecutionReplies(rows);
         native.emitOrderChangedFrame({
           ...original,
           status: 'Canceled',
           executedQuantity: String(parentFill),
           executedPrice: parentFill === 0 ? '0' : '2',
-          executionTimeMs: parentFill === 0 ? null : T + 1100,
           updatedAtMs: T + 1200,
         });
         releaseCancel.resolve();
@@ -369,35 +352,14 @@ describe('distance switch timeout market conversion rebuy', () => {
         await f.sink.waitForFresh();
         blockRefresh = true;
         native.setStockPositions([]);
-        native.setExecutionReplies([
-          ...rows,
-          {
-            orderId: 'S2',
-            tradeId: 'S2-A',
-            symbol: original.symbol,
-            quantity: String(remaining / 2),
-            price: '2',
-            tradeDoneAtMs: T + 1300,
-          },
-          {
-            orderId: 'S2',
-            tradeId: 'S2-B',
-            symbol: original.symbol,
-            quantity: String(remaining / 2),
-            price: '4',
-            tradeDoneAtMs: T + 1400,
-          },
-        ]);
         const successor = {
           ...original,
           orderId: 'S2',
-          tradeId: 'S2-B',
           orderType: 'MO' as const,
           status: 'Filled' as const,
           quantity: String(remaining),
           executedQuantity: String(remaining),
           executedPrice: '3',
-          executionTimeMs: T + 1400,
           updatedAtMs: T + 1500,
         };
         native.emitOrderChangedFrame(successor);
@@ -435,13 +397,11 @@ describe('distance switch timeout market conversion rebuy', () => {
             await quoteIssued.promise;
           }
 
-          native.setExecutionReplies(rows.map((row) => ({ ...row, price: revisionPrice })));
           native.emitOrderChangedFrame({
             ...original,
             status: 'Canceled',
             executedQuantity: '40',
             executedPrice: revisionPrice,
-            executionTimeMs: T + 1100,
             updatedAtMs: T + 1600,
           });
 
@@ -473,16 +433,6 @@ describe('distance switch timeout market conversion rebuy', () => {
         expect(native.nativeSubmitObservations()).toHaveLength(3);
         expect(f.recorder.getSellRecordByOrderId('S2')?.costAmount).toBe(afterFill?.costAmount);
         // BUY 已 accepted 后再修订关闭单，只更新事实，不追补或提交第二张回补单。
-        native.setExecutionReplies([
-          {
-            orderId: 'S2',
-            tradeId: 'S2-REVISED',
-            symbol: original.symbol,
-            quantity: String(remaining),
-            price: '4',
-            tradeDoneAtMs: T + 1400,
-          },
-        ]);
         native.emitOrderChangedFrame({ ...successor, executedPrice: '4', updatedAtMs: T + 1700 });
         await waitUntil(
           () => f.recorder.getSellRecordByOrderId('S2')?.costAmount === String(remaining * 4),

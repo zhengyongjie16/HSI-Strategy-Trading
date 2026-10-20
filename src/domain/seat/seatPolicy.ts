@@ -1,6 +1,7 @@
 /** 席位纯规则：失败冻结、信号绑定校验与启动持仓优先，不执行 I/O 或状态发布。 */
 import type { Position } from '../../types/account.js';
 import type { SeatState, SymbolRegistry } from '../../types/seat.js';
+import { isHongKongSymbol } from '../../utils/marketScope.js';
 import { isSeatVersionMatch } from './seatIdentity.js';
 import type {
   SeatUnavailableReason,
@@ -299,10 +300,14 @@ export function resolveSeatOnStartup({
   readonly positions: ReadonlyArray<Position>;
 }): string | null {
   if (!autoSearchEnabled) {
-    return configuredSymbol ?? null;
+    return configuredSymbol !== null &&
+      configuredSymbol.length > 0 &&
+      isHongKongSymbol(configuredSymbol)
+      ? configuredSymbol
+      : null;
   }
 
-  if (!candidateSymbol) {
+  if (!candidateSymbol || !isHongKongSymbol(candidateSymbol)) {
     return null;
   }
 

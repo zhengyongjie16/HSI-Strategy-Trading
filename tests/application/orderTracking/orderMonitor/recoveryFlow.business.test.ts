@@ -34,7 +34,6 @@ import type { MonitorConfig } from '../../../../src/types/config.js';
 import type { OrderReadStatus } from '../../../../src/types/orderReadMetadata.js';
 import type { OrderRecorder } from '../../../../src/types/orderRecorder.js';
 import type { OrderFact } from '../../../../src/types/trade.js';
-import { exactMultiply } from '../../../../src/utils/numeric/exact.js';
 import { createExternalApiRequestError } from '../../../helpers/createExternalApiRequestError.js';
 
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
@@ -178,7 +177,6 @@ async function createPendingOrder(params: {
   const now = Date.parse('2026-04-08T09:00:00.000Z');
   const frame = {
     orderId: params.orderId,
-    tradeId: 'RECOVERY-' + params.orderId,
     symbol: params.symbol,
     stockName: params.stockName ?? 'HSI RC',
     remark: '',
@@ -190,7 +188,6 @@ async function createPendingOrder(params: {
     submittedPrice: params.price ?? '1.01',
     executedPrice: params.executedPrice ?? '0',
     submittedAtMs: now,
-    executionTimeMs: (params.executedQuantity ?? 0) > 0 ? now - 100 : null,
     updatedAtMs: params.updatedAtMs ?? now,
   };
   const native = await createBrokerIngressFixture({
@@ -201,35 +198,10 @@ async function createPendingOrder(params: {
   native.setOrderSnapshotReplies([], [frame]);
   if (params.price === null) native.setOrderSnapshotSubmittedPriceNull(params.orderId);
 
-  const quantity = params.executedQuantity ?? 0;
-  if (quantity > 0)
-    native.setExecutionReplies([
-      {
-        orderId: params.orderId,
-        tradeId: 'RECOVERY-INDEPENDENT-EXECUTION',
-        symbol: params.symbol,
-        quantity: String(quantity),
-        price: params.executedPrice ?? '0',
-        tradeDoneAtMs: now - 100,
-      },
-    ]);
-
-  const executions = await native.executionLedgerPort.todayExecutions({ orderId: params.orderId });
-  const evidence = executions.map((execution) => ({
-    brokerOrderId: execution.orderId,
-    symbol: execution.symbol,
-    side: native.queryObservation.executionSide,
-    cumulativeQuantity: quantity,
-    cumulativeAmount: exactMultiply(String(execution.quantity), execution.price),
-    lastExecutionTimeMs: execution.tradeDoneAtMs,
-    orderRevisionMs: frame.updatedAtMs,
-    phase: native.queryObservation.executionPhase,
-  }));
   const settlementRefreshNeeds: unknown[] = [];
   const reader = native.createRecorder({
     logger: createLoggerDouble(),
     rateLimiter: createRateLimiterDouble(),
-    getExecutionTimeEvidence: () => evidence,
     settlementRefreshNeedRecorder: {
       recordSettlementRefreshNeed: (need) => {
         settlementRefreshNeeds.push(need);
@@ -262,7 +234,6 @@ async function createNativeRecoveryEvent(
   const atMs = input.updatedAtMs ?? Date.parse('2026-04-08T09:00:00.000Z');
   const native = await createBrokerIngressFixture({
     orderId: input.orderId,
-    tradeId: 'NO-EXECUTION',
     symbol: input.symbol,
     stockName: input.symbol,
     remark: '',
@@ -274,7 +245,6 @@ async function createNativeRecoveryEvent(
     submittedPrice: '1.01',
     executedPrice: '0',
     submittedAtMs: atMs,
-    executionTimeMs: null,
     updatedAtMs: atMs,
   });
   const observations: OrderFact[] = [];
@@ -282,8 +252,8 @@ async function createNativeRecoveryEvent(
   port.setOnOrderChanged((error, decoder) => {
     if (error !== null) throw error;
 
-    decoder.inspect();
-    observations.push(decoder.decode([]));
+    const observation = decoder.decode();
+    if (observation !== null) observations.push(observation);
   });
   native.emitOrderChanged();
   const observation = observations[0];
@@ -296,7 +266,6 @@ async function createRecoveryRecorder(): Promise<OrderRecorder> {
   const atMs = Date.parse('2026-04-08T09:00:00.000Z');
   const native = await createBrokerIngressFixture({
     orderId: 'RECOVERY-OWNER',
-    tradeId: 'NO-EXECUTION',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -308,14 +277,12 @@ async function createRecoveryRecorder(): Promise<OrderRecorder> {
     submittedPrice: '1.01',
     executedPrice: '0',
     submittedAtMs: atMs,
-    executionTimeMs: null,
     updatedAtMs: atMs,
   });
   const settlementRefreshNeeds: unknown[] = [];
   const recorder = native.createRecorder({
     logger: createLoggerDouble(),
     rateLimiter: createRateLimiterDouble(),
-    getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: {
       recordSettlementRefreshNeed: (need) => {
         settlementRefreshNeeds.push(need);
@@ -340,7 +307,6 @@ async function assertInvalidSdkTimestampStopsRecovery(params: {
   const validUpdatedAt = Date.parse('2026-04-08T09:01:00.000Z');
   const base = {
     orderId: 'ORDER-INVALID-SDK-SUBMITTED-AT',
-    tradeId: 'NO-EXECUTION',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -352,7 +318,6 @@ async function assertInvalidSdkTimestampStopsRecovery(params: {
     submittedPrice: '1.01',
     executedPrice: '0',
     submittedAtMs: validSubmittedAt,
-    executionTimeMs: null,
     updatedAtMs: validUpdatedAt,
   };
   const native = await createBrokerIngressFixture(base);
@@ -371,7 +336,6 @@ async function assertInvalidSdkTimestampStopsRecovery(params: {
   const orderRecorder = native.createRecorder({
     logger: createLoggerDouble(),
     rateLimiter: createRateLimiterDouble(),
-    getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: {
       recordSettlementRefreshNeed: (need) => {
         settlementRefreshNeeds.push(need);
@@ -1088,4 +1052,179 @@ describe('recovery termination and unmatched BUY', () => {
       }
     },
   );
+});
+
+describe('recovery market scope', () => {
+  function createUsPendingOrder(
+    orderId: string,
+    executionSide: 'BUY' | 'SELL',
+    status: OrderReadStatus = 'WORKING',
+  ): OrderFact {
+    const atMs = Date.parse('2026-04-08T09:00:00.000Z');
+    return {
+      orderId,
+      symbol: 'AAPL.US',
+      stockName: 'US STOCK',
+      executionSide,
+      executionStatus: 'NONE',
+      executionPhase: 'OPEN',
+      status,
+      orderType: 'ELO',
+      remark: '',
+      price: '1',
+      quantity: 100,
+      executedPrice: null,
+      executedQuantity: 0,
+      executedAmount: '0',
+      executionTimeMs: null,
+      updatedAtMs: atMs,
+      submittedAt: new Date(atMs - 1000),
+      updatedAt: new Date(atMs),
+    };
+  }
+
+  it('US pending orders are zero-op in the common recovery entry and reconciliation set', async () => {
+    const runtime = createRuntimeStore();
+    const cancelCalls: string[] = [];
+    const trackCalls: string[] = [];
+    const settleCalls: string[] = [];
+    const replayCalls: string[] = [];
+    const recoveryFlow = createRecoveryFlow({
+      logger: createLoggerDouble(),
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: await createRecoveryRecorder(),
+      tradingConfig: createTradingConfig({ monitor: createMonitorConfigWithOwnership() }),
+      symbolRegistry: createSymbolRegistryDouble(),
+      trackOrder: (params) => {
+        trackCalls.push(params.orderId);
+      },
+      cancelOrder: async (orderId) => {
+        cancelCalls.push(orderId);
+        return { kind: 'CANCEL_CONFIRMED', relatedBuyOrderIds: null };
+      },
+      settleOrder: (params) => {
+        settleCalls.push(params.orderId);
+        return { handled: true, relatedBuyOrderIds: null };
+      },
+      handleOrderChangedWhenActive: (event) => {
+        replayCalls.push(event.orderId);
+      },
+    });
+
+    await recoveryFlow.recoverOrderTrackingFromSnapshot([
+      createUsPendingOrder('US-BUY-PENDING', 'BUY'),
+      createUsPendingOrder('US-SELL-PENDING', 'SELL'),
+    ]);
+
+    expect(cancelCalls).toEqual([]);
+    expect(trackCalls).toEqual([]);
+    expect(settleCalls).toEqual([]);
+    expect(replayCalls).toEqual([]);
+    expect(runtime.runtimeState).toBe('ACTIVE');
+    expect(runtime.trackedOrders.size).toBe(0);
+  });
+
+  it('keeps the original HK old-seat SELL recovery block', async () => {
+    const runtime = createRuntimeStore();
+    const recoveryFlow = createRecoveryFlow({
+      logger: createLoggerDouble(),
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: await createRecoveryRecorder(),
+      tradingConfig: createTradingConfig({ monitor: createMonitorConfigWithOwnership() }),
+      symbolRegistry: createSymbolRegistryDouble(),
+      trackOrder: () => {},
+      cancelOrder: async () => ({ kind: 'CANCEL_CONFIRMED', relatedBuyOrderIds: null }),
+      settleOrder: () => ({ handled: true, relatedBuyOrderIds: null }),
+      handleOrderChangedWhenActive: () => {},
+    });
+
+    const error = await recoveryFlow
+      .recoverOrderTrackingFromSnapshot([
+        await createPendingOrder({
+          orderId: 'HK-OLD-SEAT-SELL',
+          symbol: 'OLD_BULL.HK',
+          side: 'SELL',
+          status: 'WORKING',
+        }),
+      ])
+      .then(
+        () => null,
+        (rejection: unknown) => rejection,
+      );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/卖单.*与当前席位不匹配/);
+    expect(runtime.runtimeState).toBe('STOPPED');
+    expect(runtime.trackedOrders.size).toBe(0);
+  });
+});
+
+describe('recovery zero-close revision boundary', () => {
+  it('wrong-seat BUY positive known is not closed by a no-revision zero terminal', async () => {
+    const runtime = createRuntimeStore();
+    let settleCalls = 0;
+    const recorder = await createRecoveryRecorder();
+    const recoveryFlow = createRecoveryFlow({
+      logger: createLoggerDouble(),
+      termination: { isTerminated: () => false, reportFatalError: () => {} },
+      runtime,
+      orderHoldRegistry: createOrderHoldRegistry(),
+      orderRecorder: recorder,
+      tradingConfig: createTradingConfig({ monitor: createMonitorConfigWithOwnership() }),
+      symbolRegistry: createSymbolRegistryDouble(),
+      trackOrder: () => {},
+      cancelOrder: async () => {
+        runtime.queriedTerminalStateByOrderId.set('WRONG-SEAT-BUY-ZERO', {
+          kind: 'TERMINAL',
+          executionStatus: 'NONE',
+          executedAmount: null,
+          executionTimeMs: null,
+          closedReason: 'CANCELED',
+          executedPrice: null,
+          executedQuantity: 0,
+          submittedQuantity: 100,
+          orderUpdatedAtMs: null,
+          status: 'CANCELED',
+        });
+        return {
+          kind: 'ALREADY_CLOSED',
+          closedReason: 'CANCELED',
+          relatedBuyOrderIds: null,
+          terminalExecution: { submittedQuantity: 100, executedQuantity: 0 },
+        };
+      },
+      settleOrder: () => {
+        settleCalls += 1;
+        return { handled: true, relatedBuyOrderIds: null };
+      },
+      handleOrderChangedWhenActive: () => {},
+    });
+
+    const error = await recoveryFlow
+      .recoverOrderTrackingFromSnapshot([
+        await createPendingOrder({
+          orderId: 'WRONG-SEAT-BUY-ZERO',
+          symbol: 'OLD_BULL.HK',
+          side: 'BUY',
+          status: 'WORKING',
+          executedQuantity: 10,
+          executedPrice: '1.05',
+        }),
+      ])
+      .then(
+        () => null,
+        (rejection: unknown) => rejection,
+      );
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/无 revision 零关闭/);
+    expect(settleCalls).toBe(0);
+    expect(runtime.trackedOrders.size).toBe(0);
+    expect(runtime.runtimeState).toBe('STOPPED');
+    expect(recorder.getExecutionFact('WRONG-SEAT-BUY-ZERO')).toBeNull();
+    expect(recorder.getPendingSellSnapshot()).toEqual([]);
+  });
 });

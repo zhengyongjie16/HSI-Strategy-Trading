@@ -1,3 +1,4 @@
+import { recalculateDailyLoss } from '../helpers/dailyLossRecalculation.js';
 import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import {
   createLoggerDouble,
@@ -35,6 +36,7 @@ import type { OrderFact } from '../../src/types/trade.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
 
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { toRecalculationOrders } from './recalculationOrders.js';
 
 type TestEventFlowDeps = Omit<EventFlowDeps, 'now' | 'monitorConfig'> &
   Partial<Pick<EventFlowDeps, 'now'>>;
@@ -125,7 +127,6 @@ async function createAmountActors(
 ) {
   const native = await createBrokerIngressFixture({
     orderId: 'BUY-AMOUNT-REVISION-COST',
-    tradeId: 'BUY-T',
     symbol: 'BULL.HK',
     stockName: 'HSI BULL',
     remark: '',
@@ -137,7 +138,6 @@ async function createAmountActors(
     submittedPrice: '10',
     executedPrice: '10',
     submittedAtMs: revisionMs - 10,
-    executionTimeMs: revisionMs - 1,
     updatedAtMs: revisionMs - 1,
   });
   native.setAccountBalance({
@@ -202,7 +202,6 @@ async function createAmountActors(
   const orderRecorder = native.createRecorder({
     logger: createLoggerDouble(),
     rateLimiter: createRateLimiterDouble(),
-    getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: {
       recordSettlementRefreshNeed: (need) => {
         onRefresh();
@@ -293,7 +292,6 @@ async function createAmountActors(
   expect(postTrade.isCurrent(receipt)).toBeTrue();
   const sellFrame = {
     orderId: 'PROTECTIVE-AMOUNT-REVISION',
-    tradeId: 'SELL-T',
     symbol: 'BULL.HK',
     stockName: 'HSI BULL',
     remark: '',
@@ -305,7 +303,6 @@ async function createAmountActors(
     submittedPrice: '9',
     executedPrice: '0',
     submittedAtMs: revisionMs - 10,
-    executionTimeMs: null,
     updatedAtMs: revisionMs,
   };
   native.setOrderDetailReplies([sellFrame]);
@@ -358,24 +355,12 @@ describe('DailyLoss protective amount revision integration', () => {
         ['PartialFilled', '9', 'OPEN'],
         ['Filled', '9.4', 'TERMINAL'],
       ] as const) {
-        actors.native.setExecutionReplies([
-          {
-            orderId: actors.sellFrame.orderId,
-            tradeId: 'SELL-T',
-            symbol: 'BULL.HK',
-            quantity: '5',
-            price,
-            tradeDoneAtMs: revision,
-          },
-        ]);
-
         actors.native.setOrderDetailReplies([
           {
             ...actors.sellFrame,
             status,
             executedPrice: price,
             executedQuantity: '5',
-            executionTimeMs: revision,
             updatedAtMs: revision,
           },
         ]);
@@ -383,6 +368,9 @@ describe('DailyLoss protective amount revision integration', () => {
           actors.sellFrame.orderId,
         )();
         if (observation === undefined) throw new Error('Expected actual live revision observation');
+
+        if (observation.executedAmount === null)
+          throw new Error('Expected positive cumulative amount on live revision');
 
         const result = flow.recordCumulativeExecution({
           factStage: phase,
@@ -499,23 +487,13 @@ describe('DailyLoss protective amount revision integration', () => {
       [firstRevisionMs, '9', '45'],
       [secondRevisionMs, '9.4', '47'],
     ] as const) {
-      actors.native.setExecutionReplies([
-        {
-          orderId: trackedOrder.orderId,
-          tradeId: 'SELL-T',
-          symbol: 'BULL.HK',
-          quantity: '5',
-          price,
-          tradeDoneAtMs: firstRevisionMs,
-        },
-      ]);
-      const executions = await actors.native.executionLedgerPort.todayExecutions({
-        orderId: trackedOrder.orderId,
-      });
       actors.native.createPushPort().setOnOrderChanged((error, decoder) => {
         if (error !== null) throw error;
 
-        const fact = decoder.decode(executions);
+        const fact = decoder.decode();
+
+        if (fact === null) throw new Error('expected HK order push fact');
+
         expect(fact.executedAmount).toBe(amount);
         eventFlow.handleOrderChangedWhenActive(fact);
       });
@@ -526,7 +504,6 @@ describe('DailyLoss protective amount revision integration', () => {
         executedQuantity: '5',
         executedPrice: price,
         updatedAtMs: revision,
-        executionTimeMs: firstRevisionMs,
       });
     }
 
@@ -570,14 +547,13 @@ describe('DailyLoss protective amount revision integration', () => {
         executedQuantity: '5',
         executedPrice: '9.4',
         updatedAtMs: secondRevisionMs,
-        executionTimeMs: firstRevisionMs,
       },
     ]);
     const [currentOrder] = await actors.native.createQueryOrdersReader(trackedOrder.orderId)();
     if (currentOrder === undefined) throw new Error('expected actual revised order');
 
-    restartedTracker.recalculateFromAllOrders(
-      [currentOrder],
+    recalculateDailyLoss(restartedTracker,
+      toRecalculationOrders([currentOrder]),
       createTradingConfig().monitor,
       new Date(secondRevisionMs),
       new Map(),
@@ -662,17 +638,6 @@ describe('DailyLoss protective amount revision integration', () => {
       emitOrderStateChanged: () => {},
     });
 
-    actors.native.setExecutionReplies([
-      {
-        orderId: 'SEALED-PROTECTIVE-AMOUNT-REVISION',
-        tradeId: 'SEALED-T',
-        symbol: 'BULL.HK',
-        quantity: '5',
-        price: '9',
-        tradeDoneAtMs: firstRevisionMs,
-      },
-    ]);
-
     actors.native.setOrderDetailReplies([
       {
         ...actors.sellFrame,
@@ -680,7 +645,6 @@ describe('DailyLoss protective amount revision integration', () => {
         status: 'PartialFilled',
         executedQuantity: '5',
         executedPrice: '9',
-        executionTimeMs: firstRevisionMs,
         updatedAtMs: firstRevisionMs,
       },
     ]);
@@ -690,6 +654,9 @@ describe('DailyLoss protective amount revision integration', () => {
     if (originalObservation === undefined) throw new Error('missing actual sealed input');
 
     expect(originalObservation.executedAmount).toBe('45');
+    if (originalObservation.executedAmount === null)
+      throw new Error('sealed protective input lacks cumulative amount');
+
     settlementFlow.recordCumulativeExecution({
       factStage: 'OPEN',
       orderId: 'SEALED-PROTECTIVE-AMOUNT-REVISION',
@@ -724,20 +691,29 @@ describe('DailyLoss protective amount revision integration', () => {
     });
 
     expect(revisionResult).toMatchObject({
-      authoritativeFactChanged: false,
+      authoritativeFactChanged: true,
       executionAdvanced: false,
     });
-    expect(revisionResult.admission).toBe('SUPPRESSED');
+    expect(revisionResult.admission).toBe('ADMITTED');
     expect(persistedProgress).toEqual([
       {
         factStage: 'OPEN',
         cumulativeAmount: '45',
         orderRevisionMs: firstRevisionMs,
       },
+      {
+        factStage: 'TERMINAL',
+        cumulativeAmount: '47',
+        orderRevisionMs: secondRevisionMs,
+      },
     ]);
+    expect(dailyLossTracker.getLossOffset('LONG')).toBe('0');
     expect(completionBoundaryMs).toEqual([firstRevisionMs]);
     expect(protectiveLiquidationEpisodeTracker.getInProgressEpisodes()).toEqual([]);
-    expect(postTradeConsistencyRuntime.getStatus()).toEqual(statusAfterCompletion);
+    expect(postTradeConsistencyRuntime.getStatus()).toEqual({
+      ...statusAfterCompletion,
+      staleVersion: statusAfterCompletion.staleVersion + 1,
+    });
     await actors.snapshot.requestClear({ reason: 'STOP', dayEpoch: 1 });
   });
 });

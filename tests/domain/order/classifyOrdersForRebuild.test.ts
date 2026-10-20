@@ -17,15 +17,17 @@ import {
 } from '../../../src/domain/order/orderRecordPolicy.js';
 import type { OrderFact } from '../../../src/types/trade.js';
 
+type RawOrder = OrderFact & Readonly<{ executedAmount: string }>;
+
 function createRawOrder(
   overrides: Partial<OrderFact> & Readonly<{ unownedDirection?: true }>,
-): OrderFact {
+): RawOrder {
   const status = overrides.status ?? 'FILLED';
   let executionStatus: OrderFact['executionStatus'] = 'NONE';
   if (status === 'FILLED') executionStatus = 'FILLED';
   else if ((overrides.executedQuantity ?? 100) > 0) executionStatus = 'PARTIAL';
 
-  const order: OrderFact = {
+  const order: RawOrder = {
     orderId: overrides.orderId ?? 'ORDER-1',
     symbol: overrides.symbol ?? 'BULL.HK',
     stockName: overrides.stockName ?? 'HSI RC SAMPLE',

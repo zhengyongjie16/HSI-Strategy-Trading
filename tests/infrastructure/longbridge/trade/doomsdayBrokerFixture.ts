@@ -14,14 +14,12 @@ import {
 } from 'longbridge';
 import { createTradeContextMock } from '../../../../mock/longbridge/tradeContextMock.js';
 import { createAccountReadAdapter } from '../../../../src/infrastructure/longbridge/trade/accountReadAdapter.js';
-import { createExecutionLedgerAdapter } from '../../../../src/infrastructure/longbridge/trade/executionLedgerAdapter.js';
 import { createOrderDetailReadAdapter } from '../../../../src/infrastructure/longbridge/trade/orderDetailReadAdapter.js';
 import { createOrderPushAdapter } from '../../../../src/infrastructure/longbridge/trade/orderPushAdapter.js';
 import { createOrderSnapshotReadAdapter } from '../../../../src/infrastructure/longbridge/trade/orderSnapshotReadAdapter.js';
 import { createPendingOrdersAdapter } from '../../../../src/infrastructure/longbridge/trade/pendingOrdersAdapter.js';
 import { createSellPositionReadAdapter } from '../../../../src/infrastructure/longbridge/trade/sellPositionReadAdapter.js';
 import { createTradeMutationAdapter } from '../../../../src/infrastructure/longbridge/trade/tradeMutationAdapter.js';
-import { orderEconomics } from '../../../../src/domain/order/orderEconomics.js';
 import type { BrokerAccess } from '../../../../src/types/brokerAccessPorts.js';
 import type { NativeSubmitObservation } from './brokerIngressFixture.js';
 
@@ -71,21 +69,14 @@ export function createDoomsdayBrokerFixture(
     toJSON: () => ({}),
   };
   context.seedStockPositions(response);
-  // 本场景真实没有 execution 流水；两个读取能力仍绑定同一个 context，而非另建 broker。
-  Object.defineProperties(context, {
-    todayExecutions: { value: async () => [] },
-    historyExecutions: { value: async () => [] },
-  });
   const ports: BrokerAccess = {
     createTradeMutationPort: () => createTradeMutationAdapter(context),
     createSellPositionReader: () => createSellPositionReadAdapter(context),
     createPendingOrdersReader: () => createPendingOrdersAdapter(context),
-    createExecutionLedgerPort: () => createExecutionLedgerAdapter(context),
-    createOrderPushPort: () => createOrderPushAdapter(context, orderEconomics),
+    createOrderPushPort: () => createOrderPushAdapter(context),
     createAccountReadPort: () => createAccountReadAdapter(context),
-    createOrderSnapshotReadPort: (deps) =>
-      createOrderSnapshotReadAdapter(context, deps, orderEconomics),
-    createOrderDetailReadPort: () => createOrderDetailReadAdapter(context, orderEconomics),
+    createOrderSnapshotReadPort: (deps) => createOrderSnapshotReadAdapter(context, deps),
+    createOrderDetailReadPort: () => createOrderDetailReadAdapter(context),
   };
   const submissions: NativeSubmitObservation[] = [];
   const originalSubmit = context.submitOrder;

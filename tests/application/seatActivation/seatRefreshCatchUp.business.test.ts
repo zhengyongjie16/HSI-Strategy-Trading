@@ -64,7 +64,6 @@ async function createCatchUpFixture() {
         throw new Error('此测试不授权 broker IO');
       },
     },
-    getExecutionTimeEvidence: initialContext.dailyLossTracker.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: {
       recordSettlementRefreshNeed: () => {
         refreshNeeds.push('execution');
@@ -292,7 +291,15 @@ describe('SEAT_REFRESH 已提交后的分阶段追赶', () => {
       await finishAndAssert(fixture, { r1: '110', n1: 10 }, pairedAlreadyAvailable ? 1 : 2);
       expect(fixture.refreshNeeds).toEqual(['execution']);
       expect(fixture.recorder.getExecutionFact('NEW-BUY')).toEqual(fact);
-      expect(fixture.context.dailyLossTracker.getExecutionTimeEvidence()).toHaveLength(2);
+      expect(
+        fixture.context.dailyLossTracker
+          .prepareProtectionBoundary({
+            direction: 'LONG',
+            boundaryExecutedTimeMs: executedTimeMs,
+          })
+          .orderBaselines.map((baseline) => baseline.orderId),
+      ).toEqual(['BASELINE-BUY', 'NEW-BUY']);
+
       expect(fixture.recorder.getCostBasis('BULL.HK', true)).toEqual({
         costAmount: '110',
         quantity: 10,

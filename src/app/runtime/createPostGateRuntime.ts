@@ -30,7 +30,6 @@ import { TIME } from '../../constants/index.js';
 import { createLiquidationCooldownTracker } from '../../domain/liquidation/cooldown/index.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../domain/liquidation/episode/index.js';
 import { orderAnalysis } from '../../domain/order/orderAnalysis.js';
-import { orderEconomics } from '../../domain/order/orderEconomics.js';
 import { createDailyLossTracker } from '../../domain/risk/dailyLossTracker.js';
 import { createRiskChecker } from '../../domain/risk/index.js';
 import { createPositionLimitChecker } from '../../domain/risk/positionLimitChecker.js';
@@ -305,7 +304,7 @@ function createPostGateRuntimeFactory(
       logger,
       diagnostics,
       requestExternalApi: wrapExternalApiRequest,
-      brokerAccess: () => brokerClientFactory.createBrokerAccess(orderEconomics),
+      brokerAccess: () => brokerClientFactory.createBrokerAccess(),
       tradingConfig,
       marketDataClient,
       unrealizedLossBuyGate: riskChecker,

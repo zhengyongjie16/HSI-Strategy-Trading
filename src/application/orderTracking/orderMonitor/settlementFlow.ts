@@ -215,6 +215,15 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
       const committed = orderRecorder.getExecutionFact(params.orderId);
       if (
         firstTerminal &&
+        (!params.isProtectiveLiquidation ||
+          params.side !== 'SELL' ||
+          protectiveLiquidationEpisodeTracker
+            .getInProgressEpisodes()
+            .some(
+              (episode) =>
+                episode.direction === (params.isLongSymbol ? 'LONG' : 'SHORT') &&
+                episode.symbol === params.symbol,
+            )) &&
         previous !== null &&
         committed !== null &&
         committed.cumulativeQuantity === previous.cumulativeQuantity &&
@@ -222,7 +231,7 @@ export function createSettlementFlow(deps: SettlementFlowDeps): SettlementFlow {
         committed.executionTimeMs === previous.executionTimeMs &&
         committed.phase === previous.phase
       ) {
-        // 保留原正成交终态的补刷新：唤醒唯一 S owner 完成新补齐 episode；纯 closed 重复不登记。
+        // 保留普通正成交终态补刷新；保护性 SELL 仅唤醒 S 完成现存 episode，旧边界补关资源不重复刷新。
         postTradeConsistencyRuntime.recordSettlementRefreshNeed({
           refreshAccount: true,
           refreshPositions: true,

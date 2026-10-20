@@ -7,6 +7,7 @@ import {
   isExternalApiRequestError,
 } from '../../utils/apiFailure/index.js';
 import { exactCompare } from '../../utils/numeric/exact.js';
+import { isHongKongSymbol } from '../../utils/marketScope.js';
 import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import type { DiagnosticFields } from '../../types/diagnostics.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
@@ -44,18 +45,18 @@ function immutableAccount(account: AccountSnapshot): AccountSnapshot {
   });
 }
 
-/** 保留全部持仓明细；available lookup 保持原裁剪，不改变成本聚合政策。 */
+/** 保留全部持仓明细；数量允许小数，可卖 lookup 只暴露港股，不改变成本聚合政策。 */
 function immutablePositions(positions: ReadonlyArray<Position>): ReadonlyArray<Position> {
   return Object.freeze(
     positions.map((position) => {
       if (
-        !Number.isSafeInteger(position.quantity) ||
+        !Number.isFinite(position.quantity) ||
         position.quantity < 0 ||
-        !Number.isSafeInteger(position.availableQuantity) ||
+        !Number.isFinite(position.availableQuantity) ||
         position.availableQuantity < 0 ||
         position.availableQuantity > position.quantity
       ) {
-        throw new RangeError('Position quantities must be nonnegative safe integers');
+        throw new RangeError('Position quantities must be finite nonnegative numbers');
       }
 
       exactCompare(position.costPrice, '0');
@@ -348,7 +349,8 @@ export function createAccountPositionSnapshot(
       });
       const nextAvailable = new Map<string, Position>();
       for (const position of positions) {
-        if (position.symbol.length > 0 && position.availableQuantity > 0) {
+        // 原始持仓保留全部市场用于估值；可卖 lookup 只服务港股卖出决策。
+        if (isHongKongSymbol(position.symbol) && position.availableQuantity > 0) {
           nextAvailable.set(position.symbol, position);
         }
       }

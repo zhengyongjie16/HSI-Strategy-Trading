@@ -7,7 +7,7 @@ import type { DailyLossAuthoritativeFactSnapshot } from '../../../src/types/risk
 import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 
 const T = Date.parse('2026-10-07T02:00:00.000Z');
-test('unsealed duplicate verifies durable with adjudicated snapshot; failure commits nothing; sealed duplicate is suppressed', () => {
+test('unsealed duplicate verifies durable with adjudicated snapshot; failure commits nothing; sealed revision retains the same durable obligation', () => {
   let filters = 0;
   const analysis = orderAnalysis;
   const daily = createDailyLossTracker({
@@ -46,7 +46,6 @@ test('unsealed duplicate verifies durable with adjudicated snapshot; failure com
   };
   expect(daily.recordCumulativeExecution(input).admission).toBe('ADMITTED');
   const before = {
-    evidence: daily.getExecutionTimeEvidence(),
     loss: daily.getLossOffset('LONG'),
     filters,
   };
@@ -57,8 +56,8 @@ test('unsealed duplicate verifies durable with adjudicated snapshot; failure com
       throw fault;
     }),
   ).toThrow(fault);
-  expect(daily.getExecutionTimeEvidence()).toEqual(before.evidence);
   expect(daily.getLossOffset('LONG')).toBe(before.loss);
+  expect(filters).toBe(before.filters);
   const durable: DailyLossAuthoritativeFactSnapshot[] = [];
   const duplicate = daily.recordCumulativeExecution(
     { ...input, executedTimeMs: T - 1, orderUpdatedAtMs: T + 10 },
@@ -83,18 +82,21 @@ test('unsealed duplicate verifies durable with adjudicated snapshot; failure com
   ]);
   daily.recordCumulativeExecution({ ...input, orderUpdatedAtMs: T + 30 });
   expect(filters).toBe(before.filters);
-  expect(
-    daily.getExecutionTimeEvidence().find((fact) => fact.brokerOrderId === 'sell')?.orderRevisionMs,
-  ).toBe(T + 30);
+  const revisionSnapshots: number[] = [];
+  daily.recordCumulativeExecution({ ...input, orderUpdatedAtMs: T + 30 }, (snapshot) => {
+    revisionSnapshots.push(snapshot.orderRevisionMs);
+  });
+  expect(revisionSnapshots).toEqual([T + 30]);
   const prepared = daily.prepareProtectionBoundary({
     direction: 'LONG',
     boundaryExecutedTimeMs: T,
   });
   daily.commitProtectionBoundary(prepared);
   expect(
-    daily.recordCumulativeExecution({ ...input, orderUpdatedAtMs: T + 40 }, () => {
-      throw new Error('sealed cannot persist');
+    daily.recordCumulativeExecution({ ...input, orderUpdatedAtMs: T + 40 }, (snapshot) => {
+      revisionSnapshots.push(snapshot.orderRevisionMs);
     }).admission,
-  ).toBe('SUPPRESSED');
+  ).toBe('ADMITTED');
+  expect(revisionSnapshots).toEqual([T + 30, T + 40]);
   expect(daily.getLossOffset('LONG')).toBe('0');
 });

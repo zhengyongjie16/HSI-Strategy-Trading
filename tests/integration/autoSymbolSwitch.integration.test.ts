@@ -311,7 +311,6 @@ describe('auto-symbol-switch integration', () => {
       // 不从后续 native submission100 推导或重算既有金额 oracle。
       const native = await createBrokerIngressFixture({
         orderId: 'MOCK-000001',
-        tradeId: 'SWITCH-SELL-FILL',
         symbol: 'OLD_BULL.HK',
         stockName: 'OLD_BULL',
         remark: 'HSI',
@@ -322,7 +321,6 @@ describe('auto-symbol-switch integration', () => {
         submittedPrice: '1',
         executedPrice: '1',
         submittedAtMs: fixedNowMs - 2000,
-        executionTimeMs: fixedNowMs - 1000,
         updatedAtMs: fixedNowMs - 500,
       });
       native.setStockPositions([
@@ -403,7 +401,6 @@ describe('auto-symbol-switch integration', () => {
       const orderRecorder = native.createRecorder({
         logger: createLoggerDouble(),
         rateLimiter,
-        getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
         settlementRefreshNeedRecorder: settlement,
       });
       const marketDataClient = createMarketDataClientDouble({
@@ -479,7 +476,7 @@ describe('auto-symbol-switch integration', () => {
               const [observation] = await native.createQueryOrdersReader('MOCK-000001')();
               if (
                 observation?.executedAmount !== '200' ||
-                observation.executionTimeMs !== fixedNowMs - 1000 ||
+                observation.executionTimeMs !== fixedNowMs - 500 ||
                 observation.updatedAtMs !== fixedNowMs - 500
               )
                 throw new Error('expected independent SDK execution amount/time');
@@ -506,7 +503,7 @@ describe('auto-symbol-switch integration', () => {
                     side: 'SELL',
                     executedPrice: '1',
                     executedQuantity: 200,
-                    executedTimeMs: fixedNowMs - 1000,
+                    executedTimeMs: fixedNowMs - 500,
                     orderUpdatedAtMs: fixedNowMs - 500,
                     orderId: observation.orderId,
                   }).admission,

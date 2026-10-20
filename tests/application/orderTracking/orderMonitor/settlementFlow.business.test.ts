@@ -26,6 +26,7 @@ import {
   createProtectiveLiquidationEpisodeTrackerDouble,
 } from '../../../helpers/testDoubles.js';
 import { createSettlementRecorder } from './settlementFlow.testFactory.js';
+import { createProtectiveLiquidationEpisodeTracker } from '../../../../src/domain/liquidation/episode/index.js';
 
 const PROTECTIVE_EXECUTION_TIME_MS = Date.parse('2026-02-25T03:11:00.000Z');
 
@@ -164,7 +165,6 @@ function createHarness(failPersistence = false) {
     (fact, relatedBuyOrderIds) => {
       commits.push({ fact, relatedBuyOrderIds });
     },
-    daily.getExecutionTimeEvidence,
   );
   const recorder = {
     ...owner,
@@ -246,7 +246,6 @@ function assertNoCommittedEffects(
   orderId: string,
 ): void {
   expect(harness.commits).toEqual([]);
-  expect(harness.daily.getExecutionTimeEvidence()).toEqual([]);
   expect(harness.daily.getLossOffset('LONG')).toBe('0');
   expect(harness.recorder.getExecutionFact(orderId)).toBeNull();
   expect(harness.recorder.getSellRecordByOrderId(orderId)).toBeNull();
@@ -415,18 +414,6 @@ describe('settlementFlow business flow', () => {
       quantity: 100,
     });
 
-    expect(harness.daily.getExecutionTimeEvidence()).toEqual([
-      {
-        brokerOrderId: orderId,
-        symbol: 'BULL.HK',
-        side: 'BUY',
-        cumulativeQuantity: 100,
-        cumulativeAmount: '102',
-        lastExecutionTimeMs: PROTECTIVE_EXECUTION_TIME_MS,
-        orderRevisionMs: PROTECTIVE_EXECUTION_TIME_MS,
-        phase: 'TERMINAL',
-      },
-    ]);
     expect(harness.refreshNeeds).toEqual([{ refreshAccount: true, refreshPositions: true }]);
     expect(harness.events).toEqual([
       {
@@ -769,7 +756,7 @@ describe('settlementFlow business flow', () => {
   });
 });
 
-it('真实旧 boundary 准入抑制同量45→46高 revision：Daily/O/durable/baseline/H/stale不变，terminal资源仍关闭', async () => {
+it('真实旧 boundary 同量45→46保留权威/durable与刷新，冻结日损不变且terminal资源只关闭一次', async () => {
   const now = new Date(PROTECTIVE_EXECUTION_TIME_MS);
   const daily = createDailyLossTracker({
     onOwnershipWarning: () => {},
@@ -812,8 +799,6 @@ it('真实旧 boundary 准入抑制同量45→46高 revision：Daily/O/durable/b
       },
     },
     {},
-    undefined,
-    daily.getExecutionTimeEvidence,
   );
   const initial = {
     factStage: 'OPEN' as const,
@@ -853,7 +838,6 @@ it('真实旧 boundary 准入抑制同量45→46高 revision：Daily/O/durable/b
     fact: recorder.getExecutionFact(initial.orderId),
     cost: recorder.getCostBasis(initial.symbol, true),
     sell: recorder.getSellRecordByOrderId(initial.orderId),
-    evidence: daily.getExecutionTimeEvidence(),
     baseline: daily.prepareProtectionBoundary({
       direction: 'LONG',
       boundaryExecutedTimeMs: now.getTime() + 1,
@@ -865,9 +849,10 @@ it('真实旧 boundary 准入抑制同量45→46高 revision：Daily/O/durable/b
   const runtime = createRuntime();
   runtime.trackedOrders.set(initial.orderId, createTrackedProtectiveSell(initial.orderId));
   const persisted: unknown[] = [],
-    episodes: unknown[] = [],
     closed: string[] = [],
     events: OrderStateChangedEvent[] = [];
+  const episodeOwner = createProtectiveLiquidationEpisodeTracker();
+  episodeOwner.restoreCompletedBoundary({ direction: 'LONG', boundaryExecutedTimeMs: now.getTime() });
   const flow = createSettlementFlow({
     diagnostics: createDiagnosticObserverDouble(),
     now: () => new Date('2031-01-02T03:04:05.000Z'),
@@ -883,11 +868,7 @@ it('真实旧 boundary 准入抑制同量45→46高 revision：Daily/O/durable/b
     persistProtectiveLiquidationExecutionProgress: (progress) => {
       persisted.push(progress);
     },
-    protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble({
-      recordProtectiveFillProgress: (progress) => {
-        episodes.push(progress);
-      },
-    }),
+    protectiveLiquidationEpisodeTracker: episodeOwner,
     postTradeConsistencyRuntime: {
       recordSettlementRefreshNeed: () => {
         gate.markStale();
@@ -909,21 +890,20 @@ it('真实旧 boundary 准入抑制同量45→46高 revision：Daily/O/durable/b
     preparedProtectiveTerminalExecution: initialDaily,
   });
   expect(result.handled).toBe(true);
-  expect(recorder.getExecutionFact(initial.orderId)).toBe(before.fact);
+  expect(recorder.getExecutionFact(initial.orderId)).toMatchObject({ cumulativeAmount: '46', updatedAtMs: now.getTime() + 30000, phase: 'TERMINAL' });
   expect(recorder.getCostBasis(initial.symbol, true)).toEqual(before.cost);
-  expect(recorder.getSellRecordByOrderId(initial.orderId)).toEqual(before.sell);
-  expect(daily.getExecutionTimeEvidence()).toEqual(before.evidence);
+  expect(recorder.getSellRecordByOrderId(initial.orderId)).toMatchObject({ costAmount: '46' });
   expect(
     daily.prepareProtectionBoundary({
       direction: 'LONG',
       boundaryExecutedTimeMs: now.getTime() + 1,
-    }),
-  ).toEqual(before.baseline);
+    }).orderBaselines.find((b) => b.orderId === initial.orderId),
+  ).toMatchObject({ cumulativeAmount: '46', orderRevisionMs: now.getTime() + 30000 });
   expect(daily.getLossOffset('LONG')).toBe(before.loss);
   expect(snapshot.getView().token).toEqual(before.token);
-  expect(gate.getStatus()).toEqual(before.gate);
-  expect(persisted).toEqual([]);
-  expect(episodes).toEqual([]);
+  expect(gate.getStatus()).toEqual({ ...before.gate, ready: false, staleVersion: before.gate.staleVersion + 1 });
+  expect(persisted).toMatchObject([{ cumulativeAmount: '46', orderRevisionMs: now.getTime() + 30000 }]);
+  expect(episodeOwner.getInProgressEpisodes()).toEqual([]);
   expect(closed).toEqual([initial.orderId]);
   expect(events).toHaveLength(1);
   expect(runtime.closedOrderIds.has(initial.orderId)).toBe(true);

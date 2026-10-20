@@ -85,7 +85,6 @@ describe('terminal switch finalization integration', () => {
     });
     const native = await createBrokerIngressFixture({
       orderId: 'BASELINE',
-      tradeId: 'BASELINE-T',
       symbol: 'OLD_BULL.HK',
       stockName: 'OLD_BULL',
       remark: '',
@@ -96,7 +95,6 @@ describe('terminal switch finalization integration', () => {
       submittedPrice: '1',
       executedPrice: '0',
       submittedAtMs: nowMs - 60000,
-      executionTimeMs: null,
       updatedAtMs: nowMs,
     });
     native.setAccountBalance({
@@ -187,7 +185,6 @@ describe('terminal switch finalization integration', () => {
     const orderRecorder = native.createRecorder({
       logger: createLoggerDouble(),
       rateLimiter: createRateLimiterDouble(),
-      getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
       settlementRefreshNeedRecorder: postTradeConsistencyRuntime,
     });
     const riskChecker = createRiskCheckerDouble({

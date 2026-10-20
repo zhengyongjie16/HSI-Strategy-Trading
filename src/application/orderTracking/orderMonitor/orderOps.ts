@@ -187,7 +187,7 @@ function applyOpenStateCheckFact(
   const cumulativeExecutionParams: OrderCumulativeExecutionParams | null =
     mergedFact.executedQuantity > 0
       ? {
-          factStage: 'OPEN' as const,
+          factStage: mergedFact.executionPhase,
           orderId,
           side: trackedOrder.side === 'BUY' ? 'BUY' : 'SELL',
           monitorSymbol: trackedOrder.monitorSymbol,

@@ -334,4 +334,58 @@ describe('DoomsdayClearanceWorkflow', () => {
     await runtime.start();
     expect(evaluations).toBe(1);
   });
+
+  it('小数美股持仓只做估值，不阻断港股清仓且不产生美股订单', async () => {
+    const { workflow, context, calls } = await createHarness();
+    const snapshot = await createSnapshotFixture({
+      account: {
+        currency: 'HKD',
+        totalCash: '100000',
+        netAssets: '100450.5',
+        positionValue: '450.5',
+        cashInfos: [{ currency: 'HKD', availableCash: '100000' }],
+      },
+      positions: [
+        ...['BULL.HK', 'BEAR.HK'].map((symbol) => ({
+          accountChannel: 'lb',
+          symbol,
+          symbolName: symbol,
+          quantity: 100,
+          availableQuantity: 100,
+          currency: 'HKD',
+          costPrice: '1',
+        })),
+        {
+          accountChannel: 'lb',
+          symbol: 'AAPL.US',
+          symbolName: 'Apple',
+          quantity: 1.125,
+          availableQuantity: 0.5,
+          currency: 'USD',
+          costPrice: '180.5',
+        },
+      ],
+    });
+    const submittedSymbols: string[][] = [];
+    const result = await workflow.evaluate({
+      ...context,
+      snapshot,
+      dayEpoch: snapshot.getView().token.dayEpoch,
+      orderExecutor: {
+        executeDoomsdayClearanceSignals: async (commands, isLive) => {
+          expect(isLive()).toBe(true);
+          submittedSymbols.push(commands.map((command) => command.symbol));
+          return {
+            executedOrderIds: commands.map((command) => `ACCEPTED:${command.symbol}`),
+            reevaluationSymbols: [],
+            unresolvedQuoteSymbols: [],
+          };
+        },
+      },
+    });
+
+    expect(result).toEqual({ executed: true, nextRetryAtMs: null });
+    expect(submittedSymbols).toEqual([['BULL.HK', 'BEAR.HK']]);
+    expect(calls).toEqual(['pending-buys', 'quotes']);
+  });
 });

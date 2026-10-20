@@ -71,15 +71,10 @@ export function createTradeRuntime(deps: CreateTradeRuntimeDeps): Promise<TradeR
     });
 
     // ========== 3. 创建 orderRecorder（边界内组装内部子模块） ==========
-    const executionLedgerPort = brokerAccess.createExecutionLedgerPort();
     const orderPushPort = brokerAccess.createOrderPushPort();
     const orderRecorder = createOrderRecorder({
       logger: logger,
-      orderSnapshotReadPort: brokerAccess.createOrderSnapshotReadPort({
-        rateLimiter,
-        executionLedgerPort,
-      }),
-      getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
+      orderSnapshotReadPort: brokerAccess.createOrderSnapshotReadPort({ rateLimiter }),
       settlementRefreshNeedRecorder: postTradeConsistencyRuntime,
     });
 
@@ -94,7 +89,6 @@ export function createTradeRuntime(deps: CreateTradeRuntimeDeps): Promise<TradeR
       logger: logger,
       diagnostics,
       orderDetailReadPort: brokerAccess.createOrderDetailReadPort(),
-      executionLedgerPort,
       orderPushPort,
       tradeMutationPort,
       rateLimiter,

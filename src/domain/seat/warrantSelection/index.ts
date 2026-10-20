@@ -5,6 +5,7 @@
  */
 import type { MarketWarrantExpiryRange } from '../../../types/marketPorts.js';
 import { EXPIRY_DATE_FILTERS } from '../../../constants/index.js';
+import { isHongKongSymbol } from '../../../utils/marketScope.js';
 import {
   canonicalDecimal,
   compareRatios,
@@ -194,6 +195,11 @@ export function selectBestWarrant({
   let primaryCandidateCount = 0;
   let degradedCandidateCount = 0;
   for (const warrant of warrants) {
+    // 缺代码事实按既有规则丢弃；其余标的只允许港股进入席位与换标决策。
+    if (warrant.symbol.length === 0) continue;
+
+    if (!isHongKongSymbol(warrant.symbol)) continue;
+
     const candidate = resolveEvaluatedWarrantCandidate(
       warrant,
       tradingMinutes,

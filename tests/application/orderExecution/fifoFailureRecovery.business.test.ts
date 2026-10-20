@@ -32,7 +32,6 @@ async function createFixture() {
   let afterAck = () => {};
   const native = await createBrokerIngressFixture({
     orderId: 'OLD',
-    tradeId: 'NO-FILL',
     symbol: 'BULL.HK',
     stockName: 'BULL',
     remark: '',
@@ -43,7 +42,6 @@ async function createFixture() {
     submittedPrice: '5',
     executedPrice: '0',
     submittedAtMs: originTime,
-    executionTimeMs: originTime,
     updatedAtMs: originTime,
   });
   const runtime: OrderMonitorRuntimeStore = {
@@ -107,7 +105,6 @@ async function createFixture() {
     cacheManager: { clearCache() {}, getPendingOrders: async () => [] },
     recordCumulativeExecution() {},
     triggerRoute() {},
-    getExecutionTimeEvidence: () => [],
   });
   ops.trackOrder({
     orderId: 'OLD',
@@ -219,19 +216,20 @@ describe('executor real FIFO failure recovery', () => {
       f.advanceClock();
     }
 
-    expect(f.native.readCounts().today).toBe(1);
+    expect(f.native.nativeReadCounts().detail).toBe(0);
     expect(await f.executor.executeSignals([f.signal], () => true)).toEqual({
       executedOrderIds: [],
       quoteFailures: [],
     });
     expect(f.tracked.replaceTempBlockedCount).toBe(5);
     expect(f.tracked.replaceResumeMode).toBe('WAIT_WS_ONLY');
-    expect(f.native.readCounts().today).toBe(2);
+    expect(f.native.nativeReadCounts().detail).toBe(1);
     expect(f.native.nativeMutations()).toHaveLength(5);
     expect(await f.executor.executeSignals([f.signal], () => true)).toEqual({
       executedOrderIds: [],
       quoteFailures: [],
     });
+    expect(f.native.nativeReadCounts().detail).toBe(1);
     expect(f.native.nativeMutations()).toHaveLength(5);
   }, 10000);
 

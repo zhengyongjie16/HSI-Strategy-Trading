@@ -124,6 +124,20 @@ describe('warrant selection policy', () => {
 });
 
 describe('strict two-stage exact candidate selection', () => {
+  it('excludes non-HK warrants from candidate admission even when they rank better', () => {
+    const result = selectBestWarrant({
+      warrants: [
+        createWarrant('BAD.US', '0.004', '900000'),
+        createWarrant('BEST.HK', '0.004', '200000'),
+      ],
+      tradingMinutes: 10,
+      policy: createPolicy('LONG'),
+    });
+
+    expect(result.candidate?.symbol).toBe('BEST.HK');
+    expect(result.primaryCandidateCount).toBe(1);
+  });
+
   it.each([
     { direction: 'LONG', far: '0.008', nearest: '0.004', degraded: '0.0034' },
     { direction: 'SHORT', far: '-0.008', nearest: '-0.004', degraded: '-0.0034' },

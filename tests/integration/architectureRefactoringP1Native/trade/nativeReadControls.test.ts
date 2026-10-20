@@ -7,7 +7,6 @@ import { createRateLimiter } from '../../../../src/application/orderExecution/ra
 
 const frame = {
   orderId: 'A',
-  tradeId: 'TA',
   symbol: 'OLD_BULL.HK',
   stockName: 'SDK',
   remark: '',
@@ -18,7 +17,6 @@ const frame = {
   submittedPrice: '1',
   executedPrice: '0',
   submittedAtMs: 1700000000000,
-  executionTimeMs: null,
   updatedAtMs: 1700000000200,
 };
 
@@ -77,13 +75,12 @@ test('explicit samectx account/positions replies flow through production account
   expect(f.accountReadCounts()).toEqual({ positions: 2, balance: 1 });
 });
 
-test('explicit per-id native detail sequences map independent ledger T; unknown or exhausted requests fail', async () => {
+test('explicit per-id native detail sequences map each order own observation time; unknown or exhausted requests fail', async () => {
   const f = await createBrokerIngressFixture(frame);
   f.setOrderDetailReplies([
     {
       ...frame,
       orderId: 'B',
-      tradeId: 'TB',
       symbol: 'NEW_BULL.HK',
       status: 'PartialFilled',
       executedQuantity: '10',
@@ -99,23 +96,14 @@ test('explicit per-id native detail sequences map independent ledger T; unknown 
     },
   ]);
 
-  f.setExecutionReplies([
-    {
-      orderId: 'B',
-      tradeId: 'TB',
-      symbol: 'NEW_BULL.HK',
-      quantity: '10',
-      price: '1.2',
-      tradeDoneAtMs: 1700000000100,
-    },
-  ]);
   const read = f.createQueryOrdersReader('B');
   const first = await read();
   expect(first[0]).toMatchObject({
     orderId: 'B',
     executionPhase: 'OPEN',
     executedAmount: '12',
-    executionTimeMs: 1700000000100,
+    // 订单级观察时间代理：取该订单自己的 updatedAt。
+    executionTimeMs: 1700000000200,
   });
 
   const second = await read();
@@ -123,7 +111,8 @@ test('explicit per-id native detail sequences map independent ledger T; unknown 
     orderId: 'B',
     executionPhase: 'TERMINAL',
     executedAmount: '12',
-    executionTimeMs: 1700000000100,
+    // 订单级观察时间代理：取该订单自己的 updatedAt。
+    executionTimeMs: 1700000000200,
   });
   const exhausted = await read().catch((error: unknown) => error);
   const unknown = await f
@@ -134,5 +123,4 @@ test('explicit per-id native detail sequences map independent ledger T; unknown 
   expect(unknown).toBeInstanceOf(Error);
   expect(String(unknown)).toContain('unconfigured native SDK method');
   expect(f.nativeReadCounts()).toEqual({ cancel: 0, detail: 4 });
-  expect(f.readCounts()).toEqual({ today: 3, history: 0 });
 });

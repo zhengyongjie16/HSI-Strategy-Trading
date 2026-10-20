@@ -17,8 +17,7 @@ import type {
 import type { MonitorConfig, TradingConfig } from '../../../types/config.js';
 import type { MarketDataClient } from '../../../types/marketPorts.js';
 import type { OrderDetailReadPort } from '../../../types/orderDetailReadPorts.js';
-import type { OrderExecutionLedgerPort } from '../../../types/orderExecutionLedger.js';
-import type { OrderExecutionTimeEvidence, OrderRecorder } from '../../../types/orderRecorder.js';
+import type { OrderRecorder } from '../../../types/orderRecorder.js';
 import type { Quote } from '../../../types/quote.js';
 import type {
   DailyLossCumulativeExecutionResult,
@@ -339,9 +338,7 @@ export interface EventFlow {
 export type OrderStatusQueryDeps = {
   readonly requestExternalApi: ExternalApiRequest;
   readonly orderDetailReadPort: OrderDetailReadPort;
-  readonly executionLedgerPort: OrderExecutionLedgerPort;
   readonly rateLimiter: RateLimiter;
-  readonly getExecutionTimeEvidence: (orderId: string) => ReadonlyArray<OrderExecutionTimeEvidence>;
 };
 
 /**

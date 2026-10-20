@@ -41,7 +41,6 @@ async function fixture(available = 40) {
   h.setNow(T);
   const original = {
     orderId: 'OLD',
-    tradeId: 'OLD-EXEC',
     symbol: 'OLD_BULL.HK',
     stockName: 'HSI RC',
     remark: 'HSI',
@@ -53,7 +52,6 @@ async function fixture(available = 40) {
     submittedPrice: '2',
     executedPrice: '0',
     submittedAtMs: T,
-    executionTimeMs: null,
     updatedAtMs: T,
   };
   const native = await createBrokerIngressFixture(original);
@@ -329,30 +327,14 @@ async function fixture(available = 40) {
     price = '2',
   ) => {
     const at = T + 100 + ++revision;
-    native.setExecutionReplies(
-      fill === 0
-        ? []
-        : [
-            {
-              orderId: id,
-              tradeId: `${id}-EXEC`,
-              symbol: original.symbol,
-              quantity: String(fill),
-              price,
-              tradeDoneAtMs: at,
-            },
-          ],
-    );
 
     native.emitOrderChangedFrame({
       ...original,
       orderId: id,
-      tradeId: `${id}-EXEC`,
       quantity: String(quantity),
       status,
       executedQuantity: String(fill),
       executedPrice: fill === 0 ? '0' : price,
-      executionTimeMs: fill === 0 ? null : at,
       updatedAtMs: at,
     });
     await waitUntil(() => monitor.getSellOperationState(id) !== 'PENDING');

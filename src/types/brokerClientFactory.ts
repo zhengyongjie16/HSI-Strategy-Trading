@@ -1,6 +1,5 @@
 import type { BrokerAccess } from './brokerAccessPorts.js';
 import type { MarketDataClient } from './marketPorts.js';
-import type { OrderEconomics } from './orderEconomics.js';
 
 /**
  * 券商客户端的中性创建能力。
@@ -9,5 +8,5 @@ import type { OrderEconomics } from './orderEconomics.js';
  */
 export interface BrokerClientFactory {
   readonly createMarketDataClient: () => Promise<MarketDataClient>;
-  readonly createBrokerAccess: (economics: OrderEconomics) => BrokerAccess;
+  readonly createBrokerAccess: () => BrokerAccess;
 }

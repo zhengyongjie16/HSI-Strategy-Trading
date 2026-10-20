@@ -18,13 +18,46 @@ function formatAccountChannel(accountChannel: string): string {
     : '未知账户';
 }
 
-/** 验证安全整数数量后按旧字段位数显示，不容忍内部数量损坏。 */
-function formatQuantity(quantity: number): string {
-  if (!Number.isSafeInteger(quantity) || quantity < 0) {
-    throw new RangeError('Display position quantity must be a nonnegative safe integer');
+/** 将 number 的最短往返指数文本展开为普通十进制，不量化有效数字。 */
+function expandExponentialText(text: string): string {
+  const exponentIndex = text.includes('e') ? text.indexOf('e') : text.indexOf('E');
+  if (exponentIndex === -1) return text;
+
+  const mantissa = text.slice(0, exponentIndex);
+  const exponent = Number(text.slice(exponentIndex + 1));
+  if (!Number.isSafeInteger(exponent)) {
+    throw new RangeError('Display quantity exponent must be a safe integer');
   }
 
-  return formatDecimal(String(quantity), 2, 'preserve');
+  const negative = mantissa.startsWith('-');
+  const unsignedMantissa = negative ? mantissa.slice(1) : mantissa;
+  const decimalIndex = unsignedMantissa.indexOf('.');
+  const integerPart =
+    decimalIndex === -1 ? unsignedMantissa : unsignedMantissa.slice(0, decimalIndex);
+  const fractionPart = decimalIndex === -1 ? '' : unsignedMantissa.slice(decimalIndex + 1);
+  const digits = `${integerPart}${fractionPart}`;
+  const point = integerPart.length + exponent;
+  const sign = negative ? '-' : '';
+
+  if (point <= 0) return `${sign}0.${'0'.repeat(-point)}${digits}`;
+
+  if (point >= digits.length) return `${sign}${digits}${'0'.repeat(point - digits.length)}`;
+
+  return `${sign}${digits.slice(0, point)}.${digits.slice(point)}`;
+}
+
+/** 数量只作为展示事实；转普通十进制文本，避免指数形式回流精确运算。 */
+function toPlainDecimalText(value: number): string {
+  return expandExponentialText(String(value));
+}
+
+/** 验证有限非负数量后按旧字段位数显示；小数持仓只影响展示，不进入交易数量。 */
+function formatQuantity(quantity: number): string {
+  if (!Number.isFinite(quantity) || quantity < 0) {
+    throw new RangeError('Display position quantity must be a finite nonnegative number');
+  }
+
+  return formatDecimal(toPlainDecimalText(quantity), 2, 'preserve');
 }
 
 /** 从当前只读事实生成日志；金融错误向上穿透，由业务 owner 关闭门禁。 */
@@ -56,7 +89,7 @@ export function displayAccountAndPositions({
     const availableText = formatQuantity(position.availableQuantity);
     const marketValue =
       currentPrice !== null && exactCompare(currentPrice, '0') > 0
-        ? exactMultiply(String(position.quantity), currentPrice)
+        ? exactMultiply(toPlainDecimalText(position.quantity), currentPrice)
         : '0';
     const positionPercentText =
       exactCompare(totalAssets, '0') > 0 && exactCompare(marketValue, '0') > 0

@@ -211,8 +211,9 @@ export function createQuantityResolver(deps: {
     if (!authorizeOrderAction()) return 0;
 
     const positions = await readSellPositions(symbol);
-    // 映射后的结构数量仍必须先验证，旧授权不能吞掉内部事实错误。
-    for (const position of positions) {
+    const symbolPositions = positions.filter((position) => position.symbol === symbol);
+    // 本次卖出只验证目标港股持仓；其他市场持仓只做估值，不得阻断港股卖出。
+    for (const position of symbolPositions) {
       if (
         !Number.isSafeInteger(position.quantity) ||
         position.quantity < 0 ||
@@ -226,9 +227,7 @@ export function createQuantityResolver(deps: {
     if (!authorizeOrderAction()) return 0;
 
     const totalAvailable = sumSafeQuantities(
-      positions
-        .filter((position) => position.symbol === symbol)
-        .map((position) => String(position.availableQuantity)),
+      symbolPositions.map((position) => String(position.availableQuantity)),
     );
 
     if (totalAvailable === 0) {

@@ -27,13 +27,13 @@ import { getRequiredHKDateKey, toHongKongTimeIso } from '../../../src/utils/time
 
 import type { BrokerIngressInput } from '../../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { toRecalculationOrders } from '../../integration/recalculationOrders.js';
 
 const NOW_MS = Date.parse('2026-03-13T02:00:00.000Z');
 
 async function createNativeAccountFixture() {
   const native = await createBrokerIngressFixture({
     orderId: 'FACADE-SEED',
-    tradeId: 'FACADE-SEED-trade',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -45,7 +45,6 @@ async function createNativeAccountFixture() {
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs: NOW_MS,
-    executionTimeMs: null,
     updatedAtMs: NOW_MS,
   });
   native.setAccountBalance({
@@ -209,7 +208,6 @@ describe('tradeRuntime facade business flow', () => {
     const frames: ReadonlyArray<BrokerIngressInput> = [
       {
         orderId: 'BUY-1',
-        tradeId: 'BUY-1-trade',
         symbol: 'BULL.HK',
         stockName: 'HSI RC',
         remark: '',
@@ -221,12 +219,10 @@ describe('tradeRuntime facade business flow', () => {
         submittedPrice: '1',
         executedPrice: '1',
         submittedAtMs: 1000,
-        executionTimeMs: 1000,
         updatedAtMs: 1000,
       },
       {
         orderId: 'BUY-2',
-        tradeId: 'BUY-2-trade',
         symbol: 'BULL.HK',
         stockName: 'HSI RC',
         remark: '',
@@ -238,29 +234,10 @@ describe('tradeRuntime facade business flow', () => {
         submittedPrice: '1.2',
         executedPrice: '1.2',
         submittedAtMs: 2000,
-        executionTimeMs: 2000,
         updatedAtMs: 2000,
       },
     ];
     f.native.setOrderSnapshotReplies(frames, []);
-    f.native.setExecutionReplies([
-      {
-        orderId: 'BUY-1',
-        tradeId: 'BUY-1-trade',
-        symbol: 'BULL.HK',
-        quantity: '100',
-        price: '1',
-        tradeDoneAtMs: 1000,
-      },
-      {
-        orderId: 'BUY-2',
-        tradeId: 'BUY-2-trade',
-        symbol: 'BULL.HK',
-        quantity: '100',
-        price: '1.2',
-        tradeDoneAtMs: 2000,
-      },
-    ]);
     const observations = await tradeRuntime.orderRecorder.fetchAllOrdersFromAPI();
     expect(f.native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
     expect(
@@ -276,7 +253,7 @@ describe('tradeRuntime facade business flow', () => {
       { id: 'BUY-2', amount: '120', quantity: 100, time: 2000, phase: 'TERMINAL' },
     ]);
     const prepared = f.daily.prepareRecalculationFromAllOrders(
-      observations,
+      toRecalculationOrders(observations),
       createMonitorConfigDouble({ monitorSymbol: 'HSI.HK' }),
       new Date(NOW_MS),
     );

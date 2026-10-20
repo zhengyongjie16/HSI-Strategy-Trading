@@ -9,7 +9,6 @@ import type { Logger } from '../../../types/logger.js';
 
 import type {
   OrderCostBasis,
-  OrderExecutionTimeEvidence,
   OrderRecord,
   PendingSellInfo,
   SellableOrderResult,
@@ -109,7 +108,6 @@ export type OrderAPIManagerDeps = {
 export type OrderRecorderFactoryDeps = {
   readonly logger: Logger;
   readonly orderSnapshotReadPort: OrderSnapshotReadPort;
-  readonly getExecutionTimeEvidence: () => ReadonlyArray<OrderExecutionTimeEvidence>;
   readonly settlementRefreshNeedRecorder: SettlementRefreshNeedRecorder;
 };
 
@@ -122,6 +120,5 @@ export type OrderRecorderFactoryDeps = {
 export type OrderRecorderDeps = {
   readonly storage: OrderStorage;
   readonly apiManager: OrderAPIManager;
-  readonly getExecutionTimeEvidence: () => ReadonlyArray<OrderExecutionTimeEvidence>;
   readonly settlementRefreshNeedRecorder: SettlementRefreshNeedRecorder;
 };

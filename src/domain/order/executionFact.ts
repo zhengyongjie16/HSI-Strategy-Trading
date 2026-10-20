@@ -1,243 +1,175 @@
 /**
- * 累计订单事实裁决。
- * API 与 WS 使用同一 broker identity、累计金额和独立 revision；裁决不提交任何经济副作用。
+ * 累计订单事实唯一裁决。
+ * API/WS/恢复/durable 使用同一 broker identity、累计数量、累计金额、执行时间与 revision；
+ * 裁决不提交任何经济副作用，调用方不得在本入口之外另造数量、金额、T 或 revision 规则。
  */
-import type {
-  BrokerOrderExecutionFact,
-  OrderExecutionTimeEvidence,
-  OrderExecutionTimeObservation,
-} from '../../types/orderRecorder.js';
+import type { BrokerOrderExecutionFact } from '../../types/orderRecorder.js';
+import type { KnownExecutionBaseline } from './types.js';
 import { canonicalDecimal, exactCompare } from '../../utils/numeric/exact.js';
 
-/** 验证累计经济与真实 T/revision；不为 V1 baseline 补造未持久化的 phase。 */
-function assertExecutionPayload(fact: Omit<BrokerOrderExecutionFact, 'phase'>): void {
+/** 判断值是否是可用于累计成交事实的正安全毫秒时间。 */
+function isValidPositiveMillis(value: number | null): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+/** observed 必须声明明确 phase；仅 known baseline 允许未持久化 phase（null）。 */
+function isKnownPhase(phase: unknown): boolean {
+  return phase === 'OPEN' || phase === 'TERMINAL';
+}
+
+/** 校验累计金额文本为非负规范十进制；金额始终保留原文精度。 */
+function assertCumulativeAmount(cumulativeAmount: string): string {
+  const canonical = canonicalDecimal(cumulativeAmount);
+  if (exactCompare(canonical, '0') < 0)
+    throw new Error('[订单事实] 累计成交金额不得为负');
+
+  return canonical;
+}
+
+/**
+ * 校验累计事实的 identity、数量、金额、T 与 revision 自洽。
+ * known 正成交必须携带正金额与有效 T；仅 baseline phase 允许未知（null）。observed 必须完整。
+ */
+function assertExecutionPayload(
+  fact: KnownExecutionBaseline,
+  allowNullPhase = false,
+): void {
   if (
     fact.brokerOrderId.length === 0 ||
     fact.symbol.length === 0 ||
     !['BUY', 'SELL'].includes(fact.side) ||
     !Number.isSafeInteger(fact.cumulativeQuantity) ||
     fact.cumulativeQuantity < 0 ||
-    !Number.isSafeInteger(fact.updatedAtMs) ||
-    fact.updatedAtMs <= 0
+    !isValidPositiveMillis(fact.updatedAtMs) ||
+    !(isKnownPhase(fact.phase) || (allowNullPhase && fact.phase === null))
   ) {
     throw new Error('[订单事实] broker identity、数量、phase 或 revision 无效');
   }
 
-  const amountComparison = exactCompare(fact.cumulativeAmount, '0');
+  const amount = assertCumulativeAmount(fact.cumulativeAmount);
   if (fact.cumulativeQuantity === 0) {
-    if (amountComparison !== 0 || fact.executionTimeMs !== null) {
+    if (exactCompare(amount, '0') !== 0 || fact.executionTimeMs !== null) {
       throw new Error('[订单事实] 零成交不得声明金额或执行时间');
     }
-  } else if (
-    amountComparison <= 0 ||
-    fact.executionTimeMs === null ||
-    !Number.isSafeInteger(fact.executionTimeMs) ||
-    fact.executionTimeMs <= 0
-  ) {
-    throw new Error('[订单事实] 正成交缺少可信金额或独立执行时间');
-  }
-}
 
-/** 验证完整中立累计事实；缺失可信 execution 时间不得用 revision 代替。 */
-function assertBrokerOrderExecutionFact(fact: BrokerOrderExecutionFact): void {
-  assertExecutionPayload(fact);
-  if (!['OPEN', 'TERMINAL'].includes(fact.phase)) throw new Error('[订单事实] phase 无效');
+    return;
+  }
+
+  if (exactCompare(amount, '0') === 0)
+    throw new Error('[订单事实] 正成交缺少可信金额');
+
+  if (!isValidPositiveMillis(fact.executionTimeMs))
+    throw new Error('[订单事实] 正成交缺少可信执行时间');
 }
 
 /**
- * 纯裁决同一订单的累计事实；旧观察返回既有对象，合法新事实返回规范金额新对象。
- * 同 revision 允许正累计量推进及 OPEN→TERMINAL 的合法最终金额修订；同阶段同量异载荷、倒退均拒绝。
+ * 合并同一订单的已知累计事实与本次完整观察。
+ *
+ * 规则（唯一实现）：
+ * - 零成交 => T 必须为 null；
+ * - 首次正成交/累计量推进 => 使用本次原始观察时间代理作为 T，且金额必须产生正增量；
+ * - 同量状态/合法金额修订 => 保留 known T，revision 可推进；
+ * - revision 不倒退、数量不回退；旧 revision 的纯重复返回 null 表示不可消费；
+ * - 旧 revision 携带数量增量直接拒绝。
+ *
+ * @param known durable/runtime 已知事实；phase 允许 null（V1 baseline）
+ * @param observed 本次 broker 观察的完整累计事实
+ * @returns 可消费事实；null 仅表示旧 revision 的非增量观察应被忽略
+ */
+export function mergeExecutionFact(
+  known: KnownExecutionBaseline | undefined,
+  observed: BrokerOrderExecutionFact,
+): BrokerOrderExecutionFact | null {
+  assertExecutionPayload(observed);
+  const normalized: BrokerOrderExecutionFact = Object.freeze({
+    ...observed,
+    cumulativeAmount: canonicalDecimal(observed.cumulativeAmount),
+  });
+  if (known === undefined) return normalized;
+
+  assertExecutionPayload(known, true);
+  if (
+    known.brokerOrderId !== observed.brokerOrderId ||
+    known.symbol !== observed.symbol ||
+    known.side !== observed.side
+  ) {
+    throw new Error('[订单事实] 同 broker identity 的归属冲突');
+  }
+
+  const quantityAdvanced = observed.cumulativeQuantity > known.cumulativeQuantity;
+  if (observed.updatedAtMs < known.updatedAtMs) {
+    if (quantityAdvanced) throw new Error('[订单事实] 累计数量推进但 revision 倒退');
+
+    return null;
+  }
+
+  if (known.phase === 'TERMINAL' && observed.phase === 'OPEN')
+    throw new Error('[订单事实] fact stage regression: TERMINAL -> OPEN');
+
+  if (observed.cumulativeQuantity < known.cumulativeQuantity)
+    throw new Error('[订单事实] 同/新 revision 累计数量倒退');
+
+  const amountChanged =
+    exactCompare(known.cumulativeAmount, normalized.cumulativeAmount) !== 0;
+
+  if (quantityAdvanced) {
+    if (exactCompare(normalized.cumulativeAmount, known.cumulativeAmount) <= 0)
+      throw new Error('[订单事实] 正成交增量缺少正金额增量');
+
+    const executionTimeMs = normalized.executionTimeMs;
+    if (!isValidPositiveMillis(executionTimeMs))
+      throw new Error('[订单事实] 正成交缺少可信执行时间');
+
+    if (known.executionTimeMs !== null && executionTimeMs < known.executionTimeMs)
+      throw new Error('[订单事实] 新 revision 的可信执行时间倒退');
+
+    return normalized;
+  }
+
+  if (observed.cumulativeQuantity === 0) {
+    // 零成交资源关闭：不允许金额或 T；revision/phase 可继续推进。
+    return Object.freeze({ ...normalized, executionTimeMs: null });
+  }
+
+  if (amountChanged) {
+    // 同 revision 的金额修订只允许由已证明的 OPEN->TERMINAL 收口授权；
+    // phase 未知的 durable baseline 不得据此授权任何阶段修订。
+    const phaseAdvanced = known.phase === 'OPEN' && observed.phase === 'TERMINAL';
+    if (observed.updatedAtMs === known.updatedAtMs && !phaseAdvanced)
+      throw new Error('[订单事实] 同 revision 同量同阶段的累计经济或执行时间冲突');
+
+    return Object.freeze({
+      ...normalized,
+      executionTimeMs: known.executionTimeMs,
+    });
+  }
+
+  if (
+    known.phase !== null &&
+    observed.updatedAtMs === known.updatedAtMs &&
+    observed.phase === known.phase
+  ) {
+    return known as BrokerOrderExecutionFact;
+  }
+
+  return Object.freeze({
+    ...normalized,
+    executionTimeMs: known.executionTimeMs,
+  });
+}
+
+/**
+ * 兼容既有日损/runtime owner 的旧观察语义：旧 revision 的纯重复返回既有事实。
+ * 完整 previous 与新观察的全部数量/金额/T/phase 规则仍由 mergeExecutionFact 唯一裁决。
  */
 export function mergeBrokerOrderExecutionFact(
   previous: BrokerOrderExecutionFact | undefined,
   incoming: BrokerOrderExecutionFact,
 ): BrokerOrderExecutionFact {
-  assertBrokerOrderExecutionFact(incoming);
-  const normalized = {
-    ...incoming,
-    cumulativeAmount: canonicalDecimal(incoming.cumulativeAmount),
-  };
-  if (previous === undefined) {
-    return Object.freeze(normalized);
-  }
+  const merged = mergeExecutionFact(previous, incoming);
+  if (merged !== null) return merged;
 
-  if (
-    previous.brokerOrderId !== incoming.brokerOrderId ||
-    previous.symbol !== incoming.symbol ||
-    previous.side !== incoming.side
-  ) {
-    throw new Error('[订单事实] 同 broker identity 的归属冲突');
-  }
+  if (previous === undefined) throw new Error('[订单事实] 缺少可消费的累计事实');
 
-  const quantityAdvanced = incoming.cumulativeQuantity > previous.cumulativeQuantity;
-  if (incoming.updatedAtMs < previous.updatedAtMs) {
-    if (quantityAdvanced) {
-      throw new Error('[订单事实] 累计数量推进但 revision 倒退');
-    }
-
-    return previous;
-  }
-
-  if (previous.phase === 'TERMINAL' && incoming.phase === 'OPEN') {
-    throw new Error('[订单事实] fact stage regression: TERMINAL -> OPEN');
-  }
-
-  if (incoming.cumulativeQuantity < previous.cumulativeQuantity) {
-    throw new Error('[订单事实] 同/新 revision 累计数量倒退');
-  }
-
-  const amountChanged = exactCompare(previous.cumulativeAmount, incoming.cumulativeAmount) !== 0;
-  const phaseAdvanced = previous.phase === 'OPEN' && incoming.phase === 'TERMINAL';
-  if (
-    incoming.updatedAtMs === previous.updatedAtMs &&
-    !quantityAdvanced &&
-    ((amountChanged && !phaseAdvanced) || incoming.executionTimeMs !== previous.executionTimeMs)
-  ) {
-    throw new Error('[订单事实] 同 revision 同量同阶段的累计经济或执行时间冲突');
-  }
-
-  if (quantityAdvanced && exactCompare(incoming.cumulativeAmount, previous.cumulativeAmount) <= 0) {
-    throw new Error('[订单事实] 正成交增量缺少正金额增量');
-  }
-
-  if (
-    previous.executionTimeMs !== null &&
-    incoming.executionTimeMs !== null &&
-    incoming.executionTimeMs < previous.executionTimeMs
-  ) {
-    throw new Error('[订单事实] 新 revision 的可信执行时间倒退');
-  }
-
-  const phase = incoming.phase;
-  if (
-    !quantityAdvanced &&
-    !amountChanged &&
-    phase === previous.phase &&
-    incoming.updatedAtMs === previous.updatedAtMs
-  ) {
-    return previous;
-  }
-
-  return Object.freeze({ ...normalized, phase });
-}
-
-/**
- * 将可信事实/durable 证据与 API 累计量匹配；未知执行时间保持未知，绝不取 API revision 替代。
- * @param orders 已映射 API 观察
- * @param evidence 唯一事实 owner 或原 durable progress/baseline 的可信执行时间证据
- * @returns 新的只读 API 观察数组，原输入不写入；同量合法金额修订仍使用真实执行时间
- */
-export function withTrustedOrderExecutionTimes<T extends OrderExecutionTimeObservation>(
-  orders: ReadonlyArray<T>,
-  evidence: ReadonlyArray<OrderExecutionTimeEvidence>,
-): ReadonlyArray<T> {
-  for (const item of evidence) {
-    assertExecutionPayload({
-      brokerOrderId: item.brokerOrderId,
-      symbol: item.symbol,
-      side: item.side,
-      cumulativeQuantity: item.cumulativeQuantity,
-      cumulativeAmount: item.cumulativeAmount,
-      executionTimeMs: item.lastExecutionTimeMs,
-      updatedAtMs: item.orderRevisionMs,
-    });
-
-    if (item.phase !== null && !['OPEN', 'TERMINAL'].includes(item.phase))
-      throw new Error('[订单事实] evidence phase 无效');
-  }
-
-  return orders.map((order) => {
-    const matching = evidence.filter(
-      (item) =>
-        item.brokerOrderId === order.orderId &&
-        item.symbol === order.symbol &&
-        item.side === order.executionSide &&
-        item.cumulativeQuantity === order.executedQuantity,
-    );
-    if (matching.length === 0) return order;
-
-    const proven = matching.filter((item) => item.phase !== null);
-    // 未存 phase 的 baseline 只能由同 revision 同 payload 的 progress/API 锚定，不能当假 OPEN 放宽金额冲突。
-    for (const item of matching.filter((candidate) => candidate.phase === null)) {
-      const sameRevision = matching.filter(
-        (candidate) => candidate.orderRevisionMs === item.orderRevisionMs,
-      );
-      if (
-        sameRevision.some(
-          (candidate) => candidate.lastExecutionTimeMs !== item.lastExecutionTimeMs,
-        ) ||
-        (order.updatedAtMs === item.orderRevisionMs &&
-          order.executionTimeMs !== null &&
-          order.executionTimeMs !== item.lastExecutionTimeMs)
-      )
-        throw new Error('[订单事实] 同 revision 的可信执行时间冲突');
-
-      const hasProvenPayload = proven.some(
-        (candidate) =>
-          candidate.orderRevisionMs === item.orderRevisionMs &&
-          exactCompare(candidate.cumulativeAmount, item.cumulativeAmount) === 0 &&
-          candidate.lastExecutionTimeMs === item.lastExecutionTimeMs,
-      );
-      const matchesApi =
-        order.updatedAtMs === item.orderRevisionMs &&
-        exactCompare(order.executedAmount, item.cumulativeAmount) === 0 &&
-        (order.executionTimeMs === null || order.executionTimeMs === item.lastExecutionTimeMs);
-      const conflict =
-        sameRevision.some(
-          (candidate) =>
-            exactCompare(candidate.cumulativeAmount, item.cumulativeAmount) !== 0 ||
-            candidate.lastExecutionTimeMs !== item.lastExecutionTimeMs,
-        ) ||
-        (order.updatedAtMs === item.orderRevisionMs &&
-          (exactCompare(order.executedAmount, item.cumulativeAmount) !== 0 ||
-            (order.executionTimeMs !== null &&
-              order.executionTimeMs !== item.lastExecutionTimeMs)));
-      if (conflict && !hasProvenPayload && !matchesApi)
-        throw new Error('[订单事实] 未知 phase baseline 的同 revision 载荷无法锚定到真实 phase');
-    }
-
-    const ordered = [...proven].sort((left, right) => {
-      const revision = left.orderRevisionMs - right.orderRevisionMs;
-      if (revision !== 0 || left.phase === right.phase) return revision;
-
-      return left.phase === 'OPEN' ? -1 : 1;
-    });
-    let latest: BrokerOrderExecutionFact | undefined;
-    for (const item of ordered) {
-      if (item.phase === null) throw new Error('[订单事实] proven execution evidence lacks phase');
-
-      latest = mergeBrokerOrderExecutionFact(latest, {
-        brokerOrderId: item.brokerOrderId,
-        symbol: item.symbol,
-        side: item.side,
-        cumulativeQuantity: item.cumulativeQuantity,
-        cumulativeAmount: item.cumulativeAmount,
-        executionTimeMs: item.lastExecutionTimeMs,
-        updatedAtMs: item.orderRevisionMs,
-        phase: item.phase,
-      });
-    }
-
-    const newest = [...matching].sort(
-      (left, right) => right.orderRevisionMs - left.orderRevisionMs,
-    )[0];
-    if (newest === undefined) throw new Error('[订单事实] matching execution evidence disappeared');
-
-    const executionTimeMs =
-      order.executionTimeMs ??
-      (latest !== undefined && latest.updatedAtMs >= newest.orderRevisionMs
-        ? latest.executionTimeMs
-        : newest.lastExecutionTimeMs);
-    mergeBrokerOrderExecutionFact(latest, {
-      brokerOrderId: order.orderId,
-      symbol: order.symbol,
-      side: order.executionSide,
-      cumulativeQuantity: order.executedQuantity,
-      cumulativeAmount: order.executedAmount,
-      executionTimeMs,
-      updatedAtMs: order.updatedAtMs,
-      phase: order.executionPhase,
-    });
-    return order.executionTimeMs === null ? Object.freeze({ ...order, executionTimeMs }) : order;
-  });
+  return previous;
 }

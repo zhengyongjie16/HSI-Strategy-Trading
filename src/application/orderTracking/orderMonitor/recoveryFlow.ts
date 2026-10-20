@@ -20,6 +20,7 @@ import type { OrderFact } from '../../../types/trade.js';
 import { isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import { exactCompare } from '../../../utils/numeric/exact.js';
 import { isSeatActive } from '../../../domain/seat/seatPolicy.js';
+import { isHongKongSymbol } from '../../../utils/marketScope.js';
 import type { OrderSeatOwnership, RecoverySnapshotReconciliationParams } from '../types.js';
 import { acknowledgeQueriedTerminalState, peekQueriedTerminalState } from './orderOps.js';
 import { resetRoutingIndex } from './routingIndex.js';
@@ -349,6 +350,15 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
     }
 
     if (trackedOrder && executedQuantity > 0) {
+      if (
+        order.executedAmount === null ||
+        order.executedPrice === null ||
+        exactCompare(order.executedPrice, '0') <= 0 ||
+        exactCompare(order.executedAmount, '0') <= 0
+      ) {
+        throw new Error(`[订单监控] 恢复部分成交订单 ${order.orderId} 缺少完整原始价格/金额，阻断恢复`);
+      }
+
       trackedOrder.executedQuantity = executedQuantity;
       trackedOrder.executedPrice = order.executedPrice;
       trackedOrder.executedAmount = order.executedAmount;
@@ -388,12 +398,15 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
   ): Promise<void> {
     if (deps.termination.isTerminated()) return;
 
+    // 恢复公共入口与 reconciliation/持仓集合统一只看港股；合法非HK 订单零操作，不撤单、不改单、不阻断。
+    const hongKongOrders = allOrders.filter((order) => isHongKongSymbol(order.symbol));
+
     runtime.runtimeState = 'BOOTSTRAPPING';
     resetRecoveryTrackingState();
     let recoveredCount = 0;
     const closedMismatchedBuyOrderIds = new Set<string>();
     try {
-      for (const order of allOrders) {
+      for (const order of hongKongOrders) {
         if (!['BUY', 'SELL'].includes(order.executionSide)) {
           throw new Error(`[订单监控] 订单 ${order.orderId} 缺少已验证的中性方向，阻断恢复`);
         }
@@ -469,7 +482,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
                 status: order.status,
                 executedQuantity: snapshotExecutedQuantity,
                 executedPrice: order.executedPrice,
-                executedAmount: order.executedAmount,
+                executedAmount: order.executedAmount ?? '0',
                 lastExecutedTimeMs: order.executionTimeMs,
                 lastOrderUpdateAtMs: snapshotUpdatedAtMs,
               },
@@ -525,7 +538,7 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
       const replayedOrderIds = replayBootstrappingEvents();
       assertPendingSellConsistency();
       assertRecoverySnapshotReconciliation({
-        allOrders,
+        allOrders: hongKongOrders,
         closedMismatchedBuyOrderIds,
         replayedOrderIds,
       });

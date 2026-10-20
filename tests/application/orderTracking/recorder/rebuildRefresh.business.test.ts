@@ -56,7 +56,6 @@ async function createRebuildFixture(): Promise<
 > {
   const native = await createBrokerIngressFixture({
     orderId: 'REBUILD-PORT',
-    tradeId: 'REBUILD-PORT-trade',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -68,7 +67,6 @@ async function createRebuildFixture(): Promise<
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs: BASE_TIME_MS,
-    executionTimeMs: null,
     updatedAtMs: BASE_TIME_MS,
   });
   native.setAccountBalance({
@@ -107,7 +105,15 @@ function publishSnapshot(
   allOrders: ReadonlyArray<OrderFact>,
 ) {
   f.recorder.validateRebuildSnapshot(symbol, allOrders);
-  const scopedOrders = allOrders.filter((order) => order.symbol === symbol);
+  const scopedOrders = allOrders
+    .filter((order) => order.symbol === symbol)
+    .map((order) => {
+      if (order.executedAmount === null) {
+        throw new Error('[测试] 正成交缺价订单必须由 batch 预检拒绝');
+      }
+
+      return { ...order, executedAmount: order.executedAmount };
+    });
   const prepared = f.daily.prepareRecalculationFromAllOrders(
     scopedOrders,
     createMonitorConfigDouble({ monitorSymbol: 'HSI.HK', orderOwnershipMapping: ['HSI'] }),
@@ -140,7 +146,6 @@ async function createRawOrder(params: {
   const executionTimeMs = BASE_TIME_MS + params.executedTimeOffsetSeconds * 1000;
   const frame: BrokerIngressInput = {
     orderId: params.orderId,
-    tradeId: params.orderId + '-trade',
     symbol: params.symbol,
     stockName: params.symbol === 'BEAR.HK' ? 'HSI RP' : 'HSI RC',
     remark: '',
@@ -152,7 +157,6 @@ async function createRawOrder(params: {
     submittedPrice: '1',
     executedPrice: params.executedPrice,
     submittedAtMs: executionTimeMs,
-    executionTimeMs: params.executedQuantity === 0 ? null : executionTimeMs,
     updatedAtMs: executionTimeMs,
   };
   const native = await createBrokerIngressFixture({
@@ -161,37 +165,25 @@ async function createRawOrder(params: {
       params.executedQuantity > 0 && params.executedPrice === '0' ? '1' : params.executedPrice,
   });
   native.setOrderDetailReplies([frame]);
-  native.setExecutionReplies(
-    params.executedQuantity === 0
-      ? []
-      : [
-          {
-            orderId: params.orderId,
-            tradeId: frame.tradeId,
-            symbol: params.symbol,
-            quantity: String(params.executedQuantity),
-            price: params.executedPrice,
-            tradeDoneAtMs: executionTimeMs,
-          },
-        ],
-  );
 
   if (params.side === 'UNKNOWN') native.setQuerySideUnknown();
 
-  const issuedLedgerBeforeRead = native.readCounts();
   let observations: ReadonlyArray<OrderFact>;
   try {
     observations = await native.createQueryOrdersReader()();
   } catch (error) {
     expect(native.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
-    expect(native.readCounts()).toEqual(issuedLedgerBeforeRead);
     throw error;
   }
 
   const observation = observations[0];
   if (observation === undefined) throw new Error('Missing issued native order observation');
 
-  expect(observation.executedAmount).toBe(params.executedAmount);
+  expect(observation.executedAmount).toBe(
+    params.executedQuantity > 0 && observation.executedPrice === null
+      ? null
+      : params.executedAmount,
+  );
   return observation;
 }
 
@@ -356,7 +348,6 @@ describe('OrderRecorder rebuild refresh', () => {
     const f = await createRebuildFixture();
     publishSnapshot(f, 'BULL.HK', true, [await validBuy('BULL.HK')]);
     const before = summarizeOrders(f.recorder.getBuyOrdersForSymbol('BULL.HK', true));
-    const beforeDaily = f.daily.getExecutionTimeEvidence();
     const malformed = createRawOrder({
       orderId: 'INVALID-BUY',
       symbol: 'BULL.HK',
@@ -368,20 +359,13 @@ describe('OrderRecorder rebuild refresh', () => {
       executedQuantity: 100,
       executedTimeOffsetSeconds: 2,
     });
-    let ingressError: unknown;
-    try {
-      await malformed;
-    } catch (error) {
-      ingressError = error;
-    }
-
-    expect(ingressError).toBeInstanceOf(TypeError);
-    expect(ingressError).toHaveProperty(
-      'message',
-      '[orderMapper] invalid cumulative execution quantity/price',
+    const rawOrder = await malformed;
+    expect(rawOrder.executedPrice).toBeNull();
+    expect(rawOrder.executedAmount).toBeNull();
+    expect(() => publishSnapshot(f, 'BULL.HK', true, [rawOrder])).toThrow(
+      /正成交缺少可持久化金额/,
     );
     expect(summarizeOrders(f.recorder.getBuyOrdersForSymbol('BULL.HK', true))).toEqual(before);
-    expect(f.daily.getExecutionTimeEvidence()).toEqual(beforeDaily);
     expect(
       f.snapshot.isCurrent(f.snapshotToken, { account: true, positions: true, paired: true }),
     ).toBeTrue();
@@ -394,7 +378,6 @@ describe('OrderRecorder rebuild refresh', () => {
     const f = await createRebuildFixture();
     publishSnapshot(f, 'BULL.HK', true, [await validBuy('BULL.HK')]);
     const before = summarizeOrders(f.recorder.getBuyOrdersForSymbol('BULL.HK', true));
-    const beforeDaily = f.daily.getExecutionTimeEvidence();
     const malformed = createRawOrder({
       orderId: 'INVALID-UNKNOWN-SIDE',
       symbol: 'BULL.HK',
@@ -416,7 +399,6 @@ describe('OrderRecorder rebuild refresh', () => {
     expect(ingressError).toBeInstanceOf(TypeError);
     expect(ingressError).toHaveProperty('message', '[orderMapper] unknown SDK execution side');
     expect(summarizeOrders(f.recorder.getBuyOrdersForSymbol('BULL.HK', true))).toEqual(before);
-    expect(f.daily.getExecutionTimeEvidence()).toEqual(beforeDaily);
     expect(
       f.snapshot.isCurrent(f.snapshotToken, { account: true, positions: true, paired: true }),
     ).toBeTrue();
@@ -430,7 +412,6 @@ describe('OrderRecorder rebuild refresh', () => {
       const f = await createRebuildFixture();
       publishSnapshot(f, 'BULL.HK', true, [await validBuy('BULL.HK')]);
       const before = summarizeOrders(f.recorder.getBuyOrdersForSymbol('BULL.HK', true));
-      const beforeDaily = f.daily.getExecutionTimeEvidence();
       const malformed = createRawOrder({
         orderId: `UNKNOWN-SIDE-${unknown.label}`,
         symbol: 'BULL.HK',
@@ -452,7 +433,6 @@ describe('OrderRecorder rebuild refresh', () => {
       expect(ingressError).toBeInstanceOf(TypeError);
       expect(ingressError).toHaveProperty('message', '[orderMapper] unknown SDK execution side');
       expect(summarizeOrders(f.recorder.getBuyOrdersForSymbol('BULL.HK', true))).toEqual(before);
-      expect(f.daily.getExecutionTimeEvidence()).toEqual(beforeDaily);
       expect(
         f.snapshot.isCurrent(f.snapshotToken, { account: true, positions: true, paired: true }),
       ).toBeTrue();
@@ -464,7 +444,6 @@ describe('OrderRecorder rebuild refresh', () => {
 
   it('uses the same symbol-scoped classifier failure for preflight and batch', async () => {
     const f = await createRebuildFixture();
-    const beforeDaily = f.daily.getExecutionTimeEvidence();
     const beforeO = summarizeOrders(f.recorder.getBuyOrdersForSymbol('BULL.HK', true));
     let preflightCalls = 0;
     let commitCalls = 0;
@@ -507,7 +486,6 @@ describe('OrderRecorder rebuild refresh', () => {
 
     expect(preflightCalls).toBe(0);
     expect(commitCalls).toBe(0);
-    expect(f.daily.getExecutionTimeEvidence()).toEqual(beforeDaily);
     expect(summarizeOrders(f.recorder.getBuyOrdersForSymbol('BULL.HK', true))).toEqual(beforeO);
     expect(
       f.snapshot.isCurrent(f.snapshotToken, { account: true, positions: true, paired: true }),
@@ -529,13 +507,11 @@ describe('OrderRecorder rebuild refresh', () => {
 
   it('a real invalidated captured token aborts the whole batch without publishing Daily or O candidates', async () => {
     const f = await createRebuildFixture();
-    const beforeDaily = f.daily.getExecutionTimeEvidence();
     f.snapshot.invalidate();
     expect(publishSnapshot(f, 'BULL.HK', true, [await validBuy('BULL.HK')])).toEqual({
       status: 'ABORTED',
     });
     expect(f.recorder.getBuyOrdersForSymbol('BULL.HK', true)).toEqual([]);
-    expect(f.daily.getExecutionTimeEvidence()).toEqual(beforeDaily);
     expect(f.sink.getStatus().staleVersion).toBe(0);
   });
 });

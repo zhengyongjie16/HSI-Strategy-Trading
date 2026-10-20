@@ -10,7 +10,7 @@ import { proportionExecutionCost } from './orderRecordPolicy.js';
 import { deductSellQuantityFromBuyOrders } from './sellDeductionPolicy.js';
 import { mergeBrokerOrderExecutionFact } from './executionFact.js';
 
-/** 将已映射 API 事实交给相同累计事实裁决，不由 revision 回填可信执行时间。 */
+/** 将已映射 API 事实交给同一累计事实裁决；T 沿用订单驱动代理，不在此另造时间。 */
 export function apiOrderToExecutionFact(order: OrderFact): BrokerOrderExecutionFact {
   if (!['BUY', 'SELL'].includes(order.executionSide)) {
     throw new Error('[订单记录] API 订单方向不可归属');
@@ -21,7 +21,7 @@ export function apiOrderToExecutionFact(order: OrderFact): BrokerOrderExecutionF
     symbol: order.symbol,
     side: order.executionSide,
     cumulativeQuantity: order.executedQuantity,
-    cumulativeAmount: order.executedAmount,
+    cumulativeAmount: order.executedAmount ?? '0',
     executionTimeMs: order.executionTimeMs,
     updatedAtMs: order.updatedAtMs,
     phase: order.executionPhase,

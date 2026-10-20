@@ -9,6 +9,7 @@ import type { OrderFact } from '../../src/types/trade.js';
 import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
 import { createMonitorConfigDouble } from '../helpers/testDoubles.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { toRecalculationOrders } from './recalculationOrders.js';
 
 const T = Date.parse('2026-10-07T02:00:00.000Z');
 const monitor = createMonitorConfigDouble({
@@ -26,7 +27,6 @@ async function observation(
 ) {
   const native = await createBrokerIngressFixture({
     orderId: id,
-    tradeId: id + '-fill',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -37,7 +37,6 @@ async function observation(
     submittedPrice: price,
     executedPrice: price,
     submittedAtMs: T - 1000,
-    executionTimeMs: T + time,
     updatedAtMs: T + revision,
   });
   return native.pushObservation;
@@ -48,6 +47,10 @@ function commit(
   o: OrderFact,
   related: ReadonlyArray<string> = [],
 ) {
+  const { executedAmount, executedPrice, executionTimeMs } = o;
+  if (executionTimeMs === null || executedPrice === null || executedAmount === null)
+    throw new Error('fixture must have full execution facts');
+
   if (related.length === 0) {
     f.flow.recordCumulativeExecution({
       orderId: o.orderId,
@@ -57,17 +60,14 @@ function commit(
       isLongSymbol: true,
       isProtectiveLiquidation: false,
       factStage: o.executionPhase,
-      executedPrice: o.executedPrice,
+      executedPrice,
       executedQuantity: o.executedQuantity,
-      executedAmount: o.executedAmount,
-      executedTimeMs: o.executionTimeMs,
+      executedAmount,
+      executedTimeMs: executionTimeMs,
       orderUpdatedAtMs: o.updatedAtMs,
     });
     return;
   }
-
-  if (o.executionTimeMs === null || o.executedPrice === null)
-    throw new Error('fixture must have full execution facts');
 
   f.recorder.commitExecutionFact(
     {
@@ -76,8 +76,8 @@ function commit(
       side: o.executionSide,
       phase: o.executionPhase,
       cumulativeQuantity: o.executedQuantity,
-      cumulativeAmount: o.executedAmount,
-      executionTimeMs: o.executionTimeMs,
+      cumulativeAmount: executedAmount,
+      executionTimeMs,
       updatedAtMs: o.updatedAtMs,
     },
     true,
@@ -90,15 +90,19 @@ function commit(
         side: o.executionSide,
         factStage: o.executionPhase,
         executedQuantity: o.executedQuantity,
-        executedPrice: o.executedPrice!,
-        executedTimeMs: o.executionTimeMs!,
+        executedPrice,
+        executedTimeMs: executionTimeMs,
         orderUpdatedAtMs: o.updatedAtMs,
       }).admission,
   );
 }
 
 function baseline(f: ReturnType<typeof createExecutionFixture>, orders: ReadonlyArray<OrderFact>) {
-  const prepared = f.daily.prepareRecalculationFromAllOrders(orders, monitor, new Date(T));
+  const prepared = f.daily.prepareRecalculationFromAllOrders(
+    toRecalculationOrders(orders),
+    monitor,
+    new Date(T),
+  );
   expect(
     f.recorder.commitRebuildSnapshot(
       [{ symbol: 'BULL.HK', isLongSymbol: true }],
@@ -241,7 +245,5 @@ test('M3 shared timing preserves active clear scope and exact related-buy deduct
     'cheap',
   ]);
 
-  expect(
-    f.daily.getExecutionTimeEvidence().find((o) => o.brokerOrderId === 'related')?.cumulativeAmount,
-  ).toBe('300');
+  expect(f.recorder.getExecutionFact('related')).toMatchObject({ cumulativeAmount: '300' });
 });

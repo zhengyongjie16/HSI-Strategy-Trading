@@ -2,7 +2,7 @@ import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { createLoggerDouble } from '../../helpers/testDoubles.js';
 
 /**
- * 已封存 execution T 的修订必须沿真实共享 settlementFlow → O beforeCommit → Daily 准入 → S sink 被抑制。
+ * 已封存 execution T 的修订沿真实 settlementFlow → O beforeCommit → Daily 保留权威事实，冻结投影不重写。
  * 保留原 V1 字节与 9.2/T/revision+1 输入；真实 recorder、Daily、repository、snapshot、S 和 hold 各自验真。
  * 这是共享结算规则线，不启动 WS ingress/settlement 消费，不以手动 release 或假 readiness 代替自然接线。
  */
@@ -31,7 +31,7 @@ import { toHongKongTimeIso } from '../../../src/utils/time/index.js';
 import { buildTradeLogPath } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/tradeLogPath.js';
 import { createOfflineBrokerPort } from './offlinePorts.js';
 
-it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real O/Daily/S while terminal resources close independently', () => {
+it('admits original 9.2/T/revision+1 authority through shared O/Daily/S without rewriting completion or repeating resources', () => {
   const dayKey = '2026-03-13';
   const executionT = 1773369000000;
   const revision = executionT + 30_000;
@@ -101,7 +101,6 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
     const owner = createOrderRecorder({
       logger: createLoggerDouble(),
       orderSnapshotReadPort: io.broker,
-      getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
       settlementRefreshNeedRecorder: sink,
     });
     const holds = createOrderHoldRegistry();
@@ -189,6 +188,7 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
       orderBaselines: sealed.orderBaselines,
     });
     daily.commitProtectionBoundary(sealed);
+    episode.commitCompletion({ direction: 'LONG', boundaryExecutedTimeMs: executionT });
     expect(daily.getLossOffset('LONG')).toBe('0');
     expect(fs.readFileSync(logFile)).toEqual(originalBytes);
     const before = {
@@ -196,7 +196,6 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
       sell: owner.getSellRecordByOrderId('OFFLINE-SELL'),
       buyList: owner.getBuyOrdersForSymbol('BULL.HK', true),
       cost: owner.getCostBasis('BULL.HK', true),
-      evidence: daily.getExecutionTimeEvidence(),
       baseline: daily.prepareProtectionBoundary({
         direction: 'LONG',
         boundaryExecutedTimeMs: executionT + 1,
@@ -205,7 +204,7 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
       snapshotToken: snapshot.getView().token,
       sinkStatus: sink.getStatus(),
     };
-    const suppressed = {
+    const corrected = {
       ...terminal,
       executedPrice: '9.2',
       // 独立整数账本：9.2 × 5 = 46；不使用生产 exact 或均价 helper。
@@ -213,47 +212,47 @@ it('suppresses original 9.2/T/revision+1 through shared settlementFlow and real 
       executedTimeMs: executionT,
       orderUpdatedAtMs: revision + 1,
     };
-    expect(flow.recordCumulativeExecution(suppressed)).toEqual({
-      admission: 'SUPPRESSED',
-      authoritativeFactChanged: false,
+    expect(flow.recordCumulativeExecution(corrected)).toEqual({
+      admission: 'ADMITTED',
+      authoritativeFactChanged: true,
       executionAdvanced: false,
     });
     const close: FinalizeOrderSettlementParams = {
-      orderId: suppressed.orderId,
+      orderId: corrected.orderId,
       closedReason: 'FILLED',
       source: 'STATE_CHECK',
-      symbol: suppressed.symbol,
-      side: suppressed.side,
-      monitorSymbol: suppressed.monitorSymbol,
-      isLongSymbol: suppressed.isLongSymbol,
-      isProtectiveLiquidation: suppressed.isProtectiveLiquidation,
-      executedPrice: suppressed.executedPrice,
-      executedAmount: suppressed.executedAmount,
-      executedQuantity: suppressed.executedQuantity,
-      executedTimeMs: suppressed.executedTimeMs,
-      orderUpdatedAtMs: suppressed.orderUpdatedAtMs,
+      symbol: corrected.symbol,
+      side: corrected.side,
+      monitorSymbol: corrected.monitorSymbol,
+      isLongSymbol: corrected.isLongSymbol,
+      isProtectiveLiquidation: corrected.isProtectiveLiquidation,
+      executedPrice: corrected.executedPrice,
+      executedAmount: corrected.executedAmount,
+      executedQuantity: corrected.executedQuantity,
+      executedTimeMs: corrected.executedTimeMs,
+      orderUpdatedAtMs: corrected.orderUpdatedAtMs,
       preparedProtectiveTerminalExecution: preparedTerminal,
     };
     expect(flow.settleOrder(close)).toEqual({ handled: true, relatedBuyOrderIds: null });
     expect(flow.settleOrder(close)).toEqual({ handled: false, relatedBuyOrderIds: null });
-    expect(owner.getExecutionFact('OFFLINE-SELL')).toEqual(before.fact);
-    expect(owner.getSellRecordByOrderId('OFFLINE-SELL')).toEqual(before.sell);
+    expect(owner.getExecutionFact('OFFLINE-SELL')).toMatchObject({ cumulativeAmount: '46', updatedAtMs: revision + 1 });
+    expect(owner.getSellRecordByOrderId('OFFLINE-SELL')).toMatchObject({ costAmount: '46' });
     expect(owner.getBuyOrdersForSymbol('BULL.HK', true)).toEqual(before.buyList);
     expect(owner.getCostBasis('BULL.HK', true)).toEqual(before.cost);
-    expect(daily.getExecutionTimeEvidence()).toEqual(before.evidence);
     expect(
       daily.prepareProtectionBoundary({
         direction: 'LONG',
         boundaryExecutedTimeMs: executionT + 1,
-      }),
-    ).toEqual(before.baseline);
+      }).orderBaselines.find((baseline) => baseline.orderId === 'OFFLINE-SELL'),
+    ).toMatchObject({ cumulativeAmount: '46', orderRevisionMs: revision + 1 });
     expect(daily.getLossOffset('LONG')).toBe('0');
     expect(episode.getInProgressEpisodes()).toEqual(before.episode);
-    expect(snapshot.getView().token).toEqual(before.snapshotToken);
-    expect(sink.getStatus()).toEqual(before.sinkStatus);
-    expect(repository.loadExecutionProgressRecords(dayKey)).toHaveLength(2);
+    expect(snapshot.getView().token.snapshotGeneration).toBe(before.snapshotToken.snapshotGeneration + 1);
+    expect(sink.getStatus()).toEqual({ ...before.sinkStatus, staleVersion: before.sinkStatus.staleVersion + 1 });
+    expect(repository.loadExecutionProgressRecords(dayKey)).toHaveLength(3);
     expect(repository.loadCompletionRecords(dayKey)).toHaveLength(1);
-    expect(fs.readFileSync(logFile)).toEqual(originalBytes);
+    expect(fs.readFileSync(logFile).subarray(0, originalBytes.length)).toEqual(originalBytes);
+    expect(repository.loadCompletionRecords(dayKey)[0]?.orderBaselines).toEqual(sealed.orderBaselines);
     expect(owner.getPendingSellSnapshot()).toEqual([]);
     expect(holds.getHoldSymbols().size).toBe(0);
     expect(runtime.closedOrderIds.has('OFFLINE-SELL')).toBe(true);

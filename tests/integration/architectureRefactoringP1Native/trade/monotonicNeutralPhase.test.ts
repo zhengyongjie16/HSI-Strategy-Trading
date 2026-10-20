@@ -6,7 +6,6 @@ import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 const input = {
   orderId: 'PHASE',
-  tradeId: 'T',
   symbol: 'BULL.HK',
   stockName: 'SDK',
   remark: '',
@@ -17,10 +16,12 @@ const input = {
   submittedPrice: '1',
   executedPrice: '1.02',
   submittedAtMs: 1700000000000,
-  executionTimeMs: 1700000000100,
   updatedAtMs: 1700000000200,
 };
 function known(order: OrderFact): KnownOrderFact {
+  if (order.executedAmount === null)
+    throw new Error('fixture order must carry an executed amount');
+
   return {
     orderId: order.orderId,
     symbol: order.symbol,
@@ -48,7 +49,7 @@ function observed(order: OrderFact): OrderObservedFact {
   };
 }
 
-test('actual mapper phase admits same revision OPEN→TERMINAL without inventing economic T/revision', async () => {
+test('actual mapper phase admits same revision OPEN→TERMINAL using the order observation time proxy', async () => {
   const open = await createBrokerIngressFixture(input);
   const terminal = await createBrokerIngressFixture({ ...input, status: 'Canceled' });
   expect(
@@ -57,7 +58,7 @@ test('actual mapper phase admits same revision OPEN→TERMINAL without inventing
     executionPhase: 'TERMINAL',
     executedQuantity: 40,
     executedAmount: '40.8',
-    executedTimeMs: 1700000000100,
+    executedTimeMs: 1700000000200,
     updatedAtMs: 1700000000200,
   });
 });
@@ -77,31 +78,29 @@ test('samebroker late weaker OPEN and no-economic-growth OPEN after terminal dis
     status: 'New',
     executedQuantity: '0',
     executedPrice: '0',
-    executionTimeMs: null,
   });
   expect(
     mergeMonotonicOrderFact(known(strongest.queryObservation), observed(zeroLate.queryObservation)),
   ).toBeNull();
-  expect(strongest.queryObservation.executionTimeMs).toBe(1700000000100);
+  expect(strongest.queryObservation.executionTimeMs).toBe(1700000000200);
   const terminal = await createBrokerIngressFixture({
     ...input,
     status: 'Canceled',
     executedQuantity: '0',
     executedPrice: '0',
-    executionTimeMs: null,
   });
   const lateOpen = await createBrokerIngressFixture({
     ...input,
     status: 'New',
     executedQuantity: '0',
     executedPrice: '0',
-    executionTimeMs: null,
     updatedAtMs: 1700000000300,
   });
   expect(
     mergeMonotonicOrderFact(known(terminal.queryObservation), observed(lateOpen.queryObservation)),
   ).toBeNull();
 
+  // 同 revision 下累计量更小但金额冲突仍是事实冲突，必须严格拒绝。
   expect(() =>
     mergeMonotonicOrderFact(known(strongest.queryObservation), {
       ...observed(lower.queryObservation),
@@ -125,23 +124,17 @@ test('samebroker late weaker OPEN and no-economic-growth OPEN after terminal dis
   ).toThrow();
 });
 
-test('missing or unknown neutral phase never defaults from SDK metadata or V1 unknown state', async () => {
-  const f = await createBrokerIngressFixture(input);
-  const missing = observed(f.queryObservation);
-  Reflect.deleteProperty(missing, 'executionPhase');
-  expect(() => mergeMonotonicOrderFact(known(f.queryObservation), missing)).toThrow(
-    '缺少已验证中性executionPhase',
-  );
-  const unknown = observed(f.queryObservation);
-  Reflect.set(unknown, 'executionPhase', 'UNKNOWN');
-  expect(() => mergeMonotonicOrderFact(known(f.queryObservation), unknown)).toThrow(
-    '缺少已验证中性executionPhase',
-  );
+/** 合并层对缺失/未知 phase 的拒绝边界归 W2；此处只固定 mapper 是 phase 的唯一来源。 */
+test('mapper is the only neutral phase source: lifecycle statuses map to OPEN/TERMINAL, never defaults', async () => {
+  for (const status of ['Filled', 'Canceled', 'Rejected', 'Expired'] as const) {
+    const terminal = await createBrokerIngressFixture({ ...input, status });
+    expect(terminal.queryObservation.executionPhase).toBe('TERMINAL');
+    expect(terminal.pushObservation.executionPhase).toBe('TERMINAL');
+  }
 
-  expect(() =>
-    mergeMonotonicOrderFact(
-      { ...known(f.queryObservation), executionPhase: null },
-      observed(f.queryObservation),
-    ),
-  ).toThrow('缺少已验证中性executionPhase');
+  for (const status of ['New', 'PartialFilled', 'WaitToCancel', 'PendingReplace'] as const) {
+    const open = await createBrokerIngressFixture({ ...input, status });
+    expect(open.queryObservation.executionPhase).toBe('OPEN');
+    expect(open.pushObservation.executionPhase).toBe('OPEN');
+  }
 });

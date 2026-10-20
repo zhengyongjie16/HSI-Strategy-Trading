@@ -21,7 +21,6 @@ it('does not double a projected BUY during a real account wait and preserves tot
   const recorder = createOrderRecorder({
     logger: createLoggerDouble(),
     orderSnapshotReadPort: io.broker,
-    getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,
   });
   const risk = createUnrealizedLossChecker({

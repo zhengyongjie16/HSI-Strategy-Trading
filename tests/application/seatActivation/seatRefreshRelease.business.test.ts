@@ -97,7 +97,7 @@ async function createActivationProtocolFixture() {
 
   spyOn(context.orderRecorder, 'validateRebuildSnapshot').mockImplementation((symbol, orders) => {
     stages.push(`preflight:${symbol}`);
-    expect(orders).toBe(allOrders);
+    expect(orders).toEqual(allOrders);
     validateOrdersForRebuild(orders.filter((order) => order.symbol === symbol));
   });
 
@@ -109,7 +109,7 @@ async function createActivationProtocolFixture() {
         { symbol: 'BEAR.HK', isLongSymbol: false },
         { symbol: 'OLD_BULL.HK', isLongSymbol: true },
       ]);
-      expect(orders).toBe(allOrders);
+      expect(orders).toEqual(allOrders);
       expect(mode).toBe('ACTIVATION');
       expect(snapshot.getView().token).toEqual(capturedToken);
       if (!isCurrent()) return { status: 'ABORTED' };

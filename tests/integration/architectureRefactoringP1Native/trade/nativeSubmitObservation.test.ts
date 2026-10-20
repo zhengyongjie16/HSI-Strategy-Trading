@@ -23,7 +23,6 @@ const nowMs = Date.parse('2026-07-10T02:00:00.000Z');
 test('actual BUY/ELO native entry observations precede reply failure and retain original failure identity', async () => {
   const f = await createBrokerIngressFixture({
     orderId: 'SEED',
-    tradeId: 'T',
     symbol: 'BULL.HK',
     stockName: 'SDK',
     remark: '',
@@ -34,7 +33,6 @@ test('actual BUY/ELO native entry observations precede reply failure and retain 
     submittedPrice: '9.2',
     executedPrice: '0',
     submittedAtMs: nowMs,
-    executionTimeMs: null,
     updatedAtMs: nowMs,
   });
   const cause = new TypeError('issued native submit failure');

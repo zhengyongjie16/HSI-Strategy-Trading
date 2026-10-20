@@ -5,6 +5,7 @@ import {
   hasSeatSymbol,
   isSeatActive,
   resolveBoundSeatSymbol,
+  resolveSeatOnStartup,
   validateSignalSeat,
 } from '../../../src/domain/seat/seatPolicy.js';
 import { createSignalDouble, createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
@@ -168,5 +169,57 @@ describe('seat symbol helpers', () => {
     expect(isSeatActive({ ...active, symbol: ' ' })).toBeTrue();
     expect(hasSeatSymbol(null)).toBeFalse();
     expect(isSeatActive(null)).toBeFalse();
+  });
+});
+
+describe('startup seat market scope', () => {
+  const hkPosition = {
+    accountChannel: 'lb',
+    symbol: 'BULL.HK',
+    symbolName: 'BULL',
+    quantity: 100,
+    availableQuantity: 80,
+    currency: 'HKD',
+    costPrice: '1',
+  };
+  const usPosition = {
+    accountChannel: 'lb',
+    symbol: 'AAPL.US',
+    symbolName: 'Apple',
+    quantity: 1.125,
+    availableQuantity: 0.5,
+    currency: 'USD',
+    costPrice: '180.5',
+  };
+
+  it('only restores a candidate symbol that is Hong Kong, using its real position', () => {
+    expect(
+      resolveSeatOnStartup({
+        autoSearchEnabled: true,
+        candidateSymbol: 'BULL.HK',
+        configuredSymbol: 'BEAR.HK',
+        positions: [hkPosition, usPosition],
+      }),
+    ).toBe('BULL.HK');
+  });
+
+  it('does not seat a US candidate or US configured symbol', () => {
+    expect(
+      resolveSeatOnStartup({
+        autoSearchEnabled: true,
+        candidateSymbol: 'AAPL.US',
+        configuredSymbol: 'BEAR.HK',
+        positions: [usPosition],
+      }),
+    ).toBeNull();
+
+    expect(
+      resolveSeatOnStartup({
+        autoSearchEnabled: false,
+        candidateSymbol: null,
+        configuredSymbol: 'AAPL.US',
+        positions: [usPosition],
+      }),
+    ).toBeNull();
   });
 });

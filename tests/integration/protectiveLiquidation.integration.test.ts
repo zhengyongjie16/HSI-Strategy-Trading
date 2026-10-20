@@ -70,7 +70,6 @@ describe('protective-liquidation integration', () => {
     }> = [];
     const native = await createBrokerIngressFixture({
       orderId: 'PL-001',
-      tradeId: 'PL-001-trade',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: '',
@@ -82,7 +81,6 @@ describe('protective-liquidation integration', () => {
       submittedPrice: '1',
       executedPrice: '0',
       submittedAtMs: EXECUTION_MS - 1000,
-      executionTimeMs: null,
       updatedAtMs: EXECUTION_MS - 1000,
     });
     native.setAccountBalance({
@@ -193,20 +191,8 @@ describe('protective-liquidation integration', () => {
         orderType: 'MO',
       });
 
-      native.setExecutionReplies([
-        {
-          orderId: 'PL-001',
-          tradeId: 'PL-001-trade',
-          symbol: 'BULL.HK',
-          quantity: '200',
-          price: '1',
-          tradeDoneAtMs: EXECUTION_MS,
-        },
-      ]);
-
       native.emitOrderChangedFrame({
         orderId: 'PL-001',
-        tradeId: 'PL-001-trade',
         symbol: 'BULL.HK',
         stockName: 'HSI RC',
         remark: '',
@@ -218,7 +204,6 @@ describe('protective-liquidation integration', () => {
         submittedPrice: '1',
         executedPrice: '1',
         submittedAtMs: EXECUTION_MS - 1000,
-        executionTimeMs: EXECUTION_MS,
         updatedAtMs: EXECUTION_MS + 30_000,
       });
       await waitUntil(() => f.recorder.getExecutionFact('PL-001')?.phase === 'TERMINAL');
@@ -237,13 +222,13 @@ describe('protective-liquidation integration', () => {
       ]);
 
       expect(episodeProgressPayloads).toEqual([
-        { direction: 'LONG', symbol: 'BULL.HK', executedTimeMs: EXECUTION_MS },
+        { direction: 'LONG', symbol: 'BULL.HK', executedTimeMs: EXECUTION_MS + 30_000 },
       ]);
       expect(refreshNeeds).toEqual([{ refreshAccount: true, refreshPositions: true }]);
       expect(f.recorder.getExecutionFact('PL-001')).toMatchObject({
         cumulativeQuantity: 200,
         cumulativeAmount: '200',
-        executionTimeMs: EXECUTION_MS,
+        executionTimeMs: EXECUTION_MS + 30_000,
         updatedAtMs: EXECUTION_MS + 30_000,
         phase: 'TERMINAL',
       });
@@ -261,7 +246,7 @@ describe('protective-liquidation integration', () => {
         orderId: 'PL-001',
         costAmount: '200',
         executedQuantity: 200,
-        executedTime: EXECUTION_MS,
+        executedTime: EXECUTION_MS + 30_000,
       });
     } finally {
       await monitor.stopRuntimeAndDrain();

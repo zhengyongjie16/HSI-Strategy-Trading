@@ -55,7 +55,6 @@ async function createHarness(
 ) {
   const frame = {
     orderId: 'OLD',
-    tradeId: 'OLD-T',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -67,7 +66,6 @@ async function createHarness(
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs: NOW - 1_000,
-    executionTimeMs: null,
     updatedAtMs: NOW,
   };
   const native = await createBrokerIngressFixture(frame);
@@ -181,21 +179,6 @@ async function createHarness(
     side: 'BUY' | 'SELL' = 'SELL',
     offsetMs = 100,
   ): void {
-    native.setExecutionReplies(
-      executedQuantity > 0
-        ? [
-            {
-              orderId,
-              tradeId: `${orderId}-fill-${executedQuantity}`,
-              symbol: 'BULL.HK',
-              quantity: String(executedQuantity),
-              price: '1',
-              tradeDoneAtMs: NOW + offsetMs,
-            },
-          ]
-        : [],
-    );
-
     native.emitOrderChangedFrame({
       ...frame,
       orderId,
@@ -204,7 +187,6 @@ async function createHarness(
       executedQuantity: String(executedQuantity),
       status,
       executedPrice: executedQuantity > 0 ? '1' : '0',
-      executionTimeMs: executedQuantity > 0 ? NOW + offsetMs : null,
       updatedAtMs: NOW + offsetMs,
     });
   }

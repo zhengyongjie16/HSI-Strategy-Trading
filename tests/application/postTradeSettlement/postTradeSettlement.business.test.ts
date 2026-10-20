@@ -1610,7 +1610,7 @@ describe('PostTradeSettlementWorkflow', () => {
             getAccountSnapshot: async () => createAccountSnapshotDouble('77000'),
             getStockPositions: async () => [
               createPositionDouble({
-                symbol: 'BULL.OLD.HK',
+                symbol: 'OLD.HK',
                 quantity: 100,
                 availableQuantity: 100,
               }),
@@ -1640,7 +1640,7 @@ describe('PostTradeSettlementWorkflow', () => {
           getInProgressEpisodes: () => [
             {
               direction: 'LONG',
-              symbol: 'BULL.OLD.HK',
+              symbol: 'OLD.HK',
               latestExecutedTimeMs: protectiveBoundaryMs,
             },
           ],

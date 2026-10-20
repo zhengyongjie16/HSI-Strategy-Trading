@@ -126,7 +126,6 @@ async function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
   const routeWakeups: Array<Readonly<{ symbol: string; kind: string }>> = [];
   const native = await createBrokerIngressFixture({
     orderId: 'ORIGINAL-BUY',
-    tradeId: 'ORIGINAL-BUY-T',
     symbol: 'BULL.HK',
     stockName: 'HSI BULL',
     remark: '',
@@ -138,7 +137,6 @@ async function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
     submittedPrice: '1',
     executedPrice: '1',
     submittedAtMs: 1,
-    executionTimeMs: 100,
     updatedAtMs: 100,
   });
   native.setAccountBalance({
@@ -201,7 +199,6 @@ async function createEventFlowHarness(trackedOrder: OrderMonitorTrackedOrder) {
   const orderRecorder = native.createRecorder({
     logger: createLoggerDouble(),
     rateLimiter: createRateLimiter(),
-    getExecutionTimeEvidence: dailyLossTracker.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: postTrade,
   });
   tradeRuntime = createTradeRuntimeDouble({
@@ -336,7 +333,6 @@ async function createNativeObservation(params: {
 }) {
   const native = await createBrokerIngressFixture({
     orderId: params.orderId,
-    tradeId: params.orderId + '-T',
     symbol: 'BULL.HK',
     stockName: 'HSI BULL',
     remark: '',
@@ -348,7 +344,6 @@ async function createNativeObservation(params: {
     submittedPrice: '1',
     executedPrice: params.executedPrice,
     submittedAtMs: 1,
-    executionTimeMs: params.executionTimeMs,
     updatedAtMs: params.revisionMs,
   });
   return native.pushObservation;
@@ -399,10 +394,10 @@ describe('orderMonitor 普通订单原始成交事实准入', () => {
         executedTimeMs: KNOWN_FACT_TIME_MS - 1,
         updatedAtMs: KNOWN_FACT_TIME_MS - 1,
       }),
-    ).toThrow('[订单监控] 累计成交推进但 broker revision 倒退');
+    ).toThrow('[订单事实] 累计数量推进但 revision 倒退');
   });
 
-  it('累计成交增加的执行时间可以晚于同次 broker revision', () => {
+  it('累计成交推进直接使用本次原始执行时间，不引入 T<=revision 历史限制', () => {
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDINARY-EXECUTION-AFTER-REVISION',
       side: 'BUY',
@@ -421,64 +416,6 @@ describe('orderMonitor 普通订单原始成交事实准入', () => {
     expect(merged?.executedTimeMs).toBe(KNOWN_FACT_TIME_MS + 1);
     expect(merged?.updatedAtMs).toBe(KNOWN_FACT_TIME_MS);
   });
-
-  const assertOrdinaryRawFactWithoutExecutionTimeFailsClosed = async (
-    params: Readonly<{
-      side: 'BUY' | 'SELL';
-      status: 'PartialFilled' | 'Filled';
-      executedQuantity: string;
-    }>,
-  ): Promise<void> => {
-    const trackedOrder = createTrackedOrder({
-      orderId: `ORDINARY-${params.side}-WS-INVALID-TIME`,
-      side: params.side,
-    });
-    const harness = await createEventFlowHarness(trackedOrder);
-    const event = await createNativeObservation({
-      orderId: trackedOrder.orderId,
-      side: trackedOrder.side,
-      status: params.status,
-      quantity: '100',
-      executedQuantity: params.executedQuantity,
-      executedPrice: '1.02',
-      revisionMs: KNOWN_FACT_TIME_MS,
-      executionTimeMs: null,
-    });
-
-    expect(() => {
-      harness.eventFlow.handleOrderChangedWhenActive(event);
-    }).toThrow('[订单监控] 正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision');
-
-    expect(trackedOrder).toMatchObject({
-      status: 'WORKING',
-      executedQuantity: 0,
-      executedPrice: null,
-      lastExecutedTimeMs: null,
-      lastOrderUpdateAtMs: null,
-    });
-    expect(harness.pendingSellQuantities).toEqual([]);
-    expect(harness.dailyLossInputs).toEqual([]);
-    expect(harness.settlementInputs).toEqual([]);
-    expect(harness.routeWakeups).toEqual([]);
-
-    expect(harness.orderRecorder.getExecutionFact(trackedOrder.orderId)).toBeNull();
-    expect(harness.dailyLossTracker.getLossOffset('LONG')).toBe('0');
-    await harness.dispose();
-  };
-
-  it('普通 SELL WS 0 到 40 的累计成交缺少原始时间时零副作用失败', async () =>
-    assertOrdinaryRawFactWithoutExecutionTimeFailsClosed({
-      side: 'SELL',
-      status: 'PartialFilled',
-      executedQuantity: '40',
-    }));
-
-  it('普通 BUY Filled WS 缺少原始时间时不会进入结算或路由', async () =>
-    assertOrdinaryRawFactWithoutExecutionTimeFailsClosed({
-      side: 'BUY',
-      status: 'Filled',
-      executedQuantity: '100',
-    }));
 
   it('普通 SELL 终态 40 到 80 的旧 revision 不得借用已确认时间结算', async () => {
     const trackedOrder = createTrackedOrder({
@@ -504,7 +441,7 @@ describe('orderMonitor 普通订单原始成交事实准入', () => {
     });
     expect(() => {
       harness.eventFlow.handleOrderChangedWhenActive(incoming);
-    }).toThrow('[订单监控] 累计成交推进但 broker revision 倒退');
+    }).toThrow('[订单事实] 累计数量推进但 revision 倒退');
 
     expect(trackedOrder).toMatchObject({
       status: 'PARTIALLY_FILLED',
@@ -576,6 +513,62 @@ describe('orderMonitor 普通订单原始成交事实准入', () => {
     await harness.dispose();
   });
 
+  it.each(['BUY', 'SELL'] as const)(
+    '普通 %s known 正量拒绝无 revision 零终端且无任何副作用',
+    async (side) => {
+      const trackedOrder = createTrackedOrder({
+        orderId: `ORDINARY-${side}-ZERO-NO-REV`,
+        side,
+        status: 'PARTIALLY_FILLED',
+        executedQuantity: 10,
+      });
+      trackedOrder.executedPrice = '1';
+      trackedOrder.executedAmount = '10';
+      trackedOrder.lastExecutedTimeMs = 100;
+      trackedOrder.lastOrderUpdateAtMs = 100;
+      const harness = await createEventFlowHarness(trackedOrder);
+      const event = {
+        orderId: trackedOrder.orderId,
+        symbol: trackedOrder.symbol,
+        stockName: 'HSI RC',
+        remark: '',
+        executionSide: side,
+        executionStatus: 'NONE' as const,
+        executionPhase: 'TERMINAL' as const,
+        status: 'CANCELED' as const,
+        orderType: 'ELO' as const,
+        price: '1',
+        quantity: 100,
+        executedPrice: null,
+        executedQuantity: 0,
+        executedAmount: null,
+        executionTimeMs: null,
+        updatedAtMs: null as unknown as number,
+        submittedAt: new Date(100),
+        updatedAt: null,
+      };
+
+      expect(() => {
+        harness.eventFlow.handleOrderChangedWhenActive(event);
+      }).toThrow(/无 revision 零关闭/);
+
+      expect(trackedOrder).toMatchObject({
+        status: 'PARTIALLY_FILLED',
+        executedQuantity: 10,
+        executedPrice: '1',
+        executedAmount: '10',
+        lastExecutedTimeMs: 100,
+        lastOrderUpdateAtMs: 100,
+      });
+      expect(harness.pendingSellQuantities).toEqual([]);
+      expect(harness.dailyLossInputs).toEqual([]);
+      expect(harness.settlementInputs).toEqual([]);
+      expect(harness.routeWakeups).toEqual([]);
+      expect(harness.orderRecorder.getExecutionFact(trackedOrder.orderId)).toBeNull();
+      await harness.dispose();
+    },
+  );
+
   it('零成交终态即使没有本次原始时间仍可收口生命周期', async () => {
     const trackedOrder = createTrackedOrder({
       orderId: 'ORDINARY-ZERO-TERMINAL',
@@ -600,7 +593,7 @@ describe('orderMonitor 普通订单原始成交事实准入', () => {
     expect(trackedOrder).toMatchObject({
       status: 'CANCELED',
       executedQuantity: 0,
-      executedPrice: '0',
+      executedPrice: null,
       lastExecutedTimeMs: null,
       lastOrderUpdateAtMs: KNOWN_FACT_TIME_MS,
     });
@@ -631,7 +624,6 @@ describe('orderMonitor 普通 OPEN state-check 原始成交事实准入', () => 
     native.setOrderDetailReplies([
       {
         orderId: 'ORDINARY-SELL-OPEN-NULL-REVISION',
-        tradeId: 'API-T',
         symbol: 'BULL.HK',
         stockName: 'HSI BULL',
         remark: '',
@@ -643,7 +635,6 @@ describe('orderMonitor 普通 OPEN state-check 原始成交事实准入', () => 
         submittedPrice: '1',
         executedPrice: '1.02',
         submittedAtMs: 1,
-        executionTimeMs: KNOWN_FACT_TIME_MS,
         updatedAtMs: Number.NaN,
       },
     ]);
@@ -664,7 +655,6 @@ describe('orderMonitor 普通 OPEN state-check 原始成交事实准入', () => 
         },
       },
       now: () => new Date(200),
-      getExecutionTimeEvidence: () => [],
       runtime,
       monitorConfig: createTradingConfig().monitor,
       rateLimiter: createRateLimiter(),

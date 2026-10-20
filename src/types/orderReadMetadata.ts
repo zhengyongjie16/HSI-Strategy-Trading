@@ -75,11 +75,13 @@ export type OrderStateCheckResult =
       readonly closedReason: OrderClosedReason;
       readonly executedPrice: string | null;
       readonly executedQuantity: number | null;
-      readonly executedAmount: string;
+
+      /** 原始累计成交金额；正成交量缺价时显式为 null，不伪造成 0。 */
+      readonly executedAmount: string | null;
       readonly executionTimeMs: number | null;
       readonly submittedQuantity: number | null;
 
-      /** 独立 broker revision，绝不作为真实 execution 时间的替代。 */
+      /** 独立 broker revision；正成交时是订单驱动执行时间 T 的唯一来源。 */
       readonly orderUpdatedAtMs: number | null;
       readonly status: OrderReadStatus;
     }
@@ -89,10 +91,12 @@ export type OrderStateCheckResult =
       readonly status: OrderReadStatus;
       readonly executedPrice: string | null;
       readonly executedQuantity: number | null;
-      readonly executedAmount: string;
+
+      /** 原始累计成交金额；正成交量缺价时显式为 null，不伪造成 0。 */
+      readonly executedAmount: string | null;
       readonly executionTimeMs: number | null;
 
-      /** 独立 broker revision，绝不作为真实 execution 时间的替代。 */
+      /** 独立 broker revision；正成交时是订单驱动执行时间 T 的唯一来源。 */
       readonly updatedAtMs: number | null;
     }
   | {

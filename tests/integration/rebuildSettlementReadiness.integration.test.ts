@@ -67,7 +67,6 @@ async function createHarness(
   const quantity = options.partial ? '200' : '100';
   const openFrame = {
     orderId: 'REBUILD-BUY',
-    tradeId: 'REBUILD-BUY-fill',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -78,7 +77,6 @@ async function createHarness(
     submittedPrice: '10',
     executedPrice: '0',
     submittedAtMs: timeMs - 60_000,
-    executionTimeMs: null,
     updatedAtMs: timeMs - 60_000,
   };
   const filledFrame = {
@@ -86,21 +84,10 @@ async function createHarness(
     status: options.partial ? ('PartialFilled' as const) : ('Filled' as const),
     executedQuantity: '100',
     executedPrice: '10',
-    executionTimeMs: timeMs,
     updatedAtMs: timeMs + 1_000,
   };
   const native = await createBrokerIngressFixture(openFrame);
   native.setOrderSnapshotReplies([], [openFrame]);
-  native.setExecutionReplies([
-    {
-      orderId: openFrame.orderId,
-      tradeId: 'REBUILD-first-fill',
-      symbol: 'BULL.HK',
-      quantity: '100',
-      price: '10',
-      tradeDoneAtMs: timeMs,
-    },
-  ]);
 
   native.setAccountBalance({
     currency: 'HKD',
@@ -221,7 +208,6 @@ async function createHarness(
   const recorder = native.createRecorder({
     logger: createLoggerDouble(),
     rateLimiter,
-    getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: postTrade,
   });
   const holds = createOrderHoldRegistry();
@@ -401,22 +387,11 @@ async function createHarness(
     pendingTimers: () => timerCallbacks.size,
     fillRemainder: async () => {
       setPositions('200');
-      native.setExecutionReplies([
-        {
-          orderId: openFrame.orderId,
-          tradeId: 'REBUILD-final-fill',
-          symbol: 'BULL.HK',
-          quantity: '200',
-          price: '10',
-          tradeDoneAtMs: timeMs + 2_000,
-        },
-      ]);
       const finalFrame = {
         ...filledFrame,
         status: 'Filled' as const,
         executedQuantity: '200',
         updatedAtMs: timeMs + 3_000,
-        executionTimeMs: timeMs + 2_000,
       };
       native.setOrderSnapshotReplies([], [finalFrame]);
       native.emitOrderChangedFrame(finalFrame);

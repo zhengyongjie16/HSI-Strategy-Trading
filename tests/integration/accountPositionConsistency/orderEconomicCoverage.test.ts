@@ -9,12 +9,8 @@ import { createLoggerDouble } from '../../helpers/testDoubles.js';
 
 import { describe, expect, it } from 'bun:test';
 import { createOrderRecorder } from '../../../src/application/orderTracking/recorder/index.js';
-import { withTrustedOrderExecutionTimes } from '../../../src/domain/order/executionFact.js';
 import { createUnrealizedLossChecker } from '../../../src/domain/risk/unrealizedLossChecker.js';
-import type {
-  BrokerOrderExecutionFact,
-  OrderExecutionTimeEvidence,
-} from '../../../src/types/orderRecorder.js';
+import type { BrokerOrderExecutionFact } from '../../../src/types/orderRecorder.js';
 import type { OrderFact } from '../../../src/types/trade.js';
 import { createOfflineBrokerPort } from './offlinePorts.js';
 
@@ -68,41 +64,14 @@ describe('same-instance economic coverage across neutral API and online facts', 
     const owner = createOrderRecorder({
       logger: createLoggerDouble(),
       orderSnapshotReadPort: io.broker,
-      getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,
     });
     const risk = createUnrealizedLossChecker({
       maxUnrealizedLossPerSymbol: null,
       onMissingData: () => {},
     });
-    const evidence: ReadonlyArray<OrderExecutionTimeEvidence> = [
-      {
-        brokerOrderId: 'PHASE-BUY',
-        symbol: 'COVERED.HK',
-        side: 'BUY',
-        cumulativeQuantity: 5,
-        cumulativeAmount: '44',
-        lastExecutionTimeMs: 1000,
-        orderRevisionMs: 1030,
-        phase: 'OPEN',
-      },
-      {
-        brokerOrderId: 'PHASE-BUY',
-        symbol: 'COVERED.HK',
-        side: 'BUY',
-        cumulativeQuantity: 5,
-        cumulativeAmount: '45',
-        lastExecutionTimeMs: 1000,
-        orderRevisionMs: 1030,
-        phase: 'TERMINAL',
-      },
-    ];
     const terminal = { ...fact('PHASE-BUY', 'BUY', 5, '45', 1000), updatedAtMs: 1030 };
-    const untrustedTime: OrderFact = { ...apiOrder(terminal), executionTimeMs: null };
-    const observations = withTrustedOrderExecutionTimes([untrustedTime], evidence);
-    expect(observations[0]?.executionTimeMs).toBe(1000);
-    expect(observations[0]?.updatedAtMs).toBe(1030);
-    expect(untrustedTime.executionTimeMs).toBeNull();
+    expect(apiOrder(terminal).executedAmount).toBe('45');
     owner.commitExecutionFact(
       { ...terminal, cumulativeAmount: '44', phase: 'OPEN' },
       true,
@@ -118,7 +87,7 @@ describe('same-instance economic coverage across neutral API and online facts', 
     expect(owner.getExecutionFact('PHASE-BUY')?.phase).toBe('TERMINAL');
     expect(owner.getCostBasis('COVERED.HK', true)).toEqual({ costAmount: '45', quantity: 5 });
     expect(
-      owner.commitRebuildSnapshot(targets, observations, () => true, 'ACTIVATION').status,
+      owner.commitRebuildSnapshot(targets, [apiOrder(terminal)], () => true, 'ACTIVATION').status,
     ).toBe('COMMITTED');
 
     owner.commitExecutionFact(terminal, true, [], () => 'DUPLICATE');
@@ -151,7 +120,6 @@ describe('same-instance economic coverage across neutral API and online facts', 
     const owner = createOrderRecorder({
       logger: createLoggerDouble(),
       orderSnapshotReadPort: io.broker,
-      getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,
     });
     const risk = createUnrealizedLossChecker({
@@ -213,7 +181,6 @@ describe('same-instance economic coverage across neutral API and online facts', 
     const owner = createOrderRecorder({
       logger: createLoggerDouble(),
       orderSnapshotReadPort: io.broker,
-      getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,
     });
     const risk = createUnrealizedLossChecker({
@@ -251,7 +218,6 @@ describe('same-instance economic coverage across neutral API and online facts', 
     const owner = createOrderRecorder({
       logger: createLoggerDouble(),
       orderSnapshotReadPort: io.broker,
-      getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: io.settlementRefreshNeedRecorder,
     });
     const partial = { ...fact('PARTIAL-BUY', 'BUY', 100, '100', 1000), phase: 'OPEN' as const };

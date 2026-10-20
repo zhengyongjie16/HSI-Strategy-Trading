@@ -1,10 +1,9 @@
 /**
- * 离线SDK入站producer：真实Decimal，完整静态SDK Execution/Push DTO契约。
+ * 离线SDK入站producer：真实Decimal，完整静态SDK Order/Push DTO契约。
  * 不构造TradeContext或不可公开构造的NAPI Order/Push实例；无双重assert、网络或第二订单模型。
- * 业务测试仅接收实际mapper产出的订单事实和neutral ledger port。
+ * 业务测试仅接收实际mapper产出的订单事实和neutral broker ports。
  */
 import type { BrokerAccess } from '../../../../src/types/brokerAccessPorts.js';
-import type { OrderEconomics } from '../../../../src/types/orderEconomics.js';
 import { createBrokerAccessAdapter } from '../../../../src/infrastructure/longbridge/trade/brokerAccessAdapter.js';
 import {
   Decimal,
@@ -16,7 +15,6 @@ import {
   CommissionFreeStatus,
   DeductionStatus,
   type OrderDetail,
-  type Execution,
   type PushOrderChanged,
   type TradeContext,
   TopicType,
@@ -24,13 +22,11 @@ import {
   type AccountBalance,
   Market,
 } from 'longbridge';
-import { createExecutionLedgerAdapter } from '../../../../src/infrastructure/longbridge/trade/executionLedgerAdapter.js';
 import {
   mapBrokerOrder,
   mapBrokerOrderPush,
 } from '../../../../src/infrastructure/longbridge/trade/orderMapper.js';
 import type { BrokerOrderSdkFields } from '../../../../src/infrastructure/longbridge/trade/types.js';
-import type { OrderExecutionLedgerPort } from '../../../../src/types/orderExecutionLedger.js';
 import {
   isValidatedOrderSide,
   isValidatedOrderStatus,
@@ -68,13 +64,12 @@ function neutralSubscriptionTopic(value: unknown): 'PRIVATE' {
 }
 
 /**
- * 创建实际SDK金融字段，经同ctx ledger adapter和实际query/push mapper得到中性事实。
- * @param input 本case明确指定的原始SDK字段文本和独立时间，字段不承担经济oracle
+ * 创建实际SDK金融字段，经真实query/push mapper得到中性事实。
+ * @param input 本case明确指定的原始SDK字段文本和时间，字段不承担经济oracle
  * @returns 仅业务事实、neutral port及读取次数，原生DTO不出基础设施测试边界
  */
 export type BrokerIngressInput = Readonly<{
   orderId: string;
-  tradeId: string;
   symbol: string;
   stockName: string;
   remark: string;
@@ -104,7 +99,6 @@ export type BrokerIngressInput = Readonly<{
   submittedPrice: string;
   executedPrice: string;
   submittedAtMs: number;
-  executionTimeMs: number | null;
   updatedAtMs: number;
 }>;
 
@@ -119,9 +113,17 @@ export type NativeSubmitObservation = Readonly<{
   timeInForce: 'DAY';
 }>;
 
+/** fixture 的 push 样本固定为HK：非HK或坏结构显式失败，不静默产出 null。 */
+function requirePushObservation(push: PushOrderChanged): OrderFact {
+  const observation = mapBrokerOrderPush(push);
+  if (observation === null)
+    throw new TypeError('[BrokerIngressFixture] push sample must be HK order');
+
+  return observation;
+}
+
 export async function createBrokerIngressFixture(
   input: BrokerIngressInput,
-  orderEconomics: OrderEconomics,
 ): Promise<
   Readonly<{
     queryObservation: OrderFact;
@@ -150,18 +152,6 @@ export async function createBrokerIngressFixture(
     setOrderSnapshotUpdatedAtAbsent: (
       source: 'history' | 'today',
       mode: 'NULL' | 'OMITTED',
-    ) => void;
-    setExecutionReplies: (
-      rows: ReadonlyArray<
-        Readonly<{
-          orderId: string;
-          tradeId: string;
-          symbol: string;
-          quantity: string;
-          price: string;
-          tradeDoneAtMs: number;
-        }>
-      >,
     ) => void;
     setStockPositions: (
       positions: ReadonlyArray<
@@ -199,13 +189,6 @@ export async function createBrokerIngressFixture(
         netAssets: string;
         availableCash: string;
       }>,
-    ) => void;
-    executionLedgerPort: OrderExecutionLedgerPort;
-    readCounts: () => Readonly<{ today: number; history: number }>;
-
-    /** 给随后真实SDK读取设置独立settlement屏障；issued计数在等待前递增。 */
-    setExecutionReadBarriers: (
-      barriers: Readonly<{ today?: Promise<void>; history?: Promise<void> }>,
     ) => void;
 
     /** 只能发给真实Monitor已注册的SDK callback，不接收业务neutral event冒充payload。 */
@@ -260,19 +243,6 @@ export async function createBrokerIngressFixture(
     >;
   }>
 > {
-  const execution: Execution | null =
-    input.executionTimeMs === null
-      ? null
-      : {
-          orderId: input.orderId,
-          tradeId: input.tradeId,
-          symbol: input.symbol,
-          quantity: new Decimal(input.executedQuantity),
-          price: new Decimal(input.executedPrice),
-          tradeDoneAt: new Date(input.executionTimeMs),
-          toString: () => input.tradeId,
-          toJSON: () => ({ tradeId: input.tradeId }),
-        };
   const order: BrokerOrderSdkFields = {
     orderId: input.orderId,
     symbol: input.symbol,
@@ -354,12 +324,6 @@ export async function createBrokerIngressFixture(
     toString: () => input.orderId,
     toJSON: () => ({ orderId: input.orderId }),
   };
-  const nativeExecutions =
-    order.executedQuantity.toString() === '0' || execution === null ? [] : [execution];
-  let todayBarrier: Promise<void> | undefined;
-  let historyBarrier: Promise<void> | undefined;
-  let todayReadCount = 0;
-  let historyReadCount = 0;
   let orderChangedHandler: ((error: Error | null, event: PushOrderChanged) => void) | undefined;
   const unexpected = (): never => {
     throw new Error('[BrokerIngressFixture] unconfigured native SDK method invoked');
@@ -613,7 +577,8 @@ export async function createBrokerIngressFixture(
   };
   let historyOrderReads = 0;
   let todayOrderReads = 0;
-  const context: TradeContext = {
+  // 故意不提供 execution 读取能力：任何残余 ledger 调用都会在 fixture 边界失败。
+  const context: Omit<TradeContext, 'todayExecutions' | 'historyExecutions'> = {
     setOnOrderChanged: (handler) => {
       orderChangedHandler = handler;
     },
@@ -808,21 +773,7 @@ export async function createBrokerIngressFixture(
     usRealizedPl: unexpected,
     orderDetailAttached: unexpected,
     estimateMaxPurchaseQuantity: unexpected,
-    todayExecutions: async (options) => {
-      todayReadCount++;
-      await todayBarrier;
-      return options?.orderId === undefined
-        ? nativeExecutions
-        : nativeExecutions.filter((row) => row.orderId === options.orderId);
-    },
-    historyExecutions: async () => {
-      historyReadCount++;
-      await historyBarrier;
-      return nativeExecutions;
-    },
   };
-  const executionLedgerPort = createExecutionLedgerAdapter(context);
-  const executions = await executionLedgerPort.todayExecutions({ orderId: input.orderId });
   return {
     setOrderSnapshotReplies: (history, today) => {
       frozenV1Configured = false;
@@ -885,22 +836,6 @@ export async function createBrokerIngressFixture(
         sequence.push(reply);
         detailReplies.set(frame.orderId, sequence);
       }
-    },
-    setExecutionReplies: (rows) => {
-      nativeExecutions.splice(
-        0,
-        nativeExecutions.length,
-        ...rows.map((row): Execution => ({
-          orderId: row.orderId,
-          tradeId: row.tradeId,
-          symbol: row.symbol,
-          quantity: new Decimal(row.quantity),
-          price: new Decimal(row.price),
-          tradeDoneAt: new Date(row.tradeDoneAtMs),
-          toString: () => row.tradeId,
-          toJSON: () => ({ tradeId: row.tradeId }),
-        })),
-      );
     },
     setStockPositions: (positions) => {
       positionsReply = {
@@ -1013,12 +948,11 @@ export async function createBrokerIngressFixture(
       contextCreations++;
       if (contextCreationFailure !== null) throw contextCreationFailure;
 
-      return createBrokerAccessAdapter(context, orderEconomics);
+      return createBrokerAccessAdapter(context as TradeContext);
     },
-    ports: createBrokerAccessAdapter(context, orderEconomics),
-    queryObservation: mapBrokerOrder(order, executions, orderEconomics),
-    pushObservation: mapBrokerOrderPush(push, executions, orderEconomics),
-    executionLedgerPort,
+    ports: createBrokerAccessAdapter(context as TradeContext),
+    queryObservation: mapBrokerOrder(order),
+    pushObservation: requirePushObservation(push),
     failReplace: (error) => {
       replaceFailure = error;
     },
@@ -1060,11 +994,6 @@ export async function createBrokerIngressFixture(
     },
     nativeSubmitObservations: () => [...nativeSubmissions],
     nativeMutations: () => [...nativeMutations],
-    readCounts: () => ({ today: todayReadCount, history: historyReadCount }),
-    setExecutionReadBarriers: (barriers) => {
-      todayBarrier = barriers.today;
-      historyBarrier = barriers.history;
-    },
     setPushSideUnknown: () => {
       pushSide = OrderSide.Unknown;
     },

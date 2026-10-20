@@ -17,7 +17,6 @@ import {
  */
 import { describe, expect, it, setSystemTime } from 'bun:test';
 import { createBrokerIngressFixture } from '../../infrastructure/longbridge/trade/brokerIngressFixture.js';
-import { orderEconomics } from '../../../src/domain/order/orderEconomics.js';
 import { TRADING } from '../../../src/constants/index.js';
 import { createOrderExecutor as createOrderExecutorCore } from '../../../src/application/orderExecution/index.js';
 import type { OrderExecutorDeps } from '../../../src/application/orderExecution/types.js';
@@ -48,26 +47,21 @@ function createOrderExecutor(deps: OrderExecutorTestDeps) {
 
 /** 原生 SDK DTO 只在 infrastructure fixture 构造，业务用例只设置中性 IO 及观察 broker entry。 */
 async function createNativeIngress() {
-  const native = await createBrokerIngressFixture(
-    {
-      orderId: 'CONTRACT-BASE',
-      tradeId: 'CONTRACT-NONE',
-      symbol: 'BULL.HK',
-      stockName: 'HSI RC',
-      remark: '',
-      side: 'SELL',
-      status: 'New',
-      orderType: 'ELO',
-      quantity: '100',
-      executedQuantity: '0',
-      submittedPrice: '5',
-      executedPrice: '0',
-      submittedAtMs: Date.parse('2026-07-10T02:00:00Z'),
-      executionTimeMs: null,
-      updatedAtMs: Date.parse('2026-07-10T02:00:00Z'),
-    },
-    orderEconomics,
-  );
+  const native = await createBrokerIngressFixture({
+    orderId: 'CONTRACT-BASE',
+    symbol: 'BULL.HK',
+    stockName: 'HSI RC',
+    remark: '',
+    side: 'SELL',
+    status: 'New',
+    orderType: 'ELO',
+    quantity: '100',
+    executedQuantity: '0',
+    submittedPrice: '5',
+    executedPrice: '0',
+    submittedAtMs: Date.parse('2026-07-10T02:00:00Z'),
+    updatedAtMs: Date.parse('2026-07-10T02:00:00Z'),
+  });
   native.setStockPositions([
     {
       symbol: 'BULL.HK',

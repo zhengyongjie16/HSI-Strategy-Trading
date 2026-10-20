@@ -21,6 +21,7 @@ import type { SymbolRegistry } from '../../types/seat.js';
 
 import type { Quote } from '../../types/quote.js';
 import type { OrderFact } from '../../types/trade.js';
+
 import type { MarketDataClient } from '../../types/marketPorts.js';
 import type { WarrantRiskRefresh } from '../riskRefresh/types.js';
 import type { StartupSeatSearch } from '../autoSearch/types.js';
@@ -28,6 +29,22 @@ import type { ProtectiveLiquidationEpisodeTracker } from '../../domain/liquidati
 
 import type { Position } from '../../types/account.js';
 import type { PostTradeSettlementWorkflow } from '../postTradeSettlement/types.js';
+import type { KnownExecutionBaseline } from '../../domain/order/types.js';
+import type { ExecutionHistorySnapshot } from '../../domain/risk/types.js';
+
+/** 恢复期单订单的完整历史、方向与校验后的 known 累计状态。 */
+export type RecoveryExecutionHistory = Readonly<{
+  known: KnownExecutionBaseline;
+  snapshots: ReadonlyArray<ExecutionHistorySnapshot>;
+  direction: 'LONG' | 'SHORT';
+}>;
+
+/** 归一后的 API 观察具有完整经济金额；其余字段沿用 broker 观察。 */
+export type NormalizedExecutionOrder = Omit<OrderFact, 'executedAmount'> &
+  Readonly<{ executedAmount: string }>;
+
+/** stale 观察的消费策略：启动恢复阻断；运行期重建保留当前 owner 的已知事实。 */
+export type StaleObservationPolicy = 'THROW' | 'KEEP_KNOWN';
 
 /** loader 使用的席位激活投递能力；由 composition 注入，不依赖具体 runtime。 */
 interface RebuildSeatActivationDispatcher {

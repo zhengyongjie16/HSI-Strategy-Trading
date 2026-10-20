@@ -68,7 +68,6 @@ test('high-revision same-quantity authoritative corrections preserve exact cost/
         throw new Error('financial test does not issue order IO');
       },
     },
-    getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: workflow,
   });
   const episodes = createProtectiveLiquidationEpisodeTracker();

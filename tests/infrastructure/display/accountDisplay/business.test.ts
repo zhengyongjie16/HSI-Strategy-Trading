@@ -133,6 +133,52 @@ describe('accountDisplay exact canonical view', () => {
     expect(snapshot.getStatus().admission).toBe('CLOSED');
   });
 
+  it('expands extreme double exponents without quantizing away a non-zero valuation', () => {
+    infoLogs.length = 0;
+    displayAccountAndPositions({
+      snapshot: reader({
+        ...view,
+        positions: [
+          {
+            ...view.positions[0]!,
+            symbol: 'BIG.HK',
+            symbolName: 'Big',
+            quantity: 1e21,
+            availableQuantity: 1e21,
+          },
+          {
+            ...view.positions[0]!,
+            symbol: 'TINY.HK',
+            symbolName: 'Tiny',
+            quantity: 1e-21,
+            availableQuantity: 1e-21,
+          },
+        ],
+      }),
+      quotesMap: new Map([
+        ['BIG.HK', { symbol: 'BIG.HK', name: 'Big', price: '1', prevClose: '1', timestamp: 1 }],
+        [
+          'TINY.HK',
+          {
+            symbol: 'TINY.HK',
+            name: 'Tiny',
+            price: '1000000000000000000000',
+            prevClose: '1',
+            timestamp: 1,
+          },
+        ],
+      ]),
+    });
+
+    const bigLine = infoLogs.find((line) => line.includes('BIG.HK')) ?? '';
+    const tinyLine = infoLogs.find((line) => line.includes('TINY.HK')) ?? '';
+    expect(bigLine).toContain('持仓=1000000000000000000000.00');
+    expect(bigLine).toContain('市值=1000000000000000000000.00');
+    expect(tinyLine).toContain('持仓=0.00');
+    expect(tinyLine).toContain('市值=1.00');
+    expect(tinyLine).not.toContain('市值=0.00');
+  });
+
   it('does not swallow broken internal financial text', () => {
     expect(() => {
       displayAccountAndPositions({

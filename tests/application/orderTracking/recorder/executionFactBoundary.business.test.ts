@@ -33,7 +33,6 @@ describe('OrderRecorder execution-fact boundary', () => {
       ).toThrow();
       expect(f.recorder.getBuyOrdersForSymbol(SYMBOL, true)).toEqual([]);
       expect(f.recorder.getExecutionFact('INVALID')).toBeNull();
-      expect(f.daily.getExecutionTimeEvidence()).toEqual([]);
       expect(f.snapshot.getView().token).toBe(token);
       expect(f.sink.getStatus()).toEqual(status);
     });
@@ -42,7 +41,6 @@ describe('OrderRecorder execution-fact boundary', () => {
       const f = createExecutionFixture();
       f.commit('BUY', 'BUY', '1', '100', 100, 1_000, SYMBOL);
       const before = f.recorder.getBuyOrdersForSymbol(SYMBOL, true);
-      const evidence = f.daily.getExecutionTimeEvidence();
       const token = f.snapshot.getView().token;
       const status = f.sink.getStatus();
       expect(() =>
@@ -58,7 +56,6 @@ describe('OrderRecorder execution-fact boundary', () => {
       ).toThrow();
       expect(f.recorder.getBuyOrdersForSymbol(SYMBOL, true)).toEqual(before);
       expect(f.recorder.getSellRecordByOrderId('INVALID')).toBeNull();
-      expect(f.daily.getExecutionTimeEvidence()).toEqual(evidence);
       expect(f.snapshot.getView().token).toBe(token);
       expect(f.sink.getStatus()).toEqual(status);
     });
@@ -121,7 +118,7 @@ describe('OrderRecorder execution-fact boundary', () => {
     expect(f.recorder.getCostBasis(SYMBOL, true)).toEqual({ costAmount: '100', quantity: 100 });
   });
 
-  it('a real sealed boundary suppresses a later original-time revision before economic publication', () => {
+  it('a sealed daily projection retains a later original-time revision in the recorder and refresh owner', () => {
     const f = createExecutionFixture();
     f.commit('BUY', 'BUY', '1', '100', 100, 1_000, SYMBOL);
     f.daily.commitProtectionBoundary(
@@ -131,7 +128,6 @@ describe('OrderRecorder execution-fact boundary', () => {
       }),
     );
     const before = f.snapshot.getView().token;
-    const cost = f.recorder.getCostBasis(SYMBOL, true);
     expect(
       f.flow.recordCumulativeExecution({
         factStage: 'TERMINAL',
@@ -147,10 +143,11 @@ describe('OrderRecorder execution-fact boundary', () => {
         executedTimeMs: f.now + 1_000,
         orderUpdatedAtMs: f.now + 1_001,
       }).admission,
-    ).toBe('SUPPRESSED');
-    expect(f.recorder.getExecutionFact('BUY')?.cumulativeAmount).toBe('100');
-    expect(f.recorder.getCostBasis(SYMBOL, true)).toEqual(cost);
-    expect(f.snapshot.getView().token).toBe(before);
-    expect(f.sink.getStatus().staleVersion).toBe(1);
+    ).toBe('ADMITTED');
+    expect(f.recorder.getExecutionFact('BUY')?.cumulativeAmount).toBe('110');
+    expect(f.recorder.getCostBasis(SYMBOL, true)).toEqual({ costAmount: '110', quantity: 100 });
+    expect(f.snapshot.getView().token.snapshotGeneration).toBe(before.snapshotGeneration + 1);
+    expect(f.sink.getStatus().staleVersion).toBe(2);
+    expect(f.daily.getLossOffset('LONG')).toBe('0');
   });
 });

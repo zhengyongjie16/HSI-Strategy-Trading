@@ -5,7 +5,6 @@ import { createLoggerDouble } from '../../../helpers/testDoubles.js';
 import { createOrderRecorder } from '../../../../src/application/orderTracking/recorder/index.js';
 import type {
   BrokerOrderExecutionFact,
-  OrderExecutionTimeEvidence,
   OrderRecorder,
 } from '../../../../src/types/orderRecorder.js';
 
@@ -16,7 +15,6 @@ export function createSettlementRecorder(
   settlementRefreshNeedRecorder: SettlementRefreshNeedRecorder,
   overrides: Partial<OrderRecorder> = {},
   onCommitted?: (fact: BrokerOrderExecutionFact, relatedBuyOrderIds: ReadonlyArray<string>) => void,
-  getExecutionTimeEvidence: () => ReadonlyArray<OrderExecutionTimeEvidence> = () => [],
 ): OrderRecorder {
   const recorder = createOrderRecorder({
     logger: createLoggerDouble(),
@@ -25,7 +23,6 @@ export function createSettlementRecorder(
         throw new Error('unconfigured settlement recorder snapshot IO');
       },
     },
-    getExecutionTimeEvidence,
     settlementRefreshNeedRecorder,
   });
   return {

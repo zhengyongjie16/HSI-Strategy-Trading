@@ -5,7 +5,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'bun:test';
 import { createSdkModuleMock } from '../sdkModuleMock.js';
 import { createQuoteContextMock } from '../../../../../mock/longbridge/quoteContextMock.js';
-import { orderEconomics } from '../../../../../src/domain/order/orderEconomics.js';
 import { createWarrantListCache } from '../../../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
 
 const sdkModuleMock = createSdkModuleMock();
@@ -132,14 +131,14 @@ describe('Longbridge client factory', () => {
     expect(quoteConfigCalls).toHaveLength(1);
     expect(quoteConfigCalls[0]).toBe(sdkConfig);
     expect(tradeConfigCalls).toHaveLength(0);
-    const brokerAccess = factory.createBrokerAccess(orderEconomics);
+    const brokerAccess = factory.createBrokerAccess();
     expect(tradeConfigCalls).toHaveLength(1);
     expect(tradeConfigCalls[0]).toBe(sdkConfig);
     expect(typeof brokerAccess.createTradeMutationPort).toBe('function');
     expect(fromApikeyCalls).toHaveLength(1);
 
     tradeCreateError = new Error('native trade construction failed');
-    expect(() => factory.createBrokerAccess(orderEconomics)).toThrow(tradeCreateError);
+    expect(() => factory.createBrokerAccess()).toThrow(tradeCreateError);
   });
 
   it('preserves OAuth URL/port and maps optional extra fields only at the SDK boundary', async () => {

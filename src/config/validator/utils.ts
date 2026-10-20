@@ -1,5 +1,6 @@
 import type { Logger } from '../../types/logger.js';
 import { canonicalDecimal, exactCompare } from '../../utils/numeric/exact.js';
+import { isHongKongSymbol } from '../../utils/marketScope.js';
 import { AMOUNT_CONFIG_TEXT_PATTERN } from '../../constants/financialConfig.js';
 import type { LiquidationCooldownConfig, MonitorConfig, DecimalRange } from '../../types/config.js';
 import type { Quote } from '../../types/quote.js';
@@ -65,6 +66,13 @@ function validateRequiredSymbol({
   if (!isSymbolWithRegion(symbol)) {
     return {
       errors: [...errors, formatSymbolFormatError(prefix, envKey, symbol)],
+    };
+  }
+
+  // 交易系统只服务港股；格式合法但市场非 HK 的配置不得进入席位/候选/下单链路。
+  if (!isHongKongSymbol(symbol)) {
+    return {
+      errors: [...errors, `${prefix}: ${envKey} 必须为港股标的（.HK），当前值: ${String(symbol)}`],
     };
   }
 

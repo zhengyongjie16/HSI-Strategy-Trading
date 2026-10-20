@@ -1,3 +1,4 @@
+import { recalculateDailyLoss } from '../../../helpers/dailyLossRecalculation.js';
 import {
   createLoggerDouble,
   createOrderRecorderDouble,
@@ -111,7 +112,6 @@ async function createTrackedOrder(
 
   const native = await createBrokerIngressFixture({
     orderId: params.orderId,
-    tradeId: 'TRACKED-' + params.orderId,
     symbol: params.symbol,
     stockName: params.symbol,
     remark: '',
@@ -123,7 +123,6 @@ async function createTrackedOrder(
     submittedPrice: params.submittedPrice ?? '1',
     executedPrice: params.executedPrice ?? ((params.executedQuantity ?? 0) > 0 ? '1' : '0'),
     submittedAtMs: params.submittedAt ?? now - 5000,
-    executionTimeMs: params.lastExecutedTimeMs ?? now,
     updatedAtMs: params.lastOrderUpdateAtMs ?? params.lastExecutedTimeMs ?? now,
   });
   const fact = native.queryObservation;
@@ -223,7 +222,7 @@ function createActualDailyTracker(now = new Date('2026-04-08T09:00:00.000Z')) {
     ...orderAnalysis,
     toHongKongTimeIso,
   });
-  daily.recalculateFromAllOrders(
+  recalculateDailyLoss(daily,
     [],
     { monitorSymbol: 'HSI.HK', orderOwnershipMapping: ['HSI'] },
     now,
@@ -276,7 +275,6 @@ async function createTimeoutSellHandoffHarness(orderId: string): Promise<{
   ] as const) {
     const ingress = await createBrokerIngressFixture({
       orderId: brokerOrderId,
-      tradeId: 'T-' + brokerOrderId,
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: '',
@@ -287,7 +285,6 @@ async function createTimeoutSellHandoffHarness(orderId: string): Promise<{
       submittedPrice: price,
       executedPrice: price,
       submittedAtMs: executionTimeMs - 1000,
-      executionTimeMs,
       updatedAtMs: executionTimeMs + 100,
     });
     const raw = ingress.queryObservation;
@@ -304,7 +301,7 @@ async function createTimeoutSellHandoffHarness(orderId: string): Promise<{
       isProtectiveLiquidation: false,
       executedPrice: price,
       executedQuantity: raw.executedQuantity,
-      executedAmount: raw.executedAmount,
+      executedAmount: raw.executedAmount!,
       executedTimeMs: raw.executionTimeMs,
       orderUpdatedAtMs: raw.updatedAtMs,
     });
@@ -343,7 +340,6 @@ async function readTerminalExecutionStatus(
 ) {
   const frame = await createBrokerIngressFixture({
     orderId: 'TERMINAL-METADATA',
-    tradeId: 'TERMINAL-METADATA-EXECUTION',
     symbol: 'BULL.HK',
     stockName: 'BULL.HK',
     remark: '',
@@ -354,7 +350,6 @@ async function readTerminalExecutionStatus(
     submittedPrice: '1',
     executedPrice: price,
     submittedAtMs: 100,
-    executionTimeMs: 150,
     updatedAtMs: 200,
   });
   return Object.freeze({
@@ -366,7 +361,6 @@ async function readTerminalExecutionStatus(
 async function createNativeFixture() {
   return createBrokerIngressFixture({
     orderId: 'ROUTE-OBSERVATION',
-    tradeId: 'NO-FILL',
     symbol: 'BULL.HK',
     stockName: 'BULL',
     remark: '',
@@ -377,7 +371,6 @@ async function createNativeFixture() {
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs: Date.parse('2026-04-08T09:00:00.000Z'),
-    executionTimeMs: Date.parse('2026-04-08T09:00:00.100Z'),
     updatedAtMs: Date.parse('2026-04-08T09:00:00.200Z'),
   });
 }
@@ -2379,7 +2372,7 @@ describe('orderMonitor routeProcessor', () => {
       caughtError = error;
     }
 
-    expect(caughtError).toHaveProperty('message', '[订单监控] 累计成交推进但 broker revision 倒退');
+    expect(caughtError).toHaveProperty('message', '[订单事实] 累计数量推进但 revision 倒退');
     expect(settlementCalls).toEqual([]);
     expect(runtime.closedOrderIds.has('SELL-REPLACE-NEW-QTY-OLD-REVISION')).toBe(false);
     expect(runtime.trackedOrders.get('SELL-REPLACE-NEW-QTY-OLD-REVISION')).toMatchObject({
@@ -2589,7 +2582,7 @@ describe('orderMonitor routeProcessor', () => {
     }
 
     expect(caughtError).toBeInstanceOf(Error);
-    expect(caughtError).toHaveProperty('message', '[订单监控] 无效累计成交数量');
+    expect((caughtError as Error).message).toContain('保护性 SELL 存在成交事实但本次观察缺少原始累计成交数量');
 
     expect(settlementCalls).toBe(0);
     expect(runtime.closedOrderIds.has(trackedOrder.orderId)).toBe(false);
@@ -2626,12 +2619,12 @@ describe('orderMonitor routeProcessor', () => {
       executionStatus: terminalExecutionStatus10.executionStatus,
       kind: 'TERMINAL' as const,
       closedReason: 'CANCELED' as const,
-      executedPrice: null,
-      executedAmount: '0',
+      executedPrice: '1.02',
+      executedAmount: exactMultiply('1.02', String(40)),
       executedQuantity: 40,
-      executionTimeMs: 190,
+      executionTimeMs: trackedExecutionMs,
       submittedQuantity: 40,
-      orderUpdatedAtMs: null,
+      orderUpdatedAtMs: trackedExecutionMs,
       status: terminalExecutionStatus10.status,
     };
     runtime.queriedTerminalStateByOrderId.set(trackedOrder.orderId, rawTerminal);
@@ -2952,7 +2945,7 @@ describe('orderMonitor routeProcessor', () => {
     }
 
     expect(caughtError).toBeInstanceOf(Error);
-    expect(caughtError).toHaveProperty('message', '[订单监控] 无效累计成交数量');
+    expect((caughtError as Error).message).toContain('保护性 SELL 存在成交事实但本次观察缺少原始累计成交数量');
     expect(runtime.queriedTerminalStateByOrderId.get(trackedOrder.orderId)).toBe(rawTerminal);
     expect(settlementCalls).toBe(0);
     expect(runtime.closedOrderIds.has(trackedOrder.orderId)).toBe(false);

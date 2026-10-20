@@ -1,12 +1,9 @@
 import { expect, test } from 'bun:test';
-import { withTrustedOrderExecutionTimes } from '../../../../src/domain/order/executionFact.js';
 import { assertProtectiveSellRawObservationFactsReady } from '../../../../src/domain/order/orderFactMerge.js';
-import type { OrderExecutionTimeObservation } from '../../../../src/types/orderRecorder.js';
 import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 const input = {
   orderId: 'STATUS',
-  tradeId: 'T',
   symbol: 'BULL.HK',
   stockName: 'SDK',
   remark: '',
@@ -17,7 +14,6 @@ const input = {
   submittedPrice: '1',
   executedPrice: '0',
   submittedAtMs: 1700000000000,
-  executionTimeMs: null,
   updatedAtMs: 1700000000200,
 };
 
@@ -52,39 +48,6 @@ test('actual mapper FILLED/PARTIAL zero-execution denial stays strict without re
         },
         observation,
       );
-    }).toThrow('原始观察否认执行事实');
+    }).toThrow('保护性 SELL');
   }
-});
-
-test('SDK-free minimal trusted-time input preserves extra fields and never synthesizes T from revision', () => {
-  const observation: OrderExecutionTimeObservation & Readonly<{ independent: string }> = {
-    orderId: 'T',
-    symbol: 'BULL.HK',
-    executionSide: 'SELL',
-    executedQuantity: 10,
-    executedAmount: '12',
-    executionTimeMs: null,
-    updatedAtMs: 1700000000200,
-    executionPhase: 'TERMINAL',
-    independent: 'kept',
-  };
-  expect(withTrustedOrderExecutionTimes([observation], [])[0]).toBe(observation);
-  const proven = withTrustedOrderExecutionTimes(
-    [observation],
-    [
-      {
-        brokerOrderId: 'T',
-        symbol: 'BULL.HK',
-        side: 'SELL',
-        cumulativeQuantity: 10,
-        cumulativeAmount: '12',
-        lastExecutionTimeMs: 1700000000100,
-        orderRevisionMs: 1700000000200,
-        phase: 'TERMINAL',
-      },
-    ],
-  )[0];
-  expect(proven).toEqual({ ...observation, executionTimeMs: 1700000000100 });
-  expect(observation.executionTimeMs).toBeNull();
-  expect(proven?.independent).toBe('kept');
 });

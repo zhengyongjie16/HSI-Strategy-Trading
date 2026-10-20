@@ -25,7 +25,6 @@ describe('broker ingress fixture production mapping', () => {
   it('proves full query/push native DTO fields, exact cost and independent execution/revision', async () => {
     const fixture = await createBrokerIngressFixture({
       orderId: 'BROKER-O',
-      tradeId: 'TRADE-T',
       symbol: 'BULL.HK',
       stockName: 'Typed SDK DTO',
       remark: 'offline',
@@ -36,7 +35,6 @@ describe('broker ingress fixture production mapping', () => {
       submittedPrice: '9.3',
       executedPrice: '9.234567891234567891',
       submittedAtMs: 1700000000000,
-      executionTimeMs: 1700000000100,
       updatedAtMs: 1700000000200,
     });
     expect(() => {
@@ -55,16 +53,11 @@ describe('broker ingress fixture production mapping', () => {
       price: '9.3',
       executedPrice: '9.234567891234567891',
       executedAmount: '923.4567891234567891',
-      executionTimeMs: 1700000000100,
+      // 订单级观察时间代理：正成交取原始 updatedAt。
+      executionTimeMs: 1700000000200,
       updatedAtMs: 1700000000200,
     });
     expect(fixture.queryObservation.submittedAt.getTime()).toBe(1700000000000);
-    expect(fixture.readCounts()).toEqual({ today: 1, history: 0 });
-    const history = await fixture.executionLedgerPort.historyExecutions({
-      endAt: new Date(1700000000300),
-    });
-    expect(history[0]?.tradeDoneAtMs).toBe(1700000000100);
-    expect(fixture.readCounts()).toEqual({ today: 1, history: 1 });
     const fatalErrors: unknown[] = [];
     const monitor = fixture.createMonitor({
       diagnostics: createDiagnosticObserverDouble(),
@@ -105,36 +98,6 @@ describe('broker ingress fixture production mapping', () => {
     }).not.toThrow();
     await monitor.stopRuntimeAndDrain();
     expect(fatalErrors).toEqual([]);
-    let settleToday!: () => void;
-    let settleHistory!: () => void;
-    fixture.setExecutionReadBarriers({
-      today: new Promise<void>((resolve) => {
-        settleToday = resolve;
-      }),
-      history: new Promise<void>((resolve) => {
-        settleHistory = resolve;
-      }),
-    });
-    let todaySettled = false;
-    let historySettled = false;
-    const todayRead = fixture.executionLedgerPort.todayExecutions().then(() => {
-      todaySettled = true;
-    });
-    const historyRead = fixture.executionLedgerPort
-      .historyExecutions({ endAt: new Date(1700000000300) })
-      .then(() => {
-        historySettled = true;
-      });
-    expect(fixture.readCounts()).toEqual({ today: 2, history: 2 });
-    await Promise.resolve();
-    expect(todaySettled).toBe(false);
-    expect(historySettled).toBe(false);
-    settleToday();
-    await todayRead;
-    expect(historySettled).toBe(false);
-    settleHistory();
-    await historyRead;
-    expect(historySettled).toBe(true);
     const lazyRead = fixture.createQueryOrdersReader();
     fixture.setQuerySideUnknown();
     expect(fixture.nativeReadCounts().detail).toBe(0);
@@ -148,7 +111,6 @@ describe('broker ingress fixture production mapping', () => {
     expect(rejected).toBeInstanceOf(TypeError);
     expect(rejected).toHaveProperty('message', '[orderMapper] unknown SDK execution side');
     expect(fixture.nativeReadCounts().detail).toBe(1);
-    expect(fixture.readCounts()).toEqual({ today: 2, history: 2 });
     const getterFault = new RangeError('lazy SDK detail getter');
     fixture.setQueryGetterFailure(getterFault);
     try {

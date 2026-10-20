@@ -1,3 +1,4 @@
+import { recalculateDailyLoss } from '../helpers/dailyLossRecalculation.js';
 import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
@@ -119,7 +120,7 @@ async function createOrderExecutor(deps: OrderExecutorTestDeps) {
       toHongKongTimeIso,
     });
   if (!monitorDailyOwners.has(ingress))
-    dailyLossTracker.recalculateFromAllOrders([], deps.tradingConfig.monitor, now(), new Map());
+    recalculateDailyLoss(dailyLossTracker, [], deps.tradingConfig.monitor, now(), new Map());
 
   const monitorContext = createMonitorContextDouble({
     config: deps.tradingConfig.monitor,
@@ -190,7 +191,6 @@ async function createNativeSellIngress(): Promise<NativeSellIngress> {
   const nowMs = Date.parse('2026-07-11T03:00:00.000Z');
   const ingress = await createBrokerIngressFixture({
     orderId: 'SELL-BASELINE',
-    tradeId: 'SELL-BASELINE-trade',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -201,7 +201,6 @@ async function createNativeSellIngress(): Promise<NativeSellIngress> {
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs: nowMs,
-    executionTimeMs: null,
     updatedAtMs: nowMs,
   });
   ingress.setAccountBalance({
@@ -237,7 +236,6 @@ function nativePositions(params: {
 async function createNativeOrderFact(orderId: string, orderType: 'ELO' | 'MO') {
   const producer = await createBrokerIngressFixture({
     orderId,
-    tradeId: orderId + '-trade',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -249,7 +247,6 @@ async function createNativeOrderFact(orderId: string, orderType: 'ELO' | 'MO') {
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs: Date.parse('2026-02-25T03:00:00.000Z'),
-    executionTimeMs: null,
     updatedAtMs: Date.parse('2026-02-25T03:00:01.000Z'),
   });
   return producer.queryObservation;
@@ -269,7 +266,6 @@ async function seedStorageFromNative(
   const orderId = `BUY-SEED-${++seedOrderSequence}`;
   const producer = await createBrokerIngressFixture({
     orderId,
-    tradeId: `${orderId}-trade`,
     symbol,
     stockName: 'HSI RC',
     remark: 'AUTO',
@@ -280,11 +276,14 @@ async function seedStorageFromNative(
     submittedPrice: price,
     executedPrice: price,
     submittedAtMs: executedAtMs - 1,
-    executionTimeMs: executedAtMs,
-    updatedAtMs: executedAtMs + 1,
+    updatedAtMs: executedAtMs,
   });
   const [order] = await producer.createQueryOrdersReader()();
-  if (order?.executionTimeMs === undefined || order.executionTimeMs === null)
+  if (
+    order?.executionTimeMs === undefined ||
+    order.executionTimeMs === null ||
+    order.executedAmount === null
+  )
     throw new Error('BUY native seed missing execution');
 
   const record: OrderRecord = {
@@ -304,7 +303,7 @@ async function createSellMonitor(
   ingress: NativeSellIngress,
   deps: Parameters<NativeSellIngress['createMonitor']>[0],
 ) {
-  deps.dailyLossTracker.recalculateFromAllOrders(
+  recalculateDailyLoss(deps.dailyLossTracker,
     [],
     deps.tradingConfig.monitor,
     deps.now(),
@@ -1234,7 +1233,6 @@ describe('sell-flow integration', () => {
     const actualRecorder = tradeCtx.createRecorder({
       logger: createLoggerDouble(),
       rateLimiter: createRateLimiterDouble(),
-      getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: settlementNeedRecorder,
     });
     const orderRecorder = {
@@ -1288,7 +1286,7 @@ describe('sell-flow integration', () => {
       },
     };
     const ingressFatalErrors: unknown[] = [];
-    const ledgerIssuedBaseline = tradeCtx.readCounts();
+    const detailReadBaseline = tradeCtx.nativeReadCounts().detail;
     const orderMonitor = await createSellMonitor(tradeCtx, {
       diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
@@ -1380,20 +1378,9 @@ describe('sell-flow integration', () => {
 
     const resultPromise = orderExecutor.executeSignals([signal], orderExecutor.callerAuthorization);
     await replaceMutationEntered;
-    tradeCtx.setExecutionReplies([
-      {
-        orderId: 'SELL-EXISTING',
-        tradeId: 'SELL-EXISTING-partial',
-        symbol: 'BULL.HK',
-        quantity: '50',
-        price: '1.01',
-        tradeDoneAtMs: submittedAtMs + 1_000,
-      },
-    ]);
 
     tradeCtx.emitOrderChangedFrame({
       orderId: 'SELL-EXISTING',
-      tradeId: 'SELL-EXISTING-partial',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: '',
@@ -1405,7 +1392,6 @@ describe('sell-flow integration', () => {
       submittedPrice: '1',
       executedPrice: '1.01',
       submittedAtMs,
-      executionTimeMs: submittedAtMs + 1_000,
       updatedAtMs: submittedAtMs + 1_000,
     });
 
@@ -1417,7 +1403,7 @@ describe('sell-flow integration', () => {
       releaseReplaceMutation?.();
       await resultPromise;
       throw new Error(
-        `partial ingress stage: ledger=${JSON.stringify(tradeCtx.readCounts())}, fact=${JSON.stringify(actualRecorder.getExecutionFact('SELL-EXISTING'))}, offset=${monitorDailyOwners.get(tradeCtx)?.getLossOffset('LONG') ?? 'UNBOUND'}`,
+        `partial ingress stage: detail=${tradeCtx.nativeReadCounts().detail}, fact=${JSON.stringify(actualRecorder.getExecutionFact('SELL-EXISTING'))}, offset=${monitorDailyOwners.get(tradeCtx)?.getLossOffset('LONG') ?? 'UNBOUND'}`,
         { cause: error },
       );
     });
@@ -1430,10 +1416,8 @@ describe('sell-flow integration', () => {
 
     expect(orderMonitor.getPendingSellOrders('BULL.HK')[0]?.executedQuantity).toBe(50);
     expect(ingressFatalErrors).toEqual([]);
-    expect(tradeCtx.readCounts()).toEqual({
-      today: ledgerIssuedBaseline.today + 1,
-      history: ledgerIssuedBaseline.history + 1,
-    });
+    // push 已携带完整累计事实，等待期间的真实部分成交不需要任何 detail 补读。
+    expect(tradeCtx.nativeReadCounts().detail).toBe(detailReadBaseline);
 
     expect(actualRecorder.getExecutionFact('SELL-EXISTING')).toMatchObject({
       cumulativeQuantity: 50,
@@ -1998,7 +1982,6 @@ describe('sell-flow integration', () => {
     tradeCtx.setStockPositions(initialAvailablePositions);
     const terminalFrame: BrokerIngressInput = {
       orderId: 'SELL-PARTIAL-WITHDRAWAL',
-      tradeId: 'SELL-PARTIAL-WITHDRAWAL-trade',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: '',
@@ -2010,19 +1993,8 @@ describe('sell-flow integration', () => {
       submittedPrice: '1',
       executedPrice: '1.02',
       submittedAtMs: Date.parse('2026-07-11T02:59:00.000Z'),
-      executionTimeMs: Date.now(),
       updatedAtMs: Date.now() + 1,
     };
-    tradeCtx.setExecutionReplies([
-      {
-        orderId: terminalFrame.orderId,
-        tradeId: terminalFrame.tradeId,
-        symbol: 'BULL.HK',
-        quantity: '40',
-        price: '1.02',
-        tradeDoneAtMs: terminalFrame.executionTimeMs ?? 0,
-      },
-    ]);
     tradeCtx.setOrderDetailReplies([terminalFrame]);
 
     tradeCtx.setCancelFailure(new Error('openapi error: code=601011: Order has been cancelled'));
@@ -2152,7 +2124,6 @@ describe('sell-flow integration', () => {
     );
     const terminalFrame: BrokerIngressInput = {
       orderId: 'SELL-PARTIAL-WITHDRAWAL-MISSING-EXECUTION',
-      tradeId: 'SELL-PARTIAL-WITHDRAWAL-MISSING-EXECUTION-trade',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: '',
@@ -2164,11 +2135,9 @@ describe('sell-flow integration', () => {
       submittedPrice: '1',
       executedPrice: '1.02',
       submittedAtMs: Date.parse('2026-07-11T02:59:00.000Z'),
-      executionTimeMs: null,
       updatedAtMs: Date.parse('2026-07-11T03:00:00.000Z'),
     };
     tradeCtx.setOrderDetailReplies([terminalFrame]);
-    tradeCtx.setExecutionReplies([]);
     tradeCtx.setCancelFailure(new Error('openapi error: code=601011: Order has been cancelled'));
 
     let throttleCallCount = 0;
@@ -2269,7 +2238,6 @@ describe('sell-flow integration', () => {
       relatedBuyOrderIds: ['BUY-NEW'],
     };
 
-    const issuedLedgerBeforeMissingDetail = tradeCtx.readCounts();
     tradeCtx.setQueryExecutedQuantityMissing();
     let caughtError: unknown = null;
     try {
@@ -2279,7 +2247,6 @@ describe('sell-flow integration', () => {
     }
 
     expect(caughtError).toBeInstanceOf(TypeError);
-    expect(tradeCtx.readCounts()).toEqual(issuedLedgerBeforeMissingDetail);
     expect(orderExecutor.settlement.isCurrent(orderExecutor.receipt)).toBeTrue();
     expect(caughtError).toHaveProperty(
       'message',

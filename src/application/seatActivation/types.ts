@@ -1,5 +1,6 @@
 import type { AccountPositionSnapshot, SnapshotToken } from '../../types/accountPosition.js';
 import type {
+  BrokerOrderExecutionFact,
   OrderFactBatchCommitResult,
   OrderProjectionTarget,
 } from '../../types/orderRecorder.js';
@@ -55,6 +56,9 @@ export interface SeatActivationSubscriptions {
 /** 同一真实订单 owner 的窄读取/预检/消费覆盖提交能力，activation 不维护第二账本。 */
 interface SeatActivationOrders {
   readonly fetchAllOrdersFromAPI: () => Promise<ReadonlyArray<OrderFact>>;
+
+  /** 当前执行事实 owner 的纯读取；仅用于同量 known 时间归一，不建立第二证据账。 */
+  readonly getExecutionFact: (brokerOrderId: string) => BrokerOrderExecutionFact | null;
   readonly validateRebuildSnapshot: (symbol: string, orders: ReadonlyArray<OrderFact>) => void;
   readonly commitRebuildSnapshot: (
     targets: ReadonlyArray<OrderProjectionTarget>,

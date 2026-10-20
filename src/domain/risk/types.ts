@@ -62,6 +62,22 @@ export type DailyLossExecutionSnapshot = {
 };
 
 /**
+ * 恢复历史中的一次累计成交快照（progress/baseline/final API 统一中性形态）。
+ * phase null 仅表示 V1 baseline 未持久化阶段；校验不得据此授权 OPEN→TERMINAL。
+ * 使用范围：仅 domain/risk 与启动恢复的完整历史校验。
+ */
+export type ExecutionHistorySnapshot = {
+  readonly orderId: string;
+  readonly symbol: string;
+  readonly side: 'BUY' | 'SELL';
+  readonly factStage: 'OPEN' | 'TERMINAL' | null;
+  readonly cumulativeQuantity: number;
+  readonly cumulativeAmount: string;
+  readonly lastExecutionTimeMs: number | null;
+  readonly orderUpdatedAtMs: number;
+};
+
+/**
  * 单笔订单的累计权威成交事实。
  * 类型用途：DailyLossTracker 按 orderId 与 revision 幂等合并恢复快照和运行期累计成交回报。
  * 数据来源：全量订单重算或 OrderMonitor 终态结算。
@@ -98,7 +114,7 @@ export type DailyLossOrderBaseline = {
 /**
  * 唯一 monitor 的双方向当日亏损状态集合。
  * 类型用途：DailyLossTracker 内部保存 LONG/SHORT 两个方向的当前分段状态。
- * 数据来源：recalculateFromAllOrders 全量重算或 recordCumulativeExecution 增量更新。
+ * 数据来源：prepareRecalculationFromAllOrders/publishRecalculation 全量重算或 recordCumulativeExecution 增量更新。
  * 使用范围：仅 domain/risk 模块内部使用。
  */
 export type DailyLossDirectionStates = Readonly<{

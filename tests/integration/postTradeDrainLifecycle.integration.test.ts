@@ -109,7 +109,6 @@ describe('PostTrade drain and Quote lifetime integration', () => {
             throw new Error('Drain case does not authorize order IO');
           },
         },
-        getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
         settlementRefreshNeedRecorder: {
           recordSettlementRefreshNeed: (need) => {
             if (recordNeedOwner === null) throw new Error('PostTrade owner not yet assembled');

@@ -7,7 +7,6 @@
  * - 对外暴露事件驱动的 OrderMonitor 接口
  */
 
-import { withTrustedOrderExecutionTimes } from '../../../domain/order/executionFact.js';
 import { recordOrderTerminalConfirmation } from './orderObservation.js';
 import {
   assertProtectiveSellRawTerminalStateFactsReady,
@@ -22,9 +21,7 @@ import type {
   ReplaceOrderPriceOutcome,
   TerminalStateSnapshot,
 } from '../../../domain/order/types.js';
-import type { OrderExecutionLedgerFact } from '../../../types/orderExecutionLedger.js';
-import type { OrderPushDecoder, OrderPushReadFact } from '../../../types/orderPushPorts.js';
-import type { OrderExecutionTimeEvidence } from '../../../types/orderRecorder.js';
+import type { OrderPushDecoder } from '../../../types/orderPushPorts.js';
 import type { OrderStateChangedEvent } from '../../../types/orderTracking.js';
 import type { TradeMutationPermit } from '../../../types/rateLimit.js';
 import type { OrderFact } from '../../../types/trade.js';
@@ -33,7 +30,6 @@ import type {
   DoomsdayCancelOrderOutcome,
   DoomsdayCancelOrderRequest,
 } from '../../../types/orderCancellation.js';
-import { isExternalApiRequestError } from '../../../utils/apiFailure/index.js';
 import type { CancelOrderMutationRequest, OrderMonitor, OrderMonitorDeps } from '../types.js';
 import { createEventFlow } from './eventFlow.js';
 import {
@@ -118,7 +114,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   let finalized = false;
   let routeRuntime: RouteRuntime | null = null;
   let orderIngressGeneration = 0;
-  let orderIngressDrain: Promise<void> = Promise.resolve();
   const activePublicOperations = new Set<Promise<unknown>>();
 
   /** 公共operation ledger包含实际query/replace/cancel的整个等待链，而非只SDK invoke。 */
@@ -143,27 +138,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       !finalized &&
       !termination.isTerminated() &&
       runtime.runtimeState !== 'STOPPED';
-  }
-
-  function getExecutionTimeEvidence(orderId: string): ReadonlyArray<OrderExecutionTimeEvidence> {
-    const fact = orderRecorder.getExecutionFact(orderId);
-    return [
-      ...dailyLossTracker.getExecutionTimeEvidence(),
-      ...(fact?.executionTimeMs === null || fact === null
-        ? []
-        : [
-            {
-              brokerOrderId: fact.brokerOrderId,
-              symbol: fact.symbol,
-              side: fact.side,
-              cumulativeQuantity: fact.cumulativeQuantity,
-              cumulativeAmount: fact.cumulativeAmount,
-              lastExecutionTimeMs: fact.executionTimeMs,
-              orderRevisionMs: fact.updatedAtMs,
-              phase: fact.phase,
-            },
-          ]),
-    ];
   }
 
   function triggerRoute(symbol: string, wakeupKind: OrderMonitorWakeupKind): void {
@@ -194,9 +168,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   const orderStatusQuery = createOrderStatusQuery({
     requestExternalApi: deps.requestExternalApi,
     orderDetailReadPort: deps.orderDetailReadPort,
-    executionLedgerPort: deps.executionLedgerPort,
     rateLimiter,
-    getExecutionTimeEvidence,
   });
 
   const orderOps = createOrderOps({
@@ -603,14 +575,10 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
    *
    * @returns 初始化 Promise
    */
-  function observeIngressRead<T>(promise: Promise<T>): Promise<T> {
-    return promise.catch((error: unknown) => {
-      if (!isExternalApiRequestError(error)) termination.reportFatalError(error);
-
-      throw error;
-    });
-  }
-
+  /**
+   * 推送解码一次即进入既有 eventFlow；无 execution/ledger IO，也无二次事实补全。
+   * 解码/归属/市场范围错误仍走 fatal；合法非HK由 decoder 返回 null。
+   */
   function handleOrderPush(err: Error | null, decoder: OrderPushDecoder): void {
     if (finalized) return;
 
@@ -621,97 +589,21 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
     if (runtime.runtimeState === 'STOPPED' || termination.isTerminated()) return;
 
-    let readFact: OrderPushReadFact;
+    let event: OrderFact | null;
     try {
-      readFact = decoder.inspect();
+      event = decoder.decode();
     } catch (error) {
       termination.reportFatalError(error);
       return;
     }
 
-    // 正成交流水读取与 mutation 共用 FIFO，不能等异步收口后才撤销此前的可卖量计划。
-    // 仅更换已归属 lifecycle 的身份，不提前发布未验证订单/成交，也不影响其他标的证明。
-    const lifecycle = runtime.trackedOrderLifecycles.get(readFact.orderId);
-    if (lifecycle?.symbol === readFact.symbol) {
-      runtime.trackedOrderLifecycles.set(readFact.orderId, { ...lifecycle });
+    if (event === null) return;
+
+    try {
+      eventFlow.handleOrderChanged(event);
+    } catch (error) {
+      termination.reportFatalError(error);
     }
-
-    const generation = orderIngressGeneration;
-    // ingress 串行包含实际 ledger IO；stop 等本链，旧 generation 不发布或重发订单。
-    orderIngressDrain = orderIngressDrain
-      .then(async () => {
-        if (
-          generation !== orderIngressGeneration ||
-          runtime.runtimeState === 'STOPPED' ||
-          termination.isTerminated()
-        )
-          return;
-
-        let executions: ReadonlyArray<OrderExecutionLedgerFact> = [];
-        if (readFact.executedQuantity > 0) {
-          await rateLimiter.throttle();
-          if (generation !== orderIngressGeneration || termination.isTerminated()) return;
-
-          const results = await Promise.allSettled([
-            observeIngressRead(
-              deps.requestExternalApi({
-                operation: 'TradeContext.todayExecutions',
-                request: () =>
-                  deps.executionLedgerPort.todayExecutions({ orderId: readFact.orderId }),
-              }),
-            ),
-            observeIngressRead(
-              deps.requestExternalApi({
-                operation: 'TradeContext.historyExecutions',
-                request: () =>
-                  deps.executionLedgerPort.historyExecutions({
-                    symbol: readFact.symbol,
-                    endAt: new Date(readFact.updatedAtMs),
-                  }),
-              }),
-            ),
-          ]);
-          for (const result of results) if (result.status === 'rejected') throw result.reason;
-
-          if (results[0].status !== 'fulfilled' || results[1].status !== 'fulfilled')
-            throw new Error('[订单监控] ledger result invariant');
-
-          executions = [...results[0].value, ...results[1].value];
-        }
-
-        const known = runtime.trackedOrders.get(readFact.orderId);
-        // 保护性 SELL 必须保留本次原始价准入，完整 ledger 仅证明执行时间，不授权借旧价收口。
-        const confirmed =
-          !(known?.executionSide === 'SELL' && known.isProtectiveLiquidation) &&
-          known?.lastOrderUpdateAtMs !== undefined &&
-          known.lastOrderUpdateAtMs !== null &&
-          known.executionPhase !== null
-            ? {
-                brokerOrderId: known.orderId,
-                symbol: known.symbol,
-                side: known.executionSide,
-                cumulativeQuantity: known.executedQuantity,
-                cumulativeAmount: known.executedAmount,
-                executionTimeMs: known.lastExecutedTimeMs,
-                updatedAtMs: known.lastOrderUpdateAtMs,
-                phase: known.executionPhase,
-                executedPrice: known.executedPrice,
-              }
-            : undefined;
-        const mapped = decoder.decode(executions, confirmed);
-        if (generation !== orderIngressGeneration || termination.isTerminated()) return;
-
-        const trusted = withTrustedOrderExecutionTimes(
-          [mapped],
-          getExecutionTimeEvidence(mapped.orderId),
-        )[0];
-        if (trusted === undefined) throw new Error('[订单监控] missing mapped ingress fact');
-
-        eventFlow.handleOrderChanged(trusted);
-      })
-      .catch((error: unknown) => {
-        termination.reportFatalError(error);
-      });
   }
 
   async function initializeSubscription(): Promise<void> {
@@ -805,7 +697,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
 
     const results = await Promise.allSettled([
       routeRuntime.stopAndDrain(),
-      orderIngressDrain,
       ...activePublicOperations,
     ]);
     for (const result of results) if (result.status === 'rejected') throw result.reason;

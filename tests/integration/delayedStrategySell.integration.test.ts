@@ -39,6 +39,7 @@ import {
 import { waitUntil } from '../helpers/asyncProgram.js';
 import { createHarness, prepareFixture } from '../strategies/intradayRegression/runtimeFixtures.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { toRecalculationOrders } from './recalculationOrders.js';
 
 describe('delayed strategy sell integration', () => {
   it.each(['active', 'gate-closed', 'route-changed'])(
@@ -61,7 +62,6 @@ describe('delayed strategy sell integration', () => {
       }).create(h.deps);
       const native = await createBrokerIngressFixture({
         orderId: 'FILLED-BUY',
-        tradeId: 'FILLED-BUY-trade',
         symbol: 'BULL.HK',
         stockName: 'HSI RC',
         remark: '',
@@ -73,7 +73,6 @@ describe('delayed strategy sell integration', () => {
         submittedPrice: '1',
         executedPrice: '1',
         submittedAtMs: now - 1000,
-        executionTimeMs: now - 1000,
         updatedAtMs: now - 1000,
       });
       native.setAccountBalance({
@@ -102,7 +101,6 @@ describe('delayed strategy sell integration', () => {
       const recorder = native.createRecorder({
         logger: createLoggerDouble(),
         rateLimiter: createRateLimiterDouble(),
-        getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
         settlementRefreshNeedRecorder: settlementNeedRecorder,
       });
       const config = createMonitorConfigDouble({ smartCloseEnabled: false });
@@ -155,7 +153,7 @@ describe('delayed strategy sell integration', () => {
       if (baseline.status !== 'COMMITTED') throw new Error('Delayed origin H publication aborted');
 
       const prepared = daily.prepareRecalculationFromAllOrders(
-        [native.queryObservation],
+        toRecalculationOrders([native.queryObservation]),
         config,
         new Date(now),
       );

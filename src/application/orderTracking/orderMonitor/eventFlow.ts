@@ -9,8 +9,10 @@
 
 import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../constants/index.js';
 import { recordOrderTerminalConfirmation } from './orderObservation.js';
+import { mergeExecutionFact } from '../../../domain/order/executionFact.js';
 import {
   assertProtectiveSellRawObservationFactsReady,
+  isWeakOpenOrderObservation,
   mergeMonotonicOrderFact,
 } from '../../../domain/order/orderFactMerge.js';
 import { resolveOrderOwnership } from '../../../domain/order/orderOwnership.js';
@@ -96,6 +98,8 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
     if (!trackedOrder) {
       const existing = orderRecorder.getExecutionFact(orderId);
       if (existing !== null) {
+        // tracking 已关闭不关闭累计事实准入：合法新 revision/金额修订仍交给同一 owner 保存，
+        // 但绝不重新结算资源、发布终态事件或重复记账。
         const ownership = resolveOrderOwnership(event, deps.monitorConfig);
         if (ownership?.monitorSymbol !== deps.monitorConfig.monitorSymbol)
           throw new Error('[订单监控] 已有 broker 事实的新观察缺少唯一归属');
@@ -104,6 +108,7 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
           event.executedQuantity > 0 &&
           (event.executedPrice === null ||
             exactCompare(event.executedPrice, '0') <= 0 ||
+            event.executedAmount === null ||
             exactCompare(
               exactMultiply(event.executedPrice, String(event.executedQuantity)),
               event.executedAmount,
@@ -111,7 +116,69 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
         )
           throw new Error('[订单监控] 已有broker事实的新观察缺少完整价格依据');
 
-        const closedReason = resolveOrderClosedReasonFromStatus(event.status);
+        const observedFact = {
+          status: event.status,
+          executionPhase: event.executionPhase,
+          executedQuantity: event.executedQuantity,
+          executedAmount: event.executedAmount,
+          executedPrice: event.executedPrice,
+          executedTimeMs:
+            event.executedQuantity === 0 ? null : (event.executionTimeMs ?? event.updatedAtMs),
+          updatedAtMs: event.updatedAtMs,
+        };
+
+        // develop 限定弱观察过滤：仅 OPEN->OPEN、同 revision、量降、金额不增、时间不推进。
+        if (
+          isWeakOpenOrderObservation(
+            {
+              executionPhase: existing.phase,
+              executedQuantity: existing.cumulativeQuantity,
+              executedAmount: existing.cumulativeAmount,
+              lastExecutedTimeMs: existing.executionTimeMs,
+              lastOrderUpdateAtMs: existing.updatedAtMs,
+            },
+            observedFact,
+          )
+        )
+          return;
+
+        // 与 tracked 路径共用唯一累计裁决：同量保留 known T，合法金额修订/水位推进，
+        // 重复观察幂等吸收；绝不进入结算/资源终态。
+        const merged = mergeExecutionFact(
+          {
+            brokerOrderId: existing.brokerOrderId,
+            symbol: existing.symbol,
+            side: existing.side,
+            cumulativeQuantity: existing.cumulativeQuantity,
+            cumulativeAmount: existing.cumulativeAmount,
+            executionTimeMs: existing.executionTimeMs,
+            updatedAtMs: existing.updatedAtMs,
+            phase: existing.phase,
+          },
+          {
+            brokerOrderId: orderId,
+            symbol: event.symbol,
+            side: event.executionSide,
+            cumulativeQuantity: event.executedQuantity,
+            cumulativeAmount: event.executedAmount ?? '0',
+            executionTimeMs: observedFact.executedTimeMs,
+            updatedAtMs: event.updatedAtMs,
+            phase: event.executionPhase,
+          },
+        );
+        // 更旧 revision 的更低累计量是纯乱序重复，入口直接忽略；
+        // 同量金额修订尝试仍交给同一 owner 以 DUPLICATE 收口（不推进任何事实）。
+        if (merged === null && event.executedQuantity < existing.cumulativeQuantity) return;
+
+        const effective = merged ?? {
+          cumulativeQuantity: observedFact.executedQuantity,
+          cumulativeAmount: observedFact.executedAmount ?? '0',
+          executionTimeMs: observedFact.executedTimeMs,
+          updatedAtMs: event.updatedAtMs,
+          phase: observedFact.executionPhase,
+        };
+
+        const closedReason = merged === null ? null : resolveOrderClosedReasonFromStatus(event.status);
         if (closedReason !== null) {
           recordOrderTerminalConfirmation(deps, {
             orderId,
@@ -119,11 +186,10 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
             side: event.executionSide,
             closedReason,
             source: 'WS',
-            orderUpdatedAtMs: event.updatedAtMs,
+            orderUpdatedAtMs: effective.updatedAtMs,
           });
         }
 
-        // tracking 已关闭不关闭事实准入；revision-only 也交给同一 owner 保存水位。
         recordCumulativeExecution({
           orderId,
           symbol: event.symbol,
@@ -131,12 +197,12 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
           monitorSymbol: ownership.monitorSymbol,
           isLongSymbol: ownership.direction === 'LONG',
           isProtectiveLiquidation: hasProtectiveLiquidationRemark(event.remark),
-          factStage: event.executionPhase,
+          factStage: effective.phase,
           executedPrice: event.executedPrice,
-          executedQuantity: event.executedQuantity,
-          executedAmount: event.executedAmount,
-          executedTimeMs: event.executionTimeMs,
-          orderUpdatedAtMs: event.updatedAtMs,
+          executedQuantity: effective.cumulativeQuantity,
+          executedAmount: effective.cumulativeAmount,
+          executedTimeMs: effective.executionTimeMs,
+          orderUpdatedAtMs: effective.updatedAtMs,
         });
         return;
       }

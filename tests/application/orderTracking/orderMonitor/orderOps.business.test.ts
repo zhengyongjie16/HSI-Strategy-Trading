@@ -74,9 +74,9 @@ async function nativeObservation(
   updatedAtMs: number,
   side: 'BUY' | 'SELL' = 'SELL',
 ) {
+  void executionTimeMs;
   const native = await createBrokerIngressFixture({
     orderId: 'OPS-NATIVE-CLASSIFICATION',
-    tradeId: 'OPS-NATIVE-EXECUTION',
     symbol: 'BULL.HK',
     stockName: 'BULL',
     remark: '',
@@ -88,7 +88,6 @@ async function nativeObservation(
     submittedPrice: '1',
     executedPrice,
     submittedAtMs: 1,
-    executionTimeMs,
     updatedAtMs,
   });
   return native.queryObservation;
@@ -1267,7 +1266,6 @@ describe('orderMonitor orderOps', () => {
     const validUpdatedAtMs = Date.parse('2026-07-14T02:00:00.000Z');
     const native = await createBrokerIngressFixture({
       orderId,
-      tradeId: 'revision-native',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: '',
@@ -1278,7 +1276,6 @@ describe('orderMonitor orderOps', () => {
       submittedPrice: '1',
       executedPrice: '0',
       submittedAtMs: Date.parse('2026-07-14T01:00:00.000Z'),
-      executionTimeMs: validUpdatedAtMs - 60_000,
       updatedAtMs: validUpdatedAtMs,
     });
     const f = createExecutionFixture({
@@ -1299,7 +1296,6 @@ describe('orderMonitor orderOps', () => {
       cacheManager: createCacheManager(),
       orderHoldRegistry: f.holds,
       orderRecorder: f.recorder,
-      getExecutionTimeEvidence: f.daily.getExecutionTimeEvidence,
       recordCumulativeExecution: (params) => {
         f.flow.recordCumulativeExecution(params);
       },
@@ -1333,7 +1329,6 @@ describe('orderMonitor orderOps', () => {
 
     const baseline = { ...trackedOrder };
     const generation = f.snapshot.getView().token.snapshotGeneration;
-    const ledgerBefore = native.readCounts();
     native.setCancelFailure(new Error('openapi error: code=601011: order cannot be cancelled'));
     native.setQueryUpdatedAtMs(Number.NaN);
     let malformed: unknown;
@@ -1346,11 +1341,9 @@ describe('orderMonitor orderOps', () => {
     expect(malformed).toBeInstanceOf(TypeError);
     expect(malformed).toHaveProperty('message', '[orderMapper] invalid updatedAt');
     expect(native.nativeReadCounts()).toEqual({ cancel: 1, detail: 1 });
-    expect(native.readCounts()).toEqual(ledgerBefore);
     expect(trackedOrder).toEqual(baseline);
     expect(trackedOrder.lastOrderUpdateAtMs).toBeNull();
     expect(f.recorder.getExecutionFact(orderId)).toBeNull();
-    expect(f.daily.getExecutionTimeEvidence()).toEqual([]);
     expect(f.snapshot.getView().token.snapshotGeneration).toBe(generation);
     native.setQueryUpdatedAtMs(validUpdatedAtMs);
     await orderOps.cancelOrder(orderId, { kind: 'ORDER_FACT' });
@@ -1358,7 +1351,6 @@ describe('orderMonitor orderOps', () => {
     expect(trackedOrder.lastOrderUpdateAtMs).toBe(validUpdatedAtMs);
     expect(trackedOrder.lastExecutedTimeMs).toBeNull();
     expect(f.recorder.getExecutionFact(orderId)).toBeNull();
-    expect(f.daily.getExecutionTimeEvidence()).toEqual([]);
     expect(f.snapshot.getView().token.snapshotGeneration).toBe(generation);
   });
 
@@ -1440,11 +1432,8 @@ describe('orderMonitor orderOps', () => {
       }
 
       expect(caughtError).toBeInstanceOf(Error);
-      expect(caughtError).toHaveProperty(
-        'message',
-        expect.stringContaining(
-          '[订单监控] 正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision',
-        ),
+      expect((caughtError as Error).message).toMatch(
+        /原始成交价格与金额不一致|正累计成交缺少有效金额、成交价格|订单观察缺少有效|无效累计成交数量/,
       );
 
       expect(trackedOrder).toMatchObject({
@@ -1645,7 +1634,7 @@ describe('orderMonitor orderOps', () => {
       expect(caughtError).toHaveProperty(
         'message',
         expect.stringMatching(
-          /正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision|无效累计成交数量/,
+          /原始成交价格与金额不一致|正累计成交缺少有效金额、成交价格|订单观察缺少有效|无效累计成交数量/,
         ),
       );
 
@@ -2448,7 +2437,7 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
 
           await expectStateCheckRawFactFailure(
             () => runStateCheckOperation(operation, harness),
-            /无效累计成交数量/,
+            /无效累计成交数量|订单观察缺少有效累计成交数量/,
           );
 
           expectNoStateCheckRawFactSideEffects(harness, trackedOrderBefore);
@@ -2481,7 +2470,7 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
 
       await expectStateCheckRawFactFailure(
         () => runStateCheckOperation('cancel', harness),
-        /无效累计成交数量/,
+        /无效累计成交数量|订单观察缺少有效累计成交数量/,
       );
 
       expectNoStateCheckRawFactSideEffects(harness, trackedOrderBefore);
@@ -2534,7 +2523,7 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
 
       await expectStateCheckRawFactFailure(
         () => runStateCheckOperation('replace', harness),
-        /无效累计成交数量/,
+        /无效累计成交数量|订单观察缺少有效累计成交数量/,
       );
 
       expect(harness.trackedOrder).toEqual(trackedOrderBefore);
@@ -2585,7 +2574,7 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
     });
   }
 
-  it('已确认 40 的等量终态可缺少本次 revision 并保留既有事实关闭', async () => {
+  it('已确认 40 的保护性 SELL 等量终态缺少原始价/revision 时在缓存前拒绝', async () => {
     const harness = createStateCheckRawFactHarness({
       operation: 'cancel',
       side: nativeWorkingSell.executionSide,
@@ -2611,22 +2600,14 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
     harness.trackedOrder.executedPrice = '1.02';
     harness.trackedOrder.lastExecutedTimeMs = 100;
     harness.trackedOrder.lastOrderUpdateAtMs = 100;
+    const trackedOrderBefore = { ...harness.trackedOrder };
 
-    await runStateCheckOperation('cancel', harness);
-    const terminalState = harness.runtime.queriedTerminalStateByOrderId.get(harness.orderId);
-    if (terminalState === undefined) {
-      throw new Error('[测试] 等量终态必须保留 raw snapshot');
-    }
-
-    expect(normalizeTerminalStateSnapshot(harness.trackedOrder, terminalState, true)).toMatchObject(
-      {
-        status: nativeCanceledZero.status,
-        executedQuantity: 40,
-        executedPrice: '1.02',
-        executedTimeMs: 100,
-        orderUpdatedAtMs: 100,
-      },
+    await expectStateCheckRawFactFailure(
+      () => runStateCheckOperation('cancel', harness),
+      /保护性 SELL 存在成交事实但本次观察缺少有效成交价|原始成交价格与金额不一致/,
     );
+
+    expectNoStateCheckRawFactSideEffects(harness, trackedOrderBefore);
   });
 
   it('累计量推进且 revision 相同的终态可使用本次 broker observation', async () => {
@@ -2698,7 +2679,7 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
 
     await expectStateCheckRawFactFailure(
       () => runStateCheckOperation('cancel', harness),
-      /broker revision.*倒退/,
+      /累计数量推进但 revision 倒退/,
     );
 
     expectNoStateCheckRawFactSideEffects(harness, trackedOrderBefore);

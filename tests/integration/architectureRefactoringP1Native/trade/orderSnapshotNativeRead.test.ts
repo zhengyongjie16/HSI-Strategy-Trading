@@ -2,23 +2,13 @@
 
 import { expect, test } from 'bun:test';
 import { createOrderAPIManager } from '../../../../src/application/orderTracking/recorder/orderApiManager.js';
-import { orderEconomics } from '../../../../src/domain/order/orderEconomics.js';
 import { createNativeSnapshotReadFixture } from '../../../infrastructure/longbridge/trade/orderSnapshotReadFixture.js';
 
-test('real snapshot IO preserves limiter/four native reads and original today priority/same-source revision selection', async () => {
-  const fixture = createNativeSnapshotReadFixture(orderEconomics);
+test('real snapshot IO preserves limiter/native order reads and original today priority/same-source revision selection', async () => {
+  const fixture = createNativeSnapshotReadFixture();
   const api = createOrderAPIManager({ orderSnapshotReadPort: fixture.port });
   const result = await api.fetchAllOrdersFromAPI();
-  expect(fixture.calls).toEqual([
-    'throttle',
-    'historyOrders',
-    'throttle',
-    'todayOrders',
-    'throttle',
-    'historyExecutions',
-    'throttle',
-    'todayExecutions',
-  ]);
+  expect(fixture.calls).toEqual(['throttle', 'historyOrders', 'throttle', 'todayOrders']);
   expect(result).toHaveLength(2);
   expect(result.find((row) => row.orderId === 'DUP')).toMatchObject({
     updatedAtMs: 250,
@@ -30,7 +20,7 @@ test('real snapshot IO preserves limiter/four native reads and original today pr
 
 test('bad returned native structure fails before later reads, and issued getter/internal failure preserves original identity', async () => {
   const cause = new RangeError('native history getter');
-  const fixture = createNativeSnapshotReadFixture(orderEconomics, cause);
+  const fixture = createNativeSnapshotReadFixture(cause);
   const api = createOrderAPIManager({ orderSnapshotReadPort: fixture.port });
   const result = await api.fetchAllOrdersFromAPI().catch((error: unknown) => error);
   expect(result).toBe(cause);

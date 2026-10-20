@@ -18,7 +18,6 @@ import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 async function fixture() {
   const native = await createBrokerIngressFixture({
     orderId: 'OLD',
-    tradeId: 'E',
     symbol: 'BULL.HK',
     stockName: 'SDK',
     remark: '',
@@ -29,7 +28,6 @@ async function fixture() {
     submittedPrice: '9.2',
     executedPrice: '0',
     submittedAtMs: 1700000000000,
-    executionTimeMs: 1700000000100,
     updatedAtMs: 1700000000200,
   });
   const runtime: OrderMonitorRuntimeStore = {
@@ -76,7 +74,6 @@ async function fixture() {
     cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
     recordCumulativeExecution: () => {},
     triggerRoute: () => {},
-    getExecutionTimeEvidence: () => [],
   });
   ops.trackOrder({
     orderId: 'OLD',
@@ -200,7 +197,6 @@ describe('monitor actual native mutation stages', () => {
     expect(error).toBeInstanceOf(TypeError);
     expect(error).toHaveProperty('message', '[orderMapper] invalid updatedAt');
     expect(f.native.nativeReadCounts()).toEqual({ cancel: 1, detail: 1 });
-    expect(f.native.readCounts()).toEqual({ today: 1, history: 0 });
     expect(f.tracked.executedQuantity).toBe(0);
     expect(f.runtime.queriedTerminalStateByOrderId.size).toBe(0);
   });
@@ -215,12 +211,10 @@ describe('monitor actual native mutation stages', () => {
       f.ops.replaceOrderPriceWithPermit('OLD', '9.3', f.request, permit),
     );
     expect(result.kind).toBe('POST_FAILURE_CONFIRMATION_REQUIRED');
-    expect(f.native.readCounts()).toEqual({ today: 1, history: 0 });
     if (result.kind !== 'POST_FAILURE_CONFIRMATION_REQUIRED')
       throw new Error('expected deferred confirmation');
 
     expect(await result.confirmAfterPermitReleased()).toEqual({ kind: 'NOT_EXECUTED' });
-    expect(f.native.readCounts()).toEqual({ today: 2, history: 0 });
     expect(f.tracked.replaceResumeMode).toBe('WAIT_WS_ONLY');
     expect(f.native.nativeMutations()).toHaveLength(1);
   });

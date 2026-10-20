@@ -1,7 +1,6 @@
 import type {
   OrderRecord,
   OrderExecutionAdmission,
-  OrderExecutionTimeEvidence,
   OrderExecutionRecordObservation,
   OrderFilteringEngine,
   OrderOwnership,
@@ -171,19 +170,14 @@ export interface DailyLossTracker {
     now: Date,
     protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
     relatedTradingSymbols?: ReadonlySet<string>,
+    recovery?: {
+      readonly executionSnapshots: ReadonlyArray<RestoreDailyLossExecutionSnapshotParams>;
+      readonly boundaries: ReadonlyArray<PreparedDailyLossProtectionBoundary>;
+    },
   ) => PreparedDailyLossRecalculation;
 
   /** 仅接受本实例发行且仍 current 的候选，同步发布全部运行态；伪造、跨实例与重用均拒绝。 */
   readonly publishRecalculation: (prepared: PreparedDailyLossRecalculation) => void;
-
-  /** 完整 prepare 后立即同步 publish，供仅需单 owner 重算的调用方使用。 */
-  readonly recalculateFromAllOrders: (
-    allOrders: ReadonlyArray<DailyLossOrderSnapshot>,
-    monitor: DailyLossMonitorScope,
-    now: Date,
-    protectionBoundaryByDirection?: ReadonlyMap<'LONG' | 'SHORT', number>,
-    relatedTradingSymbols?: ReadonlySet<string>,
-  ) => void;
 
   /** 按 revision 幂等合并订单累计成交事实，分段投影由 per-order baseline 计算 */
   readonly recordCumulativeExecution: (
@@ -193,9 +187,6 @@ export interface DailyLossTracker {
 
   /** 启动时把正式 progress record 恢复为精确历史 execution snapshot。 */
   readonly restoreExecutionSnapshot: (params: RestoreDailyLossExecutionSnapshotParams) => void;
-
-  /** 已成功提交的真实执行时间/revision 只读证据；恢复方与 API 输入匹配，不把 revision 当 T。 */
-  readonly getExecutionTimeEvidence: () => ReadonlyArray<OrderExecutionTimeEvidence>;
 
   /** 获取指定方向的当日亏损偏移（仅亏损，<=0），未初始化时返回规范文本 0 */
   readonly getLossOffset: (direction: 'LONG' | 'SHORT') => string;

@@ -487,3 +487,25 @@ describe('trading config fail-fast validator consistency', () => {
     expect(liquidationTriggerLimitValidationError).not.toBeNull();
   });
 });
+
+describe('trading config Hong Kong market scope', () => {
+  it('rejects non-HK monitor and trading symbols instead of entering seat/candidate/submit flows', async () => {
+    const monitorScopeError = await validateWithEnv(
+      createBaseEnv({ MONITOR_SYMBOL: 'HSI.US' }),
+      createTradingConfig({ monitor: createMonitorConfig({ monitorSymbol: 'HSI.US' }) }),
+    );
+    expect(monitorScopeError).not.toBeNull();
+
+    const longSymbolScopeError = await validateWithEnv(
+      createBaseEnv({ LONG_SYMBOL: 'AAPL.US' }),
+      createTradingConfig({ monitor: createMonitorConfig({ longSymbol: 'AAPL.US' }) }),
+    );
+    expect(longSymbolScopeError).not.toBeNull();
+
+    const shortSymbolScopeError = await validateWithEnv(
+      createBaseEnv({ SHORT_SYMBOL: 'TSLA.US' }),
+      createTradingConfig({ monitor: createMonitorConfig({ shortSymbol: 'TSLA.US' }) }),
+    );
+    expect(shortSymbolScopeError).not.toBeNull();
+  });
+});

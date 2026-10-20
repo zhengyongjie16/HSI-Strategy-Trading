@@ -22,11 +22,22 @@ import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createEventFlow } from '../../src/application/orderTracking/orderMonitor/eventFlow.js';
 import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
 import { createMixedTradeLogRepository } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
-import type { ProtectiveLiquidationExecutionProgressInput } from '../../src/types/risk.js';
+import type {
+  DailyLossOrderSnapshot,
+  ProtectiveLiquidationExecutionProgressInput,
+} from '../../src/types/risk.js';
 import type { OrderFact } from '../../src/types/trade.js';
 import { createExecutionFixture } from '../application/orderTracking/recorder/executionFixture.js';
 
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+
+/** 真实 recorder 已含完整金额；测试仅把已验证事实交给 DailyLoss 公共形态。 */
+function toDailyLossSnapshot(order: OrderFact): OrderFact & DailyLossOrderSnapshot {
+  if (order.executedQuantity > 0 && order.executedAmount === null)
+    throw new Error('test order missing economic amount');
+
+  return order as OrderFact & DailyLossOrderSnapshot;
+}
 
 const T = Date.parse('2026-10-07T02:00:00.000Z');
 const day = '2026-10-07';
@@ -36,10 +47,9 @@ const monitorConfig = createMonitorConfigDouble({
   liquidationTriggerLimit: 1,
   liquidationCooldown: { mode: 'minutes', minutes: 5 },
 });
-function sellFrame(time = T, revision = T + 20) {
+function sellFrame(revision = T) {
   return {
     orderId: 'protective-sell',
-    tradeId: 'sell-fill',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '|PL',
@@ -50,7 +60,6 @@ function sellFrame(time = T, revision = T + 20) {
     submittedPrice: '0.9',
     executedPrice: '0.9',
     submittedAtMs: T - 2000,
-    executionTimeMs: time,
     updatedAtMs: revision,
   };
 }
@@ -63,42 +72,33 @@ async function flush() {
 async function harness(
   root: string,
   onPersist?: (p: ProtectiveLiquidationExecutionProgressInput) => void,
+  quantity = 100,
 ) {
-  const native = await createBrokerIngressFixture(sellFrame());
+  const sellInput = {
+    ...sellFrame(),
+    quantity: String(quantity),
+    executedQuantity: String(quantity),
+    submittedPrice: String(90 / quantity),
+    executedPrice: String(90 / quantity),
+  };
+  const native = await createBrokerIngressFixture(sellInput);
   const buy = {
-    ...sellFrame(T - 1000, T - 500),
+    ...sellFrame(T - 500),
     orderId: 'buy',
-    tradeId: 'buy-fill',
     side: 'BUY' as const,
     remark: '',
-    submittedPrice: '1',
-    executedPrice: '1',
+    quantity: String(quantity),
+    executedQuantity: String(quantity),
+    submittedPrice: String(100 / quantity),
+    executedPrice: String(100 / quantity),
   };
-  native.setOrderSnapshotReplies([], [buy, sellFrame()]);
-  native.setExecutionReplies([
-    {
-      orderId: 'buy',
-      tradeId: 'buy-fill',
-      symbol: 'BULL.HK',
-      quantity: '100',
-      price: '1',
-      tradeDoneAtMs: T - 1000,
-    },
-    {
-      orderId: 'protective-sell',
-      tradeId: 'sell-fill',
-      symbol: 'BULL.HK',
-      quantity: '100',
-      price: '0.9',
-      tradeDoneAtMs: T,
-    },
-  ]);
+  native.setOrderSnapshotReplies([], [buy, sellInput]);
   const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => root });
   const persisted: ProtectiveLiquidationExecutionProgressInput[] = [];
   const persist = (p: ProtectiveLiquidationExecutionProgressInput) => {
-    persisted.push(p);
     onPersist?.(p);
     repository.appendExecutionProgressIdempotent(p);
+    persisted.push(p);
   };
   const tradeRuntime = createTradeRuntimeDouble();
   const f = createExecutionFixture({
@@ -134,7 +134,8 @@ async function harness(
     liquidationCooldownTracker: cooldown,
     mixedTradeLogRepository: repository,
   });
-  const orders = await f.recorder.fetchAllOrdersFromAPI();
+  const fetchedOrders = await f.recorder.fetchAllOrdersFromAPI();
+  const orders = fetchedOrders.map(toDailyLossSnapshot);
   const prepared = f.daily.prepareRecalculationFromAllOrders(orders, monitorConfig, new Date(T));
   const token = f.snapshot.getView().token;
   expect(
@@ -163,6 +164,8 @@ async function harness(
 }
 
 function terminal(order: OrderFact) {
+  if (order.executedAmount === null) throw new Error('terminal observation lacks amount');
+
   return {
     orderId: order.orderId,
     closedReason: 'FILLED' as const,
@@ -194,7 +197,6 @@ function track(h: Awaited<ReturnType<typeof harness>>, timeout: boolean) {
     termination: f.termination,
     rateLimiter: f.rateLimiter,
     cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
-    getExecutionTimeEvidence: f.daily.getExecutionTimeEvidence,
     triggerRoute: () => {},
     captureWorkGuard: () => () => !f.termination.isTerminated(),
     recordCumulativeExecution: (p) => {
@@ -208,9 +210,9 @@ function track(h: Awaited<ReturnType<typeof harness>>, timeout: boolean) {
     side: 'SELL',
     executionSide: 'SELL',
     orderType: 'LO',
-    price: '0.9',
-    initialSubmittedPrice: '0.9',
-    quantity: 100,
+    price: h.sell.executedPrice,
+    initialSubmittedPrice: h.sell.executedPrice,
+    quantity: h.sell.quantity,
     isLongSymbol: true,
     monitorSymbol: 'HSI.HK',
     isProtectiveLiquidation: true,
@@ -271,7 +273,6 @@ for (const mode of ['direct', 'timeout'] as const)
       expect(f.recorder.getCostBasis(sell.symbol, true)).toBeNull();
       const before = {
         fact: f.recorder.getExecutionFact(sell.orderId),
-        evidence: f.daily.getExecutionTimeEvidence(),
         token: f.snapshot.getView().token,
       };
       const closed: string[] = [];
@@ -356,7 +357,6 @@ for (const mode of ['direct', 'timeout'] as const)
       }
 
       expect(f.recorder.getExecutionFact(sell.orderId)).toBe(before.fact);
-      expect(f.daily.getExecutionTimeEvidence()).toEqual(before.evidence);
       expect(f.recorder.getPendingSellSnapshot()).toEqual([]);
       expect(f.holds.getHoldSymbols()).toEqual(new Set());
       expect(f.episode.getInProgressEpisodes()).toEqual([
@@ -371,7 +371,6 @@ for (const mode of ['direct', 'timeout'] as const)
       const after = {
         token: f.snapshot.getView().token,
         status: f.sink.getStatus(),
-        evidence: f.daily.getExecutionTimeEvidence(),
         durableCalls: h.persisted.length,
       };
       if (monitor === undefined) expect(f.flow.settleOrder(terminal(sell)).handled).toBe(false);
@@ -384,7 +383,6 @@ for (const mode of ['direct', 'timeout'] as const)
       expect(f.episode.getInProgressEpisodes()).toEqual([]);
       expect(f.snapshot.getView().token).toEqual(after.token);
       expect(f.sink.getStatus()).toEqual(after.status);
-      expect(f.daily.getExecutionTimeEvidence()).toEqual(after.evidence);
       expect(h.persisted).toHaveLength(after.durableCalls);
       expect(h.repository.loadExecutionProgressRecords(day)).toHaveLength(1);
       expect(h.repository.loadCompletionRecords(day)).toHaveLength(1);
@@ -412,7 +410,6 @@ test('C2 duplicate baseline durable fault preserves O/Daily/H/S/pending/tracking
     track(h, true);
     const before = {
       fact: f.recorder.getExecutionFact(sell.orderId),
-      evidence: f.daily.getExecutionTimeEvidence(),
       pending: f.recorder.getPendingSellSnapshot(),
       token: f.snapshot.getView().token,
       status: f.sink.getStatus(),
@@ -420,7 +417,6 @@ test('C2 duplicate baseline durable fault preserves O/Daily/H/S/pending/tracking
     expect(() => f.flow.prepareProtectiveTerminalExecution(terminal(sell))).toThrow(fault);
     expect(() => f.flow.settleOrder(terminal(sell))).toThrow(fault);
     expect(f.recorder.getExecutionFact(sell.orderId)).toBe(before.fact);
-    expect(f.daily.getExecutionTimeEvidence()).toEqual(before.evidence);
     expect(f.recorder.getPendingSellSnapshot()).toEqual(before.pending);
     expect(f.snapshot.getView().token).toEqual(before.token);
     expect(f.sink.getStatus()).toEqual(before.status);
@@ -440,7 +436,7 @@ test('C2 duplicate baseline durable fault preserves O/Daily/H/S/pending/tracking
   }
 });
 
-test('C2 delayed old terminal uses adjudicated durable T2 and sealed duplicate only closes resources', async () => {
+test('C2 same-quantity higher revision keeps known durable T and sealed duplicate only closes resources', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hsi-c2-trusted-'));
   const h = await harness(root);
   const { f, sell } = h;
@@ -453,7 +449,7 @@ test('C2 delayed old terminal uses adjudicated durable T2 and sealed duplicate o
       updatedAt: new Date(T + 100),
     };
     const prepared = f.daily.prepareRecalculationFromAllOrders(
-      [...h.orders.filter((o) => o.orderId !== sell.orderId), newer],
+      [...h.orders.filter((o) => o.orderId !== sell.orderId), newer].map(toDailyLossSnapshot),
       monitorConfig,
       new Date(T),
     );
@@ -464,18 +460,17 @@ test('C2 delayed old terminal uses adjudicated durable T2 and sealed duplicate o
       'ACTIVATION',
     );
     f.daily.publishRecalculation(prepared);
-    // tracked 是旧 OPEN；R1/T1 比 tracked 新却比 API R2/T2 旧，真实 EventFlow 只能补 T2。
-    eventFlow(f).handleOrderChanged(sell);
+    // 同量高 revision 只推进 revision，执行 T 保留 known durable T。
+    eventFlow(f).handleOrderChanged(newer);
     expect(f.runtime.closedOrderIds.has(sell.orderId)).toBe(true);
-    expect(f.episode.getInProgressEpisodes()).toMatchObject([{ latestExecutedTimeMs: T + 50 }]);
+    expect(f.episode.getInProgressEpisodes()).toMatchObject([{ latestExecutedTimeMs: T }]);
     expect(h.repository.loadExecutionProgressRecords(day)).toMatchObject([
-      { lastExecutionTimeMs: T + 50, orderRevisionMs: T + 100 },
+      { lastExecutionTimeMs: T, orderRevisionMs: T + 100 },
     ]);
-    await complete(h, T + 50);
+    await complete(h, T);
     const before = {
       token: f.snapshot.getView().token,
       status: f.sink.getStatus(),
-      evidence: f.daily.getExecutionTimeEvidence(),
       progress: h.persisted.length,
     };
     // 明确模拟已恢复 completed boundary、但同订单终态资源还需补关的组合状态。
@@ -483,14 +478,14 @@ test('C2 delayed old terminal uses adjudicated durable T2 and sealed duplicate o
     f.runtime.trackedOrders.set(sell.orderId, tracked);
     f.recorder.submitSellOrder(sell.orderId, sell.symbol, 'LONG', 100, [], T - 2000);
     f.holds.trackOrder(sell.orderId, sell.symbol);
-    expect(f.flow.settleOrder(terminal(newer)).handled).toBe(true);
+    expect(f.flow.settleOrder(terminal({ ...newer, executionTimeMs: T })).handled).toBe(true);
     expect(f.episode.getInProgressEpisodes()).toEqual([]);
     expect(f.recorder.getPendingSellSnapshot()).toEqual([]);
     expect(f.holds.getHoldSymbols()).toEqual(new Set());
     expect(f.snapshot.getView().token).toEqual(before.token);
     expect(f.sink.getStatus()).toEqual(before.status);
-    expect(f.daily.getExecutionTimeEvidence()).toEqual(before.evidence);
-    expect(h.persisted).toHaveLength(before.progress);
+    expect(h.persisted).toHaveLength(before.progress + 1);
+    expect(h.repository.loadExecutionProgressRecords(day)).toHaveLength(1);
     expect(h.repository.loadCompletionRecords(day)).toHaveLength(1);
     expect(h.cooldownCommits()).toBe(1);
   } finally {
@@ -499,61 +494,225 @@ test('C2 delayed old terminal uses adjudicated durable T2 and sealed duplicate o
   }
 });
 
-test('C2 closed high-revision execution-time correction advances only existing episode after durable success', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hsi-c2-time-correction-'));
-  const fault = new Error('time correction durable failure');
-  let failCorrection = false;
-  const h = await harness(root, (p) => {
-    if (failCorrection && p.orderRevisionMs > T + 20) throw fault;
-  });
+/** 真实 EventFlow 先完成保护性 SELL 结算；返回同一 events owner 供后续合法修订。 */
+function sealProtectiveSell(h: Awaited<ReturnType<typeof harness>>) {
+  track(h, false);
+  const events = eventFlow(h.f);
+  events.handleOrderChanged(h.sell);
+  expect(h.f.events).toHaveLength(1);
+  expect(h.f.episode.getInProgressEpisodes()).toMatchObject([{ latestExecutedTimeMs: T }]);
+  expect(h.repository.loadExecutionProgressRecords(day)).toHaveLength(1);
+  return events;
+}
+
+test('C2 sealed same-quantity same-amount higher revision advances only the revision watermark', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hsi-c2-sealed-watermark-'));
+  const h = await harness(root);
   const { f, sell } = h;
   try {
-    track(h, false);
-    const events = eventFlow(f);
-    events.handleOrderChanged(sell);
-    expect(f.events).toHaveLength(1);
-    const corrected = {
+    const events = sealProtectiveSell(h);
+    const before = f.recorder.getExecutionFact(sell.orderId);
+    events.handleOrderChanged({
       ...sell,
-      executionTimeMs: T + 50,
       updatedAtMs: T + 100,
       updatedAt: new Date(T + 100),
-    };
-    const before = {
-      fact: f.recorder.getExecutionFact(sell.orderId),
-      evidence: f.daily.getExecutionTimeEvidence(),
-      token: f.snapshot.getView().token,
-      status: f.sink.getStatus(),
-      episode: f.episode.getInProgressEpisodes(),
-    };
-    failCorrection = true;
-    expect(() => {
-      events.handleOrderChanged(corrected);
-    }).toThrow(fault);
-    expect(f.recorder.getExecutionFact(sell.orderId)).toBe(before.fact);
-    expect(f.daily.getExecutionTimeEvidence()).toEqual(before.evidence);
-    expect(f.snapshot.getView().token).toEqual(before.token);
-    expect(f.sink.getStatus()).toEqual(before.status);
-    expect(f.episode.getInProgressEpisodes()).toEqual(before.episode);
-    failCorrection = false;
-    events.handleOrderChanged(corrected);
-    expect(f.episode.getInProgressEpisodes()).toMatchObject([{ latestExecutedTimeMs: T + 50 }]);
-    expect(f.sink.getStatus().staleVersion).toBe(2);
+    });
+    const after = f.recorder.getExecutionFact(sell.orderId);
+    expect(after).not.toBe(before);
+    expect(after).toMatchObject({
+      cumulativeQuantity: 100,
+      cumulativeAmount: '90',
+      executionTimeMs: T,
+      updatedAtMs: T + 100,
+      phase: 'TERMINAL',
+    });
+    expect(f.daily.getLossOffset('LONG')).toBe('-10');
+    expect(h.repository.loadExecutionProgressRecords(day)).toMatchObject([
+      { lastExecutionTimeMs: T, orderRevisionMs: T, cumulativeAmount: '90' },
+      { lastExecutionTimeMs: T, orderRevisionMs: T + 100, cumulativeAmount: '90' },
+    ]);
+    expect(f.episode.getInProgressEpisodes()).toMatchObject([{ latestExecutedTimeMs: T }]);
     expect(f.events).toHaveLength(1);
-    expect(h.repository.loadExecutionProgressRecords(day)).toHaveLength(2);
-    await complete(h, T + 50);
-    // 完成后即使后来合法新 T 可准入，也不能由同量 closed 修订重新建立 episode。
-    const later = {
+
+    await complete(h, T);
+    // 完成后同量同金额 revision 仍只抬高水位，不重建 episode/completion。
+    events.handleOrderChanged({
       ...sell,
-      executionTimeMs: T + 200,
-      updatedAtMs: T + 300,
-      updatedAt: new Date(T + 300),
-    };
-    events.handleOrderChanged(later);
+      updatedAtMs: T + 200,
+      updatedAt: new Date(T + 200),
+    });
     await f.sink.waitForFresh();
+    expect(f.recorder.getExecutionFact(sell.orderId)).toMatchObject({ updatedAtMs: T + 200 });
+    expect(h.repository.loadExecutionProgressRecords(day)).toHaveLength(3);
+    expect(f.daily.prepareProtectionBoundary({ direction: 'LONG', boundaryExecutedTimeMs: T + 1 })
+      .orderBaselines.find((baseline) => baseline.orderId === sell.orderId)?.orderRevisionMs).toBe(T + 200);
     expect(f.episode.getInProgressEpisodes()).toEqual([]);
     expect(h.repository.loadCompletionRecords(day)).toHaveLength(1);
     expect(h.cooldownCommits()).toBe(1);
     expect(f.events).toHaveLength(1);
+  } finally {
+    await f.sink.stopAndDrain();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('C2 sealed same-quantity legal amount revision updates recorder/economy/durable without repeated resource closure', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hsi-c2-sealed-amount-'));
+  const h = await harness(root);
+  const { f, sell } = h;
+  try {
+    const events = sealProtectiveSell(h);
+    events.handleOrderChanged({
+      ...sell,
+      executedPrice: '0.95',
+      executedAmount: '95',
+      updatedAtMs: T + 100,
+      updatedAt: new Date(T + 100),
+    });
+
+    expect(f.recorder.getExecutionFact(sell.orderId)).toMatchObject({
+      cumulativeQuantity: 100,
+      cumulativeAmount: '95',
+      executionTimeMs: T,
+      updatedAtMs: T + 100,
+      phase: 'TERMINAL',
+    });
+    expect(f.daily.getLossOffset('LONG')).toBe('-5');
+    expect(h.repository.loadExecutionProgressRecords(day)).toMatchObject([
+      { lastExecutionTimeMs: T, orderRevisionMs: T, cumulativeAmount: '90' },
+      { lastExecutionTimeMs: T, orderRevisionMs: T + 100, cumulativeAmount: '95' },
+    ]);
+    // 只更新经济/durable/revision；不重新打开 pending、hold、episode 或终态事件。
+    expect(f.episode.getInProgressEpisodes()).toMatchObject([{ latestExecutedTimeMs: T }]);
+    expect(f.recorder.getPendingSellSnapshot()).toEqual([]);
+    expect(f.holds.getHoldSymbols()).toEqual(new Set());
+    expect(f.events).toHaveLength(1);
+
+    await complete(h, T);
+    expect(
+      h.repository
+        .loadCompletionRecords(day)[0]?.orderBaselines.find(
+          (baseline) => baseline.orderId === sell.orderId,
+        )?.cumulativeAmount,
+    ).toBe('95');
+  } finally {
+    await f.sink.stopAndDrain();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('C2 sealed amount revision durable failure keeps every projection and retries exactly once', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hsi-c2-sealed-fault-'));
+  const fault = new Error('sealed amount revision durable failure');
+  let failCorrection = false;
+  const h = await harness(root, (progress) => {
+    if (failCorrection && progress.orderRevisionMs > T) throw fault;
+  });
+  const { f, sell } = h;
+  try {
+    const events = sealProtectiveSell(h);
+    await complete(h, T);
+    const before = {
+      token: f.snapshot.getView().token,
+      status: f.sink.getStatus(),
+      baseline: h.repository.loadCompletionRecords(day),
+      candidate: f.daily.prepareRecalculationFromAllOrders(h.orders, monitorConfig, new Date(T)),
+      fact: f.recorder.getExecutionFact(sell.orderId),
+      loss: f.daily.getLossOffset('LONG'),
+      progress: h.repository.loadExecutionProgressRecords(day),
+      episode: f.episode.getInProgressEpisodes(),
+      events: f.events.length,
+    };
+    const corrected = {
+      ...sell,
+      executedPrice: '0.95',
+      executedAmount: '95',
+      updatedAtMs: T + 100,
+      updatedAt: new Date(T + 100),
+    };
+    failCorrection = true;
+    expect(() => { events.handleOrderChanged(corrected); }).toThrow(fault);
+    expect(f.recorder.getExecutionFact(sell.orderId)).toBe(before.fact);
+    expect(f.daily.getLossOffset('LONG')).toBe(before.loss);
+    expect(h.repository.loadExecutionProgressRecords(day)).toEqual(before.progress);
+    expect(f.episode.getInProgressEpisodes()).toEqual(before.episode);
+    expect(f.events).toHaveLength(before.events);
+    expect(f.snapshot.getView().token).toEqual(before.token);
+    expect(f.sink.getStatus()).toEqual(before.status);
+    expect(h.repository.loadCompletionRecords(day)).toEqual(before.baseline);
+    expect(before.candidate.isCurrent()).toBe(true);
+
+    failCorrection = false;
+    events.handleOrderChanged(corrected);
+    expect(f.recorder.getExecutionFact(sell.orderId)).toMatchObject({
+      cumulativeAmount: '95',
+      executionTimeMs: T,
+      updatedAtMs: T + 100,
+    });
+    expect(f.daily.getLossOffset('LONG')).toBe('0');
+    expect(h.repository.loadExecutionProgressRecords(day)).toMatchObject([
+      { lastExecutionTimeMs: T, orderRevisionMs: T, cumulativeAmount: '90' },
+      { lastExecutionTimeMs: T, orderRevisionMs: T + 100, cumulativeAmount: '95' },
+    ]);
+    events.handleOrderChanged(corrected);
+    expect(h.persisted).toHaveLength(2);
+    expect(before.candidate.isCurrent()).toBe(false);
+    expect(f.episode.getInProgressEpisodes()).toEqual([]);
+    expect(f.events).toHaveLength(before.events);
+    await f.sink.waitForFresh();
+    expect(h.repository.loadCompletionRecords(day)).toEqual(before.baseline);
+    expect(h.cooldownCommits()).toBe(1);
+  } finally {
+    await f.sink.stopAndDrain();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('P1 completed boundary retains 10/120 and revision-only authority, then rejects 20/110 and illegal phase/quantity', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hsi-p1-sealed-authority-'));
+  const h = await harness(root, undefined, 10);
+  const { f, sell } = h;
+  try {
+    const events = sealProtectiveSell(h);
+    await complete(h, T);
+    const frozen = h.repository.loadCompletionRecords(day);
+    const correction = {
+      ...sell,
+      executedPrice: '12',
+      executedAmount: '120',
+      updatedAtMs: T + 100,
+      updatedAt: new Date(T + 100),
+    };
+    events.handleOrderChanged(correction);
+    const watermark = { ...correction, updatedAtMs: T + 200, updatedAt: new Date(T + 200) };
+    events.handleOrderChanged(watermark);
+    expect(f.recorder.getExecutionFact(sell.orderId)).toMatchObject({
+      cumulativeQuantity: 10, cumulativeAmount: '120', executionTimeMs: T, updatedAtMs: T + 200,
+    });
+
+    expect(f.daily.prepareProtectionBoundary({ direction: 'LONG', boundaryExecutedTimeMs: T + 1 })
+      .orderBaselines.find((baseline) => baseline.orderId === sell.orderId)).toMatchObject({
+        cumulativeQuantity: '10', cumulativeAmount: '120', orderRevisionMs: T + 200,
+      });
+    expect(f.daily.getLossOffset('LONG')).toBe('0');
+    const progress = h.repository.loadExecutionProgressRecords(day);
+    expect(progress).toHaveLength(3);
+    for (const invalid of [
+      { ...watermark, executedQuantity: 20, executedPrice: '5.5', executedAmount: '110', executionTimeMs: T + 300, updatedAtMs: T + 300 },
+      { ...watermark, executedQuantity: 9, executedPrice: '12', executedAmount: '108', updatedAtMs: T + 300 },
+      { ...watermark, executedAmount: '121', executedPrice: '12.1' },
+      { ...watermark, executionPhase: 'OPEN' as const, updatedAtMs: T + 300 },
+    ]) expect(() => { events.handleOrderChanged(invalid); }).toThrow();
+
+    expect(f.recorder.getExecutionFact(sell.orderId)).toMatchObject({ cumulativeAmount: '120', updatedAtMs: T + 200 });
+    expect(h.repository.loadExecutionProgressRecords(day)).toEqual(progress);
+    expect(f.episode.getInProgressEpisodes()).toEqual([]);
+    expect(f.events).toHaveLength(1);
+    expect(f.holds.getHoldSymbols().size).toBe(0);
+    await f.sink.waitForFresh();
+    expect(h.repository.loadCompletionRecords(day)).toEqual(frozen);
+    expect(frozen[0]?.orderBaselines.find((baseline) => baseline.orderId === sell.orderId)?.cumulativeAmount).toBe('90');
+    expect(h.cooldownCommits()).toBe(1);
   } finally {
     await f.sink.stopAndDrain();
     fs.rmSync(root, { recursive: true, force: true });

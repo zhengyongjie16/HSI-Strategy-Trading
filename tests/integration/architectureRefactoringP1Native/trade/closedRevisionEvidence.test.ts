@@ -14,7 +14,6 @@ test('closed terminal pure revision stores O/Daily watermark without economic/S/
   let dailyCalls = 0;
   const native = await createBrokerIngressFixture({
     orderId: 'CLOSED',
-    tradeId: 'T',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -25,7 +24,6 @@ test('closed terminal pure revision stores O/Daily watermark without economic/S/
     submittedPrice: '1.01',
     executedPrice: '1.01',
     submittedAtMs: now,
-    executionTimeMs: now + 100,
     updatedAtMs: now + 200,
   });
   const f = createExecutionFixture({
@@ -59,7 +57,6 @@ test('closed terminal pure revision stores O/Daily watermark without economic/S/
   const before = f.recorder.getExecutionFact('CLOSED');
   if (before === null) throw new Error('settled order must retain authoritative fact');
 
-  const evidence = f.daily.getExecutionTimeEvidence();
   const record = f.recorder.getBuyOrdersForSymbol('BULL.HK', true)[0];
   const token = f.snapshot.getView().token;
   const stale = f.sink.getStatus().staleVersion;
@@ -83,14 +80,15 @@ test('closed terminal pure revision stores O/Daily watermark without economic/S/
       throw new Error('closed tail cannot wake route');
     },
   });
-  const rows = await native.executionLedgerPort.todayExecutions({ orderId: 'CLOSED' });
   native.createPushPort().setOnOrderChanged((_error, decoder) => {
-    flow.handleOrderChangedWhenActive(decoder.decode(rows));
+    const mapped = decoder.decode();
+    if (mapped === null) throw new Error('HK push sample must decode');
+
+    flow.handleOrderChangedWhenActive(mapped);
   });
 
   native.emitOrderChangedFrame({
     orderId: 'CLOSED',
-    tradeId: 'T',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -101,14 +99,10 @@ test('closed terminal pure revision stores O/Daily watermark without economic/S/
     submittedPrice: '1.01',
     executedPrice: '1.01',
     submittedAtMs: now,
-    executionTimeMs: now + 100,
     updatedAtMs: now + 201,
   });
   expect(dailyCalls).toBe(2);
   expect(f.recorder.getExecutionFact('CLOSED')).toEqual({ ...before, updatedAtMs: now + 201 });
-  expect(f.daily.getExecutionTimeEvidence()).toEqual(
-    evidence.map((fact) => ({ ...fact, orderRevisionMs: now + 201 })),
-  );
   expect(f.recorder.getBuyOrdersForSymbol('BULL.HK', true)[0]).toBe(record);
   expect(f.recorder.getCostBasis('BULL.HK', true)).toEqual({ costAmount: '20.2', quantity: 20 });
   expect(f.snapshot.getView().token).toEqual(token);
@@ -116,7 +110,6 @@ test('closed terminal pure revision stores O/Daily watermark without economic/S/
   expect(f.events).toHaveLength(events);
   native.emitOrderChangedFrame({
     orderId: 'CLOSED',
-    tradeId: 'T',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -127,7 +120,6 @@ test('closed terminal pure revision stores O/Daily watermark without economic/S/
     submittedPrice: '1.01',
     executedPrice: '1.05',
     submittedAtMs: now,
-    executionTimeMs: now + 100,
     updatedAtMs: now + 202,
   });
   expect(dailyCalls).toBe(3);
@@ -136,29 +128,14 @@ test('closed terminal pure revision stores O/Daily watermark without economic/S/
     updatedAtMs: now + 202,
   });
   expect(f.sink.getStatus().staleVersion).toBe(stale + 1);
-  const invalid = {
-    ...native.queryObservation,
-    updatedAtMs: now + 203,
-    executedQuantity: 21,
-    executionTimeMs: null,
-  };
-  expect(() => {
-    flow.handleOrderChangedWhenActive(invalid);
-  }).toThrow();
-  expect(dailyCalls).toBe(3);
+  // 增量但缺本次原始价格的观察仍必须拒绝，不得沿用已确认旧价。
   expect(() => {
     flow.handleOrderChangedWhenActive({
       ...native.queryObservation,
+      updatedAtMs: now + 203,
+      executedQuantity: 21,
       executedPrice: null,
-      updatedAtMs: now + 204,
-    });
-  }).toThrow();
-  expect(dailyCalls).toBe(3);
-  expect(() => {
-    flow.handleOrderChangedWhenActive({
-      ...native.queryObservation,
-      executedPrice: '7',
-      updatedAtMs: now + 205,
+      executedAmount: null,
     });
   }).toThrow();
   expect(dailyCalls).toBe(3);

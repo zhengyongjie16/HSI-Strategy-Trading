@@ -1,4 +1,4 @@
-/** P1 真实执行时间边界：同量高 revision 不越过 completed boundary，不落 durable/修改 baseline。 */
+/** P1 执行时间边界只封存经济投影；同量高 revision 仍写前持久化并保留权威事实。 */
 
 import { expect, test } from 'bun:test';
 import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
@@ -17,7 +17,7 @@ function tracker() {
   return owner;
 }
 
-test('boundary or earlier true T with higher revision is a no-op including durable observer and baseline', () => {
+test('boundary or earlier true T admits higher revision through durable without rewriting the frozen projection', () => {
   const owner = tracker();
   const input = {
     orderId: 'buy',
@@ -44,17 +44,12 @@ test('boundary or earlier true T with higher revision is a no-op including durab
     },
   );
   expect(result).toEqual({
-    admission: 'SUPPRESSED',
-    authoritativeFactChanged: false,
+    admission: 'ADMITTED',
+    authoritativeFactChanged: true,
     executionAdvanced: false,
   });
-  expect(durableCalls).toBe(0);
+  expect(durableCalls).toBe(1);
   expect(owner.getLossOffset('LONG')).toBe('0');
-  expect(owner.getExecutionTimeEvidence()[0]).toMatchObject({
-    lastExecutionTimeMs: t,
-    orderRevisionMs: t,
-    cumulativeAmount: '123.45678901234567890123456789',
-  });
 });
 
 test('progress persistence failure leaves authoritative fact and financial state uncommitted', () => {
@@ -78,6 +73,36 @@ test('progress persistence failure leaves authoritative fact and financial state
       },
     ),
   ).toThrow(fault);
-  expect(owner.getExecutionTimeEvidence()).toEqual([]);
+  expect(owner.getLossOffset('LONG')).toBe('0');
+});
+
+test('same cumulative quantity after the Hong Kong day cut does not create a new in-day fill', () => {
+  const owner = tracker();
+  const input = {
+    orderId: 'cross-day-sell',
+    symbol: 'A.HK',
+    direction: 'LONG' as const,
+    side: 'SELL' as const,
+    factStage: 'TERMINAL' as const,
+    executedPrice: '0.9',
+    executedQuantity: 100,
+    executedTimeMs: t,
+    orderUpdatedAtMs: t + 10,
+  };
+  expect(owner.recordCumulativeExecution(input).executionAdvanced).toBe(true);
+  expect(owner.getLossOffset('LONG')).toBe('0');
+
+  const nextDay = new Date('2026-10-08T02:00:00.000Z');
+  owner.resetAll(nextDay);
+  const replay = owner.recordCumulativeExecution({
+    ...input,
+    executedTimeMs: t,
+    orderUpdatedAtMs: nextDay.getTime(),
+  });
+  expect(replay).toEqual({
+    admission: 'SUPPRESSED',
+    authoritativeFactChanged: false,
+    executionAdvanced: false,
+  });
   expect(owner.getLossOffset('LONG')).toBe('0');
 });

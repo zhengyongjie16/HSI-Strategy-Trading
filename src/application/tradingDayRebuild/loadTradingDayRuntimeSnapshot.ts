@@ -8,8 +8,8 @@
  * 1. 验证交易日信息（可选）
  * 2. 初始化订单监控订阅（进入 BOOTSTRAPPING）
  * 3. 刷新账户和持仓数据
- * 4. 获取全量订单并解析席位绑定（prepareSeatsForRuntime）
- * 5. 收集相关交易标的，并全量重算日内亏损以预校验所有相关成交订单
+ * 4. 获取全量订单，用当日 durable progress/completion 的 known 累计状态归一 API 观察
+ * 5. 解析席位绑定（prepareSeatsForRuntime）并全量重算日内亏损，随后重放原边界 progress
  * 6. 从交易日志水合冷却状态，并基于订单/持仓恢复保护性清仓边界（可选）
  * 7. 重置行情订阅（可选）
  * 8. 收集并订阅所有交易标的的行情和 K 线
@@ -25,18 +25,21 @@ import {
   isInContinuousHKSession,
   isWithinMorningOpenWindow,
 } from '../../domain/tradingSession/index.js';
+import { normalizeExecutionOrder } from './executionNormalization.js';
 import { prepareSeatsForRuntime } from './seatPreparation.js';
 import { collectRuntimeQuoteSymbols } from './quoteSymbols.js';
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { exactCompare, safeQuantityNumber } from '../../utils/numeric/exact.js';
-import { withTrustedOrderExecutionTimes } from '../../domain/order/executionFact.js';
-import type { OrderExecutionTimeEvidence } from '../../types/orderRecorder.js';
+import { assertExecutionHistory } from '../../domain/risk/executionHistory.js';
+import type { ExecutionHistorySnapshot } from '../../domain/risk/types.js';
 import { resolveOrderOwnership } from '../../domain/order/orderOwnership.js';
 import { hasProtectiveLiquidationRemark } from '../../domain/order/orderRemark.js';
 import { decimalGt } from '../../utils/numeric/index.js';
 import type {
   LoadTradingDayRuntimeSnapshotDeps,
   LoadTradingDayRuntimeSnapshotParams,
+  NormalizedExecutionOrder,
+  RecoveryExecutionHistory,
   LoadTradingDayRuntimeSnapshotResult,
   TradingDayRuntimeInvalidationResult,
 } from './types.js';
@@ -164,6 +167,135 @@ function assertExecutionProgressRecordsHaveRawProtectiveProvenance(
 }
 
 /**
+ * 构建并校验恢复期完整历史（progress phase-known + completion baseline phase-null）。
+ * 同 revision/数量/金额/T 与跨 revision 的 quantity/amount/T 单调均在形成 known 前校验；
+ * 不使用“排序最新”覆盖冲突，也不新建 evidence 仓库。
+ */
+function buildRecoveryExecutionHistories(
+  progressRecords: ReadonlyArray<ProtectiveLiquidationExecutionProgressRecordV1>,
+  completionRecords: ReadonlyArray<ProtectiveLiquidationCompletionRecordV1>,
+): ReadonlyMap<string, RecoveryExecutionHistory> {
+  const groupsByOrderId = new Map<
+    string,
+    {
+      symbol: string;
+      side: 'BUY' | 'SELL';
+      direction: 'LONG' | 'SHORT';
+      snapshots: ExecutionHistorySnapshot[];
+    }
+  >();
+
+  const appendSnapshot = (
+    snapshot: ExecutionHistorySnapshot,
+    direction: 'LONG' | 'SHORT',
+  ): void => {
+    const existing = groupsByOrderId.get(snapshot.orderId);
+    if (existing === undefined) {
+      groupsByOrderId.set(snapshot.orderId, {
+        symbol: snapshot.symbol,
+        side: snapshot.side,
+        direction,
+        snapshots: [snapshot],
+      });
+    } else {
+      if (existing.symbol !== snapshot.symbol || existing.side !== snapshot.side)
+        throw new Error(
+          `[loadTradingDayRuntimeSnapshot] 恢复历史 identity 冲突: ${snapshot.orderId}`,
+        );
+
+      if (existing.direction !== direction)
+        throw new Error(`[loadTradingDayRuntimeSnapshot] 恢复历史方向冲突: ${snapshot.orderId}`);
+
+      existing.snapshots.push(snapshot);
+    }
+  };
+
+  for (const record of progressRecords) {
+    appendSnapshot(
+      {
+        orderId: record.orderId,
+        symbol: record.symbol,
+        side: 'SELL',
+        factStage: record.factStage,
+        cumulativeQuantity: safeQuantityNumber(record.cumulativeQuantity),
+        cumulativeAmount: record.cumulativeAmount,
+        lastExecutionTimeMs: record.lastExecutionTimeMs,
+        orderUpdatedAtMs: record.orderRevisionMs,
+      },
+      record.direction,
+    );
+  }
+
+  for (const completion of completionRecords) {
+    for (const baseline of completion.orderBaselines) {
+      appendSnapshot(
+        {
+          orderId: baseline.orderId,
+          symbol: baseline.symbol,
+          side: baseline.side,
+          factStage: null,
+          cumulativeQuantity: safeQuantityNumber(baseline.cumulativeQuantity),
+          cumulativeAmount: baseline.cumulativeAmount,
+          lastExecutionTimeMs: baseline.lastExecutionTimeMs,
+          orderUpdatedAtMs: baseline.orderRevisionMs,
+        },
+        completion.direction,
+      );
+    }
+  }
+
+  const histories = new Map<string, RecoveryExecutionHistory>();
+  for (const [orderId, { snapshots, direction }] of groupsByOrderId) {
+    const latest = assertExecutionHistory({ snapshots });
+    if (latest === undefined) throw new Error('[DailyLossTracker] execution history is empty');
+
+    histories.set(orderId, {
+      known: {
+        brokerOrderId: latest.orderId,
+        symbol: latest.symbol,
+        side: latest.side,
+        cumulativeQuantity: latest.cumulativeQuantity,
+        cumulativeAmount: latest.cumulativeAmount,
+        executionTimeMs: latest.lastExecutionTimeMs,
+        updatedAtMs: latest.orderUpdatedAtMs,
+        phase: latest.factStage,
+      },
+      snapshots,
+      direction,
+    });
+  }
+
+  return histories;
+}
+
+/** 用归一后的 final API 事实补齐完整历史校验；任何冲突都在副作用前阻断。 */
+function assertRecoveryHistoryAgainstOrders(
+  histories: ReadonlyMap<string, RecoveryExecutionHistory>,
+  allOrders: ReadonlyArray<NormalizedExecutionOrder>,
+): void {
+  const orderById = new Map(allOrders.map((order) => [order.orderId, order] as const));
+  for (const [orderId, history] of histories) {
+    const order = orderById.get(orderId);
+    if (order === undefined)
+      throw new Error(`[loadTradingDayRuntimeSnapshot] 恢复历史缺少当前 API 订单: ${orderId}`);
+
+    assertExecutionHistory({
+      snapshots: history.snapshots,
+      finalSnapshot: {
+        orderId: order.orderId,
+        symbol: order.symbol,
+        side: order.executionSide,
+        factStage: order.executionPhase,
+        cumulativeQuantity: order.executedQuantity,
+        cumulativeAmount: order.executedAmount,
+        lastExecutionTimeMs: order.executionTimeMs,
+        orderUpdatedAtMs: order.updatedAtMs,
+      },
+    });
+  }
+}
+
+/**
  * 恢复不能借在线 OPEN→TERMINAL 裁决吞掉旧精度冲突。
  * 同 revision/quantity 的异金额必须由原 durable TERMINAL 确认；阶段变化或新 API 更精确都不是独立证据。
  * 更高 revision 和在线合法修订仍由原订单事实 owner 裁决，不在此改写历史或引入容差。
@@ -179,18 +311,20 @@ function assertSameRevisionTerminalAmountHasDurableEvidence(
       order?.executionPhase !== 'TERMINAL' ||
       progress.orderRevisionMs !== order.updatedAtMs ||
       safeQuantityNumber(progress.cumulativeQuantity) !== order.executedQuantity ||
+      order.executedAmount === null ||
       exactCompare(progress.cumulativeAmount, order.executedAmount) === 0
     ) {
       continue;
     }
 
+    const observedAmount = order.executedAmount;
     const hasDurableTerminalEvidence = progressRecords.some(
       (terminal) =>
         terminal.factStage === 'TERMINAL' &&
         terminal.orderId === progress.orderId &&
         terminal.orderRevisionMs === progress.orderRevisionMs &&
         exactCompare(terminal.cumulativeQuantity, progress.cumulativeQuantity) === 0 &&
-        exactCompare(terminal.cumulativeAmount, order.executedAmount) === 0 &&
+        exactCompare(terminal.cumulativeAmount, observedAmount) === 0 &&
         terminal.lastExecutionTimeMs === progress.lastExecutionTimeMs,
     );
     if (!hasDurableTerminalEvidence) {
@@ -317,7 +451,7 @@ export function createLoadTradingDayRuntimeSnapshot(
       hydrateCooldownFromTradeLog && currentDayKey !== null
         ? [...mixedTradeLogRepository.loadExecutionProgressRecords(currentDayKey)]
         : [];
-    // durable 来源/唯一归属先预检，再补真实 T；首轮 daily 全量重算不能先消费 API revision 伪 T。
+    // durable 来源/唯一归属先预检；API 观察必须先用 known 累计状态归一，再进入 daily 全量重算。
     assertCompletionRecordsMatchExpectedMonitor(completionRecords, expectedMonitorSymbol);
     const rawProtectiveSellOrdersById = collectRawProtectiveSellOrdersById(rawOrders);
     assertExecutionProgressRecordsHaveRawProtectiveProvenance(
@@ -331,18 +465,7 @@ export function createLoadTradingDayRuntimeSnapshot(
       executionProgressRecords,
       rawProtectiveSellOrdersById,
     );
-    const trustedEvidence: OrderExecutionTimeEvidence[] = executionProgressRecords.map(
-      (progress) => ({
-        brokerOrderId: progress.orderId,
-        symbol: progress.symbol,
-        side: 'SELL',
-        phase: progress.factStage,
-        cumulativeQuantity: safeQuantityNumber(progress.cumulativeQuantity),
-        cumulativeAmount: progress.cumulativeAmount,
-        lastExecutionTimeMs: progress.lastExecutionTimeMs,
-        orderRevisionMs: progress.orderRevisionMs,
-      }),
-    );
+
     for (const completion of completionRecords)
       for (const baseline of completion.orderBaselines) {
         const order = rawOrders.find((entry) => entry.orderId === baseline.orderId);
@@ -361,71 +484,37 @@ export function createLoadTradingDayRuntimeSnapshot(
         // durable 边界仍由 dailyLoss 的原恢复规则消费，不替它编造 OPEN/TERMINAL。
       }
 
-    const completionBaselines = completionRecords.flatMap(
-      (completion) => completion.orderBaselines,
+    const recoveryExecutionHistories = buildRecoveryExecutionHistories(
+      executionProgressRecords,
+      completionRecords,
     );
-    const ordersWithBaselineTimes = rawOrders.map((order) => {
-      if (order.executionTimeMs !== null || order.executedQuantity === 0) return order;
-
-      const matching = completionBaselines.filter(
-        (baseline) =>
-          baseline.orderId === order.orderId &&
-          baseline.symbol === order.symbol &&
-          baseline.side === order.executionSide &&
-          safeQuantityNumber(baseline.cumulativeQuantity) === order.executedQuantity &&
-          baseline.orderRevisionMs <= order.updatedAtMs,
-      );
-      const latest = [...matching].sort(
-        (left, right) => right.orderRevisionMs - left.orderRevisionMs,
-      )[0];
-      if (latest === undefined) return order;
-
-      for (const baseline of matching) {
-        if (
-          baseline.orderRevisionMs === latest.orderRevisionMs &&
-          (baseline.lastExecutionTimeMs !== latest.lastExecutionTimeMs ||
-            exactCompare(baseline.cumulativeAmount, latest.cumulativeAmount) !== 0)
-        ) {
-          throw new Error(
-            '[loadTradingDayRuntimeSnapshot] 同 revision completion baseline 事实冲突',
-          );
-        }
-      }
-
-      // 只补已证明的 T；API 的 quantity/amount/revision/status 原样交 O owner 裁决。
-      return Object.freeze({ ...order, executionTimeMs: latest.lastExecutionTimeMs });
-    });
-    const executionTimeFacts = ordersWithBaselineTimes.map((order) =>
-      Object.freeze({
-        orderId: order.orderId,
-        symbol: order.symbol,
-        executionSide: order.executionSide,
-        executedQuantity: order.executedQuantity,
-        executedAmount: order.executedAmount,
-        executionTimeMs: order.executionTimeMs,
-        updatedAtMs: order.updatedAtMs,
-        executionPhase: order.executionPhase,
-      }),
+    const allOrders = rawOrders.map((order) =>
+      normalizeExecutionOrder(order, recoveryExecutionHistories.get(order.orderId)?.known, 'THROW'),
     );
-    const trustedTimeFacts = withTrustedOrderExecutionTimes(executionTimeFacts, trustedEvidence);
-    const allOrders = ordersWithBaselineTimes.map((order, index) => {
-      const fact = trustedTimeFacts[index];
-      if (
-        fact?.orderId !== order.orderId ||
-        fact.symbol !== order.symbol ||
-        fact.executionSide !== order.executionSide
-      ) {
-        throw new TypeError(
-          '[loadTradingDayRuntimeSnapshot] trusted execution fact identity changed',
-        );
-      }
-
-      return fact.executionTimeMs === order.executionTimeMs
-        ? order
-        : Object.freeze({ ...order, executionTimeMs: fact.executionTimeMs });
-    });
+    // 完整历史（progress + baseline + 归一 final）在任何副作用前校验；冲突不得进入重算/回放。
+    assertRecoveryHistoryAgainstOrders(recoveryExecutionHistories, allOrders);
     invalidation = resolveReceiptInvalidation();
     if (invalidation !== null) return invalidation;
+
+    const recovery = {
+      executionSnapshots: [...executionProgressRecords]
+        .sort(compareExecutionProgressFacts)
+        .map((progress) => ({ ...progress, side: 'SELL' as const })),
+      boundaries: [...completionRecords].sort(
+        (left, right) => left.boundaryExecutedTimeMs - right.boundaryExecutedTimeMs,
+      ),
+    };
+    // durable 恢复不依赖席位搜索结果，先用同一纯 prepare 阻断缺失 baseline，避免 hold/seat 半发布。
+    // 席位准备完成后仍需按最终相关标的集形成正式候选，不复用跨 await 的发布能力。
+    if (completionRecords.length > 0 || executionProgressRecords.length > 0)
+      dailyLossTracker.prepareRecalculationFromAllOrders(
+        allOrders,
+        tradingConfig.monitor,
+        now,
+        new Map(),
+        undefined,
+        recovery,
+      );
 
     orderHoldRegistry.seedFromOrders(allOrders);
     await prepareSeatsForRuntime({
@@ -452,7 +541,6 @@ export function createLoadTradingDayRuntimeSnapshot(
     invalidation = resolveReceiptInvalidation();
     if (invalidation !== null) return invalidation;
 
-    seatActivationDispatcher.dispatchCurrentActivatingSeats();
     const orderHoldSymbols = orderHoldRegistry.getHoldSymbols();
     const allTradingSymbols = collectRuntimeQuoteSymbols(
       tradingConfig.monitor,
@@ -462,15 +550,14 @@ export function createLoadTradingDayRuntimeSnapshot(
     );
     const relatedTradingSymbols = new Set(allTradingSymbols);
     relatedTradingSymbols.delete(tradingConfig.monitor.monitorSymbol);
-    dailyLossTracker.recalculateFromAllOrders(
+    const preparedDailyLoss = dailyLossTracker.prepareRecalculationFromAllOrders(
       allOrders,
       tradingConfig.monitor,
       now,
       new Map(),
       relatedTradingSymbols,
+      recovery,
     );
-
-    protectiveLiquidationEpisodeTracker.resetAll();
 
     const completedBoundaryByDirection = new Map<ProtectiveLiquidationDirection, number>();
     for (const record of completionRecords) {
@@ -530,37 +617,10 @@ export function createLoadTradingDayRuntimeSnapshot(
       }
     }
 
-    for (const [direction, boundaryExecutedTimeMs] of completedBoundaryByDirection) {
-      protectiveLiquidationEpisodeTracker.restoreCompletedBoundary({
-        direction,
-        boundaryExecutedTimeMs,
-      });
-    }
-
-    for (const progress of [...executionProgressRecords].sort(compareExecutionProgressFacts)) {
-      dailyLossTracker.restoreExecutionSnapshot({
-        factStage: progress.factStage,
-        direction: progress.direction,
-        symbol: progress.symbol,
-        side: 'SELL',
-        orderId: progress.orderId,
-        cumulativeQuantity: progress.cumulativeQuantity,
-        cumulativeAmount: progress.cumulativeAmount,
-        lastExecutionTimeMs: progress.lastExecutionTimeMs,
-        orderRevisionMs: progress.orderRevisionMs,
-      });
-    }
-
-    for (const record of [...completionRecords].sort(
-      (left, right) => left.boundaryExecutedTimeMs - right.boundaryExecutedTimeMs,
-    )) {
-      dailyLossTracker.restoreProtectionBoundary({
-        direction: record.direction,
-        boundaryExecutedTimeMs: record.boundaryExecutedTimeMs,
-        orderBaselines: record.orderBaselines,
-      });
-    }
-
+    const latestProgressByDirection = new Map<
+      ProtectiveLiquidationDirection,
+      (typeof executionProgressRecords)[number]
+    >();
     if (hydrateCooldownFromTradeLog) {
       if (currentDayKey === null) {
         throw new Error('[loadTradingDayRuntimeSnapshot] 当前交易日键无法解析');
@@ -580,10 +640,6 @@ export function createLoadTradingDayRuntimeSnapshot(
         }
       }
 
-      const latestProgressByDirection = new Map<
-        ProtectiveLiquidationDirection,
-        (typeof executionProgressRecords)[number]
-      >();
       for (const progress of executionProgressRecords) {
         const completedBoundary = latestCompletionByDirection.get(
           progress.direction,
@@ -642,7 +698,20 @@ export function createLoadTradingDayRuntimeSnapshot(
           `[loadTradingDayRuntimeSnapshot] 保护性清仓订单缺少精确成交时间，无法恢复或补写 completion: ${execution.orderId}`,
         );
       }
+    }
 
+    dailyLossTracker.publishRecalculation(preparedDailyLoss);
+    seatActivationDispatcher.dispatchCurrentActivatingSeats();
+    protectiveLiquidationEpisodeTracker.resetAll();
+
+    for (const [direction, boundaryExecutedTimeMs] of completedBoundaryByDirection) {
+      protectiveLiquidationEpisodeTracker.restoreCompletedBoundary({
+        direction,
+        boundaryExecutedTimeMs,
+      });
+    }
+
+    if (hydrateCooldownFromTradeLog) {
       for (const progress of latestProgressByDirection.values()) {
         protectiveLiquidationEpisodeTracker.restoreInProgressEpisode({
           direction: progress.direction,

@@ -1,3 +1,4 @@
+import { recalculateDailyLoss } from '../helpers/dailyLossRecalculation.js';
 import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
 import { wrapExternalApiRequest } from '../../src/infrastructure/externalApi/index.js';
@@ -46,6 +47,7 @@ import {
 } from '../helpers/testDoubles.js';
 import type { BrokerIngressInput } from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { toRecalculationOrders } from './recalculationOrders.js';
 
 const NOW_MS = Date.parse('2026-07-10T02:00:00.000Z');
 
@@ -64,7 +66,6 @@ function createOrderFrame(
 ): BrokerIngressInput {
   return {
     orderId,
-    tradeId: `${orderId}-trade`,
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -76,7 +77,6 @@ function createOrderFrame(
     submittedPrice: '2',
     executedPrice: status === 'Filled' ? '2' : '0',
     submittedAtMs: NOW_MS - 1000,
-    executionTimeMs: status === 'Filled' ? NOW_MS - 1000 : null,
     updatedAtMs: NOW_MS,
   };
 }
@@ -281,7 +281,7 @@ async function createFixture() {
   await actualTrader.orderMonitor.recoverOrderTrackingFromSnapshot([]);
   native.setOrderSnapshotReplies([], [frame]);
   const allOrders = await actualTrader.orderRecorder.fetchAllOrdersFromAPI();
-  daily.recalculateFromAllOrders(allOrders, config, new Date(NOW_MS));
+  recalculateDailyLoss(daily, toRecalculationOrders(allOrders), config, new Date(NOW_MS));
   expect(
     actualTrader.orderRecorder.commitRebuildSnapshot(
       [{ symbol: 'BULL.HK', isLongSymbol: true }],

@@ -36,7 +36,6 @@ type TestEventFlowDeps = Omit<EventFlowDeps, 'now' | 'monitorConfig' | 'diagnost
 type NativePushFixture = Awaited<ReturnType<typeof createBrokerIngressFixture>>;
 type NativePushFrame = Readonly<{
   native: NativePushFixture;
-  executions: Awaited<ReturnType<NativePushFixture['executionLedgerPort']['todayExecutions']>>;
 }>;
 
 function nativeStatus(
@@ -88,7 +87,6 @@ async function createNativePushFrame(
   // Seed the real private DTO with valid facts; negative raw price is installed only on the lazy native callback.
   const native = await createBrokerIngressFixture({
     orderId: input.orderId,
-    tradeId: 'FRAME-' + input.orderId,
     symbol: input.symbol,
     stockName: input.symbol,
     remark: '',
@@ -100,15 +98,13 @@ async function createNativePushFrame(
     submittedPrice: '1',
     executedPrice: quantity > 0 && price === '0' ? '1' : price,
     submittedAtMs: input.updatedAtMs ?? input.executionTimeMs,
-    executionTimeMs: input.executionTimeMs,
     updatedAtMs: input.updatedAtMs ?? input.executionTimeMs,
   });
-  const executions = await native.executionLedgerPort.todayExecutions({ orderId: input.orderId });
   if (quantity > 0 && price === '0') native.setPushExecutedPriceText(price);
 
   if (quantity > 100) native.setPushExecutedQuantityText(String(quantity));
 
-  return { native, executions };
+  return { native };
 }
 
 function createEventFlow(deps: TestEventFlowDeps) {
@@ -124,25 +120,9 @@ function createEventFlow(deps: TestEventFlowDeps) {
       callbacks += 1;
       if (error !== null) throw error;
 
-      const readFact = decoder.inspect();
-      const known = deps.runtime.trackedOrders.get(readFact.orderId);
-      const confirmed =
-        known?.lastOrderUpdateAtMs !== undefined &&
-        known.lastOrderUpdateAtMs !== null &&
-        known.executionPhase !== null
-          ? {
-              brokerOrderId: known.orderId,
-              symbol: known.symbol,
-              side: known.executionSide,
-              cumulativeQuantity: known.executedQuantity,
-              cumulativeAmount: known.executedAmount,
-              executionTimeMs: known.lastExecutedTimeMs,
-              updatedAtMs: known.lastOrderUpdateAtMs,
-              phase: known.executionPhase,
-              executedPrice: known.executedPrice,
-            }
-          : undefined;
-      const observation = decoder.decode(frame.executions, confirmed);
+      const observation = decoder.decode();
+      if (observation === null) return;
+
       if (active) production.handleOrderChangedWhenActive(observation);
       else production.handleOrderChanged(observation);
     });
@@ -967,7 +947,7 @@ describe('orderMonitor eventFlow', () => {
 
       expect(() => {
         eventFlow.handleOrderChangedWhenActive(terminalEvent);
-      }).toThrow('[orderMapper] invalid cumulative execution quantity/price');
+      }).toThrow();
 
       expect(runtime.trackedOrders.get(trackedOrder.orderId)).toMatchObject({
         status: 'PARTIALLY_FILLED',
@@ -1064,14 +1044,14 @@ describe('orderMonitor eventFlow', () => {
       isLongSymbol: trackedOrder.isLongSymbol,
       isProtectiveLiquidation: false,
       executedQuantity: known.executedQuantity,
-      executedPrice: known.executedPrice,
-      executedAmount: known.executedAmount,
-      executedTimeMs: known.executionTimeMs,
+      executedPrice: known.executedPrice!,
+      executedAmount: known.executedAmount!,
+      executedTimeMs: known.executionTimeMs!,
       orderUpdatedAtMs: known.updatedAtMs,
     });
     trackedOrder.executedQuantity = known.executedQuantity;
     trackedOrder.executedPrice = known.executedPrice;
-    trackedOrder.executedAmount = known.executedAmount;
+    trackedOrder.executedAmount = known.executedAmount!;
     trackedOrder.lastExecutedTimeMs = known.executionTimeMs;
     trackedOrder.lastOrderUpdateAtMs = known.updatedAtMs;
     trackedOrder.executionPhase = known.executionPhase;
@@ -1110,9 +1090,6 @@ describe('orderMonitor eventFlow', () => {
       updatedAtMs: 200,
       executionTimeMs: 50,
     });
-    expect(knownFrame.executions).toMatchObject([
-      { orderId: trackedOrder.orderId, quantity: 20, price: '1', tradeDoneAtMs: 50 },
-    ]);
     eventFlow.handleOrderChangedWhenActive(nativeFrame14);
 
     expect(trackedOrder.status).toBe('PARTIALLY_FILLED');
@@ -1121,7 +1098,7 @@ describe('orderMonitor eventFlow', () => {
       executedQuantity: 20,
       executedPrice: '1',
       executedAmount: '20',
-      lastExecutedTimeMs: 50,
+      lastExecutedTimeMs: 100,
     });
     expect(cumulativePublications).toBe(0);
     expect(settlements).toBe(0);
@@ -1260,6 +1237,9 @@ describe('orderMonitor eventFlow', () => {
       status: 'PARTIALLY_FILLED',
     });
     trackedOrder.executedQuantity = 20;
+    trackedOrder.executedPrice = '1.02';
+    trackedOrder.executedAmount = '20.4';
+    trackedOrder.lastExecutedTimeMs = 100;
     trackedOrder.lastOrderUpdateAtMs = 100;
     runtime.trackedOrders.set(trackedOrder.orderId, trackedOrder);
     const partialFills: number[] = [];

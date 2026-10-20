@@ -22,7 +22,7 @@ function createRawOrder(params: {
   readonly executedAmount: string;
   readonly executedQuantity: number;
   readonly executionTimeMs: number;
-}): OrderFact {
+}): OrderFact & Readonly<{ executedAmount: string }> {
   return {
     orderId: params.orderId,
     symbol: params.symbol,

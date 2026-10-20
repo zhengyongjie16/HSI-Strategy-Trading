@@ -35,7 +35,6 @@ async function brokerObservation(
 ) {
   const native = await createBrokerIngressFixture({
     orderId,
-    tradeId: orderId + '-' + quantity + '-' + price,
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -46,7 +45,6 @@ async function brokerObservation(
     submittedPrice: '1',
     executedPrice: price,
     submittedAtMs: revisionMs - 10,
-    executionTimeMs: revisionMs,
     updatedAtMs: revisionMs,
   });
   return native.pushObservation;
@@ -59,7 +57,6 @@ async function realEventChain(
 ) {
   const native = await createBrokerIngressFixture({
     orderId,
-    tradeId: orderId + '-tracking',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -70,7 +67,6 @@ async function realEventChain(
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs: revisionMs - 10,
-    executionTimeMs: null,
     updatedAtMs: revisionMs,
   });
   f.runtime.runtimeState = 'ACTIVE';
@@ -87,7 +83,6 @@ async function realEventChain(
     termination: f.termination,
     rateLimiter: f.rateLimiter,
     cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
-    getExecutionTimeEvidence: f.daily.getExecutionTimeEvidence,
     now: () => new Date(revisionMs),
     triggerRoute: () => {},
     captureWorkGuard: () => {
@@ -138,7 +133,6 @@ describe('order monitor cumulative execution integration', () => {
     const orderId = 'SELL-STALE-PARTIAL-TERMINAL';
     const native = await createBrokerIngressFixture({
       orderId,
-      tradeId: 'sell60',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: '',
@@ -149,7 +143,6 @@ describe('order monitor cumulative execution integration', () => {
       submittedPrice: '0.7',
       executedPrice: '0.7',
       submittedAtMs: revisionMs - 5000,
-      executionTimeMs: revisionMs,
       updatedAtMs: revisionMs,
     });
     const f = createExecutionFixture({ nowMs: revisionMs, createRecorder: native.createRecorder });
@@ -221,7 +214,6 @@ describe('order monitor cumulative execution integration', () => {
     native.setCancelFailure(new Error('openapi error: code=601011: Order already cancelled'));
     const staleDetail = {
       orderId,
-      tradeId: 'stale20',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: '',
@@ -232,20 +224,9 @@ describe('order monitor cumulative execution integration', () => {
       submittedPrice: '0.7',
       executedPrice: '0.1',
       submittedAtMs: revisionMs - 5000,
-      executionTimeMs: revisionMs - 1000,
       updatedAtMs: revisionMs - 1000,
     };
     native.setOrderDetailReplies([staleDetail, staleDetail]);
-    native.setExecutionReplies([
-      {
-        orderId,
-        tradeId: 'stale20',
-        symbol: 'BULL.HK',
-        quantity: '20',
-        price: '0.1',
-        tradeDoneAtMs: revisionMs - 1000,
-      },
-    ]);
     const firstOutcome = await monitor.cancelOrder(orderId, { kind: 'ORDER_FACT' });
     const duplicateOutcome = await monitor.cancelOrder(orderId, { kind: 'ORDER_FACT' });
     expect(firstOutcome.kind).toBe('ALREADY_CLOSED');
@@ -305,9 +286,10 @@ describe('order monitor cumulative execution integration', () => {
     expect(f.episode.getInProgressEpisodes()).toEqual([]);
     expect(f.snapshot.getView().token.snapshotGeneration).toBe(generation);
     expect(f.recorder.getExecutionFact('PROTECTIVE-PERSISTENCE-FAILURE')).toBeNull();
-    expect(f.daily.getExecutionTimeEvidence().map((x) => x.brokerOrderId)).toEqual([
-      'BUY-COST-PERSISTENCE-FAILURE',
-    ]);
+    expect(f.recorder.getExecutionFact('BUY-COST-PERSISTENCE-FAILURE')).toMatchObject({
+      cumulativeQuantity: 100,
+      cumulativeAmount: '100',
+    });
   });
 
   it('records one TERMINAL DailyLoss fact and one additional refresh when a partial protective WS closes at the same quantity', async () => {

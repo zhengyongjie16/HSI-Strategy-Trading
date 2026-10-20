@@ -46,6 +46,7 @@ import { createEventHarness, monitorConfig } from '../runtime/businessEventProgr
 import type { EventHarness } from '../runtime/businessEventProgram/types.js';
 import { prepareFixture } from '../strategies/intradayRegression/runtimeFixtures.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { toRecalculationOrders } from './recalculationOrders.js';
 
 const SYMBOL = 'HSI.HK';
 const PERIOD = 'MIN_1';
@@ -327,7 +328,6 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
   const idleProcessor: Processor = idleRuntime;
   const native = await createBrokerIngressFixture({
     orderId: 'PERF-LIFECYCLE',
-    tradeId: 'PERF-LIFECYCLE-trade',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -339,7 +339,6 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs: INITIAL_NOW_MS,
-    executionTimeMs: null,
     updatedAtMs: INITIAL_NOW_MS,
   });
   native.setAccountBalance({
@@ -350,7 +349,6 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
   });
   native.setStockPositions([]);
   native.setOrderSnapshotReplies([], []);
-  native.setExecutionReplies([]);
   const daily = createDailyLossTracker({
     onOwnershipWarning: () => {},
     ...orderAnalysis,
@@ -469,7 +467,7 @@ async function createLifecycleHarness(chain: ChainHarness): Promise<{
 
       const observations = await tradeRuntime.orderRecorder.fetchAllOrdersFromAPI();
       const prepared = daily.prepareRecalculationFromAllOrders(
-        observations,
+        toRecalculationOrders(observations),
         monitorContext.config,
         now,
       );

@@ -7,7 +7,6 @@ import type {
   PendingSellInfo,
   SellableOrderSelectParams,
 } from '../../types/orderRecorder.js';
-
 import type { OrderTimeoutCheckParams } from '../../types/tradingCalendar.js';
 import {
   canonicalDecimal,
@@ -19,7 +18,7 @@ import {
   integerQuotient,
 } from '../../utils/numeric/exact.js';
 import { calculateTradingDurationMsBetween } from '../tradingSession/index.js';
-import type { OrderStatistics } from './types.js';
+import type { OrderStatistics, RebuildOrderObservation } from './types.js';
 
 /**
  * 校验精确金额、安全整数数量与独立可信执行时间。
@@ -155,13 +154,17 @@ function isOrderTimedOut(params: OrderTimeoutCheckParams): boolean {
  * @param order 中立金融字段 API 订单
  * @returns 正成交记录或零成交的 null
  */
-function convertOrderToRecord(order: OrderExecutionRecordObservation): OrderRecord | null {
+function convertOrderToRecord(order: RebuildOrderObservation): OrderRecord | null {
   if (order.executedQuantity === 0) {
-    if (exactCompare(order.executedAmount, '0') !== 0) {
+    if (order.executedAmount !== null && exactCompare(order.executedAmount, '0') !== 0) {
       throw new Error('[订单记录] 零数量的累计金额冲突');
     }
 
     return null;
+  }
+
+  if (order.executedAmount === null) {
+    throw new Error('[订单记录] 正成交缺少可持久化金额');
   }
 
   if (order.executionTimeMs === null) {
@@ -211,9 +214,7 @@ export function classifyAndConvertOrders(orders: ReadonlyArray<OrderExecutionRec
  * @param orders 单标的全量 API 事实
  * @returns 无返回值；非法事实/指向不可归属立即失败
  */
-export function validateOrdersForRebuild(
-  orders: ReadonlyArray<OrderExecutionRecordObservation>,
-): void {
+export function validateOrdersForRebuild(orders: ReadonlyArray<RebuildOrderObservation>): void {
   for (const order of orders) {
     const record = convertOrderToRecord(order);
     const sideOwned = ['BUY', 'SELL'].includes(order.executionSide);

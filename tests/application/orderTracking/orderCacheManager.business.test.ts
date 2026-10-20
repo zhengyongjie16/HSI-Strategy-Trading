@@ -14,7 +14,6 @@ const TEST_NOW = (): Date => new Date('2026-04-10T01:00:00.000Z');
 function frame(overrides: Partial<BrokerIngressInput> = {}): BrokerIngressInput {
   return {
     orderId: 'order-1',
-    tradeId: 'CACHE-T',
     symbol: 'BULL.HK',
     stockName: 'BULL',
     remark: '',
@@ -26,7 +25,6 @@ function frame(overrides: Partial<BrokerIngressInput> = {}): BrokerIngressInput 
     submittedPrice: '1.23',
     executedPrice: '0',
     submittedAtMs: 1775782800000,
-    executionTimeMs: null,
     updatedAtMs: 1775782800000,
     ...overrides,
   };

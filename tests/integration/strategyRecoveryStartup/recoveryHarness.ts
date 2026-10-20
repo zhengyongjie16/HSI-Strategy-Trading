@@ -28,7 +28,6 @@ export async function createRecoveryHarness(
   const now = new Date('2026-04-29T01:31:00Z');
   const frame = {
     orderId: 'T28-BUY',
-    tradeId: 'T28-BUY-EXECUTION',
     symbol: 'OLD.HK',
     stockName: 'UNOWNED RC',
     remark: '',
@@ -40,7 +39,6 @@ export async function createRecoveryHarness(
     submittedPrice: '1',
     executedPrice: scenario === 'conflict' ? '1' : '0',
     submittedAtMs: now.getTime(),
-    executionTimeMs: null,
     updatedAtMs: now.getTime(),
   };
   const broker = await createBrokerIngressFixture(frame);
@@ -92,7 +90,6 @@ export async function createRecoveryHarness(
       // No independent execution row exists: strict normalization must reject missing T.
       executedQuantity: scenario === 'conflict' ? '10' : '0',
       executedPrice: scenario === 'conflict' ? '1' : '0',
-      executionTimeMs: null,
     },
   ]);
   const settlement = createSettlementFlow({
@@ -135,7 +132,6 @@ export async function createRecoveryHarness(
         throw new Error('recovery cannot fetch replacement pending cache');
       },
     },
-    getExecutionTimeEvidence: f.daily.getExecutionTimeEvidence,
     captureWorkGuard: () => {
       const captured = f.snapshot.getView().token;
       return () =>
@@ -191,14 +187,12 @@ export async function createRecoveryHarness(
     },
     useTrustedZero: () => {
       mode = 'zero';
-      broker.setExecutionReplies([]);
       broker.setOrderDetailReplies([
         {
           ...frame,
           status: 'Canceled',
           executedQuantity: '0',
           executedPrice: '0',
-          executionTimeMs: null,
         },
       ]);
     },

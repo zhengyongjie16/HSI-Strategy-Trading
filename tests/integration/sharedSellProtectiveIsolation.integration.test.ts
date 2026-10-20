@@ -21,7 +21,6 @@ import type { SettlementProtectionCompletion } from '../../src/application/postT
 import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
 import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
-import { orderEconomics } from '../../src/domain/order/orderEconomics.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { createUnrealizedLossChecker } from '../../src/domain/risk/unrealizedLossChecker.js';
 import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
@@ -41,7 +40,6 @@ import {
 const T = Date.parse('2026-10-07T02:00:00Z');
 const oldFrame: BrokerIngressInput = {
   orderId: 'OLD-PROTECTIVE',
-  tradeId: 'OLD-EXECUTION',
   symbol: 'BULL.HK',
   stockName: 'HSI RC',
   remark: '|PL',
@@ -53,7 +51,6 @@ const oldFrame: BrokerIngressInput = {
   submittedPrice: '0.9',
   executedPrice: '0',
   submittedAtMs: T,
-  executionTimeMs: null,
   updatedAtMs: T,
 };
 
@@ -74,7 +71,8 @@ async function waitForExecutionFact(
       fact !== null &&
       String(fact.cumulativeQuantity) === frame.executedQuantity &&
       fact.cumulativeAmount === expectedAmount &&
-      fact.executionTimeMs === frame.executionTimeMs &&
+      fact.executionTimeMs !== null &&
+      fact.executionTimeMs <= frame.updatedAtMs &&
       fact.updatedAtMs === frame.updatedAtMs &&
       fact.phase === (frame.status === 'Filled' ? 'TERMINAL' : 'OPEN')
     ) {
@@ -91,7 +89,7 @@ async function createHarness(
   params: { readonly protective?: boolean; readonly triggerLimit?: number } = {},
 ) {
   const frame = { ...oldFrame, remark: params.protective === false ? '' : '|PL' };
-  const native = await createBrokerIngressFixture(frame, orderEconomics);
+  const native = await createBrokerIngressFixture(frame);
   native.setAccountBalance({
     currency: 'HKD',
     totalCash: '10000',
@@ -171,11 +169,7 @@ async function createHarness(
   });
   const recorder = createOrderRecorder({
     logger: createLoggerDouble(),
-    orderSnapshotReadPort: native.ports.createOrderSnapshotReadPort({
-      rateLimiter: limiter,
-      executionLedgerPort: native.executionLedgerPort,
-    }),
-    getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
+    orderSnapshotReadPort: native.ports.createOrderSnapshotReadPort({ rateLimiter: limiter }),
     settlementRefreshNeedRecorder: settlement,
   });
   const cooldown = createLiquidationCooldownTracker();
@@ -230,7 +224,6 @@ async function createHarness(
     scheduleBoundedOneShotAt: scheduleBoundedOneShotAt,
     logger: createLoggerDouble(),
     orderDetailReadPort: native.ports.createOrderDetailReadPort(),
-    executionLedgerPort: native.executionLedgerPort,
     orderPushPort: native.ports.createOrderPushPort(),
     tradeMutationPort: native.ports.createTradeMutationPort(),
     rateLimiter: limiter,
@@ -347,17 +340,6 @@ async function createHarness(
   };
 }
 
-function ledger(frame: BrokerIngressInput) {
-  return {
-    orderId: frame.orderId,
-    tradeId: frame.tradeId,
-    symbol: frame.symbol,
-    quantity: frame.executedQuantity,
-    price: frame.executedPrice,
-    tradeDoneAtMs: frame.executionTimeMs ?? T,
-  };
-}
-
 async function fillNewOrder(f: Awaited<ReturnType<typeof createHarness>>, quantity: number) {
   const observation = f.native.nativeSubmitObservations()[0];
   if (observation === undefined) throw new Error('new native order missing');
@@ -365,17 +347,14 @@ async function fillNewOrder(f: Awaited<ReturnType<typeof createHarness>>, quanti
   const newFrame: BrokerIngressInput = {
     ...oldFrame,
     orderId: 'NEW-NON-PROTECTIVE',
-    tradeId: 'NEW-EXECUTION',
     remark: observation.remark ?? '',
     status: 'Filled',
     quantity: String(quantity),
     executedQuantity: String(quantity),
     executedPrice: '0.9',
     submittedAtMs: T + 3000,
-    executionTimeMs: T + 4000,
     updatedAtMs: T + 4010,
   };
-  f.native.setExecutionReplies([ledger(newFrame)]);
   f.positions(0, 0);
   f.advance(T + 5000);
   f.native.emitOrderChangedFrame(newFrame);
@@ -384,7 +363,7 @@ async function fillNewOrder(f: Awaited<ReturnType<typeof createHarness>>, quanti
     phase: 'TERMINAL',
     cumulativeQuantity: quantity,
     cumulativeAmount: exactMultiply(String(quantity), '0.9'),
-    executionTimeMs: T + 4000,
+    executionTimeMs: T + 4010,
     updatedAtMs: T + 4010,
   });
   expect(f.tracking.getPendingSellOrders('BULL.HK')).toEqual([]);
@@ -435,10 +414,8 @@ describe('real shared sell protective isolation', () => {
         status: 'PartialFilled',
         executedQuantity: '500',
         executedPrice: '0.9',
-        executionTimeMs: T + 1000,
         updatedAtMs: T + 1010,
       };
-      f.native.setExecutionReplies([ledger(partial)]);
       f.native.emitOrderChangedFrame(partial);
       await waitForExecutionFact(f, partial);
       expect(f.fatal).toEqual([]);
@@ -451,7 +428,7 @@ describe('real shared sell protective isolation', () => {
           factStage: 'OPEN',
           cumulativeQuantity: '500',
           cumulativeAmount: '450',
-          lastExecutionTimeMs: T + 1000,
+          lastExecutionTimeMs: T + 1010,
           orderRevisionMs: T + 1010,
         },
       ]);
@@ -474,11 +451,11 @@ describe('real shared sell protective isolation', () => {
       expect(f.recorder.getExecutionFact('OLD-PROTECTIVE')?.cumulativeQuantity).toBe(500);
       expect(f.recorder.getExecutionFact('NEW-NON-PROTECTIVE')?.cumulativeQuantity).toBe(2000);
       expect(f.episodes.getInProgressEpisodes()).toMatchObject([
-        { latestExecutedTimeMs: T + 1000 },
+        { latestExecutedTimeMs: T + 1010 },
       ]);
       f.settlement.start();
       await f.settlement.waitForFresh();
-      expect(f.completions).toMatchObject([{ boundaryExecutedTimeMs: T + 1000 }]);
+      expect(f.completions).toMatchObject([{ boundaryExecutedTimeMs: T + 1010 }]);
       expect(
         f.trace.filter((entry) =>
           ['completion', 'boundary', 'cooldown', 'episode'].includes(entry),
@@ -523,10 +500,8 @@ describe('real shared sell protective isolation', () => {
         status: 'PartialFilled',
         executedQuantity: '500',
         executedPrice: '0.9',
-        executionTimeMs: T + 1000,
         updatedAtMs: T + 1010,
       };
-      f.native.setExecutionReplies([ledger(partial)]);
       f.native.emitOrderChangedFrame(partial);
       await waitForExecutionFact(f, partial);
       expect(f.progress).toEqual([
@@ -538,7 +513,7 @@ describe('real shared sell protective isolation', () => {
           factStage: 'OPEN',
           cumulativeQuantity: '500',
           cumulativeAmount: '450',
-          lastExecutionTimeMs: T + 1000,
+          lastExecutionTimeMs: T + 1010,
           orderRevisionMs: T + 1010,
         },
       ]);

@@ -33,7 +33,11 @@ P1 已接入真实中性 order observation/port 边界。本目录通过 `archit
 
 ## 时间归属目标断言
 
-原 fixture 保持 executionTime=T、API updatedAt/revision=T+30 秒。当前测试断言恢复事实采用 durable 可信 T，revision 独立保留 T+30；相同 query 事实不重复经济投影、progress 或 submit。已完成 boundary 的同量修订继续按原规则 SUPPRESSED，历史 payload/ID/revision、baseline 与原始 fixture 字节保持不变，不用 updatedAt 补造成交时间。
+原 fixture 的 API query 事实只携带订单 updatedAt/revision=T+30 秒代理时间，真实 T 由 durable progress（T）恢复。Loader 在 daily 全量重算前用 known 累计状态归一 API：同量保留 durable T，增量使用本次原始 updatedAt 代理，无 known 才用订单 updatedAt；相同 query 事实不重复经济投影、progress 或 submit。
+
+已完成 boundary 之后，旧 boundary 的 `projection` 不重复（不重复完成/冷却/资源/结算），但 **recorder 权威修订、revision 与 durable 保存继续发生**：同日权威 facts 仍会 merge、进入候选、写 durable callback 并 publish，供后续单调检查与新 boundary 使用；**old baseline 本身不改，新 boundary 取修订后的 facts**。`uninitialized` / 跨日 / `invalid` 的抑制保持原样；保护 SELL 的 durable 义务（写前持久化、完成边界）不变。历史 payload/ID/revision、baseline 与原始 fixture 字节保持不变。
+
+边界修订 oracle（真实链）：封存后 `10/90 -> 10/120 -> rev-only` 保存修订且 T 不变，后 `20/110` 拒绝；双边界 B1（A90 冻结）保留 same-qty 80 修订、B2（A80 冻结）之后 `20/170` 与 BUY 成本 100 的 loss 为 `-10`，无 B2 的原 B1 案例仍为 `-20`；ONLINE、真实 SeatActivation 与 RESTART（包括 B2 再次恢复）三者一致。真正 completion 后 durable 写失败时 recorder / Daily / progress / token / refresh / episode / completion 均不变，retry 一次写、重复不额外。
 
 ## P2 金融精度定向验证
 

@@ -17,6 +17,7 @@
 import { ORDER_QUOTE_RETRY, TRADING } from '../../constants/index.js';
 import { resolveNextQuoteRetry } from '../quoteRetry.js';
 import { resolveQuoteReadinessForRequirement } from '../../domain/order/quoteReadiness.js';
+import { isHongKongSymbol } from '../../utils/marketScope.js';
 import type { Position } from '../../types/account.js';
 import type { Quote } from '../../types/quote.js';
 import type { DoomsdayClearanceCommand, SellSignalAction } from '../../types/signal.js';
@@ -324,10 +325,12 @@ export function createDoomsdayClearanceWorkflow(
         ? state.clearanceRetrySymbols
         : new Set([...state.clearanceReevaluationSymbols, ...(state.clearanceRetrySymbols ?? [])]);
     state.clearanceReevaluationSymbols = null;
+    // 末日清仓只处理港股；美股等持仓用于估值展示，不得阻断或触发港股清仓。
+    const tradingPositions = positions.filter((position) => isHongKongSymbol(position.symbol));
     const retryPendingPositions =
       retrySymbols === null
-        ? positions
-        : positions.filter((position) => retrySymbols.has(position.symbol));
+        ? tradingPositions
+        : tradingPositions.filter((position) => retrySymbols.has(position.symbol));
     const processingPositions = retryPendingPositions.filter(
       (position) => !state.clearanceRetryExhaustedSymbols.has(position.symbol),
     );
@@ -351,7 +354,7 @@ export function createDoomsdayClearanceWorkflow(
       allTradingSymbols.add(shortSymbol);
     }
 
-    const unmatchedPositions = positions.filter(
+    const unmatchedPositions = tradingPositions.filter(
       (position) =>
         hasPositiveAvailableQuantity(position) && !allTradingSymbols.has(position.symbol),
     );
@@ -496,7 +499,7 @@ export function createDoomsdayClearanceWorkflow(
     } else {
       const availablePositions = processingPositions.filter(hasPositiveAvailableQuantity);
       logClearanceNotice(
-        `no-signals:${todayKey}:${positions.length}:${availablePositions.length}`,
+        `no-signals:${todayKey}:${tradingPositions.length}:${availablePositions.length}`,
         `[末日保护程序] 清仓跳过：未生成清仓信号（处理持仓=${processingPositions.length}, 可用持仓=${availablePositions.length}）`,
       );
     }

@@ -41,7 +41,6 @@ const dayKey = '2026-10-07';
 function protectiveSellFrame() {
   return {
     orderId: 'NATIVE-PROTECTIVE-SELL',
-    tradeId: 'NATIVE-SELL-EXECUTION',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '|PL',
@@ -52,8 +51,7 @@ function protectiveSellFrame() {
     submittedPrice: '0.9',
     executedPrice: '0.9',
     submittedAtMs: T + 100,
-    executionTimeMs: sellTime,
-    updatedAtMs: sellTime + 20,
+    updatedAtMs: sellTime,
   };
 }
 

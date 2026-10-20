@@ -20,7 +20,6 @@ function createSnapshotInput(params: {
 }): BrokerIngressInput {
   return {
     orderId: params.orderId,
-    tradeId: params.orderId + '-T',
     symbol: params.symbol,
     stockName: params.stockName ?? 'HSI RC SAMPLE',
     remark: params.remark ?? '',
@@ -32,7 +31,6 @@ function createSnapshotInput(params: {
     submittedPrice: '1',
     executedPrice: '1',
     submittedAtMs: (params.submittedAt ?? new Date('2026-02-25T03:00:00.000Z')).getTime(),
-    executionTimeMs: Date.parse('2026-02-25T03:00:30.000Z'),
     updatedAtMs: (params.updatedAt ?? new Date('2026-02-25T03:05:00.000Z')).getTime(),
   };
 }
@@ -50,7 +48,6 @@ const optionalUpdatedAtCases = [
 async function createApiManagerHarness(
   history: ReadonlyArray<BrokerIngressInput>,
   today: ReadonlyArray<BrokerIngressInput>,
-  includeExecutionEvidence = true,
 ) {
   const fixture = await createBrokerIngressFixture(
     createSnapshotInput({
@@ -61,20 +58,6 @@ async function createApiManagerHarness(
     }),
   );
   fixture.setOrderSnapshotReplies(history, today);
-  // 同orderId跨snapshot只是一份累计观察，不复制实际execution；T不由revision代替。
-  const uniqueOrders = new Map([...history, ...today].map((order) => [order.orderId, order]));
-  if (!includeExecutionEvidence) fixture.setExecutionReplies([]);
-  else if (uniqueOrders.size > 0)
-    fixture.setExecutionReplies(
-      [...uniqueOrders.values()].map((order) => ({
-        orderId: order.orderId,
-        tradeId: order.tradeId,
-        symbol: order.symbol,
-        quantity: '100',
-        price: '1',
-        tradeDoneAtMs: Date.parse('2026-02-25T03:00:30.000Z'),
-      })),
-    );
 
   let throttles = 0;
   const apiManager = fixture.createApiManager({
@@ -102,7 +85,6 @@ async function assertSdkOrderSnapshotFails(
   actors: Awaited<ReturnType<typeof createApiManagerHarness>>,
   source: 'history' | 'today',
 ): Promise<void> {
-  const ledgerBefore = actors.fixture.readCounts();
   const caught = await actors.apiManager.fetchAllOrdersFromAPI().catch((error: unknown) => error);
   expect(caught).toBeInstanceOf(TypeError);
   expect(caught).toHaveProperty(
@@ -114,7 +96,6 @@ async function assertSdkOrderSnapshotFails(
     history: 1,
     today: source === 'today' ? 1 : 0,
   });
-  expect(actors.fixture.readCounts()).toEqual(ledgerBefore);
   expect(actors.fixture.nativeMutations()).toEqual([]);
 }
 
@@ -128,7 +109,6 @@ describe('createOrderAPIManager', () => {
       updatedAt: new Date('2026-02-25T03:01:00.000Z'),
     });
     const { fixture, apiManager, throttleCount } = await createApiManagerHarness([], [first]);
-    const ledgerBefore = fixture.readCounts();
     const firstSnapshot = await apiManager.fetchAllOrdersFromAPI();
     fixture.setOrderSnapshotReplies(
       [],
@@ -139,19 +119,14 @@ describe('createOrderAPIManager', () => {
     expect(secondSnapshot[0]?.status).toBe('FILLED');
     expect(fixture.orderSnapshotReadCounts().history).toBe(2);
     expect(fixture.orderSnapshotReadCounts().today).toBe(2);
-    expect(throttleCount()).toBe(8);
+    expect(throttleCount()).toBe(4);
     expect(secondSnapshot[0]).toMatchObject({
       executionSide: 'BUY',
       executionPhase: 'TERMINAL',
       executedAmount: '100',
       executedQuantity: 100,
-      executionTimeMs: Date.parse('2026-02-25T03:00:30.000Z'),
+      executionTimeMs: Date.parse('2026-02-25T03:05:00.000Z'),
       updatedAtMs: Date.parse('2026-02-25T03:05:00.000Z'),
-    });
-
-    expect(fixture.readCounts()).toEqual({
-      history: ledgerBefore.history + 2,
-      today: ledgerBefore.today + 2,
     });
     expect(fixture.nativeMutations()).toEqual([]);
   });
@@ -235,7 +210,7 @@ describe('createOrderAPIManager', () => {
         executedPrice: '0',
         executionTimeMs: null,
       };
-      const { fixture, apiManager } = await createApiManagerHarness([], [input], false);
+      const { fixture, apiManager } = await createApiManagerHarness([], [input]);
       fixture.setOrderSnapshotUpdatedAtAbsent('today', updatedAtCase.mode);
       const allOrders = await apiManager.fetchAllOrdersFromAPI();
       expect(allOrders).toHaveLength(1);
@@ -330,7 +305,6 @@ describe('createOrderAPIManager', () => {
   it('fails fast when historyOrders returns non-array value', async () => {
     const { fixture, apiManager } = await createApiManagerHarness([], []);
     fixture.setOrderSnapshotNonArray('history');
-    const ledgerBefore = fixture.readCounts();
     const caught = await apiManager.fetchAllOrdersFromAPI().catch((error: unknown) => error);
     expect(caught).toBeInstanceOf(TypeError);
     expect(caught).toHaveProperty(
@@ -338,18 +312,15 @@ describe('createOrderAPIManager', () => {
       '[订单记录] TradeContext.historyOrders 返回值不是数组',
     );
     expect(fixture.orderSnapshotReadCounts()).toEqual({ history: 1, today: 0 });
-    expect(fixture.readCounts()).toEqual(ledgerBefore);
   });
 
   it('fails fast when todayOrders returns non-array value', async () => {
     const { fixture, apiManager } = await createApiManagerHarness([], []);
     fixture.setOrderSnapshotNonArray('today');
-    const ledgerBefore = fixture.readCounts();
     const caught = await apiManager.fetchAllOrdersFromAPI().catch((error: unknown) => error);
     expect(caught).toBeInstanceOf(TypeError);
     expect(caught).toHaveProperty('message', '[订单记录] TradeContext.todayOrders 返回值不是数组');
     expect(fixture.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
-    expect(fixture.readCounts()).toEqual(ledgerBefore);
   });
 
   it('fails fast when API order misses required fields', async () => {
@@ -444,4 +415,5 @@ describe('createOrderAPIManager', () => {
     const allOrders = await apiManager.fetchAllOrdersFromAPI();
     expect(allOrders[0]?.remark).toBe('QuantDemo|PL');
   });
+
 });

@@ -32,7 +32,6 @@ import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 function originalFrame() {
   return {
     orderId: 'CONTROL-O',
-    tradeId: 'CONTROL-T',
     symbol: 'BULL.HK',
     stockName: 'BULL',
     remark: 'control',
@@ -43,7 +42,6 @@ function originalFrame() {
     submittedPrice: '1',
     executedPrice: '1',
     submittedAtMs: 1700000000000,
-    executionTimeMs: 1700000000100,
     updatedAtMs: 1700000000200,
   };
 }
@@ -55,7 +53,6 @@ describe('additional private broker controls', () => {
       status: 'New',
       executedQuantity: '0',
       executedPrice: '0',
-      executionTimeMs: null,
     });
     const runtime: OrderMonitorRuntimeStore = {
       trackedOrders: new Map(),
@@ -90,7 +87,6 @@ describe('additional private broker controls', () => {
         throw new Error('cancel ACK is not an execution fact');
       },
       triggerRoute: () => {},
-      getExecutionTimeEvidence: () => [],
     });
     operations.trackOrder({
       orderId: f.queryObservation.orderId,
@@ -368,7 +364,7 @@ describe('additional private broker controls', () => {
     expect(fixture.nativeMutations()).toEqual([]);
   });
 
-  it('reads frozen V1 SDK metadata privately and preserves independent BUY T with unknown SELL T', async () => {
+  it('reads frozen V1 SDK metadata privately and preserves each order own observation time proxy', async () => {
     const frozen: unknown = JSON.parse(
       readFileSync(
         new URL('../../architectureRefactoringRecovery/fixtures/recovery.json', import.meta.url),
@@ -380,16 +376,6 @@ describe('additional private broker controls', () => {
 
     const fixture = await createBrokerIngressFixture(originalFrame());
     fixture.setOrderSnapshotRepliesFromFrozenV1(frozen.orders);
-    fixture.setExecutionReplies([
-      {
-        orderId: 'OFFLINE-BUY',
-        tradeId: 'OFFLINE-BUY-T',
-        symbol: 'BULL.HK',
-        quantity: '5',
-        price: '10',
-        tradeDoneAtMs: 1773367200000,
-      },
-    ]);
     expect(fixture.orderSnapshotReadCounts()).toEqual({ history: 0, today: 0 });
     const orders = await fixture
       .createApiManager({ rateLimiter: createRateLimiterDouble() })
@@ -411,7 +397,8 @@ describe('additional private broker controls', () => {
       status: 'CANCELED',
       executedQuantity: 5,
       executedAmount: '45',
-      executionTimeMs: null,
+      // 订单级观察时间代理：正成交取该订单自己的 updatedAt。
+      executionTimeMs: 1773369030000,
       updatedAtMs: 1773369030000,
     });
     expect(fixture.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
@@ -458,11 +445,9 @@ describe('additional private broker controls', () => {
       expect(fixture.nativeReadCounts().detail).toBe(1);
       throw originalError;
     });
-    const ledgerBefore = fixture.readCounts();
     const failed = await read().catch((error: unknown) => error);
     expect(failed).toBe(originalError);
     expect(invokedOrderIds).toEqual([frame.orderId]);
-    expect(fixture.readCounts()).toEqual(ledgerBefore);
     fixture.setOrderDetailBeforeReply(async () => {});
     fixture.setQueryUpdatedAt(1700000000200);
     expect(fixture.nativeReadCounts().detail).toBe(1);
@@ -470,7 +455,6 @@ describe('additional private broker controls', () => {
     expect(rawFailure).toBeInstanceOf(TypeError);
     expect(rawFailure).toHaveProperty('message', '[orderMapper] invalid updatedAt');
     expect(fixture.nativeReadCounts().detail).toBe(2);
-    expect(fixture.readCounts()).toEqual(ledgerBefore);
     expect(fixture.nativeMutations()).toEqual([]);
   });
 
@@ -482,7 +466,6 @@ describe('additional private broker controls', () => {
     const read = fixture.createQueryOrdersReader(custom.orderId);
     const legalOrders = await read();
     expect(legalOrders[0]?.executionSide).toBe('BUY');
-    const ledgerBefore = fixture.readCounts().today;
     expect(fixture.nativeReadCounts().detail).toBe(1);
     fixture.setQuerySideUnknown();
     expect(fixture.nativeReadCounts().detail).toBe(1);
@@ -490,7 +473,6 @@ describe('additional private broker controls', () => {
     expect(failure).toBeInstanceOf(TypeError);
     expect(failure).toHaveProperty('message', '[orderMapper] unknown SDK execution side');
     expect(fixture.nativeReadCounts().detail).toBe(2);
-    expect(fixture.readCounts().today).toBe(ledgerBefore);
     expect(fixture.nativeMutations()).toEqual([]);
   });
 
@@ -499,7 +481,6 @@ describe('additional private broker controls', () => {
     const fixture = await createBrokerIngressFixture(frame);
     fixture.setOrderDetailReplies([{ ...frame, orderId: 'CUSTOM-GETTER-FAILURE' }]);
     const originalError = new TypeError('original detail-side getter failure');
-    const ledgerBefore = fixture.readCounts().today;
     fixture.setQueryGetterFailure(originalError);
     expect(fixture.nativeReadCounts().detail).toBe(0);
     const failure = await fixture
@@ -507,7 +488,6 @@ describe('additional private broker controls', () => {
       .catch((error: unknown) => error);
     expect(failure).toBe(originalError);
     expect(fixture.nativeReadCounts().detail).toBe(1);
-    expect(fixture.readCounts().today).toBe(ledgerBefore);
     expect(fixture.nativeMutations()).toEqual([]);
   });
 
@@ -515,7 +495,6 @@ describe('additional private broker controls', () => {
     const fixture = await createBrokerIngressFixture(originalFrame());
     fixture.setQueryExecutedQuantityMissing();
     expect(fixture.nativeReadCounts().detail).toBe(0);
-    const ledgerBefore = fixture.readCounts().today;
     const failure = await fixture
       .createQueryOrdersReader()()
       .catch((error: unknown) => error);
@@ -525,11 +504,10 @@ describe('additional private broker controls', () => {
 
     expect(failure.stack).toContain('orderMapper');
     expect(fixture.nativeReadCounts().detail).toBe(1);
-    expect(fixture.readCounts().today).toBe(ledgerBefore);
     expect(fixture.nativeMutations()).toEqual([]);
   });
 
-  it('connects actual Recorder snapshot reads to the original native context and independent ledger', async () => {
+  it('connects actual Recorder snapshot reads to the original native context without execution reads', async () => {
     const frame = originalFrame();
     const fixture = await createBrokerIngressFixture(frame);
     fixture.setOrderSnapshotReplies([], [frame]);
@@ -542,25 +520,22 @@ describe('additional private broker controls', () => {
           throttles += 1;
         },
       },
-      getExecutionTimeEvidence: () => [],
       settlementRefreshNeedRecorder: {
         recordSettlementRefreshNeed: () => {
           refreshNeeds += 1;
         },
       },
     });
-    const before = fixture.readCounts();
     const orders = await recorder.fetchAllOrdersFromAPI();
     expect(orders).toHaveLength(1);
     expect(orders[0]).toMatchObject({
       orderId: frame.orderId,
       executedAmount: '100',
       executedQuantity: 100,
-      executionTimeMs: frame.executionTimeMs,
+      executionTimeMs: frame.updatedAtMs,
     });
     expect(fixture.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
-    expect(fixture.readCounts()).toEqual({ history: before.history + 1, today: before.today + 1 });
-    expect(throttles).toBe(4);
+    expect(throttles).toBe(2);
     expect(refreshNeeds).toBe(0);
     expect(fixture.nativeMutations()).toEqual([]);
   });
@@ -568,7 +543,6 @@ describe('additional private broker controls', () => {
   it('keeps missing native detail quantity lazy and reaches the actual mapper before ledger IO', async () => {
     const fixture = await createBrokerIngressFixture(originalFrame());
     const before = fixture.nativeReadCounts().detail;
-    const ledgerBefore = fixture.readCounts().today;
     fixture.setQueryQuantityMissing();
     expect(fixture.nativeReadCounts().detail).toBe(before);
     const failure = await fixture
@@ -576,7 +550,6 @@ describe('additional private broker controls', () => {
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(TypeError);
     expect(fixture.nativeReadCounts().detail).toBe(before + 1);
-    expect(fixture.readCounts().today).toBe(ledgerBefore);
     expect(fixture.nativeMutations()).toEqual([]);
   });
 
@@ -707,7 +680,10 @@ describe('additional private broker controls', () => {
     const pushTypes: Array<OrderFact['orderType']> = [];
     fixture.createPushPort().setOnOrderChanged((error, decoder) => {
       expect(error).toBeNull();
-      pushTypes.push(decoder.decode([]).orderType);
+      const mapped = decoder.decode();
+      if (mapped === null) throw new Error('HK push sample must decode');
+
+      pushTypes.push(mapped.orderType);
     });
     fixture.emitOrderChangedFrame({ ...frame, orderType: 'MO' });
     fixture.emitOrderChangedFrame({ ...frame, orderType: 'ELO' });
@@ -717,19 +693,16 @@ describe('additional private broker controls', () => {
     const state = fixture.createStateQuery({
       requestExternalApi: wrapExternalApiRequest,
       rateLimiter: createRateLimiterDouble(),
-      getExecutionTimeEvidence: () => [],
     });
     const origin = { current: true };
     const before = fixture.nativeReadCounts().detail;
-    const ledgerBefore = fixture.readCounts().today;
     expect(await state.checkOrderState(frame.orderId, () => origin.current)).toMatchObject({
       kind: 'TERMINAL',
       executedQuantity: 100,
       executedAmount: '100',
-      executionTimeMs: frame.executionTimeMs,
+      executionTimeMs: frame.updatedAtMs,
     });
     expect(fixture.nativeReadCounts().detail).toBe(before + 1);
-    expect(fixture.readCounts().today).toBe(ledgerBefore + 1);
     origin.current = false;
     expect(await state.checkOrderState(frame.orderId, () => origin.current)).toEqual({
       kind: 'QUERY_FAILED',

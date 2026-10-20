@@ -290,6 +290,8 @@ export type TerminalStateSnapshot = Extract<OrderStateCheckResult, { kind: 'TERM
  */
 export type NormalizedTerminalStateSnapshot = TerminalStateSnapshot &
   Readonly<{
+    /** 归一后的经济事实必须携带精确金额文本，不得保留原始缺价 null。 */
+    readonly executedAmount: string;
     readonly executedTimeMs: number | null;
   }>;
 
@@ -303,7 +305,9 @@ export type OrderObservedFact = Readonly<{
   status: OrderReadStatus;
   executionPhase: 'OPEN' | 'TERMINAL';
   executedQuantity: number | null;
-  executedAmount: string;
+
+  /** 原始累计成交金额；正成交量缺价时显式为 null，由共享累计 merge 拒绝或保留 known。 */
+  executedAmount: string | null;
   executedPrice: string | null;
   executedTimeMs: number | null;
   updatedAtMs: number | null;
@@ -471,3 +475,14 @@ export type MergedOrderEntry = {
   readonly source: OrderSnapshotSource;
   readonly order: OrderFact;
 };
+
+/**
+ * durable baseline 恢复事实：累计经济完整，但 V1 baseline 可能未持久化 phase。
+ * phase 为 null 时不得据此授权任何阶段推进，只能消费观察本身已声明的 phase。
+ */
+export type KnownExecutionBaseline = Omit<BrokerOrderExecutionFact, 'phase'> &
+  Readonly<{ phase: 'OPEN' | 'TERMINAL' | null }>;
+
+/** 重建输入保留 mapper 原始缺价：正成交缺金额/价时不得以 known 外的方式补造。 */
+export type RebuildOrderObservation = Omit<OrderExecutionRecordObservation, 'executedAmount'> &
+  Readonly<{ executedAmount: string | null }>;

@@ -17,6 +17,7 @@
  */
 
 import { isOpenOrderReadStatus } from '../../domain/order/orderReadLifecycle.js';
+import { isHongKongSymbol } from '../../utils/marketScope.js';
 import type { OrderFact } from '../../types/trade.js';
 import type { OrderHoldRegistry } from './types.js';
 
@@ -103,6 +104,11 @@ export function createOrderHoldRegistry(): OrderHoldRegistry {
   function seedFromOrders(orders: ReadonlyArray<OrderFact>): void {
     for (const order of orders) {
       if (!order.symbol) {
+        continue;
+      }
+
+      // 恢复保留集与 orderMonitor reconciliation 共用港股范围；非HK pending 不进入订阅/阻断集合。
+      if (!isHongKongSymbol(order.symbol)) {
         continue;
       }
 

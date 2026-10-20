@@ -355,7 +355,6 @@ describe('createRebuildTradingDayState', () => {
           {
             ...(await readNativeOrder({
               orderId: 'INVALID-SHORT-EXECUTION',
-              tradeId: 'INVALID-SHORT-EXECUTION' + '-trade',
               symbol: 'BEAR.HK',
               stockName: 'Bear',
               remark: '',
@@ -366,7 +365,6 @@ describe('createRebuildTradingDayState', () => {
               executedPrice: '1',
               executedQuantity: '100',
               submittedAtMs: new Date(executionTimeMs - 30_000).getTime(),
-              executionTimeMs,
               updatedAtMs: executionTimeMs + 30_000,
             })),
             executedPrice: '0',
@@ -434,7 +432,6 @@ describe('createRebuildTradingDayState', () => {
       allOrders: [
         await readNativeOrder({
           orderId: 'HISTORY-001',
-          tradeId: 'HISTORY-001' + '-trade',
           symbol: 'BULL.HK',
           stockName: 'Bull',
           remark: '',
@@ -445,7 +442,6 @@ describe('createRebuildTradingDayState', () => {
           executedPrice: '1',
           executedQuantity: '100',
           submittedAtMs: new Date(oldExecutedTime).getTime(),
-          executionTimeMs: oldExecutedTime,
           updatedAtMs: oldExecutedTime,
         }),
       ],
@@ -597,7 +593,6 @@ describe('createRebuildTradingDayState', () => {
     const malformedPositiveExecution: OrderFact = {
       ...(await readNativeOrder({
         orderId: 'INVALID-OPEN-REBUILD-EXECUTION',
-        tradeId: 'INVALID-OPEN-REBUILD-EXECUTION' + '-trade',
         symbol: 'BULL.HK',
         stockName: 'Bull',
         remark: '',
@@ -608,7 +603,6 @@ describe('createRebuildTradingDayState', () => {
         executedPrice: '1',
         executedQuantity: '100',
         submittedAtMs: new Date('2026-03-13T02:00:00.000Z').getTime(),
-        executionTimeMs: Date.parse('2026-03-13T02:01:00.000Z'),
         updatedAtMs: Date.parse('2026-03-13T02:01:30.000Z'),
       })),
       executedPrice: '0',
@@ -685,7 +679,6 @@ describe('createRebuildTradingDayState', () => {
       });
       const ingress = await createBrokerIngressFixture({
         orderId: `UNKNOWN-OPEN-REBUILD-${unknownSideCase.label}`,
-        tradeId: `UNKNOWN-TRADE-${unknownSideCase.label}`,
         symbol: 'BULL.HK',
         stockName: 'Bull',
         remark: '',
@@ -695,7 +688,6 @@ describe('createRebuildTradingDayState', () => {
         quantity: '100',
         executedPrice: unknownSideCase.executedPrice,
         executedQuantity: String(unknownSideCase.executedQuantity),
-        executionTimeMs: Date.parse('2026-03-13T02:01:00.000Z'),
         updatedAtMs: Date.parse('2026-03-13T02:01:30.000Z'),
         submittedAtMs: Date.parse('2026-03-13T02:00:00.000Z'),
       });

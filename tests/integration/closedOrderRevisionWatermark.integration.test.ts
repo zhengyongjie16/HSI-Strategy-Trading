@@ -17,10 +17,11 @@ import { createExecutionFixture } from '../application/orderTracking/recorder/ex
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 
 const T = Date.parse('2026-10-07T02:00:00.000Z');
+
+/** 原始订单观察时间即 broker updatedAt；同量修订保留首次正成交的 known T。 */
 function frame(revision: number, price = '1') {
   return {
     orderId: 'closed-buy',
-    tradeId: 'buy-fill',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -31,7 +32,6 @@ function frame(revision: number, price = '1') {
     submittedPrice: '1',
     executedPrice: price,
     submittedAtMs: T - 1000,
-    executionTimeMs: T,
     updatedAtMs: T + revision,
   };
 }
@@ -120,15 +120,20 @@ for (const conflictingRevision of [20, 15])
         quantity: 100,
       });
 
-      expect(f.daily.getExecutionTimeEvidence()).toMatchObject([
-        { cumulativeAmount: '100', orderRevisionMs: T + 20 },
-      ]);
+      // revision-only 修订只保存水位：金额/成本不变，known T 不推进，也不重复资源终态。
+      expect(f.recorder.getExecutionFact('closed-buy')).toMatchObject({
+        cumulativeAmount: '100',
+        executionTimeMs: T + 10,
+        updatedAtMs: T + 20,
+        phase: 'TERMINAL',
+      });
       expect(f.daily.getLossOffset('LONG')).toBe('0');
       expect(f.snapshot.getView().token).toEqual(before.token);
       expect(f.sink.getStatus()).toEqual(before.status);
       expect(closed).toEqual(['closed-buy']);
       expect(f.holds.getHoldSymbols()).toEqual(new Set());
       expect(admissions).toBe(before.admissions + 1);
+      const admissionsBeforeConflict = admissions;
       native.emitOrderChangedFrame(frame(conflictingRevision, '1.1'));
       if (conflictingRevision === 20) {
         await f.termination.waitForTermination();
@@ -138,19 +143,16 @@ for (const conflictingRevision of [20, 15])
 
         expect(String(fatal.error)).toContain('同 revision');
       } else {
-        const count = admissions;
-        await waitUntil(() => admissions > count);
+        await waitUntil(() => admissions > admissionsBeforeConflict);
         expect(f.termination.getFatalState()).toEqual({ hasFatalError: false });
       }
 
+      // 旧 revision 金额修订不覆盖已存水位；真实修订必须由更高 revision 证明。
       expect(f.recorder.getExecutionFact('closed-buy')).toMatchObject({
         cumulativeAmount: '100',
+        executionTimeMs: T + 10,
         updatedAtMs: T + 20,
       });
-
-      expect(f.daily.getExecutionTimeEvidence()).toMatchObject([
-        { cumulativeAmount: '100', orderRevisionMs: T + 20 },
-      ]);
       expect(f.recorder.getBuyOrdersForSymbol('BULL.HK', true)).toEqual(list);
       expect(f.recorder.getBuyOrdersForSymbol('BULL.HK', true)[0]).toBe(list[0]);
       expect(f.snapshot.getView().token).toEqual(before.token);
@@ -164,9 +166,12 @@ for (const conflictingRevision of [20, 15])
           quantity: 100,
         });
 
-        expect(f.daily.getExecutionTimeEvidence()).toMatchObject([
-          { cumulativeAmount: '110', orderRevisionMs: T + 30 },
-        ]);
+        // 合法金额修订更新经济与刷新水位，但 known T 仍为首次正成交时间，且不重复终态。
+        expect(f.recorder.getExecutionFact('closed-buy')).toMatchObject({
+          cumulativeAmount: '110',
+          executionTimeMs: T + 10,
+          updatedAtMs: T + 30,
+        });
 
         expect(f.snapshot.getView().token.snapshotGeneration).toBe(
           before.token.snapshotGeneration + 1,

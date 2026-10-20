@@ -14,6 +14,7 @@ import { exactCompare } from '../../utils/numeric/exact.js';
 import { isSeatVersionMatch, resolveActivatingSeat } from '../../domain/seat/seatIdentity.js';
 
 import { resolveOrderOwnership } from '../../domain/order/orderOwnership.js';
+import { normalizeExecutionOrder } from '../tradingDayRebuild/executionNormalization.js';
 import type {
   SeatActivationRequest,
   SeatActivationResult,
@@ -316,10 +317,19 @@ export function createSeatActivationWorkflow(
           snapshot.isCurrent(orderSourceToken, { account: false, positions: false });
 
         // epoch/generation 与全部席位身份在第一次订单 await 前固定。
-        const allOrders = await deps.orders.fetchAllOrdersFromAPI();
+        const apiOrders = await deps.orders.fetchAllOrdersFromAPI();
         if (!canContinueActivation()) return { status: 'skipped' };
 
         if (!isOrderSourceCurrent()) continue;
+
+        // 与启动恢复同口径：同量保留 owner known T，正成交要求本次原始金额完整。
+        const allOrders = apiOrders.map((order) =>
+          normalizeExecutionOrder(
+            order,
+            context.orders.getExecutionFact(order.orderId) ?? undefined,
+            'KEEP_KNOWN',
+          ),
+        );
 
         const relatedTradingSymbols = collectSeatRefreshRelatedTradingSymbols(context, data);
         const directionBySymbol = new Map<string, boolean>();

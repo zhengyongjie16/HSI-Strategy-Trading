@@ -37,7 +37,6 @@ describe('orderMonitor OPEN state-check amount revision', () => {
     };
     const frame = {
       orderId,
-      tradeId: 'OPEN-AMOUNT-EXEC',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: '',
@@ -58,16 +57,6 @@ describe('orderMonitor OPEN state-check amount revision', () => {
       { ...frame, executedPrice: '9.4', updatedAtMs: secondRevisionMs },
     ]);
 
-    native.setExecutionReplies([
-      {
-        orderId,
-        tradeId: frame.tradeId,
-        symbol: frame.symbol,
-        quantity: '40',
-        price: '9.4',
-        tradeDoneAtMs: firstRevisionMs,
-      },
-    ]);
     const now = () => new Date(secondRevisionMs);
     const workGuard = () => {
       const captured = f.snapshot.getView().token.dayEpoch;
@@ -95,7 +84,6 @@ describe('orderMonitor OPEN state-check amount revision', () => {
       recordCumulativeExecution: (params) => {
         f.flow.recordCumulativeExecution(params);
       },
-      getExecutionTimeEvidence: f.daily.getExecutionTimeEvidence,
       triggerRoute: (symbol, reason) => {
         routeWakeups.push(`${symbol}:${reason}`);
       },

@@ -1,3 +1,4 @@
+import { recalculateDailyLoss } from '../helpers/dailyLossRecalculation.js';
 import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { createRuntimeStateFixtures } from '../helpers/runtimeStateFixtures.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
@@ -61,7 +62,7 @@ import type {
   MarketDataClient,
   QuoteUpdatedEvent,
 } from '../../src/types/marketPorts.js';
-import type { DailyLossTracker } from '../../src/types/risk.js';
+import type { DailyLossOrderSnapshot, DailyLossTracker } from '../../src/types/risk.js';
 import type { UnrealizedLossMonitor } from '../../src/types/unrealizedLoss.js';
 import type { SymbolRegistry } from '../../src/types/seat.js';
 import type { OrderRecorder } from '../../src/types/orderRecorder.js';
@@ -174,28 +175,14 @@ async function createSimulationOrderRecorder(
 ) {
   ingress.setOrderDetailReplies(frames);
   ingress.setOrderSnapshotReplies([], frames);
-  ingress.setExecutionReplies(
-    frames.flatMap((frame) =>
-      frame.executionTimeMs === null
-        ? []
-        : [
-            {
-              orderId: frame.orderId,
-              tradeId: frame.tradeId,
-              symbol: frame.symbol,
-              quantity: frame.executedQuantity,
-              price: frame.executedPrice,
-              tradeDoneAtMs: frame.executionTimeMs,
-            },
-          ],
-    ),
-  );
   const orders: OrderFact[] = [];
   for (const frame of frames) {
     const [order] = await ingress.createQueryOrdersReader(frame.orderId)();
     if (order === undefined) throw new Error('Simulation native observation missing');
 
-    expect(order.executionTimeMs).toBe(frame.executionTimeMs);
+    expect(order.executionTimeMs).toBe(
+      frame.executedQuantity === '0' ? null : frame.updatedAtMs,
+    );
     expect(order.updatedAtMs).toBe(frame.updatedAtMs);
     orders.push(order);
   }
@@ -204,7 +191,6 @@ async function createSimulationOrderRecorder(
   const orderRecorder = ingress.createRecorder({
     logger: createLoggerDouble(),
     rateLimiter: createRateLimiterDouble(),
-    getExecutionTimeEvidence: () => [],
     settlementRefreshNeedRecorder: {
       recordSettlementRefreshNeed: (need) => {
         if (settlement === null) throw new Error('Simulation settlement is not bound');
@@ -223,7 +209,17 @@ async function createSimulationOrderRecorder(
       snapshot.isCurrent(token, { account: true, positions: true, paired: true });
     if (!isCurrent()) throw new Error('Simulation O baseline requires paired H');
 
-    dailyLossTracker.recalculateFromAllOrders(orders, monitorConfig, now, new Map());
+    recalculateDailyLoss(dailyLossTracker,
+      orders.map((order) => {
+        if (order.executedQuantity > 0 && order.executedAmount === null)
+          throw new Error('Simulation order missing economic amount');
+
+        return order as OrderFact & DailyLossOrderSnapshot;
+      }),
+      monitorConfig,
+      now,
+      new Map(),
+    );
     const targets = [...new Set(orders.map((order) => order.symbol))].map((symbol) => ({
       symbol,
       isLongSymbol: symbol !== 'BEAR.HK',
@@ -245,7 +241,6 @@ function simulationExecutionFrame(
 ): BrokerIngressInput {
   return {
     orderId,
-    tradeId: `${orderId}-trade`,
     symbol,
     stockName: 'HSI RC',
     remark: 'AUTO',
@@ -256,8 +251,7 @@ function simulationExecutionFrame(
     submittedPrice: price,
     executedPrice: price,
     submittedAtMs: executionTimeMs === 1 ? 1 : executionTimeMs - 1,
-    executionTimeMs,
-    updatedAtMs: executionTimeMs + 1,
+    updatedAtMs: executionTimeMs,
   };
 }
 
@@ -274,7 +268,6 @@ async function createSimulationSnapshot(positions: ReadonlyArray<Position>) {
   const nowMs = Date.parse('2026-02-16T01:31:00.000Z');
   const ingress = await createBrokerIngressFixture({
     orderId: 'SIMULATION-BOOTSTRAP',
-    tradeId: 'SIMULATION-BOOTSTRAP-TRADE',
     symbol: 'BULL.HK',
     stockName: 'BULL.HK',
     remark: '',
@@ -285,7 +278,6 @@ async function createSimulationSnapshot(positions: ReadonlyArray<Position>) {
     submittedPrice: '1',
     executedPrice: '0',
     submittedAtMs: nowMs,
-    executionTimeMs: null,
     updatedAtMs: nowMs,
   });
   ingress.setAccountBalance({
@@ -1252,16 +1244,6 @@ describe('full business simulation integration', () => {
     function emitOrderStateChanged(symbol: string): void {
       const frame = simulationExecutionFrame('SELL-1', symbol, 'SELL', '2', 9_999_999_999_999);
       ingress.setOrderDetailReplies([frame]);
-      ingress.setExecutionReplies([
-        {
-          orderId: frame.orderId,
-          tradeId: frame.tradeId,
-          symbol,
-          quantity: '100',
-          price: '2',
-          tradeDoneAtMs: 9_999_999_999_999,
-        },
-      ]);
       ingress.emitOrderChangedFrame(frame);
     }
 

@@ -3,7 +3,6 @@
  * 同一 broker identity 的 API/WS 事实及经济消费证明共同提交；OPEN partial 只更新权威事实。
  */
 
-import { withTrustedOrderExecutionTimes } from '../../../domain/order/executionFact.js';
 import {
   apiOrderToExecutionFact,
   factToRecord,
@@ -88,7 +87,8 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
           previousSell.executedTime !== sell.executedTime ||
           exactCompare(previousSell.costAmount, sell.costAmount) !== 0));
     // 经济覆盖不证明 durable/episode 义务已完成；纯重复也先经过同步准入与持久化。
-    // 完整候选先成功，再同步准入/durable；封存抑制不写事实、覆盖、序列、列表或 stale。
+    // 完整候选先成功，再同步准入/durable；交易日准入抑制不写事实、覆盖、序列、列表或 stale。
+    // Daily 的已冻结边界仅约束日损投影，不阻止同日合法累计事实进入本 owner。
     const admission: unknown = beforeCommit();
     if (admission === 'SUPPRESSED') return;
 
@@ -255,28 +255,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     getLatestBuyOrderCost: storage.getLatestBuyOrderCost,
     getCostBasis: storage.getCostBasis,
     getSellRecordByOrderId: storage.getSellRecordByOrderId,
-    fetchAllOrdersFromAPI: async () =>
-      withTrustedOrderExecutionTimes(await apiManager.fetchAllOrdersFromAPI(), [
-        ...deps.getExecutionTimeEvidence(),
-        ...[...executionFacts.values()]
-          .filter((entry) => entry.fact.executionTimeMs !== null)
-          .map(({ fact }) => {
-            const executionTimeMs = fact.executionTimeMs;
-            if (executionTimeMs === null)
-              throw new Error('[订单记录] selected execution evidence lacks trusted time');
-
-            return {
-              brokerOrderId: fact.brokerOrderId,
-              symbol: fact.symbol,
-              side: fact.side,
-              cumulativeQuantity: fact.cumulativeQuantity,
-              cumulativeAmount: fact.cumulativeAmount,
-              lastExecutionTimeMs: executionTimeMs,
-              orderRevisionMs: fact.updatedAtMs,
-              phase: fact.phase,
-            };
-          }),
-      ]),
+    fetchAllOrdersFromAPI: apiManager.fetchAllOrdersFromAPI,
     validateRebuildSnapshot: (symbol, allOrders) => {
       validateOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
     },
@@ -317,7 +296,6 @@ export function createOrderRecorder(deps: OrderRecorderFactoryDeps): OrderRecord
   return createOrderRecorderFromParts({
     storage: createOrderStorage(logger),
     apiManager: createOrderAPIManager(deps),
-    getExecutionTimeEvidence: deps.getExecutionTimeEvidence,
     settlementRefreshNeedRecorder: deps.settlementRefreshNeedRecorder,
   });
 }

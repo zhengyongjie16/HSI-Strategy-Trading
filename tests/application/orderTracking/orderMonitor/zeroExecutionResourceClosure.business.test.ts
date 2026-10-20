@@ -15,7 +15,6 @@ const now = Date.parse('2026-07-14T02:00:00.000Z');
 async function setup(status: 'Canceled' | 'Rejected' | 'Filled') {
   const native = await createBrokerIngressFixture({
     orderId: 'ZERO-RESOURCE',
-    tradeId: 'zero-no-execution',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
@@ -26,7 +25,6 @@ async function setup(status: 'Canceled' | 'Rejected' | 'Filled') {
     submittedPrice: '1.02',
     executedPrice: '0',
     submittedAtMs: now - 60_000,
-    executionTimeMs: now - 10_000,
     updatedAtMs: now,
   });
   const f = createExecutionFixture({ nowMs: now, createRecorder: native.createRecorder });
@@ -43,7 +41,6 @@ async function setup(status: 'Canceled' | 'Rejected' | 'Filled') {
     orderHoldRegistry: f.holds,
     termination: f.termination,
     cacheManager: { clearCache: () => {}, getPendingOrders: async () => [] },
-    getExecutionTimeEvidence: f.daily.getExecutionTimeEvidence,
     captureWorkGuard: () => {
       const captured = f.snapshot.getView().token;
       return () =>
@@ -132,7 +129,6 @@ for (const [status, reason] of [
     expect(f.holds.getHoldSymbols().has('BULL.HK')).toBe(false);
     expect(f.recorder.getPendingSellSnapshot()).toEqual([]);
     expect(f.recorder.getExecutionFact('ZERO-RESOURCE')).toBeNull();
-    expect(f.daily.getExecutionTimeEvidence()).toEqual([]);
     expect(f.episode.getInProgressEpisodes()).toEqual([]);
     expect(f.snapshot.getView().token.snapshotGeneration).toBe(generation);
     expect(f.sink.getStatus()).toEqual(initialSink);
@@ -140,7 +136,6 @@ for (const [status, reason] of [
     expect(f.flow.settleOrder(input).handled).toBe(false);
     expect(f.events).toHaveLength(1);
     expect(f.recorder.getExecutionFact('ZERO-RESOURCE')).toBeNull();
-    expect(f.daily.getExecutionTimeEvidence()).toEqual([]);
     expect(f.snapshot.getView().token.snapshotGeneration).toBe(generation);
   });
 }
@@ -168,7 +163,6 @@ test('FILLED zero execution cannot borrow the non-FILLED resource-only close', a
   expect(f.recorder.getPendingSellSnapshot()).toHaveLength(1);
   expect(f.events).toEqual([]);
   expect(f.recorder.getExecutionFact('ZERO-RESOURCE')).toBeNull();
-  expect(f.daily.getExecutionTimeEvidence()).toEqual([]);
   expect(f.snapshot.getView().token.snapshotGeneration).toBe(generation);
   const missingT: TerminalStateSnapshot = {
     executionStatus: native.queryObservation.executionStatus,
@@ -182,9 +176,13 @@ test('FILLED zero execution cannot borrow the non-FILLED resource-only close', a
     executionTimeMs: null,
     orderUpdatedAtMs: now,
   };
-  expect(() => normalizeTerminalStateSnapshot(tracked, missingT, true)).toThrow(
-    '正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision',
-  );
+  expect(normalizeTerminalStateSnapshot(tracked, missingT, true)).toMatchObject({
+    executedQuantity: 100,
+    executedPrice: '1.03',
+    executedAmount: '103',
+    executedTimeMs: now,
+    orderUpdatedAtMs: now,
+  });
   expect(f.runtime.trackedOrders.get('ZERO-RESOURCE')).toEqual(before);
   expect(f.recorder.getPendingSellSnapshot()).toHaveLength(1);
   expect(f.events).toEqual([]);

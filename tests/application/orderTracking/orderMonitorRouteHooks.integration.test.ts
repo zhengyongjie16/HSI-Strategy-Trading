@@ -108,7 +108,6 @@ async function createPendingRecoveryOrder(params: {
 }): Promise<OrderFact> {
   const native = await createBrokerIngressFixture({
     orderId: params.orderId,
-    tradeId: 'RECOVERY-' + params.orderId,
     symbol: params.symbol,
     stockName: params.stockName ?? 'HSI RC ROUTE',
     remark: '',
@@ -120,7 +119,6 @@ async function createPendingRecoveryOrder(params: {
     submittedPrice: '1.01',
     executedPrice: '0',
     submittedAtMs: Date.now(),
-    executionTimeMs: null,
     updatedAtMs: Date.now(),
   });
   return native.queryObservation;
@@ -139,7 +137,6 @@ async function createTrackParams(
 ): Promise<TrackOrderParams> {
   const native = await createBrokerIngressFixture({
     orderId: params.orderId,
-    tradeId: 'TRACKED-' + params.orderId,
     symbol: params.symbol,
     stockName: params.symbol,
     remark: '',
@@ -151,7 +148,6 @@ async function createTrackParams(
     submittedPrice: params.submittedPrice,
     executedPrice: '0',
     submittedAtMs: Date.now(),
-    executionTimeMs: null,
     updatedAtMs: Date.now(),
   });
   const fact = native.queryObservation;
@@ -182,7 +178,6 @@ async function createDeps(): Promise<{
 }> {
   const native = await createBrokerIngressFixture({
     orderId: 'HOOK-NATIVE',
-    tradeId: 'HOOK-NO-EXECUTION',
     symbol: 'BULL.HK',
     stockName: 'HSI RC ROUTE',
     remark: '',
@@ -194,7 +189,6 @@ async function createDeps(): Promise<{
     submittedPrice: '1.01',
     executedPrice: '0',
     submittedAtMs: Date.now(),
-    executionTimeMs: null,
     updatedAtMs: Date.now(),
   });
   const baseConfig = createTradingConfig();
@@ -351,7 +345,6 @@ describe('createOrderMonitor route hooks integration', () => {
     expect(native.subscriptionMembership().includes('PRIVATE')).toBe(true);
     native.emitOrderChangedFrame({
       orderId: 'ORDER-EVENT-INTEGRATION-1',
-      tradeId: 'NO-EXECUTION',
       symbol: 'BULL.HK',
       stockName: 'HSI RC ROUTE',
       remark: '',
@@ -363,7 +356,6 @@ describe('createOrderMonitor route hooks integration', () => {
       submittedPrice: '1.01',
       executedPrice: '0',
       submittedAtMs: Date.now(),
-      executionTimeMs: null,
       updatedAtMs: Date.now(),
     });
     await flushMicrotasks();

@@ -73,7 +73,6 @@ describe('chaos: websocket out-of-order and duplicate pushes', () => {
       revision: number,
     ) => ({
       orderId,
-      tradeId: 'EXECUTION-' + orderId,
       symbol,
       stockName: symbol === 'BULL.HK' ? 'HSI RC' : 'HSI RP',
       remark: '',
@@ -152,32 +151,6 @@ describe('chaos: websocket out-of-order and duplicate pushes', () => {
       });
     }
 
-    native.setExecutionReplies([
-      {
-        orderId: 'WS-CHAOS-001',
-        tradeId: 'BULL-FULL',
-        symbol: 'BULL.HK',
-        quantity: '100',
-        price: '1',
-        tradeDoneAtMs: economic.now - 100,
-      },
-      {
-        orderId: 'WS-CHAOS-002',
-        tradeId: 'BEAR-PARTIAL',
-        symbol: 'BEAR.HK',
-        quantity: '20',
-        price: '1',
-        tradeDoneAtMs: economic.now - 300,
-      },
-      {
-        orderId: 'WS-CHAOS-002',
-        tradeId: 'BEAR-REST',
-        symbol: 'BEAR.HK',
-        quantity: '80',
-        price: '1',
-        tradeDoneAtMs: economic.now - 100,
-      },
-    ]);
     let dispatched = 0;
     for (const event of [
       frame('WS-CHAOS-001', 'BULL.HK', '100', 'Filled', economic.now),
@@ -212,6 +185,8 @@ describe('chaos: websocket out-of-order and duplicate pushes', () => {
     expect(admissions).toEqual([
       { admission: 'ADMITTED', authoritativeFactChanged: true, executionAdvanced: true },
       { admission: 'ADMITTED', authoritativeFactChanged: true, executionAdvanced: true },
+      // closed 后的更高 revision 仅推进水位，不重复资源/经济投影。
+      { admission: 'ADMITTED', authoritativeFactChanged: true, executionAdvanced: false },
     ]);
     await monitor.teardown();
   });

@@ -1,9 +1,7 @@
 import type {
   AccountBalance,
   Decimal,
-  Execution,
   GetHistoryOrdersOptions,
-  GetTodayExecutionsOptions,
   GetTodayOrdersOptions,
   Market,
   Order,
@@ -48,7 +46,6 @@ export type MockMethodName =
   | 'replaceOrder'
   | 'todayOrders'
   | 'historyOrders'
-  | 'todayExecutions'
   | 'accountBalance'
   | 'stockPositions'
   | 'tradeSubscribe'
@@ -185,7 +182,6 @@ export interface TradeContextContract extends MockInvocationLog, MockFailureCont
   replaceOrder: (options: ReplaceOrderOptions) => Promise<void>;
   todayOrders: (options?: GetTodayOrdersOptions) => Promise<ReadonlyArray<Order>>;
   historyOrders: (options?: GetHistoryOrdersOptions) => Promise<ReadonlyArray<Order>>;
-  todayExecutions: (options?: GetTodayExecutionsOptions) => Promise<ReadonlyArray<Execution>>;
   accountBalance: (currency?: string) => Promise<ReadonlyArray<AccountBalance>>;
   stockPositions: (symbols?: ReadonlyArray<string>) => Promise<StockPositionsResponse>;
   setOnOrderChanged: (callback: (err: Error | null, event: PushOrderChanged) => void) => void;

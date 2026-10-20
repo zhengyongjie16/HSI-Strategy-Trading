@@ -1,27 +1,13 @@
 /** 中性push解码能力：原SDK DTO只留adapter闭包，domain不注册/读取SDK类字段。 */
 import type { OrderFact } from './trade.js';
-import type { OrderExecutionLedgerFact } from './orderExecutionLedger.js';
-import type { BrokerOrderExecutionFact } from './orderRecorder.js';
 
-/** 已确认同broker累计事实及其原价格；只用于证明缺失终态quote与真实ledger的兼容性。 */
-export type OrderExecutionPriceEvidence = BrokerOrderExecutionFact &
-  Readonly<{ executedPrice: string | null }>;
-
-/** 发ledger前验证的原生身份/数量/revision，不含尚未证明的金额或执行时间。 */
-export type OrderPushReadFact = Readonly<{
-  orderId: string;
-  symbol: string;
-  executedQuantity: number;
-  updatedAtMs: number;
-}>;
-
-/** 这是延迟原始事实转换行为，不是readonly pure-data类型。 */
+/**
+ * 延迟原始事实转换：monitor 在 error/termination guard 之后解码一次。
+ * 合法非HK返回 null（不进入管理）；坏 symbol 结构或非法订单结构抛原生错误。
+ * push 不做任何 execution/ledger IO。
+ */
 export interface OrderPushDecoder {
-  readonly inspect: () => OrderPushReadFact;
-  readonly decode: (
-    executions: ReadonlyArray<OrderExecutionLedgerFact>,
-    confirmed?: OrderExecutionPriceEvidence,
-  ) => OrderFact;
+  readonly decode: () => OrderFact | null;
 }
 
 /** 原 context 的 callback 与 Private 订退订；时序、限流及经济发布仍归原 Monitor。 */

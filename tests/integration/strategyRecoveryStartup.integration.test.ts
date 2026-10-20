@@ -58,13 +58,11 @@ describe('T28 recovery → startup controlled acceptance', () => {
       if (scenario === 'accepted') {
         expect(String(error)).toContain('终态未确认');
       } else {
-        // Native positive q10/amount10 with an empty independent ledger has no trusted T.
-        // The real strict fact guard now rejects before the old late recovery text;
-        // a default q0 terminal regression must not conceal this missing-T boundary.
-        if (!(error instanceof Error)) throw new Error('expected native missing-T Error');
+        // 启动快照与权威终态都声明正成交时，恢复不得把不匹配买单当作零成交资源关闭。
+        if (!(error instanceof Error)) throw new Error('expected recovery mismatch Error');
 
         expect(error.message).toBe(
-          '[订单监控] 正累计成交缺少有效金额、成交价格、真实执行时间或 broker revision',
+          '[订单监控] 买单 T28-BUY 不匹配但启动快照或权威终态存在成交事实，阻断恢复',
         );
       }
 

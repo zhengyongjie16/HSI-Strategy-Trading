@@ -29,7 +29,6 @@ import { createStaticLiquidationExecutor } from '../../src/application/staticLiq
 import { createLiquidationCooldownTracker } from '../../src/domain/liquidation/cooldown/index.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../src/domain/liquidation/episode/index.js';
 import { orderAnalysis } from '../../src/domain/order/orderAnalysis.js';
-import { orderEconomics } from '../../src/domain/order/orderEconomics.js';
 import { createDailyLossTracker } from '../../src/domain/risk/dailyLossTracker.js';
 import { createRiskChecker } from '../../src/domain/risk/index.js';
 import { createPositionLimitChecker } from '../../src/domain/risk/positionLimitChecker.js';
@@ -58,7 +57,6 @@ const T = Date.parse('2026-10-07T02:00:00Z');
 const DAY = '2026-10-07';
 const ZERO: BrokerIngressInput = {
   orderId: 'OLD-PROTECTIVE',
-  tradeId: 'OLD-EXECUTION',
   symbol: 'BULL.HK',
   stockName: 'HSI RC',
   remark: '|PL',
@@ -70,13 +68,11 @@ const ZERO: BrokerIngressInput = {
   submittedPrice: '0.9',
   executedPrice: '0',
   submittedAtMs: T - 1000,
-  executionTimeMs: null,
   updatedAtMs: T,
 };
 const BUY: BrokerIngressInput = {
   ...ZERO,
   orderId: 'BUY-ASSOCIATION',
-  tradeId: 'BUY-EXECUTION',
   remark: 'AUTO',
   side: 'BUY',
   status: 'Filled',
@@ -85,7 +81,6 @@ const BUY: BrokerIngressInput = {
   submittedPrice: '1',
   executedPrice: '1',
   submittedAtMs: T - 2000,
-  executionTimeMs: T - 1500,
   updatedAtMs: T - 1400,
 };
 const PARTIAL: BrokerIngressInput = {
@@ -93,27 +88,15 @@ const PARTIAL: BrokerIngressInput = {
   status: 'PartialFilled',
   executedQuantity: '500',
   executedPrice: '0.9',
-  executionTimeMs: T + 1000,
   updatedAtMs: T + 1010,
 };
 
-/** 只表达 broker 执行 ledger 的原始 IO，不直接写 O/Daily 或 episode。 */
-function ledger(frame: BrokerIngressInput) {
-  if (frame.executionTimeMs === null) throw new Error('ledger requires real execution time');
-
-  return {
-    orderId: frame.orderId,
-    tradeId: frame.tradeId,
-    symbol: frame.symbol,
-    quantity: frame.executedQuantity,
-    price: frame.executedPrice,
-    tradeDoneAtMs: frame.executionTimeMs,
-  };
-}
-
 /** durable 原始成交来源与独立 broker revision；repository 实际序列化 V1，loader 实际回放。 */
-function progressOf(frame: BrokerIngressInput): ProtectiveLiquidationExecutionProgressInput {
-  if (frame.executionTimeMs === null) throw new Error('progress requires precise execution time');
+function progressOf(
+  frame: BrokerIngressInput,
+  lastExecutionTimeMs = frame.updatedAtMs,
+): ProtectiveLiquidationExecutionProgressInput {
+  if (frame.executedQuantity === '0') throw new Error('progress requires real execution fact');
 
   return {
     monitorSymbol: 'HSI.HK',
@@ -123,7 +106,7 @@ function progressOf(frame: BrokerIngressInput): ProtectiveLiquidationExecutionPr
     factStage: frame.status === 'PartialFilled' ? 'OPEN' : 'TERMINAL',
     cumulativeQuantity: frame.executedQuantity,
     cumulativeAmount: exactMultiply(frame.executedQuantity, frame.executedPrice),
-    lastExecutionTimeMs: frame.executionTimeMs,
+    lastExecutionTimeMs,
     orderRevisionMs: frame.updatedAtMs,
   };
 }
@@ -142,7 +125,8 @@ async function waitForFact(
       fact !== null &&
       fact.cumulativeQuantity === Number(frame.executedQuantity) &&
       fact.cumulativeAmount === exactMultiply(frame.executedQuantity, frame.executedPrice) &&
-      fact.executionTimeMs === frame.executionTimeMs &&
+      fact.executionTimeMs !== null &&
+      fact.executionTimeMs <= frame.updatedAtMs &&
       fact.updatedAtMs === frame.updatedAtMs &&
       fact.phase === (frame.status === 'PartialFilled' ? 'OPEN' : 'TERMINAL')
     )
@@ -170,7 +154,7 @@ async function createHarness(
   const initial = params.initial ?? ZERO;
   const history = params.history ?? [];
   const inputOrders = [...(params.associated ? [BUY] : []), ...history, initial];
-  const native = await createBrokerIngressFixture(initial, orderEconomics);
+  const native = await createBrokerIngressFixture(initial);
   const limiter = createRateLimiter({
     wait: wait,
     nowMonotonicMs: nowMonotonicMs,
@@ -181,7 +165,7 @@ async function createHarness(
   const fatal: unknown[] = [];
   const repositoryOwner = createMixedTradeLogRepository({ resolveLogRootDir: () => root });
   if (params.logRoot === undefined) {
-    for (const progress of params.progress ?? (initial.executionTimeMs === null ? [] : [initial]))
+    for (const progress of params.progress ?? (initial.executedQuantity === '0' ? [] : [initial]))
       repositoryOwner.appendExecutionProgressIdempotent(progressOf(progress));
 
     if (params.completion) repositoryOwner.appendCompletionIdempotent(params.completion);
@@ -205,7 +189,6 @@ async function createHarness(
     availableCash: '10000',
   });
   native.setOrderSnapshotReplies([], inputOrders);
-  native.setExecutionReplies(inputOrders.filter((frame) => frame.side === 'BUY').map(ledger));
   let clock = T + 1500;
   const setPositions = (quantity: number, availableQuantity: number) => {
     native.setStockPositions(
@@ -280,11 +263,7 @@ async function createHarness(
   });
   const recorderOwner = createOrderRecorder({
     logger: createLoggerDouble(),
-    orderSnapshotReadPort: native.ports.createOrderSnapshotReadPort({
-      rateLimiter: limiter,
-      executionLedgerPort: native.executionLedgerPort,
-    }),
-    getExecutionTimeEvidence: daily.getExecutionTimeEvidence,
+    orderSnapshotReadPort: native.ports.createOrderSnapshotReadPort({ rateLimiter: limiter }),
     settlementRefreshNeedRecorder: settlement,
   });
   const clearCalls: string[] = [];
@@ -375,7 +354,6 @@ async function createHarness(
     logger: createLoggerDouble(),
     orderDetailReadPort: native.ports.createOrderDetailReadPort(),
     orderPushPort: native.ports.createOrderPushPort(),
-    executionLedgerPort: native.executionLedgerPort,
     tradeMutationPort: native.ports.createTradeMutationPort(),
     rateLimiter: limiter,
     cacheManager: { clearCache() {}, getPendingOrders: async () => [] },
@@ -597,19 +575,16 @@ async function fillStatic(f: Awaited<ReturnType<typeof createHarness>>, quantity
   const fill: BrokerIngressInput = {
     ...ZERO,
     orderId: 'NEW-STATIC',
-    tradeId: 'NEW-EXECUTION',
     remark: submitted.remark ?? '',
     status: 'Filled',
     quantity: String(quantity),
     executedQuantity: String(quantity),
     executedPrice: '0.9',
     submittedAtMs: T + 2500,
-    executionTimeMs: T + 4000,
     updatedAtMs: T + 4010,
   };
   f.advance(T + 5000);
   f.setPositions(0, 0);
-  f.native.setExecutionReplies([ledger(fill)]);
   f.native.emitOrderChangedFrame(fill);
   await waitForFact(f, fill);
   await f.settlement.waitForFresh();
@@ -651,7 +626,7 @@ describe('static purpose isolation with full recovery', () => {
             expect(f.episodes.getInProgressEpisodes()).toEqual([]);
           else
             expect(f.episodes.getInProgressEpisodes()).toEqual([
-              { direction: 'LONG', symbol: 'BULL.HK', latestExecutedTimeMs: T + 1000 },
+              { direction: 'LONG', symbol: 'BULL.HK', latestExecutedTimeMs: T + 1010 },
             ]);
 
           const terminal = {
@@ -697,7 +672,7 @@ describe('static purpose isolation with full recovery', () => {
                   ...fact
                 }) => fact,
               ),
-            ).toEqual([progressOf(initial), progressOf(terminal)]);
+            ).toEqual([progressOf(initial), progressOf(terminal, T + 1010)]);
 
           await fillStatic(f, expectedQuantity);
           expect(f.repository.loadExecutionProgressRecords(DAY)).toEqual(oldProgress);
@@ -705,7 +680,7 @@ describe('static purpose isolation with full recovery', () => {
             phase: 'TERMINAL',
             cumulativeQuantity: expectedQuantity,
             cumulativeAmount: exactMultiply(String(expectedQuantity), '0.9'),
-            executionTimeMs: T + 4000,
+            executionTimeMs: T + 4010,
             updatedAtMs: T + 4010,
           });
           const completions = f.repository.loadCompletionRecords(DAY);
@@ -715,7 +690,7 @@ describe('static purpose isolation with full recovery', () => {
             expect(completions[0]).toMatchObject({
               monitorSymbol: 'HSI.HK',
               direction: 'LONG',
-              boundaryExecutedTimeMs: T + 1000,
+              boundaryExecutedTimeMs: T + 1010,
             });
 
             expect(completions[0]?.orderBaselines).toEqual([
@@ -727,7 +702,7 @@ describe('static purpose isolation with full recovery', () => {
                       side: BUY.side,
                       cumulativeQuantity: '2500',
                       cumulativeAmount: '2500',
-                      lastExecutionTimeMs: T - 1500,
+                      lastExecutionTimeMs: T - 1400,
                       orderRevisionMs: T - 1400,
                     },
                   ]
@@ -738,7 +713,7 @@ describe('static purpose isolation with full recovery', () => {
                 side: 'SELL',
                 cumulativeQuantity: '500',
                 cumulativeAmount: '450',
-                lastExecutionTimeMs: T + 1000,
+                lastExecutionTimeMs: T + 1010,
                 orderRevisionMs: T + 2000,
               },
             ]);
@@ -779,7 +754,6 @@ describe('static purpose isolation with full recovery', () => {
       const advanced: BrokerIngressInput = {
         ...PARTIAL,
         executedQuantity: '700',
-        executionTimeMs: T + 1800,
         updatedAtMs: T + 1810,
       };
       const terminal: BrokerIngressInput = {
@@ -788,9 +762,11 @@ describe('static purpose isolation with full recovery', () => {
         updatedAtMs: T + 2000,
       };
       f.settleTerminal(terminal, 1800);
+      // 撤单窗口内 broker 仍是 OPEN 700：撤销失败后的权威读取先看到原 partial，
+      // 后续重试才读到终态，静态执行不在旧成交推进前提交新单。
+      f.native.setOrderDetailReplies([{ ...advanced, status: 'PartialFilled' }, terminal]);
       f.native.setCancelBeforeReply(async () => {
         f.advance(T + 1900);
-        f.native.setExecutionReplies([ledger(advanced)]);
         f.native.emitOrderChangedFrame(advanced);
         await waitForFact(f, advanced);
         expect(f.repository.loadExecutionProgressRecords(DAY).at(-1)).toMatchObject(
@@ -838,21 +814,21 @@ describe('static purpose isolation with full recovery', () => {
           factStage: 'OPEN',
           cumulativeQuantity: '500',
           cumulativeAmount: '450',
-          lastExecutionTimeMs: T + 1000,
+          lastExecutionTimeMs: T + 1010,
           orderRevisionMs: T + 1010,
         },
         {
           factStage: 'OPEN',
           cumulativeQuantity: '700',
           cumulativeAmount: '630',
-          lastExecutionTimeMs: T + 1800,
+          lastExecutionTimeMs: T + 1810,
           orderRevisionMs: T + 1810,
         },
         {
           factStage: 'TERMINAL',
           cumulativeQuantity: '700',
           cumulativeAmount: '630',
-          lastExecutionTimeMs: T + 1800,
+          lastExecutionTimeMs: T + 1810,
           orderRevisionMs: T + 2000,
         },
       ]);
@@ -860,13 +836,13 @@ describe('static purpose isolation with full recovery', () => {
       expect(f.repository.loadExecutionProgressRecords(DAY)).toEqual(progress);
       expect(f.repository.loadCompletionRecords(DAY)).toMatchObject([
         {
-          boundaryExecutedTimeMs: T + 1800,
+          boundaryExecutedTimeMs: T + 1810,
           orderBaselines: [
             {
               orderId: 'OLD-PROTECTIVE',
               cumulativeQuantity: '700',
               cumulativeAmount: '630',
-              lastExecutionTimeMs: T + 1800,
+              lastExecutionTimeMs: T + 1810,
               orderRevisionMs: T + 2000,
             },
           ],
@@ -879,7 +855,7 @@ describe('static purpose isolation with full recovery', () => {
           cooldownConfig: { mode: 'minutes', minutes: 5 },
           currentTimeMs: T + 5000,
         }),
-      ).toBe(296800);
+      ).toBe(296810);
     } finally {
       await f.close();
     }
@@ -933,8 +909,7 @@ describe('static purpose isolation with full recovery', () => {
             { orderId: 'OLD-PROTECTIVE', isProtectiveLiquidation: true },
           ]);
           expect(f.repository.loadExecutionProgressRecords(DAY)).toEqual([]);
-          const laterPartial = { ...PARTIAL, executionTimeMs: T + 2100, updatedAtMs: T + 2110 };
-          f.native.setExecutionReplies([ledger(laterPartial)]);
+          const laterPartial = { ...PARTIAL, updatedAtMs: T + 2110 };
           f.native.emitOrderChangedFrame(laterPartial);
           await waitForFact(f, laterPartial);
           await f.settlement.waitForFresh();
@@ -943,7 +918,7 @@ describe('static purpose isolation with full recovery', () => {
           ]);
           expect(f.repository.loadCompletionRecords(DAY)).toEqual([]);
           expect(f.episodes.getInProgressEpisodes()).toEqual([
-            { direction: 'LONG', symbol: 'BULL.HK', latestExecutedTimeMs: T + 2100 },
+            { direction: 'LONG', symbol: 'BULL.HK', latestExecutedTimeMs: T + 2110 },
           ]);
           const safeTerminal = {
             ...laterPartial,
@@ -957,7 +932,7 @@ describe('static purpose isolation with full recovery', () => {
           expect(f.monitor.getPendingSellOrders('BULL.HK')).toEqual([]);
           expect(f.repository.loadExecutionProgressRecords(DAY)).toMatchObject([
             progressOf(laterPartial),
-            progressOf(safeTerminal),
+            progressOf(safeTerminal, T + 2110),
           ]);
           expect(f.repository.loadCompletionRecords(DAY)).toEqual([]);
           f.native.setSubmitBehavior(async () => 'NEW-STATIC');
@@ -998,7 +973,6 @@ describe('static purpose isolation with full recovery', () => {
     const previous: BrokerIngressInput = {
       ...PARTIAL,
       orderId: 'PREVIOUS-PROTECTIVE',
-      tradeId: 'PREVIOUS-EXECUTION',
       status: 'Canceled',
     };
     const f = await createHarness({ history: [previous], progress: [previous] });
@@ -1007,7 +981,7 @@ describe('static purpose isolation with full recovery', () => {
       await f.bootstrap();
       expect(f.repository.loadCompletionRecords(DAY)).toEqual([]);
       expect(f.episodes.getInProgressEpisodes()).toEqual([
-        { direction: 'LONG', symbol: 'BULL.HK', latestExecutedTimeMs: T + 1000 },
+        { direction: 'LONG', symbol: 'BULL.HK', latestExecutedTimeMs: T + 1010 },
       ]);
       expect(f.monitor.hasPendingProtectiveLiquidationOrders('LONG')).toBe(true);
       f.settleTerminal({ ...ZERO, status: 'Canceled', updatedAtMs: T + 2000 }, 2500);
@@ -1016,13 +990,13 @@ describe('static purpose isolation with full recovery', () => {
       const completion = f.repository.loadCompletionRecords(DAY);
       expect(completion).toMatchObject([
         {
-          boundaryExecutedTimeMs: T + 1000,
+          boundaryExecutedTimeMs: T + 1010,
           orderBaselines: [
             {
               orderId: previous.orderId,
               cumulativeQuantity: '500',
               cumulativeAmount: '450',
-              lastExecutionTimeMs: T + 1000,
+              lastExecutionTimeMs: T + 1010,
               orderRevisionMs: T + 1010,
             },
           ],
@@ -1040,14 +1014,12 @@ describe('static purpose isolation with full recovery', () => {
       const newFill: BrokerIngressInput = {
         ...ZERO,
         orderId: 'NEW-STATIC',
-        tradeId: 'NEW-EXECUTION',
         remark: 'AUTO',
         status: 'Filled',
         quantity: '2500',
         executedQuantity: '2500',
         executedPrice: '0.9',
         submittedAtMs: T + 2500,
-        executionTimeMs: T + 4000,
         updatedAtMs: T + 4010,
       };
       const restart = await createHarness({
@@ -1059,7 +1031,6 @@ describe('static purpose isolation with full recovery', () => {
       try {
         restart.advance(T + 5000);
         restart.setPositions(0, 0);
-        restart.native.setExecutionReplies([ledger(newFill)]);
         await restart.bootstrap();
         expect(restart.logText()).toBe(text);
         expect(restart.repository.loadCompletionRecords(DAY)).toEqual(completion);
@@ -1073,7 +1044,7 @@ describe('static purpose isolation with full recovery', () => {
         expect(restart.recorder.getExecutionFact(newFill.orderId)).toMatchObject({
           cumulativeQuantity: 2500,
           cumulativeAmount: '2250',
-          executionTimeMs: T + 4000,
+          executionTimeMs: T + 4010,
           updatedAtMs: T + 4010,
         });
 
@@ -1083,7 +1054,7 @@ describe('static purpose isolation with full recovery', () => {
             cooldownConfig: { mode: 'minutes', minutes: 5 },
             currentTimeMs: restart.now(),
           }),
-        ).toBe(296000);
+        ).toBe(296010);
       } finally {
         await restart.close();
       }
@@ -1092,15 +1063,18 @@ describe('static purpose isolation with full recovery', () => {
     }
   });
 
-  it('loader rejects missing precise execution evidence before hydration, never using revision as execution time', async () => {
-    const f = await createHarness({ initial: { ...PARTIAL, executionTimeMs: null }, progress: [] });
+  it('loader rejects terminal positive execution without price or durable same-quantity amount', async () => {
+    const f = await createHarness({
+      initial: { ...PARTIAL, status: 'Canceled', executedPrice: '0' },
+      progress: [],
+    });
     try {
       const failure: unknown = await f.bootstrap().then(
         () => null,
         (error: unknown) => error,
       );
       expect(failure).toBeInstanceOf(Error);
-      expect(failure).toHaveProperty('message', expect.stringContaining('execution time'));
+      expect(failure).toHaveProperty('message', expect.stringContaining('正成交缺少本次原始金额'));
       expect(f.trace).not.toContain('hydrate');
       expect(f.repository.loadCompletionRecords(DAY)).toEqual([]);
       expect(f.episodes.getInProgressEpisodes()).toEqual([]);

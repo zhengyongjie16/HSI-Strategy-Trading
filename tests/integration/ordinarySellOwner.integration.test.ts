@@ -27,7 +27,6 @@ describe('ordinary SELL real owner integration', () => {
       const now = () => new Date('2026-02-16T02:00:00Z');
       const ingress = await createBrokerIngressFixture({
         orderId: 'OWNER-SELL',
-        tradeId: 'OWNER-SELL-TRADE',
         symbol: 'BULL.HK',
         stockName: 'BULL',
         remark: '',
@@ -38,7 +37,6 @@ describe('ordinary SELL real owner integration', () => {
         submittedPrice: '1',
         executedPrice: '0',
         submittedAtMs: now().getTime(),
-        executionTimeMs: null,
         updatedAtMs: now().getTime(),
       });
       ingress.setStockPositions([

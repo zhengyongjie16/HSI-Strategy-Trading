@@ -1,3 +1,4 @@
+import { recalculateDailyLoss } from '../../../helpers/dailyLossRecalculation.js';
 import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { spyOn, afterEach, describe, expect, it } from 'bun:test';
 
@@ -48,6 +49,7 @@ import {
   createTradeRuntimeDouble,
 } from '../../../helpers/testDoubles.js';
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
+import { toRecalculationOrders } from '../../../integration/recalculationOrders.js';
 import {
   createMonitorContext,
   rethrowFatalError,
@@ -68,7 +70,6 @@ async function createDailyLossSeedOrders(
     stockName: 'HSI RC',
     remark: 'AUTO',
     orderId: prefix + '-buy',
-    tradeId: prefix + '-buy-trade',
     symbol: 'BULL.HK',
     side: 'BUY',
     status: 'Filled',
@@ -77,14 +78,12 @@ async function createDailyLossSeedOrders(
     executedPrice: '1',
     executedQuantity: '100',
     submittedAtMs: now.getTime() - 3000,
-    executionTimeMs: now.getTime() - 2000,
     updatedAtMs: now.getTime() - 1500,
   });
   const sell = await createBrokerIngressFixture({
     stockName: 'HSI RC',
     remark: 'AUTO',
     orderId: prefix + '-sell',
-    tradeId: prefix + '-sell-trade',
     symbol: 'BULL.HK',
     side: 'SELL',
     status: 'Filled',
@@ -93,7 +92,6 @@ async function createDailyLossSeedOrders(
     executedPrice: '0.9',
     executedQuantity: '100',
     submittedAtMs: now.getTime() - 2000,
-    executionTimeMs: now.getTime() - 1000,
     updatedAtMs: now.getTime() - 500,
   });
   return [buy.queryObservation, sell.queryObservation];
@@ -313,6 +311,9 @@ async function createBusinessProcessor(
     validateBatch(symbol, orders);
     validateOrdersForRebuild(orders.filter((order) => order.symbol === symbol));
     for (const order of orders.filter((candidate) => candidate.symbol === symbol)) {
+      if (order.executedAmount === null)
+        throw new Error('rebuild snapshot positive execution requires cumulative amount');
+
       mergeBrokerOrderExecutionFact(undefined, {
         brokerOrderId: order.orderId,
         symbol,
@@ -1451,7 +1452,7 @@ describe('monitorTaskProcessor business flow', () => {
       'OLD_BULL.HK',
       'BEAR.HK',
     ];
-    const rebuildSnapshots: Array<ReadonlyArray<DailyLossOrderSnapshot>> = [];
+    const rebuildSnapshots: Array<ReadonlyArray<OrderFact | DailyLossOrderSnapshot>> = [];
     const rebuildSteps: string[] = [];
     const preflightSymbols: string[] = [];
     let dailyLossRelatedTradingSymbols: ReadonlySet<string> | undefined;
@@ -1599,7 +1600,7 @@ describe('monitorTaskProcessor business flow', () => {
 
     expect([...dailyLossRelatedTradingSymbols]).toEqual([...expectedRelatedTradingSymbols]);
     for (const snapshot of rebuildSnapshots) {
-      expect(snapshot).toBe(allOrders);
+      expect(snapshot).toEqual(allOrders);
     }
 
     expect(accountSnapshotCalls).toBe(1);
@@ -1627,7 +1628,6 @@ describe('monitorTaskProcessor business flow', () => {
     let activationWrites = 0;
     const ingress = await createBrokerIngressFixture({
       orderId: 'seat-refresh-missing-updated-at',
-      tradeId: 'seat-refresh-missing-updated-at-trade',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: 'AUTO',
@@ -1638,7 +1638,6 @@ describe('monitorTaskProcessor business flow', () => {
       executedPrice: '1.1',
       executedQuantity: '100',
       submittedAtMs: Date.parse('2026-03-13T02:00:00.000Z'),
-      executionTimeMs: MONITOR_TASK_NOW_MS,
       updatedAtMs: MONITOR_TASK_NOW_MS,
     });
     const readOrders = ingress.createQueryOrdersReader();
@@ -1766,7 +1765,6 @@ describe('monitorTaskProcessor business flow', () => {
     const now = new Date(MONITOR_TASK_NOW_MS);
     const ingress = await createBrokerIngressFixture({
       orderId: 'seat-refresh-unowned-known-side',
-      tradeId: 'seat-refresh-unowned-known-side-trade',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: 'AUTO',
@@ -1777,7 +1775,6 @@ describe('monitorTaskProcessor business flow', () => {
       executedPrice: '1.1',
       executedQuantity: '100',
       submittedAtMs: now.getTime(),
-      executionTimeMs: MONITOR_TASK_NOW_MS,
       updatedAtMs: now.getTime(),
     });
     const knownSideOrder = ingress.queryObservation;
@@ -1915,7 +1912,6 @@ describe('monitorTaskProcessor business flow', () => {
     let activationWrites = 0;
     const ingress = await createBrokerIngressFixture({
       orderId: 'seat-refresh-invalid-execution-price',
-      tradeId: 'seat-refresh-invalid-execution-price-trade',
       symbol: 'BULL.HK',
       stockName: 'HSI RC',
       remark: 'AUTO',
@@ -1926,7 +1922,6 @@ describe('monitorTaskProcessor business flow', () => {
       executedPrice: '1.1',
       executedQuantity: '100',
       submittedAtMs: Date.parse('2026-03-13T02:00:00.000Z'),
-      executionTimeMs: MONITOR_TASK_NOW_MS,
       updatedAtMs: Date.parse('2026-03-13T02:01:00.000Z'),
     });
     const malformedPositiveExecution: OrderFact = {
@@ -2016,7 +2011,8 @@ describe('monitorTaskProcessor business flow', () => {
       throw new Error('expected malformed execution fact to reach the fatal channel');
     }
 
-    expect(fatalError.message).toBe('[订单记录] 金额、数量或执行时间无效');
+    // 共享执行归一与启动恢复同口径：正成交金额不完整在逐标的 preflight 之前即被拒绝。
+    expect(fatalError.message).toBe('[订单事实] 正成交缺少可信金额');
     expect(refreshOrdersCalls).toBe(0);
     expect(accountSnapshotCalls).toBe(0);
     expect(stockPositionCalls).toBe(0);
@@ -2061,7 +2057,6 @@ describe('monitorTaskProcessor business flow', () => {
       const ingress = await createBrokerIngressFixture({
         stockName: 'HSI RC',
         orderId: `seat-refresh-unknown-side-${unknownSideCase.label}`,
-        tradeId: `trade-${unknownSideCase.label}`,
         symbol: 'BULL.HK',
         side: 'BUY',
         status: unknownSideCase.status,
@@ -2070,7 +2065,6 @@ describe('monitorTaskProcessor business flow', () => {
         executedPrice: unknownSideCase.executedPrice,
         executedQuantity: String(unknownSideCase.executedQuantity),
         submittedAtMs: now.getTime(),
-        executionTimeMs: now.getTime(),
         updatedAtMs: now.getTime(),
         remark: 'AUTO',
       });
@@ -2131,8 +2125,8 @@ describe('monitorTaskProcessor business flow', () => {
         callPrice: '20000',
       });
       const seedOrders = await createDailyLossSeedOrders(now, `unknown-${unknownSideCase.label}`);
-      dailyLossTracker.recalculateFromAllOrders(
-        seedOrders,
+      recalculateDailyLoss(dailyLossTracker,
+        toRecalculationOrders(seedOrders),
         context.config,
         now,
         undefined,
@@ -2241,7 +2235,7 @@ describe('monitorTaskProcessor business flow', () => {
       status: 'Filled',
       executedPrice: '0',
       executedQuantity: 100,
-      expectedErrorFragment: '金额、数量或执行时间无效',
+      expectedErrorFragment: '正成交缺少可信金额',
     },
   ] as const) {
     it(`fails SEAT_REFRESH before DailyLoss writes for non-target related ${relatedOrderCase.label}`, async () => {
@@ -2255,7 +2249,6 @@ describe('monitorTaskProcessor business flow', () => {
       const ingress = await createBrokerIngressFixture({
         stockName: 'HSI RC',
         orderId: `seat-refresh-related-${relatedOrderCase.label}`,
-        tradeId: `trade-related-${relatedOrderCase.label}`,
         symbol: 'OLD_BULL.HK',
         side: 'BUY',
         status: 'Filled',
@@ -2264,7 +2257,6 @@ describe('monitorTaskProcessor business flow', () => {
         executedPrice: '1',
         executedQuantity: '100',
         submittedAtMs: now.getTime(),
-        executionTimeMs: now.getTime(),
         updatedAtMs: now.getTime(),
         remark: 'AUTO',
       });
@@ -2319,8 +2311,8 @@ describe('monitorTaskProcessor business flow', () => {
         callPrice: '20000',
       });
       const seedOrders = await createDailyLossSeedOrders(now, `related-${relatedOrderCase.label}`);
-      dailyLossTracker.recalculateFromAllOrders(
-        seedOrders,
+      recalculateDailyLoss(dailyLossTracker,
+        toRecalculationOrders(seedOrders),
         context.config,
         now,
         undefined,
@@ -2385,7 +2377,8 @@ describe('monitorTaskProcessor business flow', () => {
         seatStatus: context.symbolRegistry.getSeatState('LONG').status,
       }).toEqual({
         preflightBlocked: true,
-        preflightSymbols: isUnknownSide ? [] : ['BULL.HK', 'OLD_BULL.HK'],
+        // 共享执行归一先于逐标的 preflight：坏事实在归一阶段即阻断，不进入按标的校验。
+        preflightSymbols: [],
         refreshOrdersCalls: 0,
         dailyLossOffset: '-10',
         activationWrites: 0,
