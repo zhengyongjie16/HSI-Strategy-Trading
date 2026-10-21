@@ -69,7 +69,7 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
     const recorder = createOrderRecorder({
       logger: createLoggerDouble(),
       orderSnapshotReadPort: {
-        fetchSnapshots: async () => {
+        fetchAllOrders: async () => {
           throw new Error('本测试只授权已捕获 query 输入');
         },
       },

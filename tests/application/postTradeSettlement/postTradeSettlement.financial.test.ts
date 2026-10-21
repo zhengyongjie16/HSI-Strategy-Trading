@@ -64,7 +64,7 @@ test('high-revision same-quantity authoritative corrections preserve exact cost/
   const recorder = createOrderRecorder({
     logger: createLoggerDouble(),
     orderSnapshotReadPort: {
-      fetchSnapshots: async () => {
+      fetchAllOrders: async () => {
         throw new Error('financial test does not issue order IO');
       },
     },

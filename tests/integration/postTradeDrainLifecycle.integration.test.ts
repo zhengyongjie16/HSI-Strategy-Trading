@@ -105,7 +105,7 @@ describe('PostTrade drain and Quote lifetime integration', () => {
       const recorder = createOrderRecorder({
         logger: createLoggerDouble(),
         orderSnapshotReadPort: {
-          fetchSnapshots: async () => {
+          fetchAllOrders: async () => {
             throw new Error('Drain case does not authorize order IO');
           },
         },

@@ -1,66 +1,89 @@
-/** 订单快照离线 SDK 边界：保留精确 Decimal、原生读顺序及 getter 故障，向 owner 测试仅提供中性 port/观察。 */
-import { Decimal, OrderSide, OrderStatus, OrderType } from 'longbridge';
-import type { BrokerOrderSdkFields } from '../../../../src/infrastructure/longbridge/trade/types.js';
-import type { OrderSnapshotReadPort } from '../../../../src/types/orderSnapshotReadPorts.js';
-import { createOrderSnapshotReadAdapter } from '../../../../src/infrastructure/longbridge/trade/orderSnapshotReadAdapter.js';
+/** 订单快照测试装配：合法初始 native frame、中性 reply 控制及局部虚拟 timer，不执行账户 IO。 */
+import type { RateLimiter } from '../../../../src/types/rateLimit.js';
+import { createRateLimiterDouble } from '../../../helpers/testDoubles.js';
+import { createBrokerIngressFixture, type BrokerIngressInput } from './brokerIngressFixture.js';
+import type { OrderSnapshotReadFixture, OrderSnapshotTimerHarness } from './types.js';
 
-function order(id: string, revision: number): BrokerOrderSdkFields {
+/** 默认 frame 自身合法；缺失 revision/price 必须经 native reply 控制显式制造。 */
+export function createSnapshotInput(overrides: Partial<BrokerIngressInput> = {}): BrokerIngressInput {
   return {
-    orderId: id,
+    orderId: 'ORDER',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
-    side: OrderSide.Buy,
-    status: OrderStatus.New,
-    orderType: OrderType.ELO,
-    remark: '',
-    price: new Decimal('1.000000000000000001'),
-    quantity: new Decimal('100'),
-    executedPrice: null,
-    executedQuantity: new Decimal('0'),
-    submittedAt: new Date(100),
-    updatedAt: new Date(revision),
+    remark: 'QuantDemo|PL',
+    side: 'BUY',
+    status: 'Filled',
+    orderType: 'ELO',
+    quantity: '100',
+    executedQuantity: '100',
+    submittedPrice: '1.000000000000000001',
+    executedPrice: '1.2345678901234567890123456789',
+    submittedAtMs: 1000,
+    updatedAtMs: 3000,
+    ...overrides,
   };
 }
 
-/** 原生 context 与 adapter 留在 infra；调用方只驱动真实快照 port，不在此装配 core owner。 */
-export function createNativeSnapshotReadFixture(
-  historyOrderIdFault?: Error,
-): {
-  readonly port: OrderSnapshotReadPort;
-  readonly calls: ReadonlyArray<string>;
-  readonly getLaterReadCount: () => number;
-} {
-  const calls: string[] = [];
-  let laterReads = 0;
-  const badOrder = order('BAD', 200);
-  if (historyOrderIdFault) {
-    Object.defineProperty(badOrder, 'orderId', {
-      get: () => {
-        throw historyOrderIdFault;
-      },
-    });
-  }
+/** 测试直接使用唯一真实 adapter port，不再装配已删除 manager/domain policy。 */
+export async function createOrderSnapshotReadFixture(
+  history: ReadonlyArray<BrokerIngressInput> = [],
+  today: ReadonlyArray<BrokerIngressInput> = [],
+  rateLimiter: Pick<RateLimiter, 'throttle'> = createRateLimiterDouble(),
+): Promise<OrderSnapshotReadFixture> {
+  const native = await createBrokerIngressFixture(createSnapshotInput());
+  native.setOrderSnapshotReplies(history, today);
+  return { native, port: native.ports.createOrderSnapshotReadPort({ rateLimiter }) };
+}
 
-  const context = {
-    historyOrders: async () => {
-      calls.push('historyOrders');
-      return historyOrderIdFault ? [badOrder] : [order('DUP', 500), order('HISTORY', 300)];
+/** 排空有限层 Promise continuation，使断言只观察 IO/准入事件而不依赖真实 sleep。 */
+export async function flushSnapshotMicrotasks(): Promise<void> {
+  for (let turn = 0; turn < 60; turn += 1) await Promise.resolve();
+}
+
+/** 只替换本测试作用域的 retry/limiter timer；还原交给调用方 finally。 */
+export function createOrderSnapshotTimerHarness(): OrderSnapshotTimerHarness {
+  const originalNow = Date.now;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let nowMs = 10_000;
+  const timers = new Map<unknown, Readonly<{ atMs: number; callback: () => void }>>();
+
+  const fakeSetTimeout = Object.assign(
+    (
+      handler: Parameters<typeof globalThis.setTimeout>[0],
+      timeout?: number,
+    ): ReturnType<typeof originalSetTimeout> => {
+      if (typeof handler !== 'function') throw new TypeError('[测试] 快照 timer 只支持函数回调');
+
+      const handle = originalSetTimeout(() => {}, 0);
+      originalClearTimeout(handle);
+      timers.set(handle, { atMs: nowMs + (timeout ?? 0), callback: () => { handler(); } });
+      return handle;
     },
-    todayOrders: async () => {
-      calls.push('todayOrders');
-      laterReads++;
-      return [order('DUP', 200), order('DUP', 250)];
-    },
-  };
+    { __promisify__: originalSetTimeout.__promisify__ },
+  );
+  Date.now = () => nowMs;
+  globalThis.setTimeout = fakeSetTimeout;
+  globalThis.clearTimeout = (handle) => { timers.delete(handle); };
+
   return {
-    port: createOrderSnapshotReadAdapter(context, {
-      rateLimiter: {
-        throttle: async () => {
-          calls.push('throttle');
-        },
-      },
-    }),
-    calls,
-    getLaterReadCount: () => laterReads,
+    nowMs: () => nowMs,
+    pendingDelays: () => [...timers.values()].map((timer) => timer.atMs - nowMs).sort((a, b) => a - b),
+    advanceBy: async (delayMs) => {
+      nowMs += delayMs;
+      for (const [handle, timer] of timers) {
+        if (timer.atMs > nowMs) continue;
+
+        timers.delete(handle);
+        timer.callback();
+      }
+
+      await flushSnapshotMicrotasks();
+    },
+    restore: () => {
+      Date.now = originalNow;
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+    },
   };
 }

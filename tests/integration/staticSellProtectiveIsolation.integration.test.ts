@@ -1113,15 +1113,10 @@ describe('static purpose isolation with full recovery', () => {
       initial: terminal,
       progress: [],
       orderSnapshotReadPort: {
-        fetchSnapshots: async () => {
+        fetchAllOrders: async () => {
           snapshotReads++;
           // 在经济 owner 的中性读取入口损坏事实，不要求 SDK mapper 容忍正量坏价。
-          return {
-            historyOrders: [],
-            todayOrders: [
-              { ...baseline.queryObservation, executedPrice: null, executedAmount: null },
-            ],
-          };
+          return [{ ...baseline.queryObservation, executedPrice: null, executedAmount: null }];
         },
       },
     });

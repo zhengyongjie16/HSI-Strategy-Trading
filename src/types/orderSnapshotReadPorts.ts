@@ -1,15 +1,9 @@
-/** 已验证broker订单快照读取行为；原SDK实例/金融对象留在infra，非pure-data资格。 */
 import type { OrderFact } from './trade.js';
 
 /**
- * history/today 的真实订单 batch 读取能力；只返回HK范围内已验证的中性事实，
- * 不持有重建或 retry 策略。
+ * 同一 context 的全量订单读取能力；由 adapter 完成来源唯一性校验与 today 整条覆盖。
+ * 仅返回最终获选且严格映射的 HK 订单事实，SDK 实例及金融对象不离开 infrastructure。
  */
 export interface OrderSnapshotReadPort {
-  readonly fetchSnapshots: () => Promise<
-    Readonly<{
-      historyOrders: ReadonlyArray<OrderFact>;
-      todayOrders: ReadonlyArray<OrderFact>;
-    }>
-  >;
+  readonly fetchAllOrders: () => Promise<ReadonlyArray<OrderFact>>;
 }

@@ -145,7 +145,7 @@ export function createExecutionFixture(
     params.createRecorder === undefined
       ? createOrderRecorder({
           orderSnapshotReadPort: {
-            fetchSnapshots: async () => rejectUnexpected(),
+            fetchAllOrders: async () => rejectUnexpected(),
           },
           ...recorderDeps,
         })

@@ -21,7 +21,6 @@ import type {
   RouteProcessorDeps,
 } from '../../../../src/application/orderTracking/orderMonitor/types.js';
 import { createOrderRecorder } from '../../../../src/application/orderTracking/recorder/index.js';
-import { createOrderAPIManager } from '../../../../src/application/orderTracking/recorder/orderApiManager.js';
 import type { OrderRecorderFactoryDeps } from '../../../../src/application/orderTracking/recorder/types.js';
 import type {
   OrderCacheManagerDeps,
@@ -45,9 +44,6 @@ export async function createBrokerIngressFixture(
       createCacheManager: (
         deps: Omit<OrderCacheManagerDeps, 'ctx'>,
       ) => ReturnType<typeof createOrderCacheManager>;
-      createApiManager: (
-        deps: Readonly<{ rateLimiter: Pick<RateLimiter, 'throttle'> }>,
-      ) => ReturnType<typeof createOrderAPIManager>;
       createTradeRuntime: (
         deps: Omit<CreateTradeRuntimeDeps, 'brokerAccess'>,
       ) => ReturnType<typeof createTradeRuntime>;
@@ -83,10 +79,6 @@ export async function createBrokerIngressFixture(
       createOrderCacheManager({
         ...deps,
         ctx: ports.createPendingOrdersReader(),
-      }),
-    createApiManager: (deps) =>
-      createOrderAPIManager({
-        orderSnapshotReadPort: ports.createOrderSnapshotReadPort(deps),
       }),
     createTradeRuntime: (deps) =>
       createTradeRuntime({

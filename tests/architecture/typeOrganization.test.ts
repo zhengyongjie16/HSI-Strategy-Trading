@@ -401,7 +401,6 @@ describe('type organization regressions', () => {
   it('keeps orderRecorder internal implementation files behind the public boundary', async () => {
     const productionFiles = await collectTypeScriptFiles('src');
     const privateOrderRecorderFiles = new Set([
-      'src/application/orderTracking/recorder/orderApiManager.ts',
       'src/application/orderTracking/recorder/orderStorage.ts',
     ]);
     const violations: string[] = [];

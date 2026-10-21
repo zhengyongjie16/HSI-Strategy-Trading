@@ -59,7 +59,7 @@ async function createCatchUpFixture() {
   const recorder = createOrderRecorder({
     logger: createLoggerDouble(),
     orderSnapshotReadPort: {
-      fetchSnapshots: async () => {
+      fetchAllOrders: async () => {
         brokerCalls.push('unauthorized');
         throw new Error('此测试不授权 broker IO');
       },

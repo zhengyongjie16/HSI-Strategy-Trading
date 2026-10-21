@@ -1,12 +1,5 @@
 import type { Logger } from '../../../types/logger.js';
 
-/**
- * 订单快照来源标识。
- * 类型用途：标记同一 orderId 的来源（history/today），用于去重覆盖决策。
- * 数据来源：OrderAPIManager 拉取 history/today 订单时生成。
- * 使用范围：orderRecorder/orderApiManager 内部使用。
- */
-
 import type {
   OrderCostBasis,
   OrderRecord,
@@ -17,7 +10,6 @@ import type {
 import type { OrderSnapshotReadPort } from '../../../types/orderSnapshotReadPorts.js';
 
 import type { SettlementRefreshNeedRecorder } from '../../../types/settlement.js';
-import type { OrderFact } from '../../../types/trade.js';
 
 // ==================== 服务接口定义 ====================
 
@@ -77,27 +69,7 @@ export interface OrderStorage {
   clearAll: () => void;
 }
 
-/**
- * 订单 API 管理器接口。
- * 类型用途：依赖注入，负责从 Longbridge API 获取订单。
- * 数据来源：如适用。
- * 使用范围：由 OrderRecorder 依赖注入；仅 orderRecorder 模块实现与使用。
- */
-export interface OrderAPIManager {
-  fetchAllOrdersFromAPI: () => Promise<ReadonlyArray<OrderFact>>;
-}
-
 // ==================== 依赖类型定义 ====================
-
-/**
- * 订单 API 管理器依赖。
- * 类型用途：用于创建 OrderAPIManager 时的依赖注入。
- * 数据来源：如适用。
- * 使用范围：仅 orderRecorder 模块内部使用。
- */
-export type OrderAPIManagerDeps = {
-  readonly orderSnapshotReadPort: OrderSnapshotReadPort;
-};
 
 /**
  * 订单记录器正式工厂依赖。
@@ -119,6 +91,6 @@ export type OrderRecorderFactoryDeps = {
  */
 export type OrderRecorderDeps = {
   readonly storage: OrderStorage;
-  readonly apiManager: OrderAPIManager;
+  readonly orderSnapshotReadPort: OrderSnapshotReadPort;
   readonly settlementRefreshNeedRecorder: SettlementRefreshNeedRecorder;
 };

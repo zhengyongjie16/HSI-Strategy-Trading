@@ -23,13 +23,12 @@ import type {
 
 import type { OrderFact } from '../../../types/trade.js';
 import { exactCompare } from '../../../utils/numeric/exact.js';
-import { createOrderAPIManager } from './orderApiManager.js';
 import { createOrderStorage } from './orderStorage.js';
 import type { OrderRecorderDeps, OrderRecorderFactoryDeps } from './types.js';
 
 /** 创建订单 owner；所有预检、消费证明与列表发布在无 await 同步段完成。 */
 function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
-  const { storage, apiManager } = deps;
+  const { storage, orderSnapshotReadPort } = deps;
   const executionFacts = new Map<string, OwnedExecutionFact>();
   let projectionSequence = 0;
 
@@ -258,7 +257,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     getLatestBuyOrderCost: storage.getLatestBuyOrderCost,
     getCostBasis: storage.getCostBasis,
     getSellRecordByOrderId: storage.getSellRecordByOrderId,
-    fetchAllOrdersFromAPI: apiManager.fetchAllOrdersFromAPI,
+    fetchAllOrdersFromAPI: orderSnapshotReadPort.fetchAllOrders,
     validateRebuildSnapshot: (symbol, allOrders) => {
       validateOrdersForRebuild(allOrders.filter((order) => order.symbol === symbol));
     },
@@ -298,7 +297,7 @@ export function createOrderRecorder(deps: OrderRecorderFactoryDeps): OrderRecord
   logger.debug('[订单记录] 创建唯一 broker fact owner');
   return createOrderRecorderFromParts({
     storage: createOrderStorage(logger),
-    apiManager: createOrderAPIManager(deps),
+    orderSnapshotReadPort: deps.orderSnapshotReadPort,
     settlementRefreshNeedRecorder: deps.settlementRefreshNeedRecorder,
   });
 }

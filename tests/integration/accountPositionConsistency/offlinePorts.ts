@@ -15,7 +15,7 @@ export function createOfflineBrokerPort(): OfflineBrokerPort {
     calls.push('UNAUTHORIZED_BROKER_IO');
     return Promise.reject(new Error('neutral integration does not authorize broker IO'));
   }
-  const broker: OrderRecorderFactoryDeps['orderSnapshotReadPort'] = { fetchSnapshots: rejectIO };
+  const broker: OrderRecorderFactoryDeps['orderSnapshotReadPort'] = { fetchAllOrders: rejectIO };
   return {
     broker,
     calls,

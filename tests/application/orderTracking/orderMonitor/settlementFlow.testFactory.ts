@@ -19,7 +19,7 @@ export function createSettlementRecorder(
   const recorder = createOrderRecorder({
     logger: createLoggerDouble(),
     orderSnapshotReadPort: {
-      fetchSnapshots: async () => {
+      fetchAllOrders: async () => {
         throw new Error('unconfigured settlement recorder snapshot IO');
       },
     },

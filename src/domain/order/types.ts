@@ -19,7 +19,6 @@ import type {
 } from '../../types/risk.js';
 
 import type { OrderTypeConfig } from '../../types/signal.js';
-import type { OrderFact } from '../../types/trade.js';
 
 /** 订单动作所需的行情字段；由执行或换标用例显式选择，不构成查询/交易授权。 */
 type QuoteReadinessRequirement = 'PRICE' | 'PRICE_AND_LOT_SIZE';
@@ -462,20 +461,6 @@ export type ReplaceBlockOwnerSnapshot = Readonly<{
   readonly replaceBlockedUntilAt: OrderMonitorTrackedOrder['replaceBlockedUntilAt'];
   readonly lastPriceUpdateAt: OrderMonitorTrackedOrder['lastPriceUpdateAt'];
 }>;
-
-/** broker 全量快照来源，决定相同订单 history/today 的覆盖优先级，仅用于纯快照择新。 */
-export type OrderSnapshotSource = 'history' | 'today';
-
-/**
- * 合并去重后的订单条目。
- * 类型用途：在按 orderId 合并时同时保留来源与订单内容，供覆盖策略判断。
- * 数据来源：mergeAndDeduplicateOrders 构建。
- * 使用范围：domain/order/orderSnapshotPolicy 的纯快照覆盖判断。
- */
-export type MergedOrderEntry = {
-  readonly source: OrderSnapshotSource;
-  readonly order: OrderFact;
-};
 
 /**
  * durable baseline 恢复事实：累计经济完整，但 V1 baseline 可能未持久化 phase。

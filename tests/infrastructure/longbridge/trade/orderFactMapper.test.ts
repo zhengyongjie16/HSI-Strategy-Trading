@@ -57,7 +57,7 @@ test('every positive-quantity terminal requires its own positive price on the fi
   }
 });
 
-test.each(['history', 'today'] as const)('the first bad positive terminal in %s rejects the snapshot without retry or later-read fallback', async (source) => {
+test.each(['history', 'today'] as const)('a selected bad positive terminal in %s rejects the whole concurrent snapshot without retry or fallback', async (source) => {
   const frame = {
     orderId: 'SNAPSHOT-TERMINAL',
     symbol: 'BULL.HK',
@@ -76,10 +76,10 @@ test.each(['history', 'today'] as const)('the first bad positive terminal in %s 
   const bad = { ...frame, executedPrice: '0' };
   native.setOrderSnapshotReplies(source === 'history' ? [bad] : [], source === 'today' ? [bad] : []);
   const port = native.ports.createOrderSnapshotReadPort({ rateLimiter: { throttle: async () => {} } });
-  const error: unknown = await port.fetchSnapshots().catch((failure: unknown) => failure);
+  const error: unknown = await port.fetchAllOrders().catch((failure: unknown) => failure);
   expect(error).toBeInstanceOf(TypeError);
   expect(error).toMatchObject({ message: '[orderMapper] invalid cumulative execution quantity/price' });
-  expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: source === 'today' ? 1 : 0 });
+  expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
 });
 
 test('open-phase positive quantity without price and negative prices stay structural errors', () => {
@@ -152,6 +152,14 @@ test('rejects missing order identity or provenance instead of inventing ordinary
   const order = sdkOrder();
   Reflect.set(order, 'remark', null);
   expect(() => mapBrokerOrder(order)).toThrow('invalid SDK order identity/provenance');
+});
+
+test('unknown, missing or future SDK side never defaults to BUY or SELL', () => {
+  for (const invalidSide of [OrderSide.Unknown, 999, undefined]) {
+    const order = sdkOrder();
+    Reflect.set(order, 'side', invalidSide);
+    expect(() => mapBrokerOrder(order)).toThrow('unknown SDK execution side');
+  }
 });
 
 test('unknown SDK lifecycle status fails before publishing an OrderFact', () => {

@@ -227,6 +227,26 @@ function createLoadParams(
   };
 }
 
+/** 真实 adapter 场景的中性历史输入；SDK DTO 仅由 infra fixture 生成。 */
+function createStartupSnapshotOrderInput(
+  nowMs: number,
+): Parameters<typeof createBrokerIngressFixture>[0] {
+  return {
+    orderId: 'STARTUP-SNAPSHOT-BUY',
+    symbol: 'BULL.HK',
+    stockName: 'HSI RC',
+    remark: 'AUTO',
+    side: 'BUY',
+    status: 'Canceled',
+    quantity: '10',
+    executedQuantity: '10',
+    submittedPrice: '12',
+    executedPrice: '12',
+    submittedAtMs: nowMs - 10_000,
+    updatedAtMs: nowMs - 1_000,
+  };
+}
+
 async function expectPromiseToRejectWithMessage(
   promise: Promise<unknown>,
   messagePattern: RegExp | string,
@@ -579,6 +599,120 @@ function drainMonitorTasks(
 }
 
 describe('createLoadTradingDayRuntimeSnapshot', () => {
+  for (const missing of ['EXECUTED_PRICE', 'REVISION'] as const) {
+    it(`真实 adapter→recorder→启动 loader：正成交终态 history 缺 ${missing} 被完整 today 覆盖，日损与加载完成`, async () => {
+      const now = new Date('2026-03-13T03:00:00.000Z');
+      const history = createStartupSnapshotOrderInput(now.getTime());
+      const today = {
+        ...history,
+        status: 'Filled' as const,
+        quantity: '5',
+        executedQuantity: '5',
+        submittedPrice: '10',
+        executedPrice: '10',
+        updatedAtMs: now.getTime() - 3_000,
+      };
+      const sell = {
+        ...today,
+        orderId: 'STARTUP-SNAPSHOT-SELL',
+        side: 'SELL' as const,
+        executedPrice: '9',
+        updatedAtMs: now.getTime() - 2_000,
+      };
+      const native = await createBrokerIngressFixture(history);
+      native.setOrderSnapshotReplies([history], [today, sell]);
+      if (missing === 'EXECUTED_PRICE') native.setOrderSnapshotExecutedPriceMissing('history');
+      else native.setOrderSnapshotUpdatedAtAbsent('history', 'OMITTED');
+
+      const recorder = native.createRecorder({
+        logger: createLoggerDouble(),
+        rateLimiter: { throttle: async () => {} },
+        settlementRefreshNeedRecorder: { recordSettlementRefreshNeed: () => {} },
+      });
+      const reads = spyOn(recorder, 'fetchAllOrdersFromAPI');
+      const ready = createReadyTrader();
+      const deps = createBaseDeps({
+        accountService: ready.accountService,
+        orderRecorder: recorder,
+      });
+      const hydrate = spyOn(deps.tradeLogHydrator, 'hydrate');
+      const publish = spyOn(deps.dailyLossTracker, 'publishRecalculation');
+      const result = await createLoadTradingDayRuntimeSnapshot(deps)(
+        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+      );
+      expect(result.status).toBe('COMMITTED');
+      if (result.status !== 'COMMITTED') throw new Error('启动订单快照未完成');
+
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
+      expect(result.allOrders).toHaveLength(2);
+      expect(result.allOrders.find((order) => order.orderId === history.orderId)).toMatchObject({
+        status: 'FILLED',
+        executionPhase: 'TERMINAL',
+        quantity: 5,
+        price: '10',
+        executedQuantity: 5,
+        executedPrice: '10',
+        executedAmount: '50',
+        executionTimeMs: today.updatedAtMs,
+        updatedAtMs: today.updatedAtMs,
+      });
+      expect(deps.dailyLossTracker.getLossOffset('LONG')).toBe('-5');
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(hydrate).toHaveBeenCalledTimes(1);
+      expect(deps.quoteSubscriptionState.allTradingSymbols.has('BULL.HK')).toBeTrue();
+      expect(native.nativeMutations()).toEqual([]);
+    });
+  }
+
+  for (const invalid of ['EXECUTED_PRICE', 'REVISION', 'UNKNOWN_TYPE'] as const) {
+    it(`真实 adapter→recorder→启动 loader：获选 today ${invalid} 在本次订单/Daily 与 hydrate 发布前拒绝`, async () => {
+      const now = new Date('2026-03-13T03:00:00.000Z');
+      const input = createStartupSnapshotOrderInput(now.getTime());
+      const native = await createBrokerIngressFixture(input);
+      native.setOrderSnapshotReplies([input], [input]);
+      if (invalid === 'EXECUTED_PRICE') native.setOrderSnapshotExecutedPriceMissing('today');
+      else if (invalid === 'REVISION') native.setOrderSnapshotUpdatedAtAbsent('today', 'NULL');
+      else native.setOrderSnapshotOrderTypeUnknown('today');
+
+      const recorder = native.createRecorder({
+        logger: createLoggerDouble(),
+        rateLimiter: { throttle: async () => {} },
+        settlementRefreshNeedRecorder: { recordSettlementRefreshNeed: () => {} },
+      });
+      const ready = createReadyTrader();
+      const accountReads = spyOn(ready.accountService, 'getAccountSnapshot');
+      const deps = createBaseDeps({
+        accountService: ready.accountService,
+        orderRecorder: recorder,
+      });
+      const commit = spyOn(recorder, 'commitRebuildSnapshot');
+      const prepare = spyOn(deps.dailyLossTracker, 'prepareRecalculationFromAllOrders');
+      const publish = spyOn(deps.dailyLossTracker, 'publishRecalculation');
+      const holds = spyOn(deps.orderHoldRegistry, 'seedFromOrders');
+      const dispatch = spyOn(deps.seatActivationDispatcher, 'dispatchCurrentActivatingSeats');
+      const hydrate = spyOn(deps.tradeLogHydrator, 'hydrate');
+      const failure: unknown = await createLoadTradingDayRuntimeSnapshot(deps)(
+        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(TypeError);
+      expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
+      // loader 的账户 refresh 本来就先于订单读取；这里只禁止本次业务订单/Daily 发布。
+      expect(accountReads).toHaveBeenCalledTimes(1);
+      expect(commit).not.toHaveBeenCalled();
+      expect(recorder.getExecutionFact(input.orderId)).toBeNull();
+      expect(prepare).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+      expect(holds).not.toHaveBeenCalled();
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(hydrate).not.toHaveBeenCalled();
+      expect(native.nativeMutations()).toEqual([]);
+    });
+  }
+
   it('publishes symbols on the same subscription-state object before awaiting native subscription', async () => {
     const subscribed = Promise.withResolvers<ReadonlyArray<string>>();
     const release = Promise.withResolvers<undefined>();

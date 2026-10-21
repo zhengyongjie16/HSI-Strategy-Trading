@@ -338,9 +338,9 @@ describe('additional private broker controls', () => {
     fixture.setOrderSnapshotSubmittedPriceNull('MO-NULL');
     fixture.setOrderSnapshotSubmittedPriceNull('ELO-NULL');
     expect(fixture.orderSnapshotReadCounts()).toEqual({ history: 0, today: 0 });
-    const orders = await fixture
-      .createApiManager({ rateLimiter: createRateLimiterDouble() })
-      .fetchAllOrdersFromAPI();
+    const orders = await fixture.ports
+      .createOrderSnapshotReadPort({ rateLimiter: createRateLimiterDouble() })
+      .fetchAllOrders();
     expect(orders.map((order) => order.status)).toEqual([
       'UNREPORTED',
       'REPLACEMENT_UNREPORTED',
@@ -377,9 +377,9 @@ describe('additional private broker controls', () => {
     const fixture = await createBrokerIngressFixture(originalFrame());
     fixture.setOrderSnapshotRepliesFromFrozenV1(frozen.orders);
     expect(fixture.orderSnapshotReadCounts()).toEqual({ history: 0, today: 0 });
-    const orders = await fixture
-      .createApiManager({ rateLimiter: createRateLimiterDouble() })
-      .fetchAllOrdersFromAPI();
+    const orders = await fixture.ports
+      .createOrderSnapshotReadPort({ rateLimiter: createRateLimiterDouble() })
+      .fetchAllOrders();
     expect(orders).toHaveLength(2);
     expect(orders[0]).toMatchObject({
       orderId: 'OFFLINE-BUY',
@@ -421,9 +421,9 @@ describe('additional private broker controls', () => {
       },
     ]);
     expect(fixture.orderSnapshotReadCounts().today).toBe(1);
-    const invalid = await fixture
-      .createApiManager({ rateLimiter: createRateLimiterDouble() })
-      .fetchAllOrdersFromAPI()
+    const invalid = await fixture.ports
+      .createOrderSnapshotReadPort({ rateLimiter: createRateLimiterDouble() })
+      .fetchAllOrders()
       .catch((error: unknown) => error);
     expect(invalid).toBeInstanceOf(TypeError);
     expect(invalid).toHaveProperty(

@@ -48,8 +48,8 @@ describe('SDK order ingress validation', () => {
     const reader = native.ports.createOrderSnapshotReadPort({
       rateLimiter: { throttle: async () => {} },
     });
-    const snapshots = await reader.fetchSnapshots();
-    expect(snapshots.todayOrders).toMatchObject([{ remark: '|PL', executionPhase: 'OPEN' }]);
+    const orders = await reader.fetchAllOrders();
+    expect(orders).toMatchObject([{ remark: '|PL', executionPhase: 'OPEN' }]);
   });
 
   it('混合HK+US碎股：非HK订单在严格数量映射前被过滤，不进入管理', async () => {
@@ -59,11 +59,10 @@ describe('SDK order ingress validation', () => {
     expect(await native.ports.createPendingOrdersReader().todayOrders()).toMatchObject([
       { orderId: 'OLD', symbol: 'BULL.HK' },
     ]);
-    const snapshots = await native.ports
+    const orders = await native.ports
       .createOrderSnapshotReadPort({ rateLimiter: { throttle: async () => {} } })
-      .fetchSnapshots();
-    expect(snapshots.historyOrders).toEqual([]);
-    expect(snapshots.todayOrders.map((order) => order.orderId)).toEqual(['OLD']);
+      .fetchAllOrders();
+    expect(orders.map((order) => order.orderId)).toEqual(['OLD']);
   });
 
   it('坏 symbol 结构不当作非HK静默忽略', async () => {

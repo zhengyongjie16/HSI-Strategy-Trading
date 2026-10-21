@@ -1,7 +1,6 @@
-import { wrapExternalApiRequest } from '../../externalApi/index.js';
-
-/** 同一原context订单快照IO边界；core只接收已验证观察，不解析SDK对象。 */
+/** 同一 context 订单快照 IO 边界：先选择原始快照，再向 core 返回严格验证的订单事实。 */
 import { OrderSide, type Order, type TradeContext } from 'longbridge';
+import { wrapExternalApiRequest } from '../../externalApi/index.js';
 import { isValidatedOrderStatus, isValidatedOrderType } from './orderValidation.js';
 import { isHongKongSymbol } from '../../../utils/marketScope.js';
 import { isRecord } from '../../../utils/helpers/index.js';
@@ -136,30 +135,35 @@ function mapSnapshotOrder(order: Order): OrderFact {
 }
 
 /**
- * 先按市场范围过滤明确非HK订单，再执行严格数值/状态映射：
- * 跨市场订单（含碎股小数数量）不属于本系统管理范围，不得因结构差异升级为拒绝。
+ * 仅校验身份并过滤明确非 HK 订单；同一来源的 HK ID 重复必须在跨来源覆盖前拒绝。
+ * 保留原始 SDK 对象，败选观察不触碰金融、状态或修订字段。
  */
-function mapScopedOrders(
+function indexScopedOrders(
   raw: ReadonlyArray<unknown>,
   operation: string,
-): ReadonlyArray<OrderFact> {
-  const scope: OrderFact[] = [];
+): Map<string, unknown> {
+  const ordersById = new Map<string, unknown>();
   for (const order of raw) {
     assertOrderIdentity(order, operation);
-    if (!isHongKongSymbol(order.symbol)) continue;
+    const shouldSkip = !isHongKongSymbol(order.symbol);
+    if (shouldSkip) continue;
 
-    assertValidOrder(order, operation);
-    scope.push(mapSnapshotOrder(order));
+    if (ordersById.has(order.orderId)) {
+      throw new TypeError(`[订单记录] ${operation} 同一来源存在重复订单 ID: ${order.orderId}`);
+    }
+
+    ordersById.set(order.orderId, order);
   }
 
-  return scope;
+  return ordersById;
 }
 
 /**
- * 只装配批准SDK读能力；原两读顺序/limiter/retry与返回后结构验证保持。非pure-conversion/data能力。
- * @param context 原SDKcontext，不创建第二上下文
- * @param deps 原limiter
- * @returns 实际快照IO port，历史优先策略仍由原core owner决定
+ * 同一 context 并行读取 history/today，每次 SDK 尝试均先通过共享限流；只对获选 raw 严格映射。
+ * today 无条件整条覆盖同 ID 的 history，不按更新时间择优或拼接字段。
+ * @param context 原 SDK context，不创建第二上下文
+ * @param deps 已有共享 limiter
+ * @returns 返回最终 HK 订单事实的快照 IO port
  */
 export function createOrderSnapshotReadAdapter(
   context: unknown,
@@ -175,28 +179,41 @@ export function createOrderSnapshotReadAdapter(
   const ctx = context as Pick<TradeContext, 'historyOrders' | 'todayOrders'>;
   const { rateLimiter } = deps;
   return {
-    fetchSnapshots: async () => {
-      await rateLimiter.throttle();
-      const historyOrdersRaw: unknown = await wrapExternalApiRequest({
-        operation: 'TradeContext.historyOrders',
-        request: () =>
-          ctx.historyOrders({
-            endAt: new Date(),
-          }),
-      });
+    fetchAllOrders: async () => {
+      const [historyOrdersRaw, todayOrdersRaw] = await Promise.all([
+        wrapExternalApiRequest<unknown>({
+          operation: 'TradeContext.historyOrders',
+          request: async () => {
+            await rateLimiter.throttle();
+            return ctx.historyOrders({
+              endAt: new Date(),
+            });
+          },
+        }),
+        wrapExternalApiRequest<unknown>({
+          operation: 'TradeContext.todayOrders',
+          request: async () => {
+            await rateLimiter.throttle();
+            return ctx.todayOrders();
+          },
+        }),
+      ]);
       assertOrderArray(historyOrdersRaw, 'TradeContext.historyOrders');
-      // 历史结构先验证再发下一次读：坏返回不得先驱动后续 IO。
-      const historyOrders = mapScopedOrders(historyOrdersRaw, 'TradeContext.historyOrders');
-
-      await rateLimiter.throttle();
-      const todayOrdersRaw: unknown = await wrapExternalApiRequest({
-        operation: 'TradeContext.todayOrders',
-        request: () => ctx.todayOrders(),
-      });
       assertOrderArray(todayOrdersRaw, 'TradeContext.todayOrders');
-      const todayOrders = mapScopedOrders(todayOrdersRaw, 'TradeContext.todayOrders');
 
-      return { historyOrders, todayOrders };
+      const ordersById = indexScopedOrders(historyOrdersRaw, 'TradeContext.historyOrders');
+      const todayOrdersById = indexScopedOrders(todayOrdersRaw, 'TradeContext.todayOrders');
+      for (const [orderId, order] of todayOrdersById) {
+        ordersById.set(orderId, order);
+      }
+
+      return Array.from(ordersById, ([orderId, order]) => {
+        const operation = todayOrdersById.has(orderId)
+          ? 'TradeContext.todayOrders'
+          : 'TradeContext.historyOrders';
+        assertValidOrder(order, operation);
+        return mapSnapshotOrder(order);
+      });
     },
   };
 }

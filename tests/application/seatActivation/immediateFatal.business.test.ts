@@ -41,10 +41,7 @@ describe('SeatActivationWorkflow immediate fatal', () => {
       updatedAtMs: nowMs - 1_000,
     };
     const native = await createBrokerIngressFixture(input);
-    native.setOrderSnapshotReplies(
-      [{ ...input, status: 'Canceled', executedQuantity: '10' }],
-      [],
-    );
+    native.setOrderSnapshotReplies([{ ...input, status: 'Canceled', executedQuantity: '10' }], []);
     const port = native.ports.createOrderSnapshotReadPort({
       rateLimiter: { throttle: async () => {} },
     });
@@ -54,11 +51,11 @@ describe('SeatActivationWorkflow immediate fatal', () => {
     const recorder = createOrderRecorder({
       logger: createLoggerDouble(),
       orderSnapshotReadPort: {
-        fetchSnapshots: async () => {
+        fetchAllOrders: async () => {
           historyEntered.resolve();
           await historyResponse.promise;
           try {
-            return await port.fetchSnapshots();
+            return await port.fetchAllOrders();
           } catch (error) {
             mapperFailure = error;
             throw error;
@@ -92,6 +89,8 @@ describe('SeatActivationWorkflow immediate fatal', () => {
       callPrice: '20000',
     });
     const context = createMonitorContext({ config, symbolRegistry, orderRecorder: recorder });
+    const commit = spyOn(recorder, 'commitRebuildSnapshot');
+    const dailyPublish = spyOn(context.dailyLossTracker, 'publishRecalculation');
     const snapshot = await createSnapshotFixture({
       account: createAccountSnapshotDouble('100000'),
       positions: [],
@@ -222,8 +221,11 @@ describe('SeatActivationWorkflow immediate fatal', () => {
       expect(drained).toBeFalse();
       expect(actualSubscriptions.has('TEMP.HK')).toBeTrue();
       expect(retryCount).toBe(0);
-      expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 0 });
+      expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
       expect(recorder.getExecutionFact(input.orderId)).toBe(known);
+      expect(commit).not.toHaveBeenCalled();
+      expect(dailyPublish).not.toHaveBeenCalled();
+      expect(symbolRegistry.getSeatState('LONG').status).toBe('ACTIVATING');
     } finally {
       unsubscribeResponse.resolve();
       await precedingRelease;

@@ -27,6 +27,7 @@ import {
   mapBrokerOrderPush,
 } from '../../../../src/infrastructure/longbridge/trade/orderMapper.js';
 import type { BrokerOrderSdkFields } from '../../../../src/infrastructure/longbridge/trade/types.js';
+import type { OrderSnapshotMetadataControl } from './types.js';
 import {
   isValidatedOrderSide,
   isValidatedOrderStatus,
@@ -134,11 +135,28 @@ export async function createBrokerIngressFixture(
       today: ReadonlyArray<BrokerIngressInput>,
     ) => void;
     orderSnapshotReadCounts: () => Readonly<{ history: number; today: number }>;
+
+    /** native 已计 issued，回复前才执行；可延迟或抛出原始请求错误。 */
+    setOrderSnapshotBeforeReply: (
+      source: 'history' | 'today',
+      hook: () => Promise<void>,
+    ) => void;
+    setOrderSnapshotExecutedPriceMissing: (source: 'history' | 'today') => void;
+    setOrderSnapshotMetadataInvalid: (
+      source: 'history' | 'today',
+      field: OrderSnapshotMetadataControl['field'],
+      kind: OrderSnapshotMetadataControl['kind'],
+    ) => void;
+    setOrderSnapshotGetterFailure: (
+      source: 'history' | 'today',
+      orderId: string,
+      field: 'orderId' | 'remark',
+      error: Error,
+    ) => void;
     setOrderSnapshotRepliesFromFrozenV1: (orders: unknown) => void;
     setOrderSnapshotNonArray: (source: 'history' | 'today') => void;
     setOrderSnapshotOrderIdMissing: (source: 'history' | 'today') => void;
     setOrderSnapshotSymbolEmpty: (source: 'history' | 'today') => void;
-    setOrderSnapshotSideInvalid: (source: 'history' | 'today') => void;
     setOrderSnapshotQuantitiesMissing: (source: 'history' | 'today') => void;
     setOrderSnapshotOrderTypeUnknown: (source: 'history' | 'today') => void;
     setOrderSnapshotUpdatedAtInvalid: (source: 'history' | 'today') => void;
@@ -146,8 +164,8 @@ export async function createBrokerIngressFixture(
     setOrderSnapshotPriceMalformed: (orderId: string) => void;
     setPendingOrderMetadataInvalid: (
       orderId: string,
-      field: 'side' | 'status' | 'orderType',
-      kind: 'UNKNOWN' | 'NON_MEMBER' | 'MISSING',
+      field: OrderSnapshotMetadataControl['field'],
+      kind: OrderSnapshotMetadataControl['kind'],
     ) => void;
     setOrderSnapshotUpdatedAtAbsent: (
       source: 'history' | 'today',
@@ -521,17 +539,20 @@ export async function createBrokerIngressFixture(
   let todayOrderReplies: OrderDetail[] | null = null;
   const snapshotNullPriceOrderIds = new Set<string>();
   const snapshotMalformedPriceOrderIds = new Set<string>();
-  const pendingInvalidMetadata = new Map<
-    string,
-    Readonly<{ field: 'side' | 'status' | 'orderType'; kind: 'UNKNOWN' | 'NON_MEMBER' | 'MISSING' }>
-  >();
+  const pendingInvalidMetadata = new Map<string, OrderSnapshotMetadataControl>();
   const snapshotMissingId = new Set<'history' | 'today'>();
   const snapshotEmptySymbol = new Set<'history' | 'today'>();
-  const snapshotInvalidSide = new Set<'history' | 'today'>();
   const snapshotMissingQuantities = new Set<'history' | 'today'>();
   const snapshotUnknownType = new Set<'history' | 'today'>();
   const snapshotInvalidUpdatedAt = new Set<'history' | 'today'>();
   const snapshotAbsentUpdatedAt = new Map<'history' | 'today', 'NULL' | 'OMITTED'>();
+  const snapshotBeforeReply = new Map<'history' | 'today', () => Promise<void>>();
+  const snapshotMissingExecutedPrice = new Set<'history' | 'today'>();
+  const snapshotInvalidMetadata = new Map<'history' | 'today', OrderSnapshotMetadataControl>();
+  const snapshotGetterFailures = new Map<
+    'history' | 'today',
+    Readonly<{ orderId: string; field: 'orderId' | 'remark'; error: Error }>
+  >();
   // 仅实际native响应阶段改变指定字段；SDK DTO和非法primitive留在私有边界。
   const applySnapshotControls = (
     source: 'history' | 'today',
@@ -542,7 +563,8 @@ export async function createBrokerIngressFixture(
 
       if (snapshotMalformedPriceOrderIds.has(reply.orderId)) Reflect.set(reply, 'price', {});
 
-      const metadata = pendingInvalidMetadata.get(reply.orderId);
+      const originalOrderId = reply.orderId;
+      const metadata = snapshotInvalidMetadata.get(source) ?? pendingInvalidMetadata.get(reply.orderId);
       if (metadata !== undefined) {
         if (metadata.kind === 'MISSING') Reflect.deleteProperty(reply, metadata.field);
         else {
@@ -555,11 +577,11 @@ export async function createBrokerIngressFixture(
         }
       }
 
+      if (snapshotMissingExecutedPrice.has(source)) Reflect.set(reply, 'executedPrice', null);
+
       if (snapshotMissingId.has(source)) Reflect.set(reply, 'orderId', undefined);
 
       if (snapshotEmptySymbol.has(source)) Reflect.set(reply, 'symbol', '');
-
-      if (snapshotInvalidSide.has(source)) Reflect.set(reply, 'side', 999);
 
       if (snapshotMissingQuantities.has(source)) {
         Reflect.deleteProperty(reply, 'quantity');
@@ -573,6 +595,16 @@ export async function createBrokerIngressFixture(
       const absence = snapshotAbsentUpdatedAt.get(source);
       if (absence === 'NULL') Reflect.set(reply, 'updatedAt', null);
       else if (absence === 'OMITTED') Reflect.deleteProperty(reply, 'updatedAt');
+
+      const failure = snapshotGetterFailures.get(source);
+      if (failure?.orderId === originalOrderId) {
+        Object.defineProperty(reply, failure.field, {
+          configurable: true,
+          get: () => {
+            throw failure.error;
+          },
+        });
+      }
     }
 
     return replies;
@@ -602,12 +634,14 @@ export async function createBrokerIngressFixture(
     },
     historyOrders: async () => {
       historyOrderReads += 1;
+      await snapshotBeforeReply.get('history')?.();
       if (historyOrderReplies === null) return unexpected();
 
       return applySnapshotControls('history', historyOrderReplies);
     },
     todayOrders: async () => {
       todayOrderReads += 1;
+      await snapshotBeforeReply.get('today')?.();
       if (frozenV1Configured) return parseFrozenV1Orders();
 
       if (todayOrderReplies === null) return unexpected();
@@ -788,6 +822,18 @@ export async function createBrokerIngressFixture(
       historyOrderReplies = [];
     },
     orderSnapshotReadCounts: () => ({ history: historyOrderReads, today: todayOrderReads }),
+    setOrderSnapshotBeforeReply: (source, hook) => {
+      snapshotBeforeReply.set(source, hook);
+    },
+    setOrderSnapshotExecutedPriceMissing: (source) => {
+      snapshotMissingExecutedPrice.add(source);
+    },
+    setOrderSnapshotMetadataInvalid: (source, field, kind) => {
+      snapshotInvalidMetadata.set(source, { field, kind });
+    },
+    setOrderSnapshotGetterFailure: (source, orderId, field, error) => {
+      snapshotGetterFailures.set(source, { orderId, field, error });
+    },
     setOrderSnapshotNonArray: (source) => {
       const method = source === 'history' ? 'historyOrders' : 'todayOrders';
       Object.defineProperty(context, method, {
@@ -804,9 +850,6 @@ export async function createBrokerIngressFixture(
     },
     setOrderSnapshotSymbolEmpty: (source) => {
       snapshotEmptySymbol.add(source);
-    },
-    setOrderSnapshotSideInvalid: (source) => {
-      snapshotInvalidSide.add(source);
     },
     setOrderSnapshotQuantitiesMissing: (source) => {
       snapshotMissingQuantities.add(source);
