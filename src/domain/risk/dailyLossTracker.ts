@@ -101,6 +101,14 @@ function resolveTrustedSubmittedAtMs(submittedAt: Date | null | undefined): numb
   return submittedAtMs;
 }
 
+/** 无边界前快照时，完整从零历史或严格晚于边界的可信提交时间才能证明零基线。 */
+function canProveZeroBaseline(fact: DailyLossOrderFact, boundaryExecutedTimeMs: number): boolean {
+  return (
+    fact.historyCompleteFromZero ||
+    (fact.submittedAtMs !== null && fact.submittedAtMs > boundaryExecutedTimeMs)
+  );
+}
+
 /**
  * 构建空状态，避免分支重复初始化。
  *
@@ -455,6 +463,9 @@ function resolveAuthoritativeOrderFactMerge(
     result: { admission: 'ADMITTED', authoritativeFactChanged: true, executionAdvanced },
     nextFact: {
       ...incoming,
+      // 后续累计观察不会补回折叠前缀，也不应抹掉已保留的完整历史与可信提交时间。
+      historyCompleteFromZero: current?.historyCompleteFromZero ?? incoming.historyCompleteFromZero,
+      submittedAtMs: current?.submittedAtMs ?? incoming.submittedAtMs,
       cumulativeAmount: merged.cumulativeAmount,
       factStage: merged.phase,
       lastExecutionTimeMs: merged.executionTimeMs,
@@ -1068,7 +1079,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
       );
 
       if (boundarySnapshot === undefined) {
-        if (!fact.historyCompleteFromZero && fact.lastExecutionTimeMs > boundaryExecutedTimeMs) {
+        if (!canProveZeroBaseline(fact, boundaryExecutedTimeMs)) {
           throw new Error(
             `[DailyLossTracker] orderId=${fact.orderId} 无法精确冻结 protection boundary baseline`,
           );
@@ -1114,7 +1125,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
 
   /**
    * 严格校验持久化 baseline 的订单身份与累计事实单调性后恢复边界。
-   * 只有未持久化且历史折叠的 RawOrder，才能以可信 submittedAt 严格晚于边界证明零基线；
+   * 缺失 baseline 时与冻结共享零基线证明：完整从零历史，或可信 submittedAt 严格晚于边界；
    * 已持久化 baseline 继续由身份、时间与累计单调性校验恢复。
    */
   function assertProtectionBoundary(
@@ -1146,8 +1157,7 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
 
         if (
           persisted === undefined &&
-          !fact.historyCompleteFromZero &&
-          (fact.submittedAtMs === null || fact.submittedAtMs <= prepared.boundaryExecutedTimeMs)
+          !canProveZeroBaseline(fact, prepared.boundaryExecutedTimeMs)
         ) {
           throw new Error(
             `[DailyLossTracker] cannot reconstruct protection boundary baseline: ` +

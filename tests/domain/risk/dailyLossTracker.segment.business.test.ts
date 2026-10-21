@@ -945,64 +945,79 @@ describe('dailyLossTracker segment flow', () => {
     }).not.toThrow();
   });
 
-  it('allows a collapsed post-boundary ordinary BUY to be absent from completion baselines', () => {
+  it('freezes an unrevised strictly post-boundary collapsed BUY and restores the result in a fresh tracker', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
     const finalExecutionMs = boundaryMs + 60_000;
-    recalculateDailyLoss(tracker,
-      [
-        {
-          ...createExecutedOrder({
-            status: 'FILLED',
-            executionStatus: 'FILLED',
-            executionPhase: 'TERMINAL',
-            orderId: 'ORDINARY-BUY-SUBMITTED-AFTER-BOUNDARY',
-            symbol: 'BULL.HK',
-            executionSide: 'BUY',
-            executedPrice: '16',
-            executedAmount: '1600',
-            executedQuantity: 100,
-            updatedAtMs: finalExecutionMs,
-            executionTimeMs: finalExecutionMs,
-          }),
-          submittedAt: new Date(boundaryMs + 1),
-        },
-        createExecutedOrder({
+    const orders = [
+      {
+        ...createExecutedOrder({
           status: 'FILLED',
           executionStatus: 'FILLED',
           executionPhase: 'TERMINAL',
-          orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+          orderId: 'ORDINARY-BUY-SUBMITTED-AFTER-BOUNDARY',
           symbol: 'BULL.HK',
-          executionSide: 'SELL',
-          executedPrice: '9',
-          executedAmount: '360',
-          executedQuantity: 40,
-          updatedAtMs: boundaryMs,
-          executionTimeMs: boundaryMs,
+          executionSide: 'BUY',
+          executedPrice: '16',
+          executedAmount: '1600',
+          executedQuantity: 100,
+          updatedAtMs: finalExecutionMs,
+          executionTimeMs: finalExecutionMs,
         }),
-      ],
-      createMonitor(),
-      new Date(finalExecutionMs),
-      new Map(),
-    );
+        submittedAt: new Date(boundaryMs + 1),
+      },
+      createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
+        orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+        symbol: 'BULL.HK',
+        executionSide: 'SELL',
+        executedPrice: '9',
+        executedAmount: '360',
+        executedQuantity: 40,
+        updatedAtMs: boundaryMs,
+        executionTimeMs: boundaryMs,
+      }),
+    ];
+    recalculateDailyLoss(tracker, orders, createMonitor(), new Date(finalExecutionMs));
+    const prepared = tracker.prepareProtectionBoundary({
+      direction: 'LONG',
+      boundaryExecutedTimeMs: boundaryMs,
+    });
+    expect(prepared.orderBaselines).toEqual([
+      {
+        orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+        symbol: 'BULL.HK',
+        side: 'SELL',
+        cumulativeQuantity: '40',
+        cumulativeAmount: '360',
+        lastExecutionTimeMs: boundaryMs,
+        orderRevisionMs: boundaryMs,
+      },
+    ]);
+    tracker.commitProtectionBoundary(prepared);
 
+    const restarted = createSegmentTracker();
+    recalculateDailyLoss(restarted, orders, createMonitor(), new Date(finalExecutionMs));
     expect(() => {
-      tracker.restoreProtectionBoundary({
-        direction: 'LONG',
-        boundaryExecutedTimeMs: boundaryMs,
-        orderBaselines: [
-          {
-            orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
-            symbol: 'BULL.HK',
-            side: 'SELL',
-            cumulativeQuantity: '40',
-            cumulativeAmount: '360',
-            lastExecutionTimeMs: boundaryMs,
-            orderRevisionMs: boundaryMs,
-          },
-        ],
-      });
+      restarted.restoreProtectionBoundary(prepared);
     }).not.toThrow();
+
+    for (const owner of [tracker, restarted]) {
+      owner.recordCumulativeExecution({
+        direction: 'LONG',
+        orderId: 'ORDINARY-SELL-AFTER-BOUNDARY',
+        symbol: 'BULL.HK',
+        side: 'SELL',
+        executedPrice: '15',
+        executedQuantity: 100,
+        executedTimeMs: finalExecutionMs + 1,
+        orderUpdatedAtMs: finalExecutionMs + 1,
+        factStage: 'TERMINAL',
+      });
+      expect(owner.getLossOffset('LONG')).toBe('-100');
+    }
   });
 
   for (const testCase of [
@@ -1018,6 +1033,10 @@ describe('dailyLossTracker segment flow', () => {
     {
       name: 'submittedAt equal to the boundary',
       resolveSubmittedAt: (boundaryMs: number) => new Date(boundaryMs),
+    },
+    {
+      name: 'submittedAt before the boundary',
+      resolveSubmittedAt: (boundaryMs: number) => new Date(boundaryMs - 1),
     },
   ]) {
     it(`blocks a collapsed ordinary BUY without a strict post-boundary submission proof: ${testCase.name}`, () => {
@@ -1039,7 +1058,8 @@ describe('dailyLossTracker segment flow', () => {
       });
       // 负向场景故意损坏中性事实输入，不放宽领域 Date 契约。
       Reflect.set(unprovenOrder, 'submittedAt', testCase.resolveSubmittedAt(boundaryMs));
-      recalculateDailyLoss(tracker,
+      recalculateDailyLoss(
+        tracker,
         [
           unprovenOrder,
           createExecutedOrder({
@@ -1060,6 +1080,13 @@ describe('dailyLossTracker segment flow', () => {
         new Date(finalExecutionMs),
         new Map(),
       );
+
+      expect(() =>
+        tracker.prepareProtectionBoundary({
+          direction: 'LONG',
+          boundaryExecutedTimeMs: boundaryMs,
+        }),
+      ).toThrow(/无法精确冻结/);
 
       expect(() => {
         tracker.restoreProtectionBoundary({
@@ -1084,21 +1111,25 @@ describe('dailyLossTracker segment flow', () => {
   it('blocks crash-gap completion when a collapsed startup order cannot reconstruct the boundary baseline', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
-        createExecutedOrder({
-          status: 'FILLED',
-          executionStatus: 'FILLED',
-          executionPhase: 'TERMINAL',
-          orderId: 'SELL-COLLAPSED',
-          symbol: 'BULL.HK',
-          executionSide: 'SELL',
-          executedPrice: '0.9',
-          executedAmount: '90',
-          executedQuantity: 100,
-          updatedAtMs: boundaryMs + 60_000,
-          executionTimeMs: boundaryMs + 60_000,
-        }),
+        {
+          ...createExecutedOrder({
+            status: 'FILLED',
+            executionStatus: 'FILLED',
+            executionPhase: 'TERMINAL',
+            orderId: 'SELL-COLLAPSED',
+            symbol: 'BULL.HK',
+            executionSide: 'SELL',
+            executedPrice: '0.9',
+            executedAmount: '90',
+            executedQuantity: 100,
+            updatedAtMs: boundaryMs + 60_000,
+            executionTimeMs: boundaryMs + 60_000,
+          }),
+          submittedAt: new Date(boundaryMs),
+        },
       ],
       createMonitor(),
       new Date(boundaryMs + 60_000),
@@ -1111,6 +1142,377 @@ describe('dailyLossTracker segment flow', () => {
         boundaryExecutedTimeMs: boundaryMs,
       }),
     ).toThrow(/无法精确冻结/);
+  });
+
+  for (const submittedAfterBoundary of [false, true]) {
+    for (const observation of [
+      'duplicate',
+      'older',
+      'revision',
+      'phase',
+      'amount',
+      'growth',
+    ] as const) {
+      it(`preserves collapsed BUY provenance across ${observation}, submitted ${submittedAfterBoundary ? 'after' : 'before'} the boundary`, () => {
+        const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
+        const initialMs = boundaryMs + 60_000;
+        const observedMs = initialMs + 60_000;
+        const submittedAt = new Date(boundaryMs + (submittedAfterBoundary ? 1 : -1));
+        const initialOrder = {
+          ...createExecutedOrder({
+            orderId: 'COLLAPSED-BUY',
+            symbol: 'BULL.HK',
+            executionSide: 'BUY',
+            executionStatus: 'PARTIAL',
+            executionPhase: 'OPEN',
+            status: 'PARTIALLY_FILLED',
+            executedPrice: '10',
+            executedAmount: '400',
+            executedQuantity: 40,
+            updatedAtMs: initialMs,
+            executionTimeMs: initialMs,
+          }),
+          submittedAt,
+        };
+        const tracker = createSegmentTracker();
+        recalculateDailyLoss(tracker, [initialOrder], createMonitor(), new Date(observedMs));
+        const duplicate = observation === 'duplicate' || observation === 'older';
+        const quantity = observation === 'growth' ? 100 : 40;
+        const price = observation === 'amount' ? '11' : '10';
+        const currentRevisionMs =
+          observation === 'duplicate' || observation === 'phase' ? initialMs : observedMs;
+        const revisionMs = observation === 'older' ? initialMs - 1 : currentRevisionMs;
+        const phase = observation === 'phase' ? 'TERMINAL' : 'OPEN';
+        const executionTimeMs = observation === 'growth' ? observedMs : initialMs;
+        const quantityAmount = observation === 'growth' ? '1000' : '400';
+        const expectedAmount = observation === 'amount' ? '440' : quantityAmount;
+        const input: DailyLossCumulativeExecutionInput = {
+          direction: 'LONG',
+          orderId: initialOrder.orderId,
+          symbol: initialOrder.symbol,
+          side: 'BUY',
+          executedPrice: price,
+          executedQuantity: quantity,
+          executedTimeMs: observedMs,
+          orderUpdatedAtMs: revisionMs,
+          factStage: phase,
+        };
+        expect(tracker.recordCumulativeExecution(input)).toEqual({
+          admission: duplicate ? 'DUPLICATE' : 'ADMITTED',
+          authoritativeFactChanged: !duplicate,
+          executionAdvanced: observation === 'growth',
+        });
+
+        expect(tracker.recordCumulativeExecution(input)).toEqual({
+          admission: 'DUPLICATE',
+          authoritativeFactChanged: false,
+          executionAdvanced: false,
+        });
+        const boundary = { direction: 'LONG' as const, boundaryExecutedTimeMs: boundaryMs };
+        if (submittedAfterBoundary) {
+          const prepared = tracker.prepareProtectionBoundary(boundary);
+          expect(prepared.orderBaselines).toEqual([]);
+          tracker.commitProtectionBoundary(prepared);
+          const restarted = createSegmentTracker();
+          const finalOrder: OrderFact & DailyLossOrderSnapshot = {
+            ...initialOrder,
+            executionPhase: phase,
+            status: observation === 'phase' ? 'CANCELED' : initialOrder.status,
+            executedPrice: price,
+            executedAmount: expectedAmount,
+            executedQuantity: quantity,
+            quantity,
+            executionTimeMs,
+            updatedAt: new Date(duplicate ? initialMs : revisionMs),
+            updatedAtMs: duplicate ? initialMs : revisionMs,
+          };
+          recalculateDailyLoss(restarted, [finalOrder], createMonitor(), new Date(observedMs));
+          expect(() => {
+            restarted.restoreProtectionBoundary(prepared);
+          }).not.toThrow();
+          expect(restarted.getLossOffset('LONG')).toBe(tracker.getLossOffset('LONG'));
+        } else {
+          expect(() => tracker.prepareProtectionBoundary(boundary)).toThrow(/无法精确冻结/);
+          expect(() => {
+            tracker.restoreProtectionBoundary({ ...boundary, orderBaselines: [] });
+          }).toThrow(/cannot reconstruct.*COLLAPSED-BUY/);
+        }
+
+        if (observation === 'growth') {
+          expect(
+            tracker.prepareProtectionBoundary({
+              direction: 'LONG',
+              boundaryExecutedTimeMs: initialMs,
+            }).orderBaselines,
+          ).toEqual([
+            {
+              orderId: initialOrder.orderId,
+              symbol: initialOrder.symbol,
+              side: 'BUY',
+              cumulativeQuantity: '40',
+              cumulativeAmount: '400',
+              lastExecutionTimeMs: initialMs,
+              orderRevisionMs: initialMs,
+            },
+          ]);
+        }
+
+        // 拒绝较早边界不抹去真实累计量、合法 revision/phase/金额修订及已知快照。
+        expect(
+          tracker.prepareProtectionBoundary({
+            direction: 'LONG',
+            boundaryExecutedTimeMs: observedMs,
+          }).orderBaselines,
+        ).toEqual([
+          {
+            orderId: initialOrder.orderId,
+            symbol: initialOrder.symbol,
+            side: 'BUY',
+            cumulativeQuantity: String(quantity),
+            cumulativeAmount: expectedAmount,
+            lastExecutionTimeMs: executionTimeMs,
+            orderRevisionMs: duplicate ? initialMs : revisionMs,
+          },
+        ]);
+      });
+    }
+  }
+
+  for (const quantity of [40, 100]) {
+    it(`keeps complete online history when a same-day API snapshot advances to quantity ${quantity}`, () => {
+      const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
+      const initialMs = boundaryMs + 60_000;
+      const finalMs = initialMs + 60_000;
+      const tracker = createSegmentTracker();
+      tracker.resetAll(new Date(initialMs));
+      tracker.recordCumulativeExecution({
+        orderId: 'COMPLETE-BUY',
+        symbol: 'BULL.HK',
+        side: 'BUY',
+        direction: 'LONG',
+        factStage: 'OPEN',
+        executedPrice: '10',
+        executedQuantity: 40,
+        executedTimeMs: initialMs,
+        orderUpdatedAtMs: initialMs,
+      });
+
+      recalculateDailyLoss(
+        tracker,
+        [
+          {
+            ...createExecutedOrder({
+              orderId: 'COMPLETE-BUY',
+              symbol: 'BULL.HK',
+              executionSide: 'BUY',
+              executionStatus: 'PARTIAL',
+              executionPhase: 'OPEN',
+              status: 'PARTIALLY_FILLED',
+              executedPrice: '10',
+              executedAmount: quantity === 40 ? '400' : '1000',
+              executedQuantity: quantity,
+              updatedAtMs: finalMs,
+              executionTimeMs: finalMs,
+            }),
+            submittedAt: new Date(boundaryMs - 1),
+          },
+        ],
+        createMonitor(),
+        new Date(finalMs),
+      );
+
+      // 这里只验证既有完整前缀不被 API 降级，不声称该在线零基线在 fresh API 恢复中可重建。
+      expect(
+        tracker.prepareProtectionBoundary({
+          direction: 'LONG',
+          boundaryExecutedTimeMs: boundaryMs,
+        }).orderBaselines,
+      ).toEqual([]);
+
+      expect(
+        tracker.prepareProtectionBoundary({
+          direction: 'LONG',
+          boundaryExecutedTimeMs: initialMs,
+        }).orderBaselines,
+      ).toEqual([
+        {
+          orderId: 'COMPLETE-BUY',
+          symbol: 'BULL.HK',
+          side: 'BUY',
+          cumulativeQuantity: '40',
+          cumulativeAmount: '400',
+          lastExecutionTimeMs: initialMs,
+          orderRevisionMs: quantity === 40 ? finalMs : initialMs,
+        },
+      ]);
+    });
+  }
+
+  for (const scenario of [
+    {
+      name: 'preserve early trusted submission',
+      initialOffset: -1,
+      incomingOffset: 1,
+      revisionOffset: 1,
+      quantity: 40,
+      accepted: false,
+    },
+    {
+      name: 'preserve late trusted submission',
+      initialOffset: 1,
+      incomingOffset: -1,
+      revisionOffset: 1,
+      quantity: 40,
+      accepted: true,
+    },
+    {
+      name: 'preserve early trusted submission on growth',
+      initialOffset: -1,
+      incomingOffset: 1,
+      revisionOffset: 1,
+      quantity: 100,
+      accepted: false,
+    },
+    {
+      name: 'preserve late trusted submission on growth',
+      initialOffset: 1,
+      incomingOffset: -1,
+      revisionOffset: 1,
+      quantity: 100,
+      accepted: true,
+    },
+    {
+      name: 'fill missing submission on admitted API revision',
+      initialOffset: null,
+      incomingOffset: 1,
+      revisionOffset: 1,
+      quantity: 40,
+      accepted: true,
+    },
+    {
+      name: 'ignore metadata on duplicate API observation',
+      initialOffset: null,
+      incomingOffset: 1,
+      revisionOffset: 0,
+      quantity: 40,
+      accepted: false,
+    },
+    {
+      name: 'ignore metadata on older API observation',
+      initialOffset: null,
+      incomingOffset: 1,
+      revisionOffset: -1,
+      quantity: 40,
+      accepted: false,
+    },
+  ]) {
+    it(`same-day API recalculation must ${scenario.name}`, () => {
+      const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
+      const finalMs = boundaryMs + 60_000;
+      const initialOrder = createExecutedOrder({
+        orderId: 'API-BUY',
+        symbol: 'BULL.HK',
+        executionSide: 'BUY',
+        executionStatus: 'PARTIAL',
+        executionPhase: 'OPEN',
+        status: 'PARTIALLY_FILLED',
+        executedPrice: '10',
+        executedAmount: '400',
+        executedQuantity: 40,
+        updatedAtMs: finalMs,
+        executionTimeMs: finalMs,
+      });
+      Reflect.set(
+        initialOrder,
+        'submittedAt',
+        scenario.initialOffset === null ? null : new Date(boundaryMs + scenario.initialOffset),
+      );
+      const tracker = createSegmentTracker();
+      recalculateDailyLoss(tracker, [initialOrder], createMonitor(), new Date(finalMs));
+      recalculateDailyLoss(
+        tracker,
+        [
+          {
+            ...initialOrder,
+            submittedAt: new Date(boundaryMs + scenario.incomingOffset),
+            executedQuantity: scenario.quantity,
+            executedAmount: scenario.quantity === 40 ? '400' : '1000',
+            executionTimeMs: finalMs + 1,
+            updatedAt: new Date(finalMs + scenario.revisionOffset),
+            updatedAtMs: finalMs + scenario.revisionOffset,
+          },
+        ],
+        createMonitor(),
+        new Date(finalMs + 1),
+      );
+      const boundary = { direction: 'LONG' as const, boundaryExecutedTimeMs: boundaryMs };
+      if (scenario.accepted) {
+        expect(tracker.prepareProtectionBoundary(boundary).orderBaselines).toEqual([]);
+      } else {
+        expect(() => tracker.prepareProtectionBoundary(boundary)).toThrow(/无法精确冻结/);
+        expect(() => {
+          tracker.restoreProtectionBoundary({ ...boundary, orderBaselines: [] });
+        }).toThrow(/cannot reconstruct.*API-BUY/);
+      }
+    });
+  }
+
+  it('does not carry complete history into a new trading day API rebuild', () => {
+    const previousMs = Date.parse('2026-07-10T02:00:00.000Z');
+    const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
+    const finalMs = boundaryMs + 60_000;
+    const tracker = createSegmentTracker();
+    tracker.resetAll(new Date(previousMs));
+    tracker.recordCumulativeExecution({
+      direction: 'LONG',
+      orderId: 'CROSS-DAY-BUY',
+      symbol: 'BULL.HK',
+      side: 'BUY',
+      factStage: 'OPEN',
+      executedPrice: '10',
+      executedQuantity: 40,
+      executedTimeMs: previousMs,
+      orderUpdatedAtMs: previousMs,
+    });
+
+    recalculateDailyLoss(
+      tracker,
+      [
+        {
+          ...createExecutedOrder({
+            orderId: 'CROSS-DAY-BUY',
+            symbol: 'BULL.HK',
+            executionSide: 'BUY',
+            executionStatus: 'FILLED',
+            executionPhase: 'TERMINAL',
+            status: 'FILLED',
+            executedPrice: '10',
+            executedAmount: '1000',
+            executedQuantity: 100,
+            updatedAtMs: finalMs,
+            executionTimeMs: finalMs,
+          }),
+          submittedAt: new Date(previousMs - 1),
+        },
+      ],
+      createMonitor(),
+      new Date(finalMs),
+    );
+
+    expect(() =>
+      tracker.prepareProtectionBoundary({
+        direction: 'LONG',
+        boundaryExecutedTimeMs: boundaryMs,
+      }),
+    ).toThrow(/无法精确冻结/);
+
+    expect(() =>
+      { tracker.restoreProtectionBoundary({
+        direction: 'LONG',
+        boundaryExecutedTimeMs: boundaryMs,
+        orderBaselines: [],
+      }); },
+    ).toThrow(/cannot reconstruct.*CROSS-DAY-BUY/);
   });
 
   it('keeps a pre-boundary partial watermark when an equal terminal revision arrives later', () => {

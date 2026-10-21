@@ -59,6 +59,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
       previous,
       relatedBuyOrderIds,
       sequence,
+      'ONLINE',
     );
     const staged = new Map(executionFacts);
     staged.set(fact.brokerOrderId, entry);
@@ -153,6 +154,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
         staged.get(order.orderId),
         [],
         sequence,
+        'HISTORY',
       );
       const fact = prepared.fact;
       let entry = prepared;
@@ -169,6 +171,7 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
               quantity: fact.cumulativeQuantity,
               executionTimeMs,
               admittedSequence: sequence,
+              origin: 'HISTORY',
               clearedAtSequence: null,
             }),
           ]),

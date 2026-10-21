@@ -89,7 +89,7 @@ export type DailyLossOrderFact = {
   readonly symbol: string;
   readonly side: 'BUY' | 'SELL';
 
-  /** 原始 API submittedAt 的可信毫秒值；null 表示不能证明订单在保护边界后才创建。 */
+  /** 保留首个可信 API submittedAt；后续可信值仅补 null，用于证明订单严格晚于边界创建。 */
   readonly submittedAtMs: number | null;
   readonly factStage: 'OPEN' | 'TERMINAL';
   readonly cumulativeQuantity: number;
@@ -97,6 +97,8 @@ export type DailyLossOrderFact = {
   readonly lastExecutionTimeMs: number;
   readonly orderUpdatedAtMs: number;
   readonly executionSnapshots: ReadonlyArray<DailyLossExecutionSnapshot>;
+
+  /** 首次事实的历史完整性；后续累计修订或增长既不补全折叠前缀，也不丢弃已保留的完整前缀。 */
   readonly historyCompleteFromZero: boolean;
 };
 

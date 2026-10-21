@@ -69,6 +69,7 @@ export function prepareExecutionCommit(
   previous: OwnedExecutionFact | undefined,
   relatedBuyOrderIds: ReadonlyArray<string>,
   admittedSequence: number,
+  origin: ProjectionSliceInput['slice']['origin'],
 ): OwnedExecutionFact {
   if (previous !== undefined && previous.isLongSymbol !== isLongSymbol) {
     throw new Error('[订单记录] 同 broker identity 的方向归属冲突');
@@ -88,6 +89,7 @@ export function prepareExecutionCommit(
         quantity: delta,
         executionTimeMs: fact.executionTimeMs,
         admittedSequence,
+        origin,
         clearedAtSequence: null,
       }),
     ];
@@ -118,7 +120,24 @@ export function prepareExecutionCommit(
   });
 }
 
-/** 所有已消费输入都由同 owner 保存；金额修订重跑原时序/低价优先整笔过滤。 */
+/** 单次整笔扣减保持候选展示顺序；精确金额/时间/ID 优先级由共用策略裁决。 */
+function deductProjectionCandidates(
+  buys: ReadonlyArray<OrderRecord>,
+  sell: OrderRecord,
+): ReadonlyArray<OrderRecord> {
+  if (sell.executedQuantity >= calculateTotalQuantity(buys)) return [];
+
+  const retained = new Set(
+    deductSellQuantityFromBuyOrders(buys, sell.executedQuantity).map((buy) => buy.orderId),
+  );
+  return buys.filter((buy) => retained.has(buy.orderId));
+}
+
+/**
+ * 按成功经济准入位置逐 SELL 重放，只从当前 live ranges 聚合完整 BUY 身份。
+ * 精确关联先于任何时间/总量分区；非关联 SELL 的历史 ONLINE slices 只证明截止序列内的有效范围。
+ * 每次消费立即映回原 range 引用，不从历史 batch 初始候选或已失效 range 回填。
+ */
 export function projectSlices(
   facts: ReadonlyMap<string, OwnedExecutionFact>,
   symbol: string,
@@ -143,80 +162,93 @@ export function projectSlices(
     }
   }
 
-  const record = (input: ProjectionSliceInput): OrderRecord =>
-    Object.freeze({
-      ...factToRecord(input.entry.fact),
-      costAmount: proportionExecutionCost(
-        input.entry.fact.cumulativeAmount,
-        input.slice.quantity,
-        input.entry.fact.cumulativeQuantity,
-      ),
-      executedQuantity: input.slice.quantity,
-      executedTime: input.slice.executionTimeMs,
-    });
-  const inputByRecord = new Map(inputs.map((input) => [record(input), input]));
-  const buyRecords: OrderRecord[] = [];
-  const sellRecords: OrderRecord[] = [];
-  for (const [order, input] of inputByRecord)
-    (input.entry.fact.side === 'BUY' ? buyRecords : sellRecords).push(order);
+  const batches = new Map<number, ProjectionSliceInput[]>();
+  for (const input of inputs) {
+    const sequence = input.slice.admittedSequence;
+    const batch = batches.get(sequence);
+    if (batch === undefined) batches.set(sequence, [input]);
+    else batch.push(input);
+  }
 
-  // 时间区间完全复用重建/Daily 原规则，不能按 Map 或同毫秒 BUY/SELL 到达顺序重算。
-  const survivors = applyFilteringAlgorithm(buyRecords, sellRecords, (beforeSell, sell) => {
-    const input = inputByRecord.get(sell);
-    if (input === undefined) throw new Error('[订单记录] SELL 过滤缺少消费范围');
-
-    const eligible = beforeSell.filter((buy) => {
-      const buyInput = inputByRecord.get(buy);
-      if (buyInput === undefined) throw new Error('[订单记录] BUY 过滤缺少消费范围');
-
-      return (
-        buyInput.slice.clearedAtSequence === null ||
-        buyInput.slice.clearedAtSequence > input.slice.admittedSequence
-      );
-    });
-    const grouped = new Map<string, OrderRecord>();
-    for (const buy of eligible) {
-      const previous = grouped.get(buy.orderId);
-      const quantity = (previous?.executedQuantity ?? 0) + buy.executedQuantity;
-      if (!Number.isSafeInteger(quantity)) throw new RangeError('[订单记录] 过滤范围数量越界');
-
-      grouped.set(buy.orderId, {
-        ...buy,
-        executedQuantity: quantity,
-        costAmount: exactAdd(previous?.costAmount ?? '0', buy.costAmount),
-        executedTime: Math.max(previous?.executedTime ?? 0, buy.executedTime),
-      });
+  let survivors: ReadonlyArray<ProjectionSliceInput> = [];
+  for (const [sequence, batch] of [...batches].sort(([left], [right]) => left - right)) {
+    const buys: ProjectionSliceInput[] = [];
+    const historySells: ProjectionSliceInput[] = [];
+    const onlineSells: ProjectionSliceInput[] = [];
+    for (const input of batch) {
+      if (input.entry.fact.side === 'BUY') buys.push(input);
+      else if (input.slice.origin === 'HISTORY') historySells.push(input);
+      else onlineSells.push(input);
     }
 
-    const eligibleRecords = [...grouped.values()];
-    if (sell.executedQuantity >= calculateTotalQuantity(eligibleRecords)) return [];
+    historySells.sort((left, right) => left.slice.executionTimeMs - right.slice.executionTimeMs);
+    let lastHistoricalFilter: ProjectionSliceInput | undefined;
+    for (const input of historySells) {
+      if (input.entry.relatedBuyOrderIds.length === 0) lastHistoricalFilter = input;
+    }
 
-    const related = input.entry.relatedBuyOrderIds;
-    if (related.length > 0) return eligible.filter((buy) => !related.includes(buy.orderId));
-
-    const retained = new Set(
-      deductSellQuantityFromBuyOrders(eligibleRecords, sell.executedQuantity).map(
-        (survivor) => survivor.orderId,
-      ),
+    survivors = [...survivors, ...buys].filter(
+      ({ slice }) => slice.clearedAtSequence === null || slice.clearedAtSequence > sequence,
     );
-    return eligible.filter((buy) => retained.has(buy.orderId));
-  });
-  return survivors.flatMap((survivor) => {
-    const input = inputByRecord.get(survivor);
-    if (input === undefined) throw new Error('[订单记录] 幸存 BUY 缺少消费范围');
 
-    return input.slice.clearedAtSequence === null ? [input] : [];
-  });
+    for (const input of [...historySells, ...onlineSells]) {
+      const related = input.entry.relatedBuyOrderIds;
+      if (related.length > 0) {
+        // settlement 已证明的选择不可重新匹配；关联范围不存在也不得 fallback 普通扣减。
+        survivors = survivors.filter(({ brokerOrderId }) => !related.includes(brokerOrderId));
+        continue;
+      }
+
+      const sell = {
+        ...factToRecord(input.entry.fact),
+        executedQuantity: input.slice.quantity,
+        executedTime: input.slice.executionTimeMs,
+      };
+      const records = aggregateBuySlices(survivors);
+      let onlineCut = 0;
+      for (const slice of input.entry.projectionSlices) {
+        if (slice.origin === 'ONLINE') onlineCut = Math.max(onlineCut, slice.admittedSequence);
+      }
+
+      // 来源只能在完整身份聚合后判定；证据必须属于此刻仍有效的 range，而非历史上的同 ID。
+      const onlineIds = new Set(
+        survivors
+          .filter(({ slice }) => slice.origin === 'ONLINE' || slice.admittedSequence <= onlineCut)
+          .map(({ brokerOrderId }) => brokerOrderId),
+      );
+      const historicalBuys = records.filter((buy) => !onlineIds.has(buy.orderId));
+      let onlineRemaining = records.filter((buy) => onlineIds.has(buy.orderId));
+      let historicalRemaining = applyFilteringAlgorithm(historicalBuys, [sell], (beforeSell) => {
+        const retained = deductProjectionCandidates([...beforeSell, ...onlineRemaining], sell);
+        onlineRemaining = retained.filter((buy) => onlineIds.has(buy.orderId));
+        return retained.filter((buy) => !onlineIds.has(buy.orderId));
+      });
+      if (input.slice.origin === 'HISTORY' && input !== lastHistoricalFilter) {
+        // 历史批次中先保留旧候选、再追加未来区间；最后一轮才将 M0 放到最前，保持旧展示次序。
+        historicalRemaining = [
+          ...historicalRemaining.filter((buy) => buy.executedTime < sell.executedTime),
+          ...historicalRemaining.filter((buy) => buy.executedTime > sell.executedTime),
+        ];
+      }
+
+      const retained = new Map<string, ProjectionSliceInput[]>(
+        [...historicalRemaining, ...onlineRemaining].map((buy) => [buy.orderId, []]),
+      );
+      for (const live of survivors) retained.get(live.brokerOrderId)?.push(live);
+
+      survivors = [...retained.values()].flat();
+    }
+  }
+
+  return survivors.filter(({ slice }) => slice.clearedAtSequence === null);
 }
 
-/** survivor 展示列表按 broker ID 合并；成本依据始终是精确金额与安全数量。 */
-export function projectRecords(
-  facts: ReadonlyMap<string, OwnedExecutionFact>,
-  symbol: string,
-  isLongSymbol: boolean,
+/** 过滤和展示使用同一个 broker identity 聚合；仅合并传入的有效范围，不扩展消费资格。 */
+function aggregateBuySlices(
+  inputs: ReadonlyArray<ProjectionSliceInput>,
 ): ReadonlyArray<OrderRecord> {
   const records = new Map<string, OrderRecord>();
-  for (const input of projectSlices(facts, symbol, isLongSymbol)) {
+  for (const input of inputs) {
     const amount = proportionExecutionCost(
       input.entry.fact.cumulativeAmount,
       input.slice.quantity,
@@ -238,4 +270,13 @@ export function projectRecords(
   }
 
   return [...records.values()];
+}
+
+/** survivor 展示列表按 broker ID 合并；成本依据始终是精确金额与安全数量。 */
+export function projectRecords(
+  facts: ReadonlyMap<string, OwnedExecutionFact>,
+  symbol: string,
+  isLongSymbol: boolean,
+): ReadonlyArray<OrderRecord> {
+  return aggregateBuySlices(projectSlices(facts, symbol, isLongSymbol));
 }

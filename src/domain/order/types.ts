@@ -250,11 +250,12 @@ export interface OrderDailyLossAnalysisDeps {
   };
 }
 
-/** 同 broker identity 的已消费增量范围；主动 clear 仅作用于当时实际存活的范围。 */
+/** 同 broker identity 的经济增量范围；来源和准入位置固定。slice 不是独立订单，clear 仅标记当时幸存范围。 */
 type ExecutionProjectionSlice = {
   readonly quantity: number;
   readonly executionTimeMs: number;
   readonly admittedSequence: number;
+  readonly origin: 'ONLINE' | 'HISTORY';
   readonly clearedAtSequence: number | null;
 };
 
@@ -267,7 +268,7 @@ export type OwnedExecutionFact = {
   readonly relatedBuyOrderIds: ReadonlyArray<string>;
 };
 
-/** 纯重算中的私有 slice 引用；同 broker ID 保留，不生成 LOCAL identity。 */
+/** 纯重算中的私有 slice 引用；每轮只聚合当前位置尚存的同 broker ID 范围，不复活已消费范围。 */
 export type ProjectionSliceInput = {
   readonly brokerOrderId: string;
   readonly entry: OwnedExecutionFact;
