@@ -1730,11 +1730,12 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:BAD_UPDATED_AT');
       },
-      waitCondition: () => fatalErrors.length === 1,
+      waitCondition: () => fatalErrors.length === 2,
       timeoutMs: 500,
     });
 
-    expect(fatalErrors).toHaveLength(1);
+    expect(fatalErrors).toHaveLength(2);
+    expect(fatalErrors[1]).toBe(queryFailure);
     const fatalError = fatalErrors[0];
     if (!(fatalError instanceof Error)) {
       throw new Error('expected DailyLossTracker failure to reach the fatal channel');
@@ -1870,11 +1871,12 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:UNOWNED_KNOWN_SIDE');
       },
-      waitCondition: () => fatalErrors.length === 1,
+      waitCondition: () => fatalErrors.length === 2,
       timeoutMs: 500,
     });
 
     const fatalError = fatalErrors[0];
+    expect(fatalErrors[1]).toBe(fatalError);
     if (!(fatalError instanceof Error)) {
       throw new Error('expected DailyLossTracker ownership failure to reach the fatal channel');
     }
@@ -2001,12 +2003,13 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:INVALID_EXECUTION');
       },
-      waitCondition: () => fatalErrors.length === 1,
+      waitCondition: () => fatalErrors.length === 2,
       timeoutMs: 500,
     });
 
-    expect(fatalErrors).toHaveLength(1);
+    expect(fatalErrors).toHaveLength(2);
     const fatalError = fatalErrors[0];
+    expect(fatalErrors[1]).toBe(fatalError);
     if (!(fatalError instanceof Error)) {
       throw new Error('expected malformed execution fact to reach the fatal channel');
     }
@@ -2179,13 +2182,14 @@ describe('monitorTaskProcessor business flow', () => {
         pushTask: () => {
           scheduleSeatRefreshTask(queue, `SEAT_REFRESH:LONG:UNKNOWN_SIDE:${unknownSideCase.label}`);
         },
-        waitCondition: () => fatalErrors.length === 1,
+        waitCondition: () => fatalErrors.length === 2,
         timeoutMs: 500,
       });
 
       expect(ingress.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
       expect(ingress.nativeMutations()).toEqual([]);
-      expect(fatalErrors[0]).toBe(queryFailure);
+      expect(fatalErrors).toHaveLength(2);
+      expect(fatalErrors[1]).toBe(queryFailure);
       const fatalError = fatalErrors[0];
       const refreshWasBlocked = fatalError instanceof Error && fatalError === queryFailure;
 
@@ -2353,7 +2357,7 @@ describe('monitorTaskProcessor business flow', () => {
         pushTask: () => {
           scheduleSeatRefreshTask(queue, `SEAT_REFRESH:LONG:RELATED:${relatedOrderCase.label}`);
         },
-        waitCondition: () => fatalErrors.length === 1,
+        waitCondition: () => fatalErrors.length === 2,
         timeoutMs: 500,
       });
 
@@ -2362,6 +2366,7 @@ describe('monitorTaskProcessor business flow', () => {
       if (isUnknownSide) expect(fatalErrors[0]).toBe(queryFailure);
 
       const fatalError = fatalErrors[0];
+      expect(fatalErrors[1]).toBe(fatalError);
       const preflightBlocked =
         fatalError instanceof Error &&
         (isUnknownSide
@@ -2887,11 +2892,12 @@ describe('monitorTaskProcessor business flow', () => {
       pushTask: () => {
         scheduleSeatRefreshTask(queue, 'SEAT_REFRESH:LONG:FAIL');
       },
-      waitCondition: () => fatalErrors.length === 1,
+      waitCondition: () => fatalErrors.length === 2,
       timeoutMs: 500,
     });
 
-    expect(fatalErrors).toHaveLength(1);
+    expect(fatalErrors).toHaveLength(2);
+    expect(fatalErrors[1]).toBe(fatalErrors[0]);
     expect(fatalErrors[0]).toBeInstanceOf(Error);
     expect(getQuotesCalls).toBe(1);
     expect(context.symbolRegistry.getSeatState('LONG')).toMatchObject({

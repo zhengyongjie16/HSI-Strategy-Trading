@@ -775,7 +775,7 @@ describe('orderMonitor eventFlow', () => {
   });
 
   it.each([null, 0] as const)(
-    'equal-quantity terminal revision preserves the existing valid price when incoming price is %s',
+    'equal-quantity terminal rejects incoming price %s before any settlement or tracked mutation',
     async (incomingPrice) => {
       const runtime = createRuntimeStore();
       const trackedOrder = await createTrackedOrder({
@@ -822,20 +822,13 @@ describe('orderMonitor eventFlow', () => {
       if (incomingPrice === null) terminalEvent.native.setPushExecutedPriceMissing();
       else terminalEvent.native.setPushExecutedPriceText(String(incomingPrice));
 
-      eventFlow.handleOrderChangedWhenActive(terminalEvent);
+      const before = structuredClone(trackedOrder);
+      expect(() => { eventFlow.handleOrderChangedWhenActive(terminalEvent); }).toThrow(TypeError);
 
-      expect(settlements).toEqual([
-        {
-          orderId: 'ORDER-EQUAL-QTY-TERMINAL',
-          closedReason: 'FILLED',
-          source: 'WS',
-          executedPrice: '1',
-          executedAmount: exactMultiply('1', '40'),
-          executedQuantity: 40,
-          executedTimeMs: 100,
-          orderUpdatedAtMs: 200,
-        },
-      ]);
+      expect(settlements).toEqual([]);
+      expect(trackedOrder).toEqual(before);
+      expect(runtime.queriedTerminalStateByOrderId.size).toBe(0);
+      expect(runtime.closedOrderIds.size).toBe(0);
     },
   );
 
@@ -1471,6 +1464,8 @@ describe('orderMonitor eventFlow', () => {
       symbol: 'BULL.HK',
       side: 'BUY',
       status: 'FILLED',
+      executedQuantity: 100,
+      executedPrice: '1',
       executionTimeMs: Date.now(),
     });
     eventFlow.handleOrderChanged(nativeFrame25);
@@ -1735,6 +1730,8 @@ describe('orderMonitor eventFlow', () => {
       symbol: 'BULL.HK',
       side: 'BUY',
       status: 'FILLED',
+      executedQuantity: 100,
+      executedPrice: '1',
       executionTimeMs: Date.now(),
     });
     eventFlow.handleOrderChangedWhenActive(nativeFrame30);

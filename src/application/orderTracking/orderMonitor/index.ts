@@ -8,10 +8,7 @@
  */
 
 import { recordOrderTerminalConfirmation } from './orderObservation.js';
-import {
-  assertProtectiveSellRawTerminalStateFactsReady,
-  normalizeTerminalStateSnapshot,
-} from '../../../domain/order/orderFactMerge.js';
+import { normalizeTerminalStateSnapshot } from '../../../domain/order/orderFactMerge.js';
 import { isOpenOrderReadStatus } from '../../../domain/order/orderReadLifecycle.js';
 import { buildOrderMonitorConfig } from '../../../domain/order/orderTrackingPolicy.js';
 import type {
@@ -25,6 +22,7 @@ import type { OrderPushDecoder } from '../../../types/orderPushPorts.js';
 import type { OrderStateChangedEvent } from '../../../types/orderTracking.js';
 import type { TradeMutationPermit } from '../../../types/rateLimit.js';
 import type { OrderFact } from '../../../types/trade.js';
+import { isExternalApiRequestError } from '../../../utils/apiFailure/index.js';
 import type {
   CancelOrderOutcome,
   DoomsdayCancelOrderOutcome,
@@ -116,7 +114,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
   let orderIngressGeneration = 0;
   const activePublicOperations = new Set<Promise<unknown>>();
 
-  /** 公共operation ledger包含实际query/replace/cancel的整个等待链，而非只SDK invoke。 */
+  /** 公共操作覆盖完整等待链；内部错误立即关闭准入，原 Promise 仍向调用方传错并负责排空。 */
   function registerPublicOperation<T>(operation: () => Promise<T>): Promise<T> {
     const promise = operation();
     activePublicOperations.add(promise);
@@ -124,8 +122,9 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       () => {
         activePublicOperations.delete(promise);
       },
-      () => {
+      (error: unknown) => {
         activePublicOperations.delete(promise);
+        if (!isExternalApiRequestError(error)) termination.reportFatalError(error);
       },
     );
     return promise;
@@ -380,13 +379,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     trackedOrder: OrderMonitorTrackedOrder,
     terminalState: TerminalStateSnapshot,
   ) {
-    assertProtectiveSellRawTerminalStateFactsReady(trackedOrder, terminalState);
-    const isProtectiveSell = trackedOrder.side === 'SELL' && trackedOrder.isProtectiveLiquidation;
-    const normalizedTerminalState = normalizeTerminalStateSnapshot(
-      trackedOrder,
-      terminalState,
-      isProtectiveSell,
-    );
+    const normalizedTerminalState = normalizeTerminalStateSnapshot(trackedOrder, terminalState);
     recordOrderTerminalConfirmation(
       { runtime, diagnostics: deps.diagnostics, now },
       {
@@ -528,9 +521,18 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
     permit: TradeMutationPermit,
     quantity?: number | null,
   ) {
-    const result = await registerPublicOperation(() =>
-      orderOps.replaceOrderPriceWithPermit(orderId, newPrice, request, permit, quantity),
-    );
+    const result = await registerPublicOperation(async () => {
+      const outcome = await orderOps.replaceOrderPriceWithPermit(
+        orderId,
+        newPrice,
+        request,
+        permit,
+        quantity,
+      );
+      return outcome.kind === 'POST_FAILURE_CONFIRMATION_REQUIRED'
+        ? outcome
+        : settleReplaceOutcome(orderId, outcome);
+    });
     if (result.kind === 'POST_FAILURE_CONFIRMATION_REQUIRED') {
       return {
         kind: 'POST_FAILURE_CONFIRMATION_REQUIRED' as const,
@@ -542,7 +544,7 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
       };
     }
 
-    return settleReplaceOutcome(orderId, result);
+    return result;
   }
 
   /** 只在实际query完成后同步结算，绝不在外层FIFO内启动后继query。 */

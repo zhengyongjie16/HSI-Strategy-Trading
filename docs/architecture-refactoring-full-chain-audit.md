@@ -2,7 +2,7 @@
 
 ## summary
 
-**结论：B01 已由用户明确授权，不作为问题或验收阻塞；其余 F01–F08 仍需处理，当前分支尚不能通过本次审计验收。**
+**原审计结论（受审版本 `2b67d36`）：B01 已由用户明确授权，不作为问题或验收阻塞；其余 F01–F08 仍需处理，该受审版本尚不能通过本次审计验收。** F03 工作区实施与离线验证见[本轮补记](#f03-implementation-verification)，不代表 F05 或全报告各项已修。
 
 经分领域首审和另一子代理独立二次复核，确认 **8 项实现／失败协议问题：1 项 critical、7 项 major**。**B01（末日保留旧 SELL、仅新增 available）已由用户明确确认为授权业务改动，不计入问题、严重性统计或验收阻塞，仅保留行为变更记录。**此外，4 类有改进依据或方案明示的行为变化单独登记，不混作已证实的新算法缺陷。
 
@@ -14,7 +14,7 @@
 - **规格依据**：`docs/architecture/architecture-refactoring-implementation-plan.md`；只针对授权、历史条款交叉检查其直接引用的设计文档，没有扩大到无关文档。
 - **执行方式**：10 个通用子代理会话，显式配置均为 `cliproxyapi/gpt-6.1-sol / thinking=max`，已通过本地进程／会话配置核实；不声称验证了服务端隐藏路由。主代理只协调和汇总，不承担源码结论的首审或二审。
 - **置信度**：下列具名反例及根因 high；任意外部时序、所有状态组合和生产发布安全的穷尽结论未建立。没有实盘事故或真实损失的断言。
-- **只读边界**：未修改生产源码、测试、配置或原方案，未切换分支、reset、merge，未连接实盘。本文件为新增审计文档。多数探针／验证在 TEMP 隔离目录运行；一组定向测试的默认 preload 更新了被忽略的 `tests/logs`，不能声称文件系统完全无副作用，未擅自清理这些日志。
+- **原审计只读边界**：未修改生产源码、测试、配置或原方案，未切换分支、reset、merge，未连接实盘。本文件为新增审计文档。多数探针／验证在 TEMP 隔离目录运行；一组定向测试的默认 preload 更新了被忽略的 `tests/logs`，不能声称文件系统完全无副作用，未擅自清理这些日志。
 
 ### 总表与去重
 
@@ -22,7 +22,7 @@
 |---|---|---|---|---|
 | F01 | OE-001 | **critical** | 在线 SELL 投影遗漏同毫秒剩余 BUY，浮亏保护与智能平仓结果错误 | validation |
 | F02 | G5-RA01 | major | 无新增成交的修订覆盖历史来源，保护 completion 写出后自身恢复拒绝 | seat-selection |
-| F03 | OE-002 | major | 已结束订单的特定重复／乱序观察触发全局 fatal | validation |
+| F03 | OE-002 | major | 正成交终态首次缺价额被 known 掩盖；closed 同证据迟到 OPEN 误触发阶段回退 fatal | validation |
 | F04 | OE-005 | major | cancel／replace 一般外部拒绝被扩为 UNKNOWN fatal | market-strategy |
 | F05 | INF-C1、INF-C2、G3-C3 | major | 完整事实校验先于观察择优和消费范围选择，扩大启动／激活／推送失败范围 | recheck-ingress |
 | F06 | G3-C1 | major | 距离换标缩减合法普通卖单对应回补预算，同卖出200却回补200→80 | recheck-switch |
@@ -90,27 +90,51 @@ F05 的三个主子场景及同根旁支只计一个根因；V-C6 不另计；V-
 
 **限定**：完全重复观察不会触发；数量真正增长时旧版已有incoming来源问题，不算本次新增。**二审**：`audit-recheck-risk-boundary.md`，4类观察×2版本共8组执行，另4组当前真实链路，真实隔离JSONL写读。**维度**：实现、类型／来源契约、测试、需求。
 
-### F03｜已结束订单的特定重复／乱序消息被升级为全局 fatal
+### F03｜正成交终态首次准入失守，closed 同证据迟到 OPEN 误触发阶段回退
 
-**当前位置**：`src/application/orderTracking/orderMonitor/eventFlow.ts:97-170`；`src/domain/order/executionFact.ts:101-112`；fatal出口 `orderMonitor/index.ts:582-606`。
+**直接链路（原受审版本 `2b67d36`，行号随修复变动）**：`src/infrastructure/longbridge/trade/orderMapper.ts` → `src/domain/order/orderFactMerge.ts` → `src/application/orderTracking/orderMonitor/eventFlow.ts`；共享裁决 `src/domain/order/executionFact.ts`；fatal出口 `orderMonitor/index.ts`。
 
-**旧版依据**：`develop:src/core/trader/orderMonitor/eventFlow.ts:94-105`，无tracked直接返回，不重新处理closed旧观察。
+**最新复核准则（本轮实施与验证见[补记](#f03-implementation-verification)）**：本次原始量价／金额证据不完整的正成交终态，必须在**第一次**准入时 fatal；不能凭同量或 known 完整继承旧价／旧额。金额可以合法修订，数量相同不足以证明本次经济事实未变。closed 的严格事实校验不是此类异常的根因，不得放宽它来容忍第二次消息。
 
-**根因**：当前增加“已无tracking但recorder仍有事实”的合法修订入口，却未保留弱观察／普通资源终态重复的收口规则：价格完整性校验在旧revision判定前；弱OPEN仅覆盖OPEN→OPEN，不覆盖已settle/detach后的同revision OPEN。
+**旧版依据及边界**：`develop:src/core/trader/orderMonitor/eventFlow.ts:94-105` 无tracked直接返回，可说明closed旧观察的历史收口，但不能授权正成交终态缺价额时沿用known。
 
-**独立复现**：
+**原受审版本的根因分为两个子场景**：
 
-1. 普通BUY PartialFilled100@1 → 同量Filled原始价0（mapper映为缺价）→ 再次完全相同Filled。第一次在tracked路径可凭known完整经济事实关闭资源；重复在closed路径却fatal。
-2. 普通SELL部分成交后Canceled并真实settle/detach，再收到同revision PartialFilled，触发 `TERMINAL -> OPEN` fatal。
-3. 完整的更旧revision OPEN被忽略；尚由timeout owner保留tracked的终态，再收到同revision OPEN，两版均不fatal。合法更高revision金额修订仍正常更新，不能一律丢弃closed事件。
+1. mapper允许普通正成交终态把原始零价转为缺价；domain的普通同量终态旁路再用known价格、金额完成结算，首次异常被掩盖。closed重复才因完整性校验fatal，错误被推迟到第二次。
+2. 新增“已无tracking但recorder仍有事实”的合法修订入口后，真实settle/detach后的同revision迟到OPEN进入共享阶段回退校验；没有在closed入站窄范围丢弃证据完整且与已接受终态身份、revision、数量、金额均相同的观察。
 
-**影响**：确认普通重放可关闭全局交易及生产准入；不是重复成交或持仓被重复扣减。其他订单的跟进／保护停止是潜在后果。
+**历史独立复现（保留证据，旧验收前提已被替代）**：
 
-**最小修复方向**：closed入口先区分不能重开资源的弱／旧观察、已known吸收的普通终态重复与真实新经济修订，再走严格事实owner。保留保护性原始证据要求、真实增量缺价拒绝及合法closed修订，不删全局阶段回退校验。
+1. 普通BUY PartialFilled100@1 → 同量Filled原始价0（mapper映为缺价）→ 再次完全相同Filled。受审版本第一次tracked借known关闭资源，第二次closed fatal；**第一次成功结算本身即违反最新准则**，不能把“第二次不fatal”作为此输入的修复目标。
+2. 普通SELL部分成交后Canceled并真实settle/detach，再收到同revision PartialFilled，触发 `TERMINAL -> OPEN` fatal。允许丢弃的范围以以下完整同证据条件为准，不能仅凭同revision放行。
+3. 完整的更旧revision OPEN被忽略；尚由timeout owner保留tracked的终态收到同revision OPEN，两版均不fatal。这是历史控制，不授权异常正成交终态沿用known；合法更高revision金额修订仍须保留，不能一律丢弃closed事件。
 
-**回归验证**：必须真实settle/detach，和仍tracked的timeout控制组分开；覆盖同／旧／新revision、缺价／零价普通终态、合法金额修订，断言无重复terminal、hold释放、经济消费。现有tracked no-reopen测试不能证明detached入口正确。
+**影响**：首条异常正成交终态被旧事实掩盖并完成结算，错误直到重复观察才暴露；另一个子场景则将合法同证据迟到OPEN升级为全局退出。未证实重复成交或重复扣减；其他订单的跟进／保护停止是潜在后果。
 
-**二审**：`audit-recheck-order-facts.md`。**维度**：实现、类型（经济phase≠tracking生命周期）、测试、需求。
+**F03 修复准则（本轮已实施，验证见补记）**：
+
+- **异常正成交终态首次fatal**：mapper与domain都必须拒绝本次原始数量、价格或金额缺失／零／无效的正成交终态，保留有效revision／时间要求；普通BUY／SELL与保护SELL均不得借known价额完成结算。不得重试、补查、等待第二次消息或在closed兜底。真实零成交的非Filled终态仍正常关闭，不能把Filled伪作零成交。
+- **closed只窄范围丢弃迟到OPEN**：仅在已无tracking、已有TERMINAL事实，且入站证据完整、broker身份（orderId／symbol／side及归属）匹配、同revision、同累计数量、同累计金额时丢弃；不重开资源、不发布经济变化、不重复settle。共享事实owner的阶段回退拒绝保持，不能把此入口过滤扩为一般 `TERMINAL -> OPEN` 放行。
+- 保留完整旧revision非增量的既有stale处理与合法同量金额修订；缺证据不能借“旧revision／同量”绕过首次校验。
+
+**回归验收准则（本轮离线结果见[补记](#f03-implementation-verification)）**：真实mapper→Monitor的第一条缺失／零／无效价额正成交终态即fatal，结算前无副作用；domain直接调用及state-check也不能沿用known。另须真实settle/detach验证完整同证据迟到OPEN被丢弃，并与仍tracked的timeout控制组分开；身份冲突仍拒绝，除完整旧revision非增量的stale外，未满足窄丢弃条件的阶段回退仍拒绝。覆盖普通BUY／SELL、保护SELL、真实零成交非Filled、完整旧revision非增量和合法closed金额修订，断言无重复terminal、hold释放或经济消费。
+
+**二审**：`audit-recheck-order-facts.md` 为历史证据，不能用其原有通过结果证明最新首次 fatal 准则；本轮全链路二审及原两位 reviewer 的独立复验均已完成，F03 无剩余代码发现，离线结果与边界见[补记](#f03-implementation-verification)。**维度**：实现、类型（经济phase≠tracking生命周期）、测试、需求。
+
+<a id="f03-implementation-verification"></a>
+
+#### 本轮实施与验证补记（仅 F03）
+
+基线 HEAD：`353b621f46120dc20bf7aec57949c3f73234a83f`；以下为其工作区修复的离线证据，不改写 `2b67d36` 原审计结论，也不代表 F05 或全报告各项已修。
+
+- **实施**：已删除 mapper 正量终态缺价豁免，以及 domain 缺证据时借 known 补价收口；统一本次原始数量、价格、金额及有效 revision 准入，先于 stale／known／已终态过滤及任何资源／经济／durable 副作用。`Filled + Q=0` 矛盾终态也已由 mapper、domain 两处 guard 首次拒绝，不会先落终态再以 `handled:false` 忽略后续有效成交；真实零成交的非 Filled（如 `Canceled／Rejected`）继续合法。
+- **边界**：closed 仅忽略已无 tracking、已有 TERMINAL 事实，且本次证据完整、完整 identity（orderId／symbol／side／归属）匹配、同 revision、同累计数量及金额的迟到 OPEN 重放；其他坏证据首次拒绝，全局 phase guard 不变。完整旧 revision 非增量、合法同量金额修订及 `T=null` 时本次有效 revision 代理模型均保留。
+- **全链路二审闭环**：发现并最小修复 Monitor 公共 operation 等待 fanout 等其他 I/O 后才 fatal、seatActivation 等待 `finally release` 后才 fatal 的时序问题；两者均复用现成 termination，先关闭双 gate 再排空，首错不变，外部 API 失败政策不变。原两位 reviewer 已独立复验全部关闭，F03 无剩余代码发现。
+- **最终全仓离线总览**：`bun --no-env-file test --preload ./tests/setup/testRuntime.ts`，启用 `OfflineSdkGuard`，使用临时 `APP_LOG_ROOT_DIR`；**320 files／3420 tests：3418 pass／2 fail，22767 assertions，330.48s**。这是本轮最终全仓结果，**不是全绿**。
+- **两项失败归因**：均在干净 HEAD `353b621f46120dc20bf7aec57949c3f73234a83f` 的临时快照中重现；852 个归档文件已逐 blob 核对，环境同为 Windows／Bun 1.3.14，非 F03 新增。`tests/config/runtime/runtime.business.test.ts` 硬编码默认日志根，与显式 `APP_LOG_ROOT_DIR` 冲突；去掉该环境变量的控制通过。`tests/infrastructure/persistence/mixedTradeLogRepository/business.test.ts:393` 的非法 UTF-8 确实被拒绝，但实际 `Invalid byte sequence` 不匹配测试 regex。未修改这些无关测试。
+- **检查与专项**：`lint:fix`、非修改 `lint`、`type-check`、`git diff --check` 均通过。真实 `rateLimiter` + `termination` 专项 **4 cases** 确认 detail 异常不产生第二次 SDK I/O，dirty pass 2 不等于第二次请求。
+- **较早定向批次（历史，不累计）**：实施验证 **52 files／609 pass／0 fail**；独立高价值 **10 files／117 pass／0 fail**；独立邻接 **36 files／357 pass／0 fail**。批次有重叠，不相加、不替代最终全仓总览；邻接发现的 recorder 旧 fixture 契约不符已最小修正并独立复验，未跳过。
+- **未覆盖**：未连接真实券商，未做“坏 callback → 实际 OS 进程 exit”的单体端到端；源码 `fatal → cleanup → exit(1)` 链已完整追踪。本轮仅覆盖 F03，不宣告 F05 或全报告验收完成。
 
 ### F04｜cancel／replace 一般外部失败被错误套用 submit UNKNOWN fatal
 
@@ -143,7 +167,7 @@ F05 的三个主子场景及同根旁支只计一个根因；V-C6 不另计；V-
 - 当前：`src/infrastructure/longbridge/trade/orderSnapshotReadAdapter.ts:120-153,178-199`，history逐条完整映射在today请求前；`orderMapper.ts:101-109` 拒绝正成交缺revision或在途正成交缺价。
 - 旧版：`develop:src/core/orderRecorder/orderApiManager.ts:118-125,146-164,197-207,272-296`，保留nullable原始观察，先history／today择优，再对实际业务消费事实校验。
 - 反例：同ID history正成交 `updatedAt=null`，today完整；或旧PartialFilled缺价、today完整Filled。旧版恢复成功；当前只请求history就TypeError，完整today没有机会覆盖。
-- 同来源重复的旧观察亦有此问题。**普通终态缺价但revision有效**的history可以映射为null并被today覆盖，两版都通过；不是所有nullable都失败。
+- 同来源重复的旧观察亦有此问题。**历史控制，受F03新准则影响**：受审版本的普通终态缺价但revision有效的history可映射为null并被today覆盖，两版都通过；该结果只说明旧实现，不再是正成交终态的保持目标。按最新F03，正成交终态本次缺／零／无效价额须首次fatal，不能依赖today覆盖或known补值；F05其他范围问题仍需独立处理。
 
 #### F05-b：旧明确允许忽略的 Unknown＋零成交＋终态变为全局失败
 
@@ -156,13 +180,13 @@ F05 的三个主子场景及同根旁支只计一个根因；V-C6 不另计；V-
 - 当前 `src/application/seatActivation/index.ts:320-332` 全账户normalize后，`:334-374` 才选related及归属；`src/application/tradingDayRebuild/loadTradingDayRuntimeSnapshot.ts:491-493` 同样全量归一。
 - `src/application/tradingDayRebuild/executionNormalization.ts:45-48` 对任意正成交null金额抛错。
 - 旧 `develop:src/main/asyncProgram/monitorTaskProcessor/handlers/seatRefresh.ts:318-352` 先related预检；recorder先symbol过滤；Daily原来按有效成交和ownership选择消费范围。
-- 反例：激活BULL.HK，全账户另有无本系统归属、非related、无pending／durable义务的00005.HK手工普通Filled单，成交价null。真实adapter允许该普通终态缺价表示；旧激活ACTIVE、旧loader成功；当前在Daily／O提交前抛错，真实监控队列进一步关闭全局准入。
+- 历史反例：激活BULL.HK，全账户另有无本系统归属、非related、无pending／durable义务的00005.HK手工普通Filled单，成交价null。受审版本adapter允许该普通终态缺价表示；旧激活ACTIVE、旧loader成功；受审版本在Daily／O提交前抛错，真实监控队列进一步关闭全局准入。**此前要求放行此缺价输入的前提已被F03首次fatal准则替代**，不能用它作为最新放行目标，也不据此宣称F05整体已修。
 
 **同根旁支**：untracked且recorder无known的HK推送，本应被eventFlow忽略，却先被mapper严格拒绝。独立验证Unknown零成交终态及无关partial缺价会fatal。不能修成“无tracking一概丢弃”，因为closed但有known的合法修订仍须处理。
 
 **影响**：确认恢复／激活／消息准入范围扩大；没有坏账已经发布的证据。broker出现这些组合的频率未在线验证。
 
-**最小修复方向**：严格区分原始结构／保真读取、原规则择优、原consumer消费集合、窄经济事实构造。先选中，再对真正需消费的事实严格校验；不得用“哪条校验通过就选哪条”。Unknown终态丢弃也要在today优先之后，防止history复活。
+**最小修复方向**：严格区分原始结构／保真读取、原规则择优、原consumer消费集合、窄经济事实构造。先选中，再对真正需消费的事实严格校验；不得用“哪条校验通过就选哪条”。Unknown终态丢弃也要在today优先之后，防止history复活。**此范围修复不得绕过F03对异常正成交终态的mapper／domain首次fatal要求**，旧普通缺价可映射的对照不是最新目标。
 
 **必须保留的负向控制**：坏的获选today不可fallback；相关缺金额、相关不可归属、Unknown OPEN／正成交仍拒绝；非席位但属于系统的完整历史仍须参与日损（独立控制OTHER.HK往返loss=-10），不能简单只保留relatedSymbols；pending API本来严格拒绝Unknown，未认定为新增回归。
 
@@ -308,13 +332,13 @@ D01已由订单和风险代理复核；D02由validation与风险代理独立统�
 
 不能归因为“重构凭空添加executionTime≤revision”。develop本来存在这些判断，例如旧 `orderMonitor/settlementFlow.ts:275` 与日志仓储检查；当时两种时间同来自订单updatedAt。重构中间态引入独立execution时间后，原先后假设失效，多层仍沿用才造成合法事实被拒绝。
 
-当前不应重新加回无依据的跨时钟先后约束。历史修复已存在，但不能由该提交已修推导所有成交准入／恢复语义已正确；F02、F03、F05是当前仍存在的具体问题。
+当前不应重新加回无依据的跨时钟先后约束。历史修复已存在，但不能由该提交已修推导所有成交准入／恢复语义已正确；F02、F03、F05是原受审版本 `2b67d36` 中仍存在的具体问题，F03 工作区进展见[本轮补记](#f03-implementation-verification)。
 
 ### 2b67d36
 
-历史根因至少包括：execution驱动启动、全局数量安全整数化、跨市场范围失控。当前已恢复订单驱动数据源，账户正小数展示与HK执行整数约束分离，非HK在严格订单映射前过滤，不能重复报告这些已修路径。
+历史根因至少包括：execution驱动启动、全局数量安全整数化、跨市场范围失控。受审版本 `2b67d36` 已恢复订单驱动数据源，账户正小数展示与HK执行整数约束分离，非HK在严格订单映射前过滤，不能重复报告这些已修路径。
 
-但该修复也改动了closed-order修订入口、经济投影、共同归一和封存准入。现有F01／F03／F05等说明“修回订单来源”并不等于端到端恢复旧业务语义；D01还需明确登记其非纯迁移范围。不能把所有当前问题都归因于这两个提交：B01来自`8fd0eef`，F06／F07关键政策来自`c36cadb2`，D02来自`8464691`，D03来自`4a148b3`。
+但该修复也改动了closed-order修订入口、经济投影、共同归一和封存准入。该受审版本的F01／F03／F05等说明“修回订单来源”并不等于端到端恢复旧业务语义；D01还需明确登记其非纯迁移范围。不能把该受审版本的所有问题都归因于这两个提交：B01来自`8fd0eef`，F06／F07关键政策来自`c36cadb2`，D02来自`8464691`，D03来自`4a148b3`。
 
 ## 覆盖与验证
 
@@ -336,9 +360,9 @@ D01已由订单和风险代理复核；D02由validation与风险代理独立统�
 
 G4原P11和G6原T52全部核实为纯类型文件，不是隐藏未读运行逻辑。补审后，G4这11项以及G6中有直接运行时消费者的51项，其已知直接消费者均有D证据；`src/types/orderHold.ts`只有类型中间边，保留字段传播未评估边界。契约字段的全部动态／间接消费者仍不能由静态import或测试执行自动证明。
 
-### 有效全量门禁
+### 原审计有效全量门禁（历史）
 
-验证代理在固定Git导出TEMP副本中执行，未运行原仓库lint:fix／format，未启动实盘。共用已安装依赖；没有按两版lockfile重新安装的独立环境证明。
+验证代理在固定Git导出TEMP副本中执行，未运行原仓库lint:fix／format，未启动实盘。共用已安装依赖；没有按两版lockfile重新安装的独立环境证明。下表“当前”指原受审版本 `2b67d36`，**3288 pass／0 fail、317 文件为历史结果，不是本轮 F03 全仓测试**；本轮离线结果见[补记](#f03-implementation-verification)。
 
 | 检查 | 当前 | develop |
 |---|---|---|
@@ -349,7 +373,7 @@ G4原P11和G6原T52全部核实为纯类型文件，不是隐藏未读运行逻�
 
 旧版有效测试命令显式preload外置offline SDK guard：`bun --no-env-file test --preload <TEMP>/validation-offline-sdk-guard.ts`。首次Bun帮助页空跑虽exit0，已经排除，不算通过；探针构造错误／环境断言失败及纠正均保留，不冒充产品缺陷。
 
-**不累计不同代理重叠的定向测试数。** 全绿证明现有各自oracle通过，不能证明新旧等价。关键反向oracle和缺测已在每条finding说明。
+**不累计不同代理重叠的定向测试数。** 该历史全绿只证明当时各自oracle通过，不能证明新旧等价，也不能替代本轮 F03 的 **3418 pass／2 fail**。关键反向oracle和缺测已在每条finding说明。
 
 ### 独立二审证据索引
 
@@ -359,7 +383,7 @@ G4原P11和G6原T52全部核实为纯类型文件，不是隐藏未读运行逻�
 
 | 报告／工件 | 内容 |
 |---|---|
-| `audit-recheck-order-facts.md`、`recheck-order-facts.test.ts` | F01、F03；6 pass／149断言，真实Monitor＋经济消费者差分 |
+| `audit-recheck-order-facts.md`、`recheck-order-facts.test.ts` | F01、F03历史差分；6 pass／149断言，真实Monitor＋经济消费者；不代表最新F03首次fatal准则已验证 |
 | `audit-recheck-risk-boundary.md`、`recheck-risk-boundary-{differential,probe}.ts` | F02；同量来源、自然边界、实际JSONL→新loader |
 | `audit-recheck-mutation-errors.md` | F04；两版wrapper／adapter／自动route，附可运行探针 |
 | `audit-recheck-ingress.md`、`audit-recheck-ingress.probe.cjs` | F05；26场景及择优／scope负向控制 |
@@ -402,7 +426,7 @@ None。没有为凑数量把命名、行数、注释噪音、未穷尽动态消�
 
 1. **先修F01**：恢复在线经济账正确性，同时保护风险与智能平仓消费，不在下游补假数据。
 2. **修F02并审慎对待既有durable**：保持来源证据，确保成功completion能自恢复；如需处理真实日志，先按真实历史对账，不自动删改。
-3. **修F03／F04／F05／F07**：恢复正确消息／范围／失败归属，保留严格实际事实、UNKNOWN及内部不变量保护；避免统一catch或降级。
+3. **继续处理F04／F05／F07**：F03 已按最新准则完成首次拒绝、closed 窄范围丢弃与 fatal 时序修复，并经独立复验，见[本轮补记](#f03-implementation-verification)；其余问题仍须恢复正确消息／范围／失败归属，保留严格实际事实、UNKNOWN及内部不变量保护，避免统一catch或降级。
 4. **修F06／F08**：恢复原合法移仓资金范围与lifecycle恢复唤醒，不用新轮询或影子账掩盖。
 5. **B01按已授权业务变更保留，不作为问题处理；D01–D04另行维持原范围登记**。B01无需再次授权或恢复旧末日接管策略；其他有明确改进的部分保留并写清边界，不能机械回滚安全收益。
-6. 将已独立复现的正／反例转为长期业务回归；修复时运行与范围相称的验证及项目必需检查。**本次仅分析与记录，没有实施修复，不能据全绿门禁宣告可按纯架构重构发布。**
+6. 将已独立复现的正／反例转为长期业务回归；修复时运行与范围相称的验证及项目必需检查。**原审计（受审版本 `2b67d36`）仅分析与记录，没有实施修复，不能据其全绿门禁宣告可按纯架构重构发布。** F03 工作区实施与离线验证见[本轮补记](#f03-implementation-verification)，不构成全报告通过。

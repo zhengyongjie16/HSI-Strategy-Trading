@@ -18,10 +18,7 @@ import {
   NON_REPLACEABLE_READ_STATUSES,
   NON_REPLACEABLE_READ_TYPES,
 } from '../../../constants/orderReadMetadata.js';
-import {
-  assertProtectiveSellRawTerminalStateFactsReady,
-  normalizeTerminalStateSnapshot,
-} from '../../../domain/order/orderFactMerge.js';
+import { normalizeTerminalStateSnapshot } from '../../../domain/order/orderFactMerge.js';
 import { isTerminalOrderReadStatus } from '../../../domain/order/orderReadLifecycle.js';
 import {
   canAttemptTimeoutHandling,
@@ -96,13 +93,7 @@ function resolveTerminalSettlementInput(
     );
   }
 
-  assertProtectiveSellRawTerminalStateFactsReady(order, rawTerminalState);
-  const isProtectiveSell = order.side === 'SELL' && order.isProtectiveLiquidation;
-  const normalizedTerminalState = normalizeTerminalStateSnapshot(
-    order,
-    rawTerminalState,
-    isProtectiveSell,
-  );
+  const normalizedTerminalState = normalizeTerminalStateSnapshot(order, rawTerminalState);
   const resolvedClosedReason = normalizedTerminalState.closedReason;
   if (!isSupportedTerminalCloseReason(resolvedClosedReason)) {
     throw new Error(
@@ -250,9 +241,7 @@ function settlePendingReplaceTerminal(
     );
   }
 
-  assertProtectiveSellRawTerminalStateFactsReady(order, rawTerminalState);
-  const isProtectiveSell = order.side === 'SELL' && order.isProtectiveLiquidation;
-  const terminal = normalizeTerminalStateSnapshot(order, rawTerminalState, isProtectiveSell);
+  const terminal = normalizeTerminalStateSnapshot(order, rawTerminalState);
   recordOrderTerminalConfirmation(deps, {
     orderId: order.orderId,
     closedReason: terminal.closedReason,

@@ -31,6 +31,7 @@ import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js'
 import { createMonitorTaskRuntimeFixture as createMonitorTaskProcessor } from '../../runtime/asyncProgram/monitorTaskProcessor/fixtures.js';
 import { createSeatActivationFixture } from './fixtures.js';
 import { createSeatActivationWorkflow } from '../../../src/application/seatActivation/index.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createSeatDiagnosticRuntime } from '../../../src/runtime/seatDiagnosticRuntime/index.js';
 import { DIAGNOSTIC_OPERATIONS } from '../../../src/constants/diagnostics.js';
 import type { DiagnosticFields } from '../../../src/types/diagnostics.js';
@@ -236,7 +237,21 @@ async function captureHandlerFailure(
 ): Promise<unknown> {
   const protocol = await createActivationProtocolFixture();
   const context = protocol.context;
+  const closedGates: string[] = [];
+  const termination = createTerminationRuntime({
+    closeTradingGate: () => {
+      closedGates.push('trading');
+    },
+    closeProducerAdmission: () => {
+      closedGates.push('producer');
+    },
+    stopProducers: [],
+    onSecondaryError: () => {},
+  });
+  const releaseStarted = createDeferred<null>();
+  const releaseGate = createDeferred<null>();
   const handler = createSeatActivationFixture({
+    termination,
     clock: { now: () => new Date(70_000) },
     snapshot: protocol.snapshot,
     monitorContext: context,
@@ -254,16 +269,36 @@ async function captureHandlerFailure(
       },
     }),
     quoteSubscriptionRuntime: createObservedQuoteRuntime(protocol, async () => {
+      releaseStarted.resolve(null);
+      await releaseGate.promise;
       if ('releaseFailure' in params) throw params.releaseFailure;
     }),
   });
 
   let thrown: unknown = 'not-thrown';
+  const handling = handler.activate(createSeatRefreshTask(), () => true).then(
+    (result) => {
+      if (result.status === 'retry' || result.status === 'failed') thrown = result.error;
+    },
+    (error: unknown) => {
+      thrown = error;
+    },
+  );
+  await releaseStarted.promise;
   try {
-    const result = await handler.activate(createSeatRefreshTask(), () => true);
-    if (result.status === 'retry' || result.status === 'failed') thrown = result.error;
-  } catch (error) {
-    thrown = error;
+    if ('bodyFailure' in params && !isExternalApiRequestError(params.bodyFailure)) {
+      const fatalState = termination.getFatalState();
+      expect(fatalState.hasFatalError).toBeTrue();
+      if (fatalState.hasFatalError) expect(fatalState.error).toBe(params.bodyFailure);
+
+      expect(closedGates).toEqual(['trading', 'producer']);
+    } else {
+      expect(termination.getFatalState()).toEqual({ hasFatalError: false });
+      expect(closedGates).toEqual([]);
+    }
+  } finally {
+    releaseGate.resolve(null);
+    await handling;
   }
 
   expect(protocol.stages).toEqual(['retain', 'admission', 'quotes', 'release']);
@@ -320,6 +355,7 @@ describe('SEAT_REFRESH diagnostics distinguish activation from retain release', 
     let quoteCalls = 0;
     const successfulClient = createSuccessMarketDataClient(protocol);
     const workflow = createSeatActivationWorkflow({
+      termination: { reportFatalError: () => {} },
       diagnostics,
       clock,
       config: context.config,
@@ -546,6 +582,7 @@ describe('SEAT_REFRESH release error precedence', () => {
     const context = protocol.context;
     const releaseFailure = new TypeError('release retain contract broken');
     const handler = createSeatActivationFixture({
+      termination: { reportFatalError: () => {} },
       clock: { now: () => new Date(70_000) },
       monitorContext: context,
       snapshot: protocol.snapshot,
@@ -574,6 +611,7 @@ describe('SEAT_REFRESH release error precedence', () => {
       const releaseRejection = createDeferred<undefined>();
       const releaseStarted = createDeferred<null>();
       const handler = createSeatActivationFixture({
+        termination: { reportFatalError: () => {} },
         clock: { now: () => new Date(70_000) },
         monitorContext: context,
         snapshot: protocol.snapshot,
@@ -608,6 +646,7 @@ describe('SEAT_REFRESH release error precedence', () => {
       cause: new Error('release unavailable'),
     });
     const workflow = createSeatActivationFixture({
+      termination: { reportFatalError: () => {} },
       clock: { now: () => new Date(70_000) },
       monitorContext: protocol.context,
       snapshot: protocol.snapshot,

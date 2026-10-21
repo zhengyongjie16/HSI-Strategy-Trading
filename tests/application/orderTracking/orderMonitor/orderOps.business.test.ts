@@ -1433,7 +1433,7 @@ describe('orderMonitor orderOps', () => {
 
       expect(caughtError).toBeInstanceOf(Error);
       expect((caughtError as Error).message).toMatch(
-        /原始成交价格与金额不一致|正累计成交缺少有效金额、成交价格|订单观察缺少有效|无效累计成交数量/,
+        /原始成交价格与金额不一致|正累计成交缺少本次原始价格或金额|订单观察缺少有效|无效累计成交数量/,
       );
 
       expect(trackedOrder).toMatchObject({
@@ -1634,7 +1634,7 @@ describe('orderMonitor orderOps', () => {
       expect(caughtError).toHaveProperty(
         'message',
         expect.stringMatching(
-          /原始成交价格与金额不一致|正累计成交缺少有效金额、成交价格|订单观察缺少有效|无效累计成交数量/,
+          /原始成交价格与金额不一致|正累计成交缺少本次原始价格或金额|订单观察缺少有效|无效累计成交数量/,
         ),
       );
 
@@ -2574,12 +2574,16 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
     });
   }
 
-  it('已确认 40 的保护性 SELL 等量终态缺少原始价/revision 时在缓存前拒绝', async () => {
+  it.each([
+    { side: 'BUY' as const, protective: false },
+    { side: 'SELL' as const, protective: false },
+    { side: 'SELL' as const, protective: true },
+  ])('已确认 40 的 $side protective=$protective 等量终态缺少原始价/revision 时在缓存前拒绝', async ({ side, protective }) => {
     const harness = createStateCheckRawFactHarness({
       operation: 'cancel',
-      side: nativeWorkingSell.executionSide,
-      executionSide: 'SELL',
-      isProtectiveLiquidation: true,
+      side,
+      executionSide: side,
+      isProtectiveLiquidation: protective,
       stateCheckResult: {
         executionStatus: nativeCanceled40.executionStatus,
         executedAmount: '40.8',
@@ -2604,7 +2608,7 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
 
     await expectStateCheckRawFactFailure(
       () => runStateCheckOperation('cancel', harness),
-      /保护性 SELL 存在成交事实但本次观察缺少有效成交价|原始成交价格与金额不一致/,
+      /正累计成交缺少本次原始价格或金额/,
     );
 
     expectNoStateCheckRawFactSideEffects(harness, trackedOrderBefore);

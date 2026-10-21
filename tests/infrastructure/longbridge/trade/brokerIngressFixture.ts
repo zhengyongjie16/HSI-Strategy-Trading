@@ -193,7 +193,9 @@ export async function createBrokerIngressFixture(
 
     /** 只能发给真实Monitor已注册的SDK callback，不接收业务neutral event冒充payload。 */
     emitOrderChanged: () => void;
-    emitOrderChangedFrame: (frame: BrokerIngressInput) => void;
+    emitOrderChangedFrame: (
+      frame: Omit<BrokerIngressInput, 'executedPrice'> & Readonly<{ executedPrice: string | null }>,
+    ) => void;
     setPushExecutedPriceMissing: () => void;
     setPushExecutedPriceText: (exact: string) => void;
     setPushExecutedQuantityMissing: () => void;
@@ -1070,7 +1072,7 @@ export async function createBrokerIngressFixture(
           return new Decimal(frame.executedQuantity);
         },
         get executedPrice() {
-          return new Decimal(frame.executedPrice);
+          return frame.executedPrice === null ? null : new Decimal(frame.executedPrice);
         },
         get submittedAt() {
           return new Date(frame.submittedAtMs);

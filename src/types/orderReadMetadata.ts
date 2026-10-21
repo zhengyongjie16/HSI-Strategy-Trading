@@ -76,7 +76,7 @@ export type OrderStateCheckResult =
       readonly executedPrice: string | null;
       readonly executedQuantity: number | null;
 
-      /** 原始累计成交金额；正成交量缺价时显式为 null，不伪造成 0。 */
+      /** 本次精确累计成交金额；正成交必须为正，不能从 known 补全。 */
       readonly executedAmount: string | null;
       readonly executionTimeMs: number | null;
       readonly submittedQuantity: number | null;
@@ -92,7 +92,7 @@ export type OrderStateCheckResult =
       readonly executedPrice: string | null;
       readonly executedQuantity: number | null;
 
-      /** 原始累计成交金额；正成交量缺价时显式为 null，不伪造成 0。 */
+      /** 本次精确累计成交金额；正成交必须为正，不能从 known 补全。 */
       readonly executedAmount: string | null;
       readonly executionTimeMs: number | null;
 

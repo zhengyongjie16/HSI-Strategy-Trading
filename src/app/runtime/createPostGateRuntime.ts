@@ -468,6 +468,7 @@ function createPostGateRuntimeFactory(
       strategy,
     });
     const seatActivation = createSeatActivationWorkflow({
+      termination,
       clock,
       diagnostics,
       config: monitorContext.config,

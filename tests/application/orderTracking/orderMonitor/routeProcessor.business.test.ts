@@ -641,12 +641,17 @@ describe('orderMonitor routeProcessor', () => {
 
   it('普通终态订单不会再次进入 timeout 处理', async () => {
     const runtime = createRuntimeStore();
+    const executionTimeMs = Date.now();
     attachTrackedOrders(runtime, 'BULL.HK', [
       await createTrackedOrder({
         orderId: 'BUY-CLOSED-SHOULD-SKIP-TIMEOUT',
         symbol: 'BULL.HK',
         side: 'BUY',
         status: 'FILLED',
+        executedQuantity: 100,
+        executedPrice: '1',
+        lastExecutedTimeMs: executionTimeMs,
+        lastOrderUpdateAtMs: executionTimeMs,
       }),
     ]);
     const cancelOrderIds: string[] = [];
@@ -2900,7 +2905,7 @@ describe('orderMonitor routeProcessor', () => {
       lastOrderUpdateAtMs: 200,
     });
     attachTrackedOrders(runtime, 'BULL.HK', [trackedOrder]);
-    const terminalExecutionStatus12 = await readTerminalExecutionStatus('Filled', 0, '1.02');
+    const terminalExecutionStatus12 = await readTerminalExecutionStatus('Filled', 100, '1.02');
     const rawTerminal = {
       executionStatus: terminalExecutionStatus12.executionStatus,
       kind: 'TERMINAL' as const,

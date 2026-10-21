@@ -2,7 +2,7 @@
 
 import type { OrderReadStatus, OrderStateCheckResult } from '../../types/orderReadMetadata.js';
 import type { BrokerOrderExecutionFact } from '../../types/orderRecorder.js';
-import { exactCompare } from '../../utils/numeric/exact.js';
+import { exactCompare, exactMultiply } from '../../utils/numeric/exact.js';
 import { mergeExecutionFact } from './executionFact.js';
 import { orderReadStatusPriority } from './orderReadLifecycle.js';
 import type {
@@ -55,7 +55,7 @@ export function assertExecutionQuantityWithinSubmittedQuantity(
     throw new Error(`[订单监控] 订单 ${orderId} 累计成交量超过有效委托数量`);
 }
 
-/** known 经济事实完整才允许普通同量终态保留旧价/金额/T；零成交要求无金额无 T。 */
+/** 完整旧 revision 的非增量终态仅可用已验证的 known 事实收口；零成交要求无金额无 T。 */
 function hasCompleteKnownEconomics(known: KnownOrderFact): boolean {
   if (known.executedQuantity === 0)
     return exactCompare(known.executedAmount, '0') === 0 && known.lastExecutedTimeMs === null;
@@ -96,31 +96,8 @@ export function isWeakOpenOrderObservation(
   );
 }
 
-/**
- * 普通同量终态资源收口：原始价/金额缺失或 revision 已旧时，保留完整 known 经济事实。
- * 增量、不同量或 known 不完整都不得走此旁路；保护性 SELL 在调用前已独立校验原始事实。
- */
-function isResourceOnlyTerminalObservation(
-  known: KnownOrderFact,
-  observed: OrderObservedFact,
-): boolean {
-  if (observed.executionPhase !== 'TERMINAL') return false;
-
-  if (observed.executedQuantity !== known.executedQuantity) return false;
-
-  if (!hasCompleteKnownEconomics(known)) return false;
-
-  const rawMissing =
-    !hasPositivePrice(observed.executedPrice) || isMissingOrZeroAmount(observed.executedAmount);
-  const staleRevision =
-    observed.updatedAtMs !== null &&
-    known.lastOrderUpdateAtMs !== null &&
-    observed.updatedAtMs < known.lastOrderUpdateAtMs;
-  return rawMissing || staleRevision;
-}
-
-/** 校验本次观察的累计数量/revision/成交价与金额基本自洽；其余增量规则交给共享 merge。 */
-function validateObservedFacts(known: KnownOrderFact, observed: OrderObservedFact): number | null {
+/** 本次观察先拒绝 FILLED 零量并证明量价金额/revision 自洽，再裁决重复、旧 revision 或已终态。 */
+export function assertOrderObservedFactsReady(observed: OrderObservedFact): number | null {
   if (
     observed.executedQuantity === null ||
     !Number.isSafeInteger(observed.executedQuantity) ||
@@ -128,8 +105,11 @@ function validateObservedFacts(known: KnownOrderFact, observed: OrderObservedFac
   )
     throw new Error('[订单监控] 订单观察缺少有效累计成交数量');
 
+  if (observed.status === 'FILLED' && observed.executedQuantity === 0)
+    throw new Error('[订单监控] FILLED 观察必须具有正累计成交数量');
+
   if (observed.executedQuantity === 0) {
-    // 零成交不消费价格；只禁止伪造金额或执行时间。零成交资源关闭允许缺少 broker revision。
+    // 非 FILLED 零成交不消费价格；禁止伪造金额或执行时间，资源关闭允许缺少 broker revision。
     if (!isMissingOrZeroAmount(observed.executedAmount) || observed.executedTimeMs !== null)
       throw new Error('[订单监控] 零成交观察不得声明金额或执行时间');
 
@@ -139,29 +119,28 @@ function validateObservedFacts(known: KnownOrderFact, observed: OrderObservedFac
     return observed.updatedAtMs;
   }
 
-  const rawPricePresent = hasPositivePrice(observed.executedPrice);
-  const rawAmountPresent = !isMissingOrZeroAmount(observed.executedAmount);
-  if (rawPricePresent !== rawAmountPresent)
-    throw new Error('[订单监控] 原始成交价格与金额不一致');
-
-  const resourceOnly = isResourceOnlyTerminalObservation(known, observed);
-  if ((!rawPricePresent || !rawAmountPresent) && !resourceOnly) {
+  if (
+    !hasPositivePrice(observed.executedPrice) ||
+    observed.executedAmount === null ||
+    exactCompare(observed.executedAmount, '0') <= 0
+  ) {
     throw new Error('[订单监控] 正累计成交缺少本次原始价格或金额');
   }
 
   if (
-    (observed.updatedAtMs === null || !isValidPositiveFactNumber(observed.updatedAtMs)) &&
-    !resourceOnly
-  ) {
+    exactCompare(
+      exactMultiply(observed.executedPrice, String(observed.executedQuantity)),
+      observed.executedAmount,
+    ) !== 0
+  )
+    throw new Error('[订单监控] 原始成交价格与金额不一致');
+
+  if (!isValidPositiveFactNumber(observed.updatedAtMs)) {
     throw new Error('[订单监控] 订单观察缺少有效 broker revision');
   }
 
-  if (
-    observed.executedTimeMs !== null &&
-    !isValidPositiveFactNumber(observed.executedTimeMs)
-  )
+  if (observed.executedTimeMs !== null && !isValidPositiveFactNumber(observed.executedTimeMs))
     throw new Error('[订单监控] 原始执行时间无效');
-
 
   return observed.updatedAtMs;
 }
@@ -204,13 +183,15 @@ function resolveKnownBaseline(known: KnownOrderFact): KnownExecutionBaseline | u
   };
 }
 
-/** 提取正成交保留后的成交价：增量/金额修订接受本次原始价，否则保留 known。 */
+/** 零成交不声明成交价；正成交增量/金额修订接受本次原始价，否则保留 known。 */
 function resolveMergedExecutedPrice(
   known: KnownOrderFact,
   observed: OrderObservedFact,
   executionAdvanced: boolean,
   amountRevised: boolean,
 ): string | null {
+  if (observed.executedQuantity === 0) return null;
+
   if (executionAdvanced || amountRevised) return observed.executedPrice;
 
   if (known.executedPrice !== null) return known.executedPrice;
@@ -273,7 +254,7 @@ export function assertProtectiveSellRawObservationFactsReady(
 
 /**
  * state-check TERMINAL 原始事实准入。
- * 与 OPEN 共用同一原始量价/revision 规则，且必须在任何 resourceOnly 旁路之前执行。
+ * 与 OPEN 共用同一原始量价/revision 规则，且必须在任何终态收口之前执行。
  */
 export function assertProtectiveSellRawTerminalStateFactsReady(
   known: KnownOrderFact & Partial<Pick<TrackedOrder, 'isProtectiveLiquidation'>>,
@@ -300,7 +281,7 @@ export function assertProtectiveSellRawTerminalStateFactsReady(
   );
 }
 
-/** state-check 到达后、任何 cache/运行态写入前验证原始事实；增量缺价由共享 merge 再次拒绝。 */
+/** state-check 到达后、任何 cache/运行态写入前验证本次完整原始事实，禁止继承 known 补价。 */
 export function assertStateCheckRawExecutionFactsReady(
   known: (KnownOrderFact & Partial<Pick<TrackedOrder, 'isProtectiveLiquidation'>>) | null | undefined,
   result: Exclude<OrderStateCheckResult, { kind: 'QUERY_FAILED' }>,
@@ -317,20 +298,7 @@ export function assertStateCheckRawExecutionFactsReady(
       updatedAtMs: result.kind === 'OPEN' ? result.updatedAtMs : result.orderUpdatedAtMs,
     };
 
-  const reference = known ?? {
-    orderId: 'state-check',
-    symbol: '',
-    executionSide: 'BUY' as const,
-    executionPhase: null,
-    submittedQuantity: observation.executedQuantity ?? 0,
-    status: result.status,
-    executedQuantity: 0,
-    executedPrice: null,
-    executedAmount: '0',
-    lastExecutedTimeMs: null,
-    lastOrderUpdateAtMs: null,
-  };
-  validateObservedFacts(reference, observation);
+  assertOrderObservedFactsReady(observation);
 
   if (known === null || known === undefined) return;
 
@@ -489,7 +457,7 @@ export function mergeMonotonicOrderFact(
   const observedPhase = requireExecutionPhase(observed.executionPhase);
   if (known.executionPhase !== null) requireExecutionPhase(known.executionPhase);
 
-  const observedRevision = validateObservedFacts(known, observed);
+  const observedRevision = assertOrderObservedFactsReady(observed);
   assertExecutionQuantityWithinSubmittedQuantity(
     known.orderId,
     known.submittedQuantity,
@@ -521,29 +489,32 @@ export function mergeMonotonicOrderFact(
     };
   }
 
-  if (isResourceOnlyTerminalObservation(known, observed)) {
-    if (observed.updatedAtMs === null) throw new Error('[订单监控] 订单观察缺少 broker revision');
-
-    const knownRevision = known.lastOrderUpdateAtMs;
-    return {
-      status: observed.status,
-      executionPhase: 'TERMINAL',
-      executedQuantity: known.executedQuantity,
-      executedAmount: known.executedAmount,
-      executedPrice: known.executedPrice,
-      executedTimeMs: known.lastExecutedTimeMs,
-      updatedAtMs:
-        knownRevision === null ? observed.updatedAtMs : Math.max(knownRevision, observed.updatedAtMs),
-    };
-  }
-
   if (observedRevision === null) throw new Error('[订单监控] 订单观察缺少有效 broker revision');
 
   const merged = mergeExecutionFact(
     resolveKnownBaseline(known),
     toExecutionFact(known, observed, observedRevision, observedPhase),
   );
-  if (merged === null) return null;
+  if (merged === null) {
+    // 完整旧 revision 的同量终态仍可关闭资源，但不得用 known 补全本次缺失证据。
+    if (
+      observedPhase === 'TERMINAL' &&
+      observed.executedQuantity === known.executedQuantity &&
+      hasCompleteKnownEconomics(known)
+    ) {
+      return {
+        status: observed.status,
+        executionPhase: 'TERMINAL',
+        executedQuantity: known.executedQuantity,
+        executedAmount: known.executedAmount,
+        executedPrice: known.executedPrice,
+        executedTimeMs: known.lastExecutedTimeMs,
+        updatedAtMs: known.lastOrderUpdateAtMs,
+      };
+    }
+
+    return null;
+  }
 
   const executionAdvanced = merged.cumulativeQuantity > known.executedQuantity;
   const amountRevised =
@@ -596,20 +567,11 @@ export function mergeMonotonicOrderFact(
   };
 }
 
-/** 用已知完整经济事实收口同量终态，不推进 T，也不制造新成交；broker revision 可取本次进度。 */
-function normalizeResourceOnlyTerminal(
+/** 本次旧 revision 终态已通过完整准入，收口时仅保留更强 known 事实，不制造成交或推进 T。 */
+function retainKnownTerminalFacts(
   known: KnownOrderFact,
   terminal: TerminalStateSnapshot,
 ): NormalizedTerminalStateSnapshot {
-  const knownRevision = known.lastOrderUpdateAtMs;
-  const terminalRevision = terminal.orderUpdatedAtMs;
-  let orderUpdatedAtMs = knownRevision;
-  if (
-    orderUpdatedAtMs === null ||
-    (terminalRevision !== null && terminalRevision > orderUpdatedAtMs)
-  )
-    orderUpdatedAtMs = terminalRevision;
-
   return {
     ...terminal,
     executedQuantity: known.executedQuantity,
@@ -617,20 +579,19 @@ function normalizeResourceOnlyTerminal(
     executedAmount: known.executedAmount,
     executionTimeMs: known.lastExecutedTimeMs,
     executedTimeMs: known.lastExecutedTimeMs,
-    orderUpdatedAtMs,
+    orderUpdatedAtMs: known.lastOrderUpdateAtMs,
   };
 }
 
 /**
  * 将 API TERMINAL state-check 与当前已知订单事实合并为可结算终态。
- * 保护性 SELL 原始事实检查必须先于普通 resourceOnly 旁路；终态不得否认更强的已知经济事实。
+ * 本次原始事实必须先通过共享准入；完整旧 revision 非增量终态不得否认更强 known 事实。
  */
 export function normalizeTerminalStateSnapshot(
   known: KnownOrderFact & Partial<Pick<TrackedOrder, 'isProtectiveLiquidation'>>,
   terminal: TerminalStateSnapshot,
-  isProtectiveSell: boolean = false,
 ): NormalizedTerminalStateSnapshot {
-  if (isProtectiveSell) assertProtectiveSellRawTerminalStateFactsReady(known, terminal);
+  assertProtectiveSellRawTerminalStateFactsReady(known, terminal);
 
   const observed: OrderObservedFact = {
     status: terminal.status,
@@ -642,9 +603,6 @@ export function normalizeTerminalStateSnapshot(
     updatedAtMs: terminal.orderUpdatedAtMs,
   };
 
-  if (isResourceOnlyTerminalObservation(known, observed))
-    return normalizeResourceOnlyTerminal(known, terminal);
-
   const merged = mergeMonotonicOrderFact(known, observed);
   if (merged === null) {
     // 旧 revision 的非增量终态不能推进事实；known 完整时用其收口资源（只允许同量或更低的原始量）。
@@ -655,10 +613,10 @@ export function normalizeTerminalStateSnapshot(
     if (
       staleRevision &&
       hasCompleteKnownEconomics(known) &&
-      (terminal.executedQuantity === null ||
-        terminal.executedQuantity <= known.executedQuantity)
+      terminal.executedQuantity !== null &&
+      terminal.executedQuantity <= known.executedQuantity
     )
-      return normalizeResourceOnlyTerminal(known, terminal);
+      return retainKnownTerminalFacts(known, terminal);
 
     throw new Error(`[订单监控] 订单 ${known.orderId} 终态事实无法与当前已知事实合并`);
   }

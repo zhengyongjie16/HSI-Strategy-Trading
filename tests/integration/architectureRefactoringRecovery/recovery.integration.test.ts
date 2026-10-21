@@ -437,6 +437,7 @@ async function createOfflineRecovery(
         status: 'ACTIVATING',
       });
       const workflow = createSeatActivationWorkflow({
+        termination,
         diagnostics: createDiagnosticObserverDouble(),
         clock: { now: () => now },
         config,

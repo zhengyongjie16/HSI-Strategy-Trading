@@ -11,6 +11,8 @@ import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../constants/in
 import { recordOrderTerminalConfirmation } from './orderObservation.js';
 import { mergeExecutionFact } from '../../../domain/order/executionFact.js';
 import {
+  assertExecutionQuantityWithinSubmittedQuantity,
+  assertOrderObservedFactsReady,
   assertProtectiveSellRawObservationFactsReady,
   isWeakOpenOrderObservation,
   mergeMonotonicOrderFact,
@@ -22,7 +24,7 @@ import { resolveOrderClosedReasonFromStatus } from '../../../domain/order/orderT
 import type { OrderReadStatus } from '../../../types/orderReadMetadata.js';
 import type { DailyLossCumulativeExecutionResult } from '../../../types/risk.js';
 import type { OrderFact } from '../../../types/trade.js';
-import { exactCompare, exactMultiply } from '../../../utils/numeric/exact.js';
+import { exactCompare } from '../../../utils/numeric/exact.js';
 import {
   acknowledgeLatestReplaceTerminal,
   acknowledgeQueriedTerminalState,
@@ -104,17 +106,7 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
         if (ownership?.monitorSymbol !== deps.monitorConfig.monitorSymbol)
           throw new Error('[订单监控] 已有 broker 事实的新观察缺少唯一归属');
 
-        if (
-          event.executedQuantity > 0 &&
-          (event.executedPrice === null ||
-            exactCompare(event.executedPrice, '0') <= 0 ||
-            event.executedAmount === null ||
-            exactCompare(
-              exactMultiply(event.executedPrice, String(event.executedQuantity)),
-              event.executedAmount,
-            ) !== 0)
-        )
-          throw new Error('[订单监控] 已有broker事实的新观察缺少完整价格依据');
+        assertExecutionQuantityWithinSubmittedQuantity(orderId, event.quantity, event.executedQuantity);
 
         const observedFact = {
           status: event.status,
@@ -126,6 +118,24 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
             event.executedQuantity === 0 ? null : (event.executionTimeMs ?? event.updatedAtMs),
           updatedAtMs: event.updatedAtMs,
         };
+
+        // 先验证本次原始事实及归属，再允许过滤 closed 同 revision 的完整 OPEN 重放。
+        assertOrderObservedFactsReady({ ...observedFact, executedTimeMs: event.executionTimeMs });
+        if (
+          existing.brokerOrderId !== orderId ||
+          existing.symbol !== event.symbol ||
+          existing.side !== event.executionSide
+        )
+          throw new Error('[订单事实] 同 broker identity 的归属冲突');
+
+        if (
+          existing.phase === 'TERMINAL' &&
+          event.executionPhase === 'OPEN' &&
+          event.updatedAtMs === existing.updatedAtMs &&
+          event.executedQuantity === existing.cumulativeQuantity &&
+          exactCompare(event.executedAmount ?? '0', existing.cumulativeAmount) === 0
+        )
+          return;
 
         // develop 限定弱观察过滤：仅 OPEN->OPEN、同 revision、量降、金额不增、时间不推进。
         if (

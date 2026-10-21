@@ -15,6 +15,7 @@ export function createSeatActivationFixture(deps: ActivationFixtureDeps): SeatAc
     quoteSubscriptionRuntime,
   } = deps;
   return createSeatActivationWorkflow({
+    termination: deps.termination,
     diagnostics: createDiagnosticObserverDouble(),
     clock,
     config: context.config,

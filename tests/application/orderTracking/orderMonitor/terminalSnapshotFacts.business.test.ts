@@ -1,8 +1,8 @@
 /**
  * orderMonitor 权威终态快照事实边界测试。
  *
- * 验证 state-check 的 TERMINAL 快照只能在新增累计成交具备本次 broker revision 时推进经济事实，
- * 数量未增加时则仅允许使用已确认事实完成生命周期收口。
+ * 验证 state-check 的 TERMINAL 快照须先具备本次完整量价金额/revision，
+ * 同量完整观察保留 known T，不能借已确认事实补全本次缺失证据。
  */
 
 import { describe, expect, it } from 'bun:test';
@@ -141,7 +141,7 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
     }).toThrow(/保护性 SELL 存在成交事实但本次观察缺少有效成交价/);
 
     expect(() => {
-      normalizeTerminalStateSnapshot(knownFact, terminalState, true);
+      normalizeTerminalStateSnapshot(knownFact, terminalState);
     }).toThrow();
   });
 
@@ -155,7 +155,7 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
       orderUpdatedAtMs: FIRST_REVISION_MS + 1,
     });
     assertProtectiveSellRawTerminalStateFactsReady(knownFact, terminalState);
-    const normalized = normalizeTerminalStateSnapshot(knownFact, terminalState, true);
+    const normalized = normalizeTerminalStateSnapshot(knownFact, terminalState);
     const dailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
       ...orderAnalysis,

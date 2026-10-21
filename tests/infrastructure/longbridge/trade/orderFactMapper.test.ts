@@ -1,4 +1,4 @@
-/** SDK mapper 单测：保真原文/元数据/订单级观察时间，缺价不补价、不伪0金额。 */
+/** SDK mapper 单测：保真原文/元数据/观察时间，正成交缺价与 FILLED 零量首次即拒绝。 */
 import { expect, test } from 'bun:test';
 import { Decimal, OrderSide, OrderStatus, OrderType } from 'longbridge';
 import {
@@ -47,28 +47,39 @@ test('high significant SDK text maps by exact text; order observation time proxi
   expect(mapped.submittedAt.getTime()).toBe(1000);
 });
 
-test('positive-quantity ordinary terminal without price reaches business merge as explicit missing', () => {
-  const canceled = mapBrokerOrder({
-    ...sdkOrder(),
-    status: OrderStatus.Canceled,
-    executedPrice: null,
-  });
-  expect(canceled).toMatchObject({
-    executionPhase: 'TERMINAL',
-    executionStatus: 'PARTIAL',
-    executedQuantity: 100,
-    executedPrice: null,
-    executedAmount: null,
-    updatedAtMs: 3000,
-  });
+test('every positive-quantity terminal requires its own positive price on the first mapping', () => {
+  for (const status of [OrderStatus.Filled, OrderStatus.Canceled, OrderStatus.Expired, OrderStatus.Rejected]) {
+    for (const executedPrice of [null, new Decimal('0')]) {
+      expect(() => mapBrokerOrder({ ...sdkOrder(), status, executedPrice })).toThrow(
+        'invalid cumulative execution quantity/price',
+      );
+    }
+  }
+});
 
-  const zeroPrice = mapBrokerOrder({
-    ...sdkOrder(),
-    status: OrderStatus.Expired,
-    executedPrice: new Decimal('0'),
-  });
-  expect(zeroPrice.executedPrice).toBeNull();
-  expect(zeroPrice.executedAmount).toBeNull();
+test.each(['history', 'today'] as const)('the first bad positive terminal in %s rejects the snapshot without retry or later-read fallback', async (source) => {
+  const frame = {
+    orderId: 'SNAPSHOT-TERMINAL',
+    symbol: 'BULL.HK',
+    stockName: 'HSI',
+    remark: '',
+    side: 'BUY' as const,
+    status: 'Filled' as const,
+    quantity: '100',
+    executedQuantity: '100',
+    submittedPrice: '1',
+    executedPrice: '1',
+    submittedAtMs: 1000,
+    updatedAtMs: 2000,
+  };
+  const native = await createBrokerIngressFixture(frame);
+  const bad = { ...frame, executedPrice: '0' };
+  native.setOrderSnapshotReplies(source === 'history' ? [bad] : [], source === 'today' ? [bad] : []);
+  const port = native.ports.createOrderSnapshotReadPort({ rateLimiter: { throttle: async () => {} } });
+  const error: unknown = await port.fetchSnapshots().catch((failure: unknown) => failure);
+  expect(error).toBeInstanceOf(TypeError);
+  expect(error).toMatchObject({ message: '[orderMapper] invalid cumulative execution quantity/price' });
+  expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: source === 'today' ? 1 : 0 });
 });
 
 test('open-phase positive quantity without price and negative prices stay structural errors', () => {
@@ -92,19 +103,35 @@ test('open-phase positive quantity without price and negative prices stay struct
   ).toThrow('invalid cumulative execution quantity/price');
 });
 
-test('zero execution keeps a true zero amount and no observation time', () => {
-  const initial = mapBrokerOrder({
-    ...sdkOrder(),
-    status: OrderStatus.New,
-    executedQuantity: new Decimal('0'),
-    executedPrice: null,
-    updatedAt: null,
-  });
-  expect(initial.executedAmount).toBe('0');
-  expect(initial.executionTimeMs).toBeNull();
-  expect(initial.updatedAtMs).toBe(1000);
-  expect(initial.updatedAt).toBeNull();
+test('FILLED requires positive cumulative quantity for either side, regardless of price', () => {
+  for (const side of [OrderSide.Buy, OrderSide.Sell]) {
+    for (const executedPrice of [null, new Decimal('0'), new Decimal('1')]) {
+      expect(() => mapBrokerOrder({
+        ...sdkOrder(),
+        side,
+        executedQuantity: new Decimal('0'),
+        executedPrice,
+      })).toThrow('FILLED order requires positive cumulative execution quantity');
+    }
+  }
 });
+
+test.each([OrderStatus.New, OrderStatus.Canceled, OrderStatus.Rejected])(
+  'non-FILLED status %s keeps a true zero amount and no observation time',
+  (status) => {
+    const initial = mapBrokerOrder({
+      ...sdkOrder(),
+      status,
+      executedQuantity: new Decimal('0'),
+      executedPrice: null,
+      updatedAt: null,
+    });
+    expect(initial.executedAmount).toBe('0');
+    expect(initial.executionTimeMs).toBeNull();
+    expect(initial.updatedAtMs).toBe(1000);
+    expect(initial.updatedAt).toBeNull();
+  },
+);
 
 test('positive execution requires an independent broker revision', () => {
   expect(() => mapBrokerOrder({ ...sdkOrder(), updatedAt: null })).toThrow(

@@ -156,6 +156,7 @@ describe('SeatActivationWorkflow 真实订单读票', () => {
     spyOn(context.riskChecker, 'prepareUnrealizedLossData').mockImplementation(risk.prepare);
     spyOn(context.riskChecker, 'publishUnrealizedLossData').mockImplementation(risk.publish);
     const workflow = createSeatActivationFixture({
+      termination: { reportFatalError: () => {} },
       clock: { now: () => now },
       monitorContext: context,
       snapshot,

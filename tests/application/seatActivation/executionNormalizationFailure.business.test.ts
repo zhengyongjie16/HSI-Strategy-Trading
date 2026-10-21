@@ -11,6 +11,7 @@ import {
   createQuoteSubscriptionRuntimeDouble,
 } from '../../helpers/testDoubles.js';
 import { createSeatActivationFixture } from './fixtures.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 
 function positiveOrderMissingAmount(): OrderFact {
   const updatedAtMs = Date.parse('2026-03-13T02:59:00.000Z');
@@ -58,7 +59,14 @@ describe('SEAT_REFRESH API 归一失败', () => {
     const dailyPublish = spyOn(context.dailyLossTracker, 'publishRecalculation');
     const validate = spyOn(context.orderRecorder, 'validateRebuildSnapshot');
     const commit = spyOn(context.orderRecorder, 'commitRebuildSnapshot');
+    const termination = createTerminationRuntime({
+      closeTradingGate: () => {},
+      closeProducerAdmission: () => {},
+      stopProducers: [],
+      onSecondaryError: () => {},
+    });
     const workflow = createSeatActivationFixture({
+      termination,
       clock: { now: () => new Date('2026-03-13T03:00:00.000Z') },
       monitorContext: context,
       snapshot,
@@ -82,6 +90,7 @@ describe('SEAT_REFRESH API 归一失败', () => {
       caught = error;
     }
 
+    expect(termination.getFatalState()).toEqual({ hasFatalError: true, error: caught });
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).message).toContain('正成交缺少本次原始金额');
     expect(dailyPrepare).not.toHaveBeenCalled();

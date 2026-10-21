@@ -192,6 +192,7 @@ async function createPendingOrder(params: {
   };
   const native = await createBrokerIngressFixture({
     ...frame,
+    status: 'New',
     executedQuantity: '0',
     executedPrice: '0',
   });

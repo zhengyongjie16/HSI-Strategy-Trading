@@ -6,7 +6,7 @@ import type {
 } from '../../types/orderRecorder.js';
 import type { Quote } from '../../types/quote.js';
 import type { DailyLossMonitorScope, DailyLossTracker } from '../../types/risk.js';
-import type { RuntimeClock } from '../../types/runtime.js';
+import type { RuntimeClock, RuntimeTermination } from '../../types/runtime.js';
 import type { SeatState, SymbolRegistry } from '../../types/seat.js';
 import type { PreparedUnrealizedLossData } from '../../types/unrealizedLoss.js';
 import type { WarrantRefreshResult } from '../../types/warrantRisk.js';
@@ -85,8 +85,9 @@ interface SeatActivationRisk {
   ) => WarrantRefreshResult;
 }
 
-/** 激活用例的窄依赖；调度、停止和致命错误上报由实际 runtime 持有。 */
+/** 激活用例的窄依赖；内部错误同步上报既有 termination，调度和停止仍由 runtime 持有。 */
 export interface SeatActivationWorkflowDeps {
+  readonly termination: Pick<RuntimeTermination, 'reportFatalError'>;
   readonly diagnostics: DiagnosticObserver;
   readonly clock: RuntimeClock;
   readonly config: DailyLossMonitorScope;

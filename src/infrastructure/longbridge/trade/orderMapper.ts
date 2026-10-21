@@ -52,21 +52,9 @@ function sdkFinancialText(text: string): string {
   return text.startsWith('-') && exactCompare(normalized, '0') === 0 ? '-0' : normalized;
 }
 
-/** 真实零成交才是 '0'；正成交缺价显式 null，不伪造金额。 */
-function cumulativeAmount(
-  executedPrice: string | null,
-  executedQuantity: number,
-): string | null {
-  if (executedQuantity === 0) return '0';
-
-  if (executedPrice === null) return null;
-
-  return exactMultiply(executedPrice, String(executedQuantity));
-}
-
 /**
  * 将 SDK 累计金融字段转换为中性事实；成本依据为 SDK 均价原文×累计量，不经 number/显示舍入。
- * 正成交缺价只在普通终态放行并显式保留缺失，绝不补价、绝不伪造 0 金额。
+ * FILLED 必须有正累计量；所有正成交观察必须携带本次有效正价，首次映射即拒绝矛盾或缺价事实。
  * @param order SDK 查询订单，身份/归属证据在此共享边界再次校验
  * @returns 含订单级观察时间代理的完整内部订单观察
  */
@@ -80,27 +68,26 @@ export function mapBrokerOrder(order: BrokerOrderSdkFields): OrderFact {
 
   const quantity = safeQuantityNumber(order.quantity.toString());
   const executedQuantity = safeQuantityNumber(order.executedQuantity.toString());
-  const observedExecutedPrice =
-    order.executedPrice === null ? null : sdkFinancialText(order.executedPrice.toString());
-  if (observedExecutedPrice !== null && exactCompare(observedExecutedPrice, '0') < 0) {
-    throw new TypeError('[orderMapper] invalid cumulative execution quantity/price');
+  if (order.status === OrderStatus.Filled && executedQuantity === 0) {
+    throw new TypeError('[orderMapper] FILLED order requires positive cumulative execution quantity');
   }
 
-  // 零价不是可观测成交价：正成交时归为显式缺价，交由业务合并裁决，不偷补旧价。
   const executedPrice =
-    observedExecutedPrice !== null &&
-    executedQuantity > 0 &&
-    exactCompare(observedExecutedPrice, '0') === 0
-      ? null
-      : observedExecutedPrice;
-
-  if (executedQuantity > quantity) {
+    order.executedPrice === null ? null : sdkFinancialText(order.executedPrice.toString());
+  if (
+    (executedPrice !== null && exactCompare(executedPrice, '0') < 0) ||
+    executedQuantity > quantity
+  ) {
     throw new TypeError('[orderMapper] invalid cumulative execution quantity/price');
   }
 
-  // 正成交缺价只有普通终态可达业务合并；在途订单缺价仍是结构错误。
-  if (executedQuantity > 0 && executedPrice === null && executionPhase !== 'TERMINAL') {
-    throw new TypeError('[orderMapper] invalid cumulative execution quantity/price');
+  let executedAmount = '0';
+  if (executedQuantity > 0) {
+    if (executedPrice === null || exactCompare(executedPrice, '0') <= 0) {
+      throw new TypeError('[orderMapper] invalid cumulative execution quantity/price');
+    }
+
+    executedAmount = exactMultiply(executedPrice, String(executedQuantity));
   }
 
   const submittedAtMs = timestamp(order.submittedAt, 'submittedAt');
@@ -112,9 +99,6 @@ export function mapBrokerOrder(order: BrokerOrderSdkFields): OrderFact {
   if (order.status === OrderStatus.Filled) executionStatus = 'FILLED';
   else if (order.status === OrderStatus.PartialFilled || executedQuantity > 0)
     executionStatus = 'PARTIAL';
-
-  /** 真实零成交才是 '0'；正成交缺价显式 null，不伪造金额。 */
-  const executedAmount = cumulativeAmount(executedPrice, executedQuantity);
 
   // 零成交初始订单的版本就是其提交事实；正成交必须有独立修订字段。
   const updatedAtMs =

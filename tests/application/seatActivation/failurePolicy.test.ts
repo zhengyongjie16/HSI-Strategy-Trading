@@ -4,6 +4,7 @@ import { createSeatActivationFixture } from './fixtures.js';
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createMonitorContext } from '../../helpers/asyncProgram.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
+import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import {
   createAccountSnapshotDouble,
   createMarketDataClientDouble,
@@ -32,7 +33,19 @@ describe('SeatActivationWorkflow 失败策略', () => {
       attempts: 1,
       cause: new Error('network'),
     });
+    const closedGates: string[] = [];
+    const termination = createTerminationRuntime({
+      closeTradingGate: () => {
+        closedGates.push('trading');
+      },
+      closeProducerAdmission: () => {
+        closedGates.push('producer');
+      },
+      stopProducers: [],
+      onSecondaryError: () => {},
+    });
     const workflow = createSeatActivationFixture({
+      termination,
       clock: { now: () => new Date('2026-03-13T03:00:00.000Z') },
       monitorContext: context,
       snapshot,
@@ -71,5 +84,8 @@ describe('SeatActivationWorkflow 失败策略', () => {
     expect(snapshot.getView().token.snapshotGeneration).toBe(originalGeneration);
     expect(calls).toBe(2);
     expect(releases).toBe(2);
+    expect(termination.getFatalState()).toEqual({ hasFatalError: false });
+    expect(termination.isTerminated()).toBeFalse();
+    expect(closedGates).toEqual([]);
   });
 });

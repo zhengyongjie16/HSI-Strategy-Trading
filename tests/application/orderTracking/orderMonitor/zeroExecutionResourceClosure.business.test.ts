@@ -2,9 +2,10 @@ import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js'
 import { wait } from '../../../../src/infrastructure/time/index.js';
 import { createLoggerDouble, createMonitorConfigDouble } from '../../../helpers/testDoubles.js';
 
-/** 完整tracked生产normalize→settle：非FILLED零执行只收资源，不能借失踪tracking绕过经济提交。 */
+/** 真实 trackOrder：非 FILLED 零执行只收资源，FILLED 零量在 eventFlow 原始准入拒绝。 */
 
 import { expect, test } from 'bun:test';
+import { createEventFlow } from '../../../../src/application/orderTracking/orderMonitor/eventFlow.js';
 import { normalizeTerminalStateSnapshot } from '../../../../src/domain/order/orderFactMerge.js';
 import type { TerminalStateSnapshot } from '../../../../src/domain/order/types.js';
 
@@ -12,13 +13,13 @@ import { createBrokerIngressFixture } from '../../../integration/architectureRef
 import { createExecutionFixture } from '../recorder/executionFixture.js';
 
 const now = Date.parse('2026-07-14T02:00:00.000Z');
-async function setup(status: 'Canceled' | 'Rejected' | 'Filled') {
+async function setup(status: 'Canceled' | 'Rejected', side: 'BUY' | 'SELL' = 'SELL', protective = true) {
   const native = await createBrokerIngressFixture({
     orderId: 'ZERO-RESOURCE',
     symbol: 'BULL.HK',
     stockName: 'HSI RC',
     remark: '',
-    side: 'SELL',
+    side,
     status,
     quantity: '100',
     executedQuantity: '0',
@@ -65,9 +66,11 @@ async function setup(status: 'Canceled' | 'Rejected' | 'Filled') {
     quantity: 100,
     isLongSymbol: true,
     monitorSymbol: 'HSI.HK',
-    isProtectiveLiquidation: true,
+    isProtectiveLiquidation: protective,
   });
-  f.recorder.submitSellOrder('ZERO-RESOURCE', 'BULL.HK', 'LONG', 100, [], now - 60_000);
+
+  if (side === 'SELL')
+    f.recorder.submitSellOrder('ZERO-RESOURCE', 'BULL.HK', 'LONG', 100, [], now - 60_000);
 
   return { f, native };
 }
@@ -105,7 +108,7 @@ for (const [status, reason] of [
       executionTimeMs: null,
       orderUpdatedAtMs: null,
     };
-    const normalized = normalizeTerminalStateSnapshot(tracked, raw, true);
+    const normalized = normalizeTerminalStateSnapshot(tracked, raw);
     expect(normalized).toMatchObject({
       executedQuantity: 0,
       executedAmount: '0',
@@ -140,50 +143,53 @@ for (const [status, reason] of [
   });
 }
 
-test('FILLED zero execution cannot borrow the non-FILLED resource-only close', async () => {
-  const { f, native } = await setup('Filled');
-  const tracked = f.runtime.trackedOrders.get('ZERO-RESOURCE');
-  if (tracked === undefined) throw new Error('FILLED negative case requires full tracking');
-
-  const before = { ...tracked };
-  const generation = f.snapshot.getView().token.snapshotGeneration;
-  const result = f.flow.settleOrder({
-    orderId: 'ZERO-RESOURCE',
-    closedReason: 'FILLED',
-    source: 'STATE_CHECK',
-    executedQuantity: 0,
-    executedAmount: '0',
-    executedPrice: null,
-    executedTimeMs: null,
-    orderUpdatedAtMs: null,
+test.each(['BUY', 'SELL'] as const)('ordinary %s FILLED zero execution cannot mutate tracking or terminal confirmation', async (side) => {
+  const { f, native } = await setup('Canceled', side, false);
+  const flow = createEventFlow({
+    diagnostics: createDiagnosticObserverDouble(),
+    logger: createLoggerDouble(),
+    runtime: f.runtime,
+    monitorConfig: createMonitorConfigDouble(),
+    now: () => new Date(now),
+    orderRecorder: f.recorder,
+    recordCumulativeExecution: (params) => {
+      f.flow.recordCumulativeExecution(params);
+    },
+    prepareProtectiveTerminalExecution: f.flow.prepareProtectiveTerminalExecution,
+    settleOrder: f.flow.settleOrder,
+    cacheBootstrappingEvent: () => {
+      throw new Error('active order cannot bootstrap');
+    },
+    triggerRoute: () => {
+      throw new Error('invalid fact cannot wake a route');
+    },
   });
-  expect(result.handled).toBe(false);
-  expect(f.runtime.trackedOrders.get('ZERO-RESOURCE')).toEqual(before);
-  expect(f.holds.getHoldSymbols().has('BULL.HK')).toBe(true);
-  expect(f.recorder.getPendingSellSnapshot()).toHaveLength(1);
-  expect(f.events).toEqual([]);
-  expect(f.recorder.getExecutionFact('ZERO-RESOURCE')).toBeNull();
-  expect(f.snapshot.getView().token.snapshotGeneration).toBe(generation);
-  const missingT: TerminalStateSnapshot = {
-    executionStatus: native.queryObservation.executionStatus,
-    kind: 'TERMINAL',
-    closedReason: 'FILLED',
-    status: native.queryObservation.status,
-    submittedQuantity: 100,
-    executedQuantity: 100,
-    executedAmount: '103',
-    executedPrice: '1.03',
-    executionTimeMs: null,
-    orderUpdatedAtMs: now,
-  };
-  expect(normalizeTerminalStateSnapshot(tracked, missingT, true)).toMatchObject({
-    executedQuantity: 100,
-    executedPrice: '1.03',
-    executedAmount: '103',
-    executedTimeMs: now,
-    orderUpdatedAtMs: now,
+  const observe = () => structuredClone({
+    tracked: [...f.runtime.trackedOrders],
+    lifecycles: [...f.runtime.trackedOrderLifecycles],
+    indexed: [...f.runtime.trackedOrderIdsBySymbol],
+    closed: [...f.runtime.closedOrderIds],
+    fact: f.recorder.getExecutionFact('ZERO-RESOURCE'),
+    buys: f.recorder.getBuyOrdersForSymbol('BULL.HK', true),
+    sell: f.recorder.getSellRecordByOrderId('ZERO-RESOURCE'),
+    holds: [...f.holds.getHoldSymbols()],
+    pending: f.recorder.getPendingSellSnapshot(),
+    loss: f.daily.getLossOffset('LONG'),
+    episode: f.episode.getInProgressEpisodes(),
+    events: f.events,
+    snapshot: f.snapshot.getView().token,
+    consistency: f.sink.getStatus(),
   });
-  expect(f.runtime.trackedOrders.get('ZERO-RESOURCE')).toEqual(before);
-  expect(f.recorder.getPendingSellSnapshot()).toHaveLength(1);
-  expect(f.events).toEqual([]);
+  const before = observe();
+  expect(before.tracked).toHaveLength(1);
+  expect(before.lifecycles).toHaveLength(1);
+  // 显式绕过 SDK mapper 检查共享 domain 边界；不是让不可达坏输入进入 settlement 后补救。
+  expect(() => { flow.handleOrderChangedWhenActive({
+    ...native.queryObservation,
+    status: 'FILLED',
+    executionStatus: 'FILLED',
+  }); }).toThrow('FILLED 观察必须具有正累计成交数量');
+  expect(observe()).toEqual(before);
+  expect(native.nativeReadCounts()).toEqual({ cancel: 0, detail: 0 });
+  expect(native.nativeMutations()).toEqual([]);
 });

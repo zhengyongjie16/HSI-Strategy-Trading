@@ -1,7 +1,8 @@
 /**
  * 席位激活用例。
  * 唯一运行期 ACTIVATING→ACTIVE owner；按 retain/admission/真实订单/Daily/snapshot/订阅/风险/ACTIVE/release 屏障推进。
- * 外部失败仅一次延迟重试，内部错误与 release 错误保持原分类和身份；不维护第二订单账或 settlement ready。
+ * 外部失败仅一次延迟重试；主体内部错误在完整 await release 前同步 fatal，清理不覆盖原始错误身份。
+ * 不维护第二订单账或 settlement ready。
  */
 import { API } from '../../constants/index.js';
 import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
@@ -499,6 +500,9 @@ export function createSeatActivationWorkflow(
     } catch (error) {
       hasBodyFailure = true;
       bodyFailure = error;
+      // release 可能等待串行退订 I/O，内部错误必须先同步关门，再完整排空 retain。
+      if (!isExternalApiRequestError(error)) context.termination.reportFatalError(error);
+
       throw error;
     } finally {
       let releaseStartedAtMs: number | null = null;

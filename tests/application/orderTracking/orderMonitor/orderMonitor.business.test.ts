@@ -2488,7 +2488,7 @@ describe('orderMonitor business flow', () => {
     await monitor.stopRuntimeAndDrain();
   });
 
-  it('public state-check protective terminal with positive execution but invalid execution time rejects without local closure', async () => {
+  it('public state-check protective terminal with positive execution but invalid execution time reports fatal without local closure', async () => {
     const recorderCalls: string[] = [];
     const dailyLossCalls: DailyLossCumulativeExecutionInput[] = [];
     const persistenceCalls: string[] = [];
@@ -2604,7 +2604,7 @@ describe('orderMonitor business flow', () => {
       orderType: 'ELO',
     });
 
-    await expectPromiseRejectsToMatch(
+    const error = await expectPromiseRejectsToMatch(
       () =>
         monitor.cancelOrder('SELL-PROTECTIVE-STATE-CHECK-MISSING-TIME', {
           kind: 'ORDER_FACT',
@@ -2618,10 +2618,11 @@ describe('orderMonitor business flow', () => {
     expect(episodeCalls).toEqual([]);
     expect(refreshNeeds).toEqual([]);
     expect(orderStateEvents).toEqual([]);
-    expect(fatalErrors).toEqual([]);
+    expect(fatalErrors).toEqual([error]);
+    expect(termination.getFatalState()).toEqual({ hasFatalError: true, error });
     expect(monitor.getPendingSellOrders('BULL.HK')).toHaveLength(1);
     expect(economic.recorder.getExecutionFact(frame.orderId)).toBeNull();
-    expect(admissionOpen).toBe(true);
+    expect(admissionOpen).toBe(false);
     expect(native.nativeReadCounts()).toEqual({ cancel: 1, detail: 1 });
     await monitor.stopRuntimeAndDrain();
   });

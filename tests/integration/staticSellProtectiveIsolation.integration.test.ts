@@ -38,6 +38,7 @@ import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import { createMixedTradeLogRepository } from '../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import { createLoadTradingDayRuntimeSnapshot } from '../../src/application/tradingDayRebuild/loadTradingDayRuntimeSnapshot.js';
 import { createRebuildTradingDayState } from '../../src/application/tradingDayRebuild/rebuildTradingDayState.js';
+import type { OrderSnapshotReadPort } from '../../src/types/orderSnapshotReadPorts.js';
 import type { ProtectiveLiquidationExecutionProgressInput } from '../../src/types/risk.js';
 import { exactMultiply } from '../../src/utils/numeric/exact.js';
 import { toHongKongTimeIso } from '../../src/utils/time/index.js';
@@ -148,6 +149,7 @@ async function createHarness(
     readonly history?: ReadonlyArray<BrokerIngressInput>;
     readonly completion?: SettlementProtectionCompletion;
     readonly logRoot?: string;
+    readonly orderSnapshotReadPort?: OrderSnapshotReadPort;
   } = {},
 ) {
   const root = params.logRoot ?? mkdtempSync(path.join(tmpdir(), 'p3f-static-'));
@@ -263,7 +265,9 @@ async function createHarness(
   });
   const recorderOwner = createOrderRecorder({
     logger: createLoggerDouble(),
-    orderSnapshotReadPort: native.ports.createOrderSnapshotReadPort({ rateLimiter: limiter }),
+    orderSnapshotReadPort:
+      params.orderSnapshotReadPort ??
+      native.ports.createOrderSnapshotReadPort({ rateLimiter: limiter }),
     settlementRefreshNeedRecorder: settlement,
   });
   const clearCalls: string[] = [];
@@ -863,12 +867,16 @@ describe('static purpose isolation with full recovery', () => {
 
   for (const kind of ['ACK', 'OPEN', 'MISSING_QUANTITY'] as const) {
     it(
-      kind + ': no new submit/REPLACE/static clearing and the old order can still advance',
+      kind === 'MISSING_QUANTITY'
+        ? kind + ': fatal preserves the old order and blocks all later execution'
+        : kind + ': no new submit/REPLACE/static clearing and the old order can still advance',
       async () => {
         const f = await createHarness({ associated: true });
         try {
           await f.bootstrap();
           const beforeBuy = f.recorder.getBuyOrdersForSymbol('BULL.HK', true);
+          const beforePending = f.recorder.getPendingSellSnapshot();
+          const beforeExecution = f.recorder.getExecutionFact(ZERO.orderId);
           expect(beforeBuy).toHaveLength(1);
           if (kind === 'ACK') f.native.setCancelBeforeReply(async () => {});
           else {
@@ -883,9 +891,17 @@ describe('static purpose isolation with full recovery', () => {
           if (kind === 'MISSING_QUANTITY') {
             const failure: unknown = await f.execute().then(
               () => null,
-              (error: unknown) => error,
+              (error: unknown) => {
+                expect(f.fatal).toHaveLength(1);
+                expect(f.fatal[0]).toBe(error);
+                return error;
+              },
             );
-            expect(failure).toBeInstanceOf(Error);
+            expect(failure).toBeInstanceOf(TypeError);
+            expect(failure).toHaveProperty(
+              'message',
+              "null is not an object (evaluating 'order.executedQuantity.toString')",
+            );
           } else expect(await f.execute()).toEqual({ kind: 'NOOP' });
 
           expect(f.native.nativeCancelOrderIds()).toEqual(['OLD-PROTECTIVE']);
@@ -910,6 +926,32 @@ describe('static purpose isolation with full recovery', () => {
           ]);
           expect(f.repository.loadExecutionProgressRecords(DAY)).toEqual([]);
           const laterPartial = { ...PARTIAL, updatedAtMs: T + 2110 };
+          if (kind === 'MISSING_QUANTITY') {
+            const firstFatal = f.fatal[0];
+            f.native.emitOrderChangedFrame(laterPartial);
+            f.native.emitOrderChangedFrame({
+              ...laterPartial,
+              status: 'Canceled',
+              updatedAtMs: T + 3000,
+            });
+            expect(await f.execute()).toEqual({ kind: 'NOOP' });
+            expect(f.fatal).toHaveLength(1);
+            expect(f.fatal[0]).toBe(firstFatal);
+            expect(f.recorder.getExecutionFact(ZERO.orderId)).toEqual(beforeExecution);
+            expect(f.recorder.getPendingSellSnapshot()).toEqual(beforePending);
+            expect(f.recorder.getBuyOrdersForSymbol('BULL.HK', true)).toEqual(beforeBuy);
+            expect(f.monitor.getPendingSellOrders('BULL.HK')).toMatchObject([
+              { orderId: ZERO.orderId, isProtectiveLiquidation: true, executedQuantity: 0 },
+            ]);
+            expect(f.repository.loadExecutionProgressRecords(DAY)).toEqual([]);
+            expect(f.repository.loadCompletionRecords(DAY)).toEqual([]);
+            expect(f.episodes.getInProgressEpisodes()).toEqual([]);
+            expect(f.native.nativeCancelOrderIds()).toEqual([ZERO.orderId]);
+            expect(f.native.nativeMutations()).toEqual([]);
+            expect(f.clearCalls).toEqual([]);
+            return;
+          }
+
           f.native.emitOrderChangedFrame(laterPartial);
           await waitForFact(f, laterPartial);
           await f.settlement.waitForFresh();
@@ -1063,21 +1105,43 @@ describe('static purpose isolation with full recovery', () => {
     }
   });
 
-  it('loader rejects terminal positive execution without price or durable same-quantity amount', async () => {
+  it('loader rejects terminal positive execution without raw price/amount before hydration', async () => {
+    const terminal: BrokerIngressInput = { ...PARTIAL, status: 'Canceled' };
+    const baseline = await createBrokerIngressFixture(terminal);
+    let snapshotReads = 0;
     const f = await createHarness({
-      initial: { ...PARTIAL, status: 'Canceled', executedPrice: '0' },
+      initial: terminal,
       progress: [],
+      orderSnapshotReadPort: {
+        fetchSnapshots: async () => {
+          snapshotReads++;
+          // 在经济 owner 的中性读取入口损坏事实，不要求 SDK mapper 容忍正量坏价。
+          return {
+            historyOrders: [],
+            todayOrders: [
+              { ...baseline.queryObservation, executedPrice: null, executedAmount: null },
+            ],
+          };
+        },
+      },
     });
     try {
       const failure: unknown = await f.bootstrap().then(
         () => null,
         (error: unknown) => error,
       );
+      expect(snapshotReads).toBe(1);
       expect(failure).toBeInstanceOf(Error);
-      expect(failure).toHaveProperty('message', expect.stringContaining('正成交缺少本次原始金额'));
+      expect(failure).toHaveProperty(
+        'message',
+        `[执行归一] 正成交缺少本次原始金额: ${terminal.orderId}`,
+      );
       expect(f.trace).not.toContain('hydrate');
+      expect(f.trace).not.toContain('recovery');
+      expect(f.repository.loadExecutionProgressRecords(DAY)).toEqual([]);
       expect(f.repository.loadCompletionRecords(DAY)).toEqual([]);
       expect(f.episodes.getInProgressEpisodes()).toEqual([]);
+      expect(f.clearCalls).toEqual([]);
       expect(f.native.nativeMutations()).toEqual([]);
     } finally {
       await f.close();

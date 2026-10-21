@@ -107,6 +107,7 @@ async function createCatchUpFixture() {
   const reconciledTokens: SnapshotToken[] = [];
   const owners: string[] = [];
   const workflow = createSeatActivationFixture({
+    termination: { reportFatalError: () => {} },
     clock: { now: () => now },
     monitorContext: context,
     snapshot,

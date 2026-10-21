@@ -23,7 +23,7 @@ export type OrderFact = {
   readonly executedPrice: string | null;
   readonly executedQuantity: number;
 
-  /** SDK 累计成交均价原文 × 累计安全整数数量；正成交缺价时显式 null，不伪造成 0。 */
+  /** SDK 本次有效正均价原文 × 累计安全整数数量；正成交缺价在 mapper 拒绝，零成交为 '0'。 */
   readonly executedAmount: string | null;
 
   /**

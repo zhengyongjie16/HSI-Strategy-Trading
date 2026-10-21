@@ -1,23 +1,27 @@
 # 订单驱动启动恢复回归修复方案
 
-> **文档状态：设计记录 / 实施状态记录——实施完成并通过最新一轮离线验收与独立复审（含新增 P1-D 与优化批次）；未实盘验证、未提交**
+> **文档状态：设计与原批次实施历史记录；F03 本轮修复、全链路二审及独立复验已完成；未实盘验证**
 >
-> - 实施、多轮独立复审与统一离线验收均已完成；本文件是供用户审阅、后续维护与回溯使用的**方案与设计记录**，**不是唯一权威**，以后续明确确认/复审结论为准。
-> - 权威结果（详见 §10、§13.4、§14）：A reviewer 同轮 **APPROVE 且原 P1 关闭**（195 pass / 11 files + 真实链路 / terminal / crossday probes）；B 优化 **APPROVE**（75 pass / 9 files + 9 probes）；此前的 final-review-financial 同轮 APPROVE（A/B/C 全闭）、final-review-boundaries APPROVE W4 两项、W2 原三项关闭均继续有效。
-> - 最新统一全量：**3288 pass / 0 fail / 317 files**（套件 4 项 build pass）。先前 **3284 为历史验收快照，已被 3288 取代**。
-> - **未实盘验证**，且**尚未提交任何 commit**（HEAD 仍 `d2aa59054abac546f506b27df45f161afcfc6578`）。
-> - 本文的"已修/已关闭"指**工作区状态**（未提交）；代码/文件统计引用**验收快照**，不作为永久实时值。
-> - 本次更新仅涉及本文件与 `tests/integration/architectureRefactoringRecovery/README.md`：未改业务代码、未改测试代码、未重跑测试/构建/lint、未读 `.env`、未启动应用或实盘、未 commit。
+> **F03 最终全仓离线总览（最新）**：**320 files／3420 tests：3418 pass／2 fail，22767 assertions，330.48s**；两项失败均在干净基线中重现，非 F03 新增，**不能称全仓全绿**，详见 §14.2。
+> 普通同量终态沿用 known 价额、正量终态缺价映射 `null` 的旧前提已撤销；`Filled + Q=0` 也已由 mapper／domain 两处 guard 首次拒绝。Monitor 公共 operation 与 seatActivation 的 fatal 时序问题已最小修复，原两位 reviewer 独立复验全部关闭。
+> 规则见 §5.1、§6.1–§6.3、§13.1；完整证据及未覆盖边界见[审计 F03 本轮补记](./architecture-refactoring-full-chain-audit.md#f03-implementation-verification)。本轮仅 F03，不代表 F05 或全报告已修。
+>
+> - 以下原批次记录供维护与回溯使用，**不是当前全仓验证结论**，以后续明确确认／复审结论为准。
+> - 原批次结果（详见 §10、§13.4）：A reviewer 同轮 **APPROVE 且原 P1 关闭**（195 pass / 11 files + 真实链路 / terminal / crossday probes）；B 优化 **APPROVE**（75 pass / 9 files + 9 probes）；此前的 final-review-financial 同轮 APPROVE（A/B/C 全闭）、final-review-boundaries APPROVE W4 两项、W2 原三项关闭均保留为历史记录。
+> - 原批次统一全量：**3288 pass / 0 fail / 317 files**（套件 4 项 build pass），取代当时的 3284 快照；不替代本轮 F03 最终全仓结果。
+> - 原批次验收时未实盘验证、未提交，HEAD 为 `d2aa59054abac546f506b27df45f161afcfc6578`；这些均为历史快照，不作为当前代码状态。
+> - 原批次的“已修／已关闭”指当时工作区状态；代码／文件统计不作为永久实时值。
+> - 原批次文档更新仅涉及本文件与 `tests/integration/architectureRefactoringRecovery/README.md`，当时未改业务或测试代码、未重跑测试／构建／lint、未读 `.env`、未启动应用或实盘、未 commit；本轮文档收尾范围见 §16.4。
 
 | 项目 | 值 |
 | --- | --- |
 | 仓库 | `D:/Code/HSI-Strategy-Trading` |
 | 当前分支 | `beta-V2` |
-| 当前基线 HEAD | `d2aa59054abac546f506b27df45f161afcfc6578` |
+| F03 本轮基线 HEAD | `353b621f46120dc20bf7aec57949c3f73234a83f` |
 | 对照分支 | `develop` @ `6e239c8a128372bd9b2fb2d79464346792a5e81e`（前置远端验证时为最新；本文不声称此刻仍为最新） |
 | 回归引入点 | `4a148b3`，其直接父为 `develop` |
-| 工作区状态 | **最新验收快照**：178 项（152 M / 10 D / 16 untracked），未提交；为某一时点快照，**非永久实时值** |
-| 验收状态 | **离线验收通过**（最新全量 3288 pass / `tsc` / `eslint` / `git diff --check` 均 exit 0）+ 两 reviewer 批准；**未实盘、未提交** |
+| 原批次工作区快照 | 178 项（152 M / 10 D / 16 untracked），当时未提交；**非当前实时值** |
+| F03 验收状态 | 本轮修复与两位 reviewer 独立复验关闭；全仓有两项既有失败，检查通过，详见 §14.2；**未实盘** |
 | 目标业务语义 | 回到旧 `develop` 的**订单驱动（order-driven）**语义 |
 
 ---
@@ -54,7 +58,7 @@
 - 修复 `historyOrders`/`todayOrders` 驱动的启动、重建、快照、pending、push、status query 路径。
 - 统一订单事实契约（`OrderFact`、`BrokerOrderExecutionFact`、推送 decoder、详情读取、broker access、merge 裁决）。
 - 订单时间（`executionTimeMs`/`updatedAtMs`）与状态推进的单一规则集。
-- 终态价格沿用规则与保护 SELL 的写前校验边界。
+- 正成交终态本次原始量价／金额的首次准入（不沿用 known 价额）与保护 SELL 的写前校验边界。
 - HK scope（市场判定）与 US 全面交易隔离。
 - 账户精度：有限、非负、小数文本的安全转换与展示。
 - Durable baseline 恢复、完整历史预检、KEEP_KNOWN 语义、fail-closed 冲突处理。
@@ -168,9 +172,9 @@ BrokerOrderExecutionFact ── mergeExecutionFact(known, observed) ──> Brok
 生成规则（必须逐条满足）：
 
 1. **raw 正量 + 有效正价** → `executedAmount` = `exactMultiply(qty, price)`，字符串精确乘法，禁止 `Number` 运算、禁止四舍五入。
-2. **raw 正量 + terminal + 缺价** → `executedAmount = null`；**不得**伪 0。
-3. **OPEN + 缺价 / 负价** → 直接拒绝（fail-fast），不构造事实。
-4. **zero 量** → `executedAmount = "0"`、`executionTimeMs = null`。
+2. **raw 正量 + terminal + 本次缺／零／无效价额** → mapper **第一次就拒绝**，domain 同样拒绝；不得映射缺价事实后继承 known 价额，不重试、不补查、不等待第二次消息或 closed 兜底。
+3. **正量 OPEN + 缺／零／无效价额** → 直接拒绝（fail-fast），不构造事实。
+4. **真实 zero 量且非 Filled** → `executedAmount = "0"`、`executionTimeMs = null`；零成交非 Filled 终态仍可正常关闭，Filled 零成交拒绝。
 5. **正量必须有有效 `updatedAtMs`**；不得用 `now()` 或 `submittedAt` 兜底。
 6. **zero 量** 可用真实 `submittedAt` 作为初始 revision 水位。
 
@@ -233,19 +237,20 @@ mergeBrokerOrderExecutionFact(...)
 8. 旧入站**弱 `OPEN → OPEN`**：仅限 **同 rev + qty 降 + amount 不增加 + T 不推进**；允许按过滤处理，但**不得**借此扩展经济 owner 或 recovery 范围。
 9. Known 正量必须 `amount > 0` 且 T 有效；**不可**用 raw 去补损坏的 known；`phase: null` **只**允许给旧 baseline。
 10. **same rev + same qty + same phase + amount 冲突 → 拒绝**；唯一例外是**已证明的 `OPEN → TERMINAL`**，此时允许最终金额修订。
-11. **`TERMINAL → OPEN` 一律拒绝**；`phase-null` **不得**授权任何特例。
+11. 共享事实裁决的 **`TERMINAL → OPEN` 仍拒绝**；仅 closed 入站可按 §6.2 窄范围丢弃完整同证据迟到 OPEN，不放宽 domain 阶段规则；完整旧 revision 非增量仍按既有 stale 处理，`phase-null` **不得**授权特例。
 
-### 6.2 终态价格沿用（TERMINAL price reuse）
+### 6.2 正成交终态原始证据与 closed 入站（F03 最新准则）
 
-普通（非保护 SELL）规则：
-
-- 同 order、同 qty 的 TERMINAL：**仅当 known 完整**（价格、金额、T 三者齐备）才可沿用。
-- **增量缺价**、**无 known**、**OPEN 缺价** → 都**不能**借用旧值。
+- **异常正成交终态第一次就 fatal（已实施）**：普通 BUY／SELL 与保护 SELL 均必须由本次原始数量、正价、正金额和有效 revision／时间自证；缺失／零／无效量价或金额不得继承 known 价格、金额完成结算。同 order、同 qty、known 完整也不能授权沿用，因为同量仍可能发生金额修订。mapper 与 domain 已删除缺价／known 补价豁免，`Filled + Q=0` 也已由两处 guard 在写终态、结算前首次拒绝；不重试、不补查、不等第二条或 closed 兜底。
+- **closed 仅窄范围丢弃迟到 OPEN**：仅在已无 tracking、已有 TERMINAL 事实，且本次证据完整、broker 身份（orderId／symbol／side 及归属）匹配、同 revision、同累计数量、同累计金额时，在入站丢弃；不重开资源、不重复 terminal／settle／hold／经济消费。其他坏证据首次拒绝，其余阶段回退仍由共享裁决拒绝，完整旧 revision 非增量的既有 stale 处理不变。
+- 保留真实零成交非 Filled 正常关闭、证据完整的合法同量金额修订（含 closed 后的新 revision），以及 `T=null` 时本次有效 revision 代理模型；不能把所有 closed 事件一律丢弃。
+- **fatal 时序二审闭环**：Monitor 公共 operation 等待 fanout 等其他 I/O 后才 fatal、seatActivation 等待 `finally release` 后才 fatal 的问题已最小修复；两者复用现成 termination，先关双 gate 再排空，首错与外部 API 失败政策不变。原两位 reviewer 独立复验全部关闭，F03 无剩余代码发现。
+- **历史前提更正**：原方案“普通同量终态可凭完整 known 沿用价额”已撤销；原 F03 的第一次 tracked 借 known 结算、第二次 closed fatal 是历史缺陷表现，不是应保留的第一次成功行为。本轮工作区实施与最终离线结果见[审计 F03 本轮补记](./architecture-refactoring-full-chain-audit.md#f03-implementation-verification)，不据历史结果宣告本轮全仓全绿。
 
 ### 6.3 保护 SELL
 
-- 当 **known 有成交** 或 **raw 本次有成交**时，`cancel` / `reject` / `expire` / `filled` 都必须携带**本次 raw 的正 qty + 正价 + 有效 `updatedAtMs`**。
-- 该校验**必须在 resourceOnly 旁路之前**执行（否则绕过校验的旁路会发布无价格事实）。
+- 当 **known 有成交** 或 **raw 本次有成交**时，`cancel` / `reject` / `expire` / `filled` 都必须携带**本次 raw 的正 qty + 正价 + 正金额 + 有效 `updatedAtMs`**。
+- 统一的本次原始数量、价格、金额及有效 revision 准入，**先于 stale／known／已终态过滤，以及任何资源／经济／durable 副作用**；缺证据收口已删除，不得恢复。
 - **纯 zero** 不得制造经济 progress，也不得制造 completion。
 
 ### 6.4 zero 与 close
@@ -528,7 +533,7 @@ isHongKongSymbol(symbol: unknown): symbol is string
 - **体量**：本轮相对实施前工作区 **+20 / −40，净减 20 行**。
 - **保留（不得合并）**：两次完整 history 验证、两次 prepare、freshness 校验；语义不同的阶段**不合并**。
 
-**复审与验证**：独立 minimality 与金融 review **均 APPROVE**；旧 / 新差分的返回与错误比较**全部 0 差异**；金融定向 **161 pass**。最新全量 **3288 pass / 0 fail / 317 files**、`typecheck` / `eslint` / `diff --check` 均 0、套件 4 项 build pass；验证前后**两个受审文件 SHA256 与 review 一致**。未实盘、未 commit。
+**复审与验证（原批次历史）**：独立 minimality 与金融 review **均 APPROVE**；旧 / 新差分的返回与错误比较**全部 0 差异**；金融定向 **161 pass**。当时全量 **3288 pass / 0 fail / 317 files**、`typecheck` / `eslint` / `diff --check` 均 0、套件 4 项 build pass；验证前后**两个受审文件 SHA256 与 review 一致**。当时未实盘、未 commit；不替代 §14.2 的 F03 最终结果。
 
 ---
 
@@ -540,7 +545,7 @@ isHongKongSymbol(symbol: unknown): symbol is string
 
 | 文件 | 变更要点 |
 | --- | --- |
-| `src/infrastructure/longbridge/trade/orderMapper.ts` | raw → `OrderFact`；精确金额、严格时间、terminal 缺价 `null` |
+| `src/infrastructure/longbridge/trade/orderMapper.ts` | raw → `OrderFact`；精确金额、严格时间；正成交 terminal 缺／零／无效价额首次拒绝（F03），不构造缺价 `null` 事实 |
 | `src/infrastructure/longbridge/trade/orderSnapshotReadAdapter.ts` | HK-only 过滤在严格转换/boot cache 之前；产出 `BrokerOrderExecutionFact` |
 | `src/infrastructure/longbridge/trade/pendingOrdersAdapter.ts` | US pending 无 mutation；HK 旧席位规则保留 |
 | `src/infrastructure/longbridge/trade/orderPushAdapter.ts` | `decode(): OrderFact \| null`；删除 inspect/ReadFact/PriceEvidence |
@@ -620,10 +625,10 @@ isHongKongSymbol(symbol: unknown): symbol is string
 
 ## 12. 实施计划与责任边界
 
-### 12.1 终态
+### 12.1 原批次终态（历史）
 
-- **已完成**：实施、多轮独立复审（financial / boundaries / A / B）与最新统一离线验收（详见 §13.4、§14）。
-- **未进行**：实盘验证；**未提交 commit**（HEAD 仍 `d2aa59054abac546f506b27df45f161afcfc6578`）。
+- 原批次已完成实施、多轮独立复审（financial / boundaries / A / B）与当时的统一离线验收（§13.4）；F03 最新状态见 §14.2。
+- 当时未实盘验证、未提交 commit，HEAD 为 `d2aa59054abac546f506b27df45f161afcfc6578`；非当前 HEAD 声明。
 
 ### 12.2 实际执行顺序（历史记录，已按序完成）
 
@@ -633,8 +638,8 @@ isHongKongSymbol(symbol: unknown): symbol is string
 4. **final-review-financial 独立只读复审** → 同轮 **APPROVE**；boundaries reviewer 之前已 **APPROVE W4 两项**。
 5. **W5 统一门禁**（当时 3284）→ 全绿。
 6. **新增 P1-D 与优化批次**（用户授权）：边界抑制语义修复（§10.4）+ 结构收敛（§10.5）；A reviewer 同轮 **APPROVE**（原 P1 关闭，195 pass / 11 files + 真实链 / terminal / crossday probes），B 优化 **APPROVE**（75 pass / 9 files + 9 probes）。
-7. **最新统一串行复验**：`tsc` / `eslint` / 全量 **3288 pass / 0 fail / 317 files** / `diff --check` 均通过（§13.4）。
-8. 复审无 blocker 后做总结；本文件即记录最终状态。
+7. **原批次最终统一串行复验**：`tsc` / `eslint` / 全量 **3288 pass / 0 fail / 317 files** / `diff --check` 均通过（§13.4）。
+8. 原批次复审无 blocker 后做总结；该批次最终状态保留为历史记录。
 
 ### 12.3 协作约束（对后续维护仍适用）
 
@@ -660,10 +665,10 @@ isHongKongSymbol(symbol: unknown): symbol is string
 | 5 | execution API 调用计数 | `historyExecutions` / `todayExecutions` = **0** |
 | 6 | detail `orderId` 错误 / 非 HK | 拒绝 |
 | 7 | 时间矩阵 | 首次 positive 取 updatedAt；same qty 保 knownT；rev 独立推进；oldRev 非增不覆盖/增拒 |
-| 8 | phase 矩阵 | `OPEN→TERMINAL` 允许最终金额修订；`TERMINAL→OPEN` 拒；phase-null 不授权 |
+| 8 | phase 矩阵 | `OPEN→TERMINAL` 允许最终金额修订；共享裁决 `TERMINAL→OPEN` 拒，closed 仅丢弃 §6.2 的完整同证据迟到 OPEN；phase-null 不授权 |
 | 9 | qty 矩阵 | same/new rev 量降共享 owner 拒；qty 增取本次 T |
-| 10 | price 矩阵 | terminal 缺价 `null`；OPEN 缺价/负价拒；精确乘法 |
-| 11 | 保护 SELL | 本次 raw 正 qty + 正价 + 有效 T；校验在 resourceOnly 之前 |
+| 10 | price／amount 矩阵（F03，本轮离线证据见[补记](./architecture-refactoring-full-chain-audit.md#f03-implementation-verification)） | 正成交 terminal 缺／零／无效量价或金额首次 fatal；`Filled + Q=0` 已由 mapper／domain 两处 guard 首拒；不继承 known、不重试／补查；OPEN 正量缺价拒；精确乘法；真实零成交非 Filled 正常关闭 |
+| 11 | 保护 SELL | 本次 raw 正 qty + 正价 + 正金额 + 有效 T；统一原始量价／金额及 revision 准入先于 stale／known／已终态过滤和资源／经济／durable 副作用；不得恢复缺证据收口 |
 | 12 | bare zero close | 只认 known 完整 zero；不清 known positive、不借 oldRev 包装 |
 | 13 | closed 但 recorder known 的新 rev 修订 | 经济更新 / rev-only 水位；不重复 settle/hold/冷却/completion |
 | 14 | 目标 qty 原始小数 | 严格校验；99.99…9 / 100.00…1 不得成 100 |
@@ -677,18 +682,18 @@ isHongKongSymbol(symbol: unknown): symbol is string
 | 19 | 故障注入 | 故障前**无半发布**（经济/durable 一致） |
 | 20 | 全量回归 | 全量测试 + 架构约束检查 |
 
-### 13.2 命令（离线、无凭证）
+### 13.2 原 W5 命令（历史，离线、无凭证）
 
 ```bash
-# W5 实际执行（离线、无凭证）
+# W5 原批次实际执行（离线、无凭证）
 bunx tsc -p tsconfig.json --noEmit      # exit 0
 bunx eslint .                           # exit 0
 bun test --no-env-file --no-install     # 3288 pass / 0 fail / 317 files
 git diff --check                        # exit 0
 ```
 
-- 原计划的 `bun run --no-env-file --no-install type-check|lint` 与上面 `bunx` 直调等价；W5 以**实际串行结果**为准（§13.4）。
-- **不要**设置 `APP_LOG_ROOT_DIR`（本次未设）：基线环境在外部设置它会导致一条测试失败；默认（不设）即可。
+- 原计划的 `bun run --no-env-file --no-install type-check|lint` 与上面 `bunx` 直调等价；原 W5 **历史串行结果**见 §13.4。
+- 原 W5 未设 `APP_LOG_ROOT_DIR`；F03 最新全仓使用临时日志根与 `OfflineSdkGuard`（§14.2）。显式日志根触发的既有测试冲突已在干净基线复现，不能以去掉环境变量后的控制通过替代本轮最终全仓结果。
 
 ### 13.3 验收口径
 
@@ -696,7 +701,9 @@ git diff --check                        # exit 0
 - A/B/C 必须有反例测试，且反例与在线路径结果一致。
 - 复审由**独立只读** reviewer 完成；本次 `REQUEST CHANGES` 已清除（A/B/C 关闭），后续任何新变更仍需独立复审后方可宣布验收。
 
-### 13.4 最终验收结果（最新权威快照）
+### 13.4 原批次验收结果（历史快照）
+
+> 下表仅记录原订单驱动修复批次，**不是本轮 F03 最终全仓结果**；最新结果见 §14.2 与[审计 F03 补记](./architecture-refactoring-full-chain-audit.md#f03-implementation-verification)。
 
 | 项目 | 结果 |
 | --- | --- |
@@ -713,47 +720,47 @@ git diff --check                        # exit 0
 | 环境 | `APP_LOG_ROOT_DIR` **未设**；无凭证、无实盘、未启动应用 |
 | 代码状态 | HEAD `d2aa590…`；工作区 **178 项（152 M / 10 D / 16 untracked）**= 验收快照（不含非本任务的 AGENTS.md 单行策略改动）；**无 commit** |
 
-> 以上为**某一时点的离线验收快照**，不构成"实盘已验证"或"未来无缺陷"的承诺。先前 **3284 pass 为历史快照，不能覆盖最新 3288**。本次二轮最小精简（§10.6）已覆盖在该快照内，未改变 3288 计数。
+> 以上为**原批次历史离线验收快照**，不构成“实盘已验证”或“未来无缺陷”的承诺。当时 3284 被 3288 取代，原批次二轮最小精简（§10.6）已覆盖在该快照内；两者都不能替代本轮 F03 的 **3418 pass／2 fail**。
 
 ---
 
 ## 14. 当前状态（最终）
 
-### 14.1 修复批次台账
+### 14.1 原批次修复台账（历史）
 
-> 注：本表为**最终状态**。"已修/关闭"指**工作区变更 + 对应审查项关闭**，不代表已提交。
+> 注：本表记录**原订单驱动修复批次的验收状态**。“已修／关闭”指当时工作区变更与对应审查项关闭，不代表已提交；F03 本轮状态见 §14.2。
 
 | 批次 | 内容 | 状态 |
 | --- | --- | --- |
 | W2 | same/new rev 量降拒绝；无 rev zero 不能否认 known positive；knownT 完整 | 工作区已修；**原三项（量降 / 无 rev zero / knownT 完整）已复审关闭**（未提交） |
 | W3 | 100→90 progress 可 replay；same-rev 两 phase 异 T 预检通过；execution 明细移除与归一化 | **原始反例已修且恢复模块复审通过**；A/B/C 已于同轮 financial **APPROVE** 关闭 |
 | W4 | 原始 target qty 安全整数/display 展开；closed 经济合法修订恢复；durable 故障下全投影原状 + retry once | 工作区已修；**已列明审查项经复审关闭（仅 W4 两项）**（未提交） |
-| W1 | 随修复恢复 | 已恢复，已纳入最终全量（0 fail） |
+| W1 | 随修复恢复 | 当时已恢复，已纳入原批次全量（0 fail） |
 | D（后续新增 P1） | 边界仅抑制 projection；同日权威 facts 仍 merge / 候选 / durable callback / publish；old baseline 不改、新 boundary 取修订 facts；跨日 / invalid / uninitialized 抑制保留 | **已关闭**：A reviewer 同轮 **APPROVE**（195 pass / 11 files + 真实链 / terminal / crossday probes）；真实 oracle 与 B1/B2 双边界均一致（未提交） |
 | 优化（Opt） | 删 `recalculateFromAllOrders` 生产包装；测试专用 `tests/helpers/dailyLossRecalculation.ts`；`assertExecutionHistory` 直接返回已排序 latest 并删重复 selector；3 适配器注释清理（display 不改） | **已复审 APPROVE**（75 pass / 9 files + 9 probes）（未提交） |
 
-### 14.2 最终验证（最新权威快照）
+### 14.2 F03 最终验证（最新快照）
 
-- W5 统一串行：`tsc` exit 0；`eslint` exit 0；`bun test` **3288 pass / 0 fail / 317 files**（套件 4 项 build pass）；`git diff --check` exit 0。
-- 两 reviewer：A 同轮 **APPROVE**（原 P1 关闭；195 pass / 11 files + probes）；B 优化 **APPROVE**（75 pass / 9 files + 9 probes）。
-- 二轮最小精简（§10.6）：minimality / 金融 review 均 APPROVE，金融定向 161 pass；全量仍 3288（未变）。
-- 历史轮次仍有效：financial 同轮 APPROVE（240 pass / 12 files / 1484 assertions + probes，无新 P0/P1/P2）；boundaries APPROVE W4 两项（32 probes）。
-- **未实盘验证**；**无 commit**（HEAD `d2aa590…`）。
-- 账户负数数量按当前非负合同处理，**不**扩展 short 支持。
+- **全仓离线**：`bun --no-env-file test --preload ./tests/setup/testRuntime.ts`，启用 `OfflineSdkGuard`，使用临时 `APP_LOG_ROOT_DIR`；**320 files／3420 tests：3418 pass／2 fail，22767 assertions，330.48s**，不是全仓全绿。
+- **失败基线复核**：干净 HEAD `353b621f46120dc20bf7aec57949c3f73234a83f` 临时快照的 852 个归档文件已逐 blob 核对，相同 Windows／Bun 1.3.14 下两项均重现，非 F03 新增。`tests/config/runtime/runtime.business.test.ts` 的硬编码默认日志根与显式 `APP_LOG_ROOT_DIR` 冲突，去掉环境变量的控制通过；`tests/infrastructure/persistence/mixedTradeLogRepository/business.test.ts:393` 的非法 UTF-8 已拒绝，实际 `Invalid byte sequence` 与测试 regex 不匹配。未修改这些无关测试。
+- **检查与复审**：`lint:fix`、非修改 `lint`、`type-check`、`git diff --check` 通过；原两位 reviewer 对 §6.2 的首拒、closed 窄丢弃及 fatal 时序修复均已独立复验关闭，F03 无剩余代码发现。
+- **边界**：未连接真实券商，未做“坏 callback → 实际 OS 进程 exit”的单体端到端；源码 `fatal → cleanup → exit(1)` 链已完整追踪。本轮仅覆盖 F03，不声称 F05 或全报告完成；较早定向批次不相加，详见[审计 F03 补记](./architecture-refactoring-full-chain-audit.md#f03-implementation-verification)。
+- 账户负数数量仍按非负合同处理，**不**扩展 short 支持。
 
 #### 14.2.1 历史验证（保留，**不作当前结论**）
 
-- 曾出现 `3225 pass / 0 fail`，但当时 review 发现反例，**当时未批准**——"全绿历史"**不等于**当期验收。
-- 中间快照曾为 `3263 pass / 1 fail`（317 files），唯一失败为 `monotonicNeutralPhase` 断言；该失败早已不在全量中。
-- 上一次验收曾为 **3284 pass**（317 files），**已被本轮 3288 取代**，不得作为当前结论。
-- W1 曾单独定向 `3 pass / 0 fail`，现已纳入全量。
-- financial 曾多轮 `REQUEST CHANGES`（A/B/C），**现状为同轮 APPROVE**；上述历史请求修改**已失效**，仅作过程记录。
+- 原订单驱动批次 W5 的 **3288 pass／0 fail／317 files** 保留于 §13.4，不是 F03 本轮结果。
+- 曾出现 `3225 pass / 0 fail`，但当时 review 发现反例，**当时未批准**——“全绿历史”**不等于**当期验收。
+- 中间快照曾为 `3263 pass / 1 fail`（317 files），唯一失败为 `monotonicNeutralPhase` 断言；该失败在后续原 W5 快照中已消失。
+- 原批次 **3284 pass**（317 files）后来被 3288 取代；两者均不得作为当前结论。
+- W1 曾单独定向 `3 pass / 0 fail`，后纳入原批次全量。
+- financial 曾多轮 `REQUEST CHANGES`（A/B/C），原批次验收时已同轮 APPROVE；请求修改仅作过程记录。
 
 ### 14.3 结论
 
-**已完成实施并通过最新一轮离线验收与独立复审**（A/B/C 全闭，W2/W4 审查项关闭，新增 P1-D 关闭，优化批次复审通过）；但**未实盘验证、未提交**。因此：
+**F03 本轮实施、全链路二审与原两位 reviewer 的独立复验均已完成，无剩余 F03 代码发现**；最终全仓仍有两项干净基线可重现的既有失败（§14.2），不宣告全仓全绿。原批次 A/B/C、W2/W4、P1-D 与优化验收记录保留为历史，不扩展为 F05 或全报告完成。因此：
 
-- 不得据此宣称"实盘已验证"或"未来无 bug/无忧"；
+- 不得据此宣称“实盘已验证”“坏 callback 至真实 OS 进程退出的单体端到端已验证”或“未来无 bug／无忧”；
 - 生产启用仍需按 §15.1 / §15.3 谨慎推进。
 
 ---
@@ -777,13 +784,13 @@ git diff --check                        # exit 0
 | 精度放宽 | 99.99…9 被卖成 100，超卖 | 窄点严格文本转换（保留） |
 | US 泄漏 | 对 US pending 撤改/阻断 | 全链路 HK guard，market 判定前置（保留） |
 | 测试换绿 | 安全 oracle 缺失 | 只迁移不删断言（保留） |
-| **未实盘验证** | 离线全绿**不能**代表真实撮合、时延、断线重连、券商侧异常下的行为 | 生产启用前保留观察期与回滚点（§15.3） |
+| **未实盘验证** | 历史离线全绿或本轮离线结果均**不能**代表真实撮合、时延、断线重连、券商侧异常下的行为 | 生产启用前保留观察期与回滚点（§15.3） |
 
 ### 15.3 发布建议
 
-- 发布前：备份 durable 数据并**只读保留**；离线重放历史；以本次离线验收（§13.4）为准。
+- 发布前：备份 durable 数据并**只读保留**；离线重放历史；F03 最新离线结果与边界以 §14.2 为准，§13.4 仅为原批次历史。
 - **不得**自动清理日志、不得降级、不得以实盘试启动代替验证。
-- 因**未实盘验证**：生产启用应谨慎推进（小规模/观察期/保留回滚点），不把本次离线全绿当作生产就绪证明。
+- 因**未实盘验证**：生产启用应谨慎推进（小规模/观察期/保留回滚点），不把历史全绿或本轮离线结果当作生产就绪证明。
 - 出现未决业务选择时，聚焦用户决策，不擅自放宽契约。
 
 ---
@@ -837,7 +844,8 @@ git diff --check                        # exit 0
 | 旧订单驱动实现（对照目标语义） | `git show develop:src/application/tradingDayRebuild/loadTradingDayRuntimeSnapshot.ts`、`git show develop:src/infrastructure/longbridge/trade/orderMapper.ts`（按需逐点对照） |
 | 回归引入点 | `4a148b3`（直接父为 `develop`） |
 | develop 基线 | `6e239c8a128372bd9b2fb2d79464346792a5e81e` |
-| 当前 beta-V2 基线 | `d2aa59054abac546f506b27df45f161afcfc6578` |
+| 原订单驱动验收基线（历史） | `d2aa59054abac546f506b27df45f161afcfc6578` |
+| F03 本轮基线 | `353b621f46120dc20bf7aec57949c3f73234a83f` |
 | SDK 日志 | `logs/sdk/trade/2026-10-19.log` — 第 45 行 `historyOrders=42`、第 47 行 `todayOrders=0`、第 49 行 `historyExecutions=38`；首个失败成交在返回序列第 33 条 `SNDK.US qty=0.0006`，另有 `YANG 0.036`、`MSOS 0.2`、`GDXD 0.026` |
 | 失败栈 | 本地 `mapBrokerExecutions` → `safeQuantityNumber` → `RangeError`（API `code 0`，非远端错误） |
 | 离线集成验收说明 | `tests/integration/architectureRefactoringRecovery/README.md`（边界后仅抑制 projection；权威修订 / rev / durable 保存） |
@@ -845,4 +853,5 @@ git diff --check                        # exit 0
 ### 16.4 只读核对说明
 
 - 首次撰写时：仅做了路径与符号存在性的最小只读核对（`git status`、`git ls-files`、路由符号 grep、关键文件存在性），**未**运行测试/构建/lint、**未**修改业务或测试代码、**未**读取 `.env`、**未**启动应用或实盘、**未**切分支或 commit。
-- 最终状态更新时：仅回读与静态自检本文，**未**重跑测试/构建，**未**修改业务或测试代码；验收数据以 §13.4 / §14.2 引用的快照为准。
+- 原批次最终状态更新时：仅回读与静态自检本文，**未**重跑测试／构建，**未**修改业务或测试代码；原验收数据保留于 §13.4。
+- F03 文档收尾：仅核对并精确更新本文及两份全链路审计文档，未改 src／tests／skills，未重跑测试／构建／lint；只做文档一致性、链接与 `git diff --check` 检查，最终事实引用已确认的 §14.2 证据。

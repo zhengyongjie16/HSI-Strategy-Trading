@@ -128,15 +128,54 @@ test('closed terminal pure revision stores O/Daily watermark without economic/S/
     updatedAtMs: now + 202,
   });
   expect(f.sink.getStatus().staleVersion).toBe(stale + 1);
-  // 增量但缺本次原始价格的观察仍必须拒绝，不得沿用已确认旧价。
-  expect(() => {
-    flow.handleOrderChangedWhenActive({
-      ...native.queryObservation,
-      updatedAtMs: now + 203,
-      executedQuantity: 21,
-      executedPrice: null,
-      executedAmount: null,
-    });
-  }).toThrow();
+  const closed = f.recorder.getExecutionFact('CLOSED');
+  const afterCorrection = {
+    fact: closed,
+    records: f.recorder.getBuyOrdersForSymbol('BULL.HK', true),
+    consistency: f.sink.getStatus(),
+    token: f.snapshot.getView().token,
+    events: f.events,
+    holds: [...f.holds.getHoldSymbols()],
+  };
+  const replay = {
+    ...native.queryObservation,
+    executionPhase: 'OPEN' as const,
+    executionStatus: 'PARTIAL' as const,
+    status: 'PARTIALLY_FILLED' as const,
+    executedPrice: '1.05',
+    executedAmount: '21',
+    updatedAtMs: now + 202,
+    executionTimeMs: now + 500,
+  };
+  flow.handleOrderChangedWhenActive(replay);
   expect(dailyCalls).toBe(3);
+
+  // 原始证据/identity 冲突必须先拒绝；不同量额或新 revision OPEN 仍遵守全局 TERMINAL->OPEN 禁令。
+  for (const invalid of [
+    { executedPrice: null },
+    { executedAmount: null },
+    { executedAmount: '-21' },
+    { executedPrice: 'NaN' },
+    { executedAmount: 'NaN' },
+    { executedPrice: '1' },
+    { executionTimeMs: Number.NaN },
+    { updatedAtMs: Number.NaN },
+    { executedQuantity: -1 },
+    { symbol: 'BEAR.HK' },
+    { executionSide: 'SELL' as const },
+    { executedQuantity: 21, executedAmount: '22.05' },
+    { executedPrice: '1.1', executedAmount: '22' },
+    { updatedAtMs: now + 203 },
+  ]) {
+    expect(() => { flow.handleOrderChangedWhenActive({ ...replay, ...invalid }); }).toThrow();
+    expect(dailyCalls).toBe(3);
+    expect({
+      fact: f.recorder.getExecutionFact('CLOSED'),
+      records: f.recorder.getBuyOrdersForSymbol('BULL.HK', true),
+      consistency: f.sink.getStatus(),
+      token: f.snapshot.getView().token,
+      events: f.events,
+      holds: [...f.holds.getHoldSymbols()],
+    }).toEqual(afterCorrection);
+  }
 });

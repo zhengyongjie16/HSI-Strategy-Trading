@@ -312,6 +312,7 @@ async function createChain(
   const quoteSubscriptions = subscriptions;
   // 与 createPostGateRuntime 相同连接：activation、Monitor、settlement 消费同一 O/Daily/风险 owners。
   const activation = createSeatActivationWorkflow({
+    termination,
     clock: { now },
     diagnostics,
     config,

@@ -1,7 +1,7 @@
 /**
  * 订单累计事实唯一裁决矩阵。
  * 覆盖 zero/T、首次正成交、增量推进、同量修订、乱序/重复、phase-null durable baseline
- * 与普通/保护 SELL 终态原始缺价准入；不启动任何 broker IO。
+ * 与普通/保护 SELL 终态原始缺价、FILLED 零量准入；不启动任何 broker IO。
  */
 import { describe, expect, it } from 'bun:test';
 import {
@@ -9,7 +9,9 @@ import {
   mergeExecutionFact,
 } from '../../../src/domain/order/executionFact.js';
 import {
+  assertOrderObservedFactsReady,
   assertProtectiveSellRawObservationFactsReady,
+  assertStateCheckRawExecutionFactsReady,
   mergeMonotonicOrderFact,
   normalizeTerminalStateSnapshot,
 } from '../../../src/domain/order/orderFactMerge.js';
@@ -504,17 +506,154 @@ describe('mergeMonotonicOrderFact：状态与缺价边界', () => {
   });
 });
 
-describe('normalizeTerminalStateSnapshot：普通/保护终态缺价', () => {
-  it('普通同量终态缺价且 known 完整时保留旧价/金额/T', () => {
-    const normalized = normalizeTerminalStateSnapshot(knownOrder(), terminalSnapshot({
-      executedPrice: null,
-      executedAmount: null,
+describe('normalizeTerminalStateSnapshot：本次完整原始证据先于任何 known/stale 收口', () => {
+  it.each([
+    {
+      label: '首次 BUY',
+      executionSide: 'BUY' as const,
+      executionPhase: 'OPEN' as const,
+      status: 'WORKING' as const,
+      quantity: 0,
+      revision: null,
+    },
+    {
+      label: '旧 revision SELL',
+      executionSide: 'SELL' as const,
+      executionPhase: 'OPEN' as const,
+      status: 'PARTIALLY_FILLED' as const,
+      quantity: 40,
+      revision: 50,
+    },
+    {
+      label: '已终态旧 revision',
+      executionSide: 'SELL' as const,
+      executionPhase: 'TERMINAL' as const,
+      status: 'FILLED' as const,
+      quantity: 40,
+      revision: 50,
+    },
+  ])('$label 的 FILLED 零量在原始准入拒绝，不得被 known/stale 旁路', (scenario) => {
+    const known = knownOrder({
+      executionSide: scenario.executionSide,
+      executionPhase: scenario.executionPhase,
+      executedQuantity: scenario.quantity,
+      executedAmount: scenario.quantity === 0 ? '0' : '40.8',
+      executedPrice: scenario.quantity === 0 ? null : '1.02',
+      lastExecutedTimeMs: scenario.quantity === 0 ? null : 100,
+      lastOrderUpdateAtMs: scenario.quantity === 0 ? null : 100,
+      status: scenario.status,
+    });
+    const terminal = terminalSnapshot({
+      status: 'FILLED',
+      closedReason: 'FILLED',
+      executionStatus: 'FILLED',
+      executedQuantity: 0,
+      executedPrice: '0',
+      executedAmount: '0',
       executionTimeMs: null,
+      orderUpdatedAtMs: scenario.revision,
+    });
+    const raw = observed({
+      status: terminal.status,
+      executionPhase: 'TERMINAL',
+      executedQuantity: 0,
+      executedPrice: '0',
+      executedAmount: '0',
+      executedTimeMs: null,
+      updatedAtMs: scenario.revision,
+    });
+    const before = structuredClone(known);
+    const error = 'FILLED 观察必须具有正累计成交数量';
+    expect(() => assertOrderObservedFactsReady(raw)).toThrow(error);
+    expect(() => mergeMonotonicOrderFact(known, raw)).toThrow(error);
+    expect(() => { assertStateCheckRawExecutionFactsReady(known, terminal); }).toThrow(error);
+    expect(() => { assertStateCheckRawExecutionFactsReady(null, terminal); }).toThrow(error);
+    expect(() => normalizeTerminalStateSnapshot(known, terminal)).toThrow(error);
+    expect(known).toEqual(before);
+  });
+
+  it.each([
+    { label: '同量缺价金额', raw: { executedPrice: null, executedAmount: null }, known: {} },
+    { label: '旧 revision 单边缺价', raw: { executedPrice: null, orderUpdatedAtMs: 50 }, known: {} },
+    { label: '旧 revision 单边缺金额', raw: { executedAmount: null, orderUpdatedAtMs: 50 }, known: {} },
+    { label: '已终态零价金额', raw: { executedPrice: '0', executedAmount: '0' }, known: { executionPhase: 'TERMINAL' as const } },
+    { label: '已终态负金额', raw: { executedAmount: '-40.8' }, known: { executionPhase: 'TERMINAL' as const } },
+    { label: '重复观察 NaN 价', raw: { executedPrice: 'NaN', orderUpdatedAtMs: 100 }, known: {} },
+    { label: '旧 revision NaN 金额', raw: { executedAmount: 'NaN', orderUpdatedAtMs: 50 }, known: {} },
+    { label: '重复观察价量金额不符', raw: { executedAmount: '41', orderUpdatedAtMs: 100 }, known: {} },
+    { label: '同量缺 revision', raw: { orderUpdatedAtMs: null }, known: {} },
+    { label: '同量无效 revision', raw: { orderUpdatedAtMs: Number.NaN }, known: {} },
+    { label: '同量无效 T', raw: { executionTimeMs: Number.NaN }, known: {} },
+  ])('$label 不得被 known、重复或旧 revision 旁路', ({ raw, known: overrides }) => {
+    const known = knownOrder(overrides);
+    const terminal = terminalSnapshot(raw);
+    const before = structuredClone(known);
+    expect(() => normalizeTerminalStateSnapshot(known, terminal)).toThrow();
+    expect(() => mergeMonotonicOrderFact(known, observed({
+      status: terminal.status,
+      executionPhase: 'TERMINAL',
+      executedQuantity: terminal.executedQuantity,
+      executedPrice: terminal.executedPrice,
+      executedAmount: terminal.executedAmount,
+      executedTimeMs: terminal.executionTimeMs,
+      updatedAtMs: terminal.orderUpdatedAtMs,
+    }))).toThrow();
+    expect(known).toEqual(before);
+  });
+
+  it.each([20, 40])('完整旧 revision 非增量终态（本次量 %s）仍用更强 known 事实收口', (executedQuantity) => {
+    const normalized = normalizeTerminalStateSnapshot(knownOrder(), terminalSnapshot({
+      executedQuantity,
+      executedPrice: '1',
+      executedAmount: String(executedQuantity),
+      executionTimeMs: 50,
+      orderUpdatedAtMs: 50,
     }));
-    expect(normalized.executedPrice).toBe('1.02');
-    expect(normalized.executedAmount).toBe('40.8');
-    expect(normalized.executedTimeMs).toBe(100);
-    expect(normalized.status).toBe('CANCELED');
+    expect(normalized).toMatchObject({
+      executedQuantity: 40,
+      executedPrice: '1.02',
+      executedAmount: '40.8',
+      executedTimeMs: 100,
+      orderUpdatedAtMs: 100,
+      status: 'CANCELED',
+    });
+  });
+
+  it('完整旧 revision 的增量终态仍拒绝', () => {
+    expect(() => normalizeTerminalStateSnapshot(knownOrder(), terminalSnapshot({
+      executedQuantity: 80,
+      executedAmount: '81.6',
+      executionTimeMs: 50,
+      orderUpdatedAtMs: 50,
+    }))).toThrow(/累计数量推进但 revision 倒退/);
+  });
+
+  it('共享 merge 对完整旧 revision 同量终态仍以 known 关闭资源', () => {
+    expect(mergeMonotonicOrderFact(knownOrder(), observed({
+      status: 'CANCELED',
+      executionPhase: 'TERMINAL',
+      executedPrice: '1',
+      executedAmount: '40',
+      executedTimeMs: 50,
+      updatedAtMs: 50,
+    }))).toEqual({
+      status: 'CANCELED',
+      executionPhase: 'TERMINAL',
+      executedQuantity: 40,
+      executedPrice: '1.02',
+      executedAmount: '40.8',
+      executedTimeMs: 100,
+      updatedAtMs: 100,
+    });
+  });
+
+  it('同量完整观察 T=null 沿用本次有效 revision 代理，最终仍保留 known T', () => {
+    const normalized = normalizeTerminalStateSnapshot(
+      knownOrder({ lastExecutedTimeMs: 300 }),
+      terminalSnapshot({ executionTimeMs: null, orderUpdatedAtMs: 200 }),
+    );
+    expect(normalized.executedTimeMs).toBe(300);
+    expect(normalized.orderUpdatedAtMs).toBe(200);
   });
 
   it('普通同量终态 raw 完整时保留 known T 并接受合法金额修订', () => {
@@ -541,7 +680,7 @@ describe('normalizeTerminalStateSnapshot：普通/保护终态缺价', () => {
     ).toThrow();
   });
 
-  it('保护 SELL 部分成交后 cancel/reject 即使缺价也在 resourceOnly 旁路前拒绝', () => {
+  it('保护 SELL 部分成交后 cancel/reject 缺价必须在终态收口前拒绝', () => {
     const protective = knownOrder({
       executionSide: 'SELL',
       isProtectiveLiquidation: true,
@@ -557,7 +696,6 @@ describe('normalizeTerminalStateSnapshot：普通/保护终态缺价', () => {
             executedAmount: null,
             executionTimeMs: null,
           }),
-          true,
         ),
       ).toThrow();
     }
@@ -571,7 +709,6 @@ describe('normalizeTerminalStateSnapshot：普通/保护终态缺价', () => {
     const normalized = normalizeTerminalStateSnapshot(
       protective,
       terminalSnapshot({ executionTimeMs: 400, orderUpdatedAtMs: 500 }),
-      true,
     );
     expect(normalized.executedTimeMs).toBe(100);
     expect(normalized.executedAmount).toBe('40.8');
@@ -599,7 +736,6 @@ describe('normalizeTerminalStateSnapshot：普通/保护终态缺价', () => {
         executedAmount: null,
         executionTimeMs: null,
       }),
-      true,
     );
     expect(normalized.executedQuantity).toBe(0);
     expect(normalized.executedTimeMs).toBeNull();

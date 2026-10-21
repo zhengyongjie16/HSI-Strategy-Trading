@@ -2101,6 +2101,12 @@ describe('sell-flow integration', () => {
   });
 
   it('fails closed when CANCEL_AND_SUBMIT terminal execution quantity is unavailable', async () => {
+    const fatalErrors: unknown[] = [];
+    const termination = createTerminationDouble({
+      reportFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+    });
     const eloFact = await createNativeOrderFact('SELL-EXISTING', 'ELO');
     const marketFact = await createNativeOrderFact('SELL-EXISTING', 'MO');
     const tradingConfig = createTradingConfig();
@@ -2191,11 +2197,7 @@ describe('sell-flow integration', () => {
       tradingConfig,
       symbolRegistry,
       isContinuousTradingAllowed: () => true,
-      termination: createTerminationDouble({
-        reportFatalError: (error) => {
-          throw error;
-        },
-      }),
+      termination,
     });
     orderMonitor.trackOrder({
       orderId: 'SELL-PARTIAL-WITHDRAWAL-MISSING-EXECUTION',
@@ -2244,6 +2246,9 @@ describe('sell-flow integration', () => {
       await orderExecutor.executeSignals([signal], orderExecutor.callerAuthorization);
     } catch (error) {
       caughtError = error;
+      expect(termination.isTerminated()).toBeTrue();
+      expect(fatalErrors).toHaveLength(1);
+      expect(fatalErrors[0]).toBe(error);
     }
 
     expect(caughtError).toBeInstanceOf(TypeError);

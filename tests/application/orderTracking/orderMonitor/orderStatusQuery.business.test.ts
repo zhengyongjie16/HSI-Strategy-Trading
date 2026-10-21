@@ -93,6 +93,19 @@ describe('orderStatusQuery business flow', () => {
     }
   });
 
+  it('rejects the first positive terminal with zero price without retrying or reading a later valid reply', async () => {
+    const orderId = 'ORDER-FIRST-BAD-TERMINAL';
+    const f = await createQueryContext([
+      frame(orderId, 'Filled', '100', '0'),
+      frame(orderId, 'Filled', '100', '1'),
+    ]);
+    const error = await rejection(() => f.check(orderId));
+    expectMapperFailure(error, '[orderMapper] invalid cumulative execution quantity/price');
+    expect(f.native.nativeReadCounts()).toEqual({ cancel: 0, detail: 1 });
+    expect(f.native.nativeMutations()).toEqual([]);
+    f.abortOwner.abort();
+  });
+
   it('maps Expired and PartialWithdrawal to TERMINAL CANCELED', async () => {
     const f = await createQueryContext([
       frame('ORDER-EXPIRED', 'Expired'),

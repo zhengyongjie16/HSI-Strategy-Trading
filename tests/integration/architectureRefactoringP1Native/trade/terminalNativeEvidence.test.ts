@@ -1,3 +1,4 @@
+/** 真实离线 SDK callback：正量终态首次缺价即停在 mapper，完整终态才进入共享累计裁决。 */
 import { expect, test } from 'bun:test';
 import { mergeMonotonicOrderFact } from '../../../../src/domain/order/orderFactMerge.js';
 import type { KnownOrderFact } from '../../../../src/domain/order/types.js';
@@ -39,79 +40,55 @@ const frame = {
   updatedAtMs: 150,
 };
 
-test('registered SDK terminal callback with missing raw price reaches the shared merge and keeps confirmed economics', async () => {
+test.each([null, '0'] as const)(
+  'registered SDK terminal callback rejects raw price %s on its first decode, before merge',
+  async (price) => {
+    const f = await createBrokerIngressFixture({ ...frame, status: 'Filled' });
+    const results: OrderFact[] = [];
+    let callbacks = 0;
+    f.createPushPort().setOnOrderChanged((_error, decoder) => {
+      callbacks++;
+      const mapped = decoder.decode();
+      if (mapped !== null) results.push(mapped);
+    });
+
+    if (price === null) f.setPushExecutedPriceMissing();
+    else f.setPushExecutedPriceText(price);
+
+    expect(() => { f.emitOrderChanged(); }).toThrow(TypeError);
+    expect(callbacks).toBe(1);
+    expect(results).toEqual([]);
+    expect(f.nativeReadCounts()).toEqual({ cancel: 0, detail: 0 });
+    expect(f.nativeMutations()).toEqual([]);
+  },
+);
+
+test('complete registered terminal callback may revise amount without advancing known execution time', async () => {
   const f = await createBrokerIngressFixture(frame);
-  const original = f.queryObservation;
-  const known = knownFrom(original);
+  const known = knownFrom(f.queryObservation);
   const results: Array<ReturnType<typeof mergeMonotonicOrderFact>> = [];
-  const mappedFacts: string[] = [];
-  let callbacks = 0;
   f.createPushPort().setOnOrderChanged((_error, decoder) => {
-    callbacks++;
     const mapped = decoder.decode();
     if (mapped === null) throw new Error('HK push sample must decode');
 
-    mappedFacts.push(mapped.executionStatus);
-    results.push(
-      mergeMonotonicOrderFact(known, {
-        status: mapped.status,
-        executionPhase: mapped.executionPhase,
-        executedQuantity: mapped.executedQuantity,
-        executedAmount: mapped.executedAmount,
-        executedPrice: mapped.executedPrice,
-        executedTimeMs: mapped.executionTimeMs,
-        updatedAtMs: mapped.updatedAtMs,
-      }),
-    );
+    results.push(mergeMonotonicOrderFact(known, {
+      status: mapped.status,
+      executionPhase: mapped.executionPhase,
+      executedQuantity: mapped.executedQuantity,
+      executedAmount: mapped.executedAmount,
+      executedPrice: mapped.executedPrice,
+      executedTimeMs: mapped.executionTimeMs,
+      updatedAtMs: mapped.updatedAtMs,
+    }));
   });
-
-  // 终态零价是显式缺价：合并保留已确认经济事实，既不拒绝也不伪造新价。
-  f.emitOrderChangedFrame({ ...frame, status: 'Canceled', executedPrice: '0', updatedAtMs: 200 });
-  expect(results[0]).toMatchObject({
+  f.emitOrderChangedFrame({ ...frame, status: 'Filled', executedPrice: '1.1', updatedAtMs: 200 });
+  expect(results).toEqual([{
+    status: 'FILLED',
     executionPhase: 'TERMINAL',
     executedQuantity: 40,
-    executedAmount: '40',
-    executedPrice: '1',
-  });
-
-  f.emitOrderChangedFrame({ ...frame, status: 'Filled', executedPrice: '0', updatedAtMs: 200 });
-  expect(mappedFacts).toEqual(['PARTIAL', 'FILLED']);
-  expect(callbacks).toBe(2);
-  expect(results).toHaveLength(2);
-});
-
-test('increment terminal observation still requires its own raw price; missing price cannot invent economics', async () => {
-  const f = await createBrokerIngressFixture(frame);
-  const original = f.queryObservation;
-  let rejection: unknown = null;
-  f.createPushPort().setOnOrderChanged((_error, decoder) => {
-    const mapped = decoder.decode();
-    if (mapped === null) throw new Error('HK push sample must decode');
-
-    try {
-      mergeMonotonicOrderFact(
-        knownFrom(original),
-        {
-          status: mapped.status,
-          executionPhase: mapped.executionPhase,
-          executedQuantity: mapped.executedQuantity + 10,
-          executedAmount: mapped.executedAmount,
-          executedPrice: mapped.executedPrice,
-          executedTimeMs: mapped.executionTimeMs,
-          updatedAtMs: mapped.updatedAtMs,
-        },
-      );
-    } catch (error) {
-      rejection = error;
-    }
-  });
-
-  f.emitOrderChangedFrame({
-    ...frame,
-    status: 'Canceled',
-    executedQuantity: '50',
-    executedPrice: '0',
+    executedAmount: '44',
+    executedPrice: '1.1',
+    executedTimeMs: 150,
     updatedAtMs: 200,
-  });
-  expect(rejection).toBeInstanceOf(Error);
+  }]);
 });

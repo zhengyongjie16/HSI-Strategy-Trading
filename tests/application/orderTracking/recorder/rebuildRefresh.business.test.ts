@@ -179,11 +179,7 @@ async function createRawOrder(params: {
   const observation = observations[0];
   if (observation === undefined) throw new Error('Missing issued native order observation');
 
-  expect(observation.executedAmount).toBe(
-    params.executedQuantity > 0 && observation.executedPrice === null
-      ? null
-      : params.executedAmount,
-  );
+  expect(observation.executedAmount).toBe(params.executedAmount);
   return observation;
 }
 
@@ -346,20 +342,16 @@ describe('OrderRecorder rebuild refresh', () => {
 
   it('rejects a malformed positive execution before replacing existing records', async () => {
     const f = await createRebuildFixture();
-    publishSnapshot(f, 'BULL.HK', true, [await validBuy('BULL.HK')]);
+    const validOrder = await validBuy('BULL.HK');
+    publishSnapshot(f, 'BULL.HK', true, [validOrder]);
     const before = summarizeOrders(f.recorder.getBuyOrdersForSymbol('BULL.HK', true));
-    const malformed = createRawOrder({
+    // 直接破坏合法中性事实以验证 recorder 防线，不要求真实 mapper 接受坏价。
+    const rawOrder: OrderFact = {
+      ...validOrder,
       orderId: 'INVALID-BUY',
-      symbol: 'BULL.HK',
-      side: 'BUY',
-      status: 'Filled',
-      submittedQuantity: 100,
-      executedPrice: '0',
-      executedAmount: '0',
-      executedQuantity: 100,
-      executedTimeOffsetSeconds: 2,
-    });
-    const rawOrder = await malformed;
+      executedPrice: null,
+      executedAmount: null,
+    };
     expect(rawOrder.executedPrice).toBeNull();
     expect(rawOrder.executedAmount).toBeNull();
     expect(() => publishSnapshot(f, 'BULL.HK', true, [rawOrder])).toThrow(
