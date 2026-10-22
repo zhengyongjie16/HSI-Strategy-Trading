@@ -123,9 +123,7 @@ function requirePushObservation(push: PushOrderChanged): OrderFact {
   return observation;
 }
 
-export async function createBrokerIngressFixture(
-  input: BrokerIngressInput,
-): Promise<
+export async function createBrokerIngressFixture(input: BrokerIngressInput): Promise<
   Readonly<{
     queryObservation: OrderFact;
     pushObservation: OrderFact;
@@ -137,10 +135,7 @@ export async function createBrokerIngressFixture(
     orderSnapshotReadCounts: () => Readonly<{ history: number; today: number }>;
 
     /** native 已计 issued，回复前才执行；可延迟或抛出原始请求错误。 */
-    setOrderSnapshotBeforeReply: (
-      source: 'history' | 'today',
-      hook: () => Promise<void>,
-    ) => void;
+    setOrderSnapshotBeforeReply: (source: 'history' | 'today', hook: () => Promise<void>) => void;
     setOrderSnapshotExecutedPriceMissing: (source: 'history' | 'today') => void;
     setOrderSnapshotMetadataInvalid: (
       source: 'history' | 'today',
@@ -564,7 +559,8 @@ export async function createBrokerIngressFixture(
       if (snapshotMalformedPriceOrderIds.has(reply.orderId)) Reflect.set(reply, 'price', {});
 
       const originalOrderId = reply.orderId;
-      const metadata = snapshotInvalidMetadata.get(source) ?? pendingInvalidMetadata.get(reply.orderId);
+      const metadata =
+        snapshotInvalidMetadata.get(source) ?? pendingInvalidMetadata.get(reply.orderId);
       if (metadata !== undefined) {
         if (metadata.kind === 'MISSING') Reflect.deleteProperty(reply, metadata.field);
         else {

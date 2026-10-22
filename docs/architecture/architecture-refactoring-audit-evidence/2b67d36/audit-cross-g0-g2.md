@@ -56,11 +56,11 @@ G2 第 3 节 `:142` 对零漂移严格口径留有用户裁决保留。本次按
 
 **独立差分 M1**：AST 提取两版原 `getQuotes` 函数（没有重写其控制流），只对 builder 注入观察口以隔离金融精度升级：合法已订阅 A.HK → realtime await → 清 subscribed/staticInfo/prevClose → 返回 realtime。
 
-| 传给 quote builder 的实参 | develop | current |
-| --- | --- | --- |
-| name | null | Entry Name |
-| lotSize | null（观察口表示实际缺失） | 100 |
-| prevClose | 0 | "99.2" |
+| 传给 quote builder 的实参 | develop                    | current    |
+| ------------------------- | -------------------------- | ---------- |
+| name                      | null                       | Entry Name |
+| lotSize                   | null（观察口表示实际缺失） | 100        |
+| prevClose                 | 0                          | "99.2"     |
 
 exit 0。这里比较的是 metadata 实参，不声称观察口是完整 SDK quote builder。真实 current adapter 的 unsubscribe→resubscribe（新名称/新手数）两分支在 `tests/infrastructure/longbridge/market/quoteClient.test.ts:763-815` 实际运行通过。
 
@@ -121,11 +121,11 @@ exit 0。这里比较的是 metadata 实参，不声称观察口是完整 SDK qu
 
 **S1（两版原工厂，不落盘）**：初始 OLD.HK 已订阅；positions r2=SLOW.HK，position owner 发起 subscribe SLOW 并挂起；期间当前 positions 变 r3={OLD.HK,LATEST.HK}；释放 SDK，不另发一个 position 命令来“替新实现收尾”。
 
-| 观察点（排空清理前取值） | develop | current |
-| --- | --- | --- |
-| subscribe | HSI+OLD；SLOW | HSI+OLD；SLOW；LATEST |
-| unsubscribe | **OLD** | **SLOW** |
-| 返回时实际订阅 | HSI、SLOW（旧投影） | HSI、OLD、LATEST（当前 truth） |
+| 观察点（排空清理前取值） | develop             | current                        |
+| ------------------------ | ------------------- | ------------------------------ |
+| subscribe                | HSI+OLD；SLOW       | HSI+OLD；SLOW；LATEST          |
+| unsubscribe              | **OLD**             | **SLOW**                       |
+| 返回时实际订阅           | HSI、SLOW（旧投影） | HSI、OLD、LATEST（当前 truth） |
 
 exit 0。由此证实的不是抽象“同步更好”：旧差集会把已重新需要的 OLD 退掉，并返回尚未收敛当前 truth；新 owner 保护 OLD，移除过时 SLOW，在同一负责持仓的命令内接入 LATEST。
 
@@ -270,7 +270,7 @@ exit **0**；**23 pass / 0 fail / 170 expect() calls**；1 file，99ms。直接�
 下表 PID 是 **2026-10-20T16:45:14.223Z** 的恢复后快照值，不把旧启动 PID 与恢复 PID 不同误判为模型变化。每个会话都有 model/thinking 各一个事件，全部 `cliproxyapi/gpt-6.1-sol / max`；所有可见 assistant 元数据均同模型，nonmatching=0。
 
 | 任务（由首个实际 user task 确认） | 会话文件名（上述目录） | 恢复后 PID | model/thinking 事件时间 UTC |
-| --- | --- | ---: | --- |
+| --- | --- | --: | --- |
 | G0/基线地图/本交叉复核 | `c97d1070-6870-4893-afb7-d29f532e9af3.jsonl` | 49064 | 11:51:45.565 / 11:51:45.566 |
 | G1 lifecycle | `bffcbacb-b3dd-4d36-a066-95d6c5953394.jsonl` | 31004 | 11:52:57.835 |
 | G2 market-strategy | `0f14212a-1f9c-4ef4-b64e-a7a54d86dd0b.jsonl` | 55152 | 11:52:57.858 |

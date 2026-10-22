@@ -34,7 +34,7 @@ None。已确认的是错误冻结及 durable 自拒绝；没有证据把它升�
 ## 子项裁决
 
 | 子项 | verdict | 独立依据及限定 |
-|---|---|---|
+| --- | --- | --- |
 | 同量 revision-only 把 false 覆盖为 true | **confirmed** | 两版真实 DailyLoss 工厂、同经济输入；旧仍拒绝较早 freeze，当前 ADMITTED 后返回空 baseline。 |
 | 已知可信 submittedAt 被同量更新覆盖为 null | **confirmed** | 两个构造器＋唯一投影 `...incoming` 直接证明；旧 `...current` 保留。它是同一来源丢失根因的一部分，不另算第二个缺陷。 |
 | 同 revision 的纯 phase 修订也应保留来源 | **confirmed** | 同量同金额 OPEN→TERMINAL 独立差分：旧拒绝，当前 ADMITTED／空 baseline。没有新增成交，不能恢复缺失的零点历史。 |
@@ -53,12 +53,12 @@ None。已确认的是错误冻结及 durable 自拒绝；没有证据把它升�
 
 共同经济输入：当日 API BUY，委托 200、累计成交 100、累计金额 100，submittedAt=`T−1000`，API 最后执行代理及 revision=`T+2000`，初始 OPEN。目标 boundary=`T+1000`。两版初始 freeze 都拒绝。
 
-| 在线观察 | develop | current |
-|---|---|---|
-| 完全重复 | 仍拒绝 | DUPLICATE，仍拒绝 |
-| 同量同额，revision→`T+3000` | 仍拒绝 | ADMITTED、无 execution advance、空 baseline |
-| 同量同额同 revision，OPEN→TERMINAL | 仍拒绝 | ADMITTED、空 baseline |
-| 同量，revision→`T+3000`，金额→90 | 仍拒绝 | ADMITTED、空 baseline |
+| 在线观察                           | develop | current                                     |
+| ---------------------------------- | ------- | ------------------------------------------- |
+| 完全重复                           | 仍拒绝  | DUPLICATE，仍拒绝                           |
+| 同量同额，revision→`T+3000`        | 仍拒绝  | ADMITTED、无 execution advance、空 baseline |
+| 同量同额同 revision，OPEN→TERMINAL | 仍拒绝  | ADMITTED、空 baseline                       |
+| 同量，revision→`T+3000`，金额→90   | 仍拒绝  | ADMITTED、空 baseline                       |
 
 这里直接调用 freeze 是有意的模块差分，**本节不据此声称较早 boundary 已生产可达**。生产边界来源由下一节独立证明。
 
@@ -115,7 +115,7 @@ holdsSeed=0, seatsDispatch=0, recoveryCalls=0, hydrateCalls=0
 ## 关键调用链及精确证据
 
 | 环节 | current 证据 | 本次核实内容 |
-|---|---|---|
+| --- | --- | --- |
 | API 中性映射 | `src/infrastructure/longbridge/trade/orderMapper.ts:117–142` | 金额由原始价量产生；正成交 T 为订单 updatedAt 代理；保留原始 submittedAt。 |
 | API 来源 | `src/domain/risk/dailyLossTracker.ts:350–370` | 来源 false，可信 submittedAt；不是在线历史。 |
 | 在线来源／合并 | 同文件 `:300–317,412–464` | 在线默认 true/null；经济 merge 后 `...incoming` 覆盖来源。 |
@@ -148,8 +148,7 @@ holdsSeed=0, seatsDispatch=0, recoveryCalls=0, hydrateCalls=0
 
 ## 验证记录与复现
 
-外部目录：
-`C:/Users/65459/AppData/Local/Temp/hsi-architecture-audit-20261020/`
+外部目录： `C:/Users/65459/AppData/Local/Temp/hsi-architecture-audit-20261020/`
 
 ### 独立探针
 
@@ -193,7 +192,7 @@ None。没有另立风格、重复注释或未经证明的 dead code 问题。
 ## 七维审查与覆盖边界
 
 | 维度 | 本次结论 |
-|---|---|
+| --- | --- |
 | Implementation | 已深读两版 DailyLoss 构造、合并、freeze／restore 关键分支，以及当前事件→O/Daily→progress／episode→S→durable→loader 对应路径；确认同根因一项。 |
 | Project and Spec | 加载仓库指令及适用 skills；旧源码为等价真值，当前类型、测试、注释和事实一致性政策不能授权“缺失历史变完整”。未修改方案。 |
 | Type Design | DailyLossOrderFact 同时携带来源和经济事实，broker merge 只覆盖后者；readonly 不阻止 object spread 覆盖来源。建议明确保留规则，不要求引入新框架或复杂类型体系。 |

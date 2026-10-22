@@ -90,9 +90,9 @@ describe('normalizeExecutionOrder zero observation adjudication', () => {
 
   it('older zero cannot keep an unknown-phase baseline known fact', () => {
     const target = order({ updatedAtMs: 90, updatedAt: new Date(90) });
-    expect(() =>
-      normalizeExecutionOrder(target, known({ phase: null }), 'KEEP_KNOWN'),
-    ).toThrow(/缺少 known phase/);
+    expect(() => normalizeExecutionOrder(target, known({ phase: null }), 'KEEP_KNOWN')).toThrow(
+      /缺少 known phase/,
+    );
   });
 
   it('known zero is adjudicated through merge instead of being bypassed', () => {
@@ -184,12 +184,16 @@ describe('normalizeExecutionOrder zero observation adjudication', () => {
   });
 
   it('zero observation declaring amount or execution time is rejected', () => {
-    expect(() => normalizeExecutionOrder(order({ executedAmount: '1' }), undefined, 'THROW')).toThrow(
-      /零成交订单声明金额或执行时间/,
-    );
+    expect(() =>
+      normalizeExecutionOrder(order({ executedAmount: '1' }), undefined, 'THROW'),
+    ).toThrow(/零成交订单声明金额或执行时间/);
 
     expect(() =>
-      normalizeExecutionOrder(order({ executedAmount: null, executionTimeMs: 1 }), undefined, 'THROW'),
+      normalizeExecutionOrder(
+        order({ executedAmount: null, executionTimeMs: 1 }),
+        undefined,
+        'THROW',
+      ),
     ).toThrow(/零成交订单声明金额或执行时间/);
   });
 

@@ -106,7 +106,11 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
         if (ownership?.monitorSymbol !== deps.monitorConfig.monitorSymbol)
           throw new Error('[订单监控] 已有 broker 事实的新观察缺少唯一归属');
 
-        assertExecutionQuantityWithinSubmittedQuantity(orderId, event.quantity, event.executedQuantity);
+        assertExecutionQuantityWithinSubmittedQuantity(
+          orderId,
+          event.quantity,
+          event.executedQuantity,
+        );
 
         const observedFact = {
           status: event.status,
@@ -188,7 +192,8 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
           phase: observedFact.executionPhase,
         };
 
-        const closedReason = merged === null ? null : resolveOrderClosedReasonFromStatus(event.status);
+        const closedReason =
+          merged === null ? null : resolveOrderClosedReasonFromStatus(event.status);
         if (closedReason !== null) {
           recordOrderTerminalConfirmation(deps, {
             orderId,

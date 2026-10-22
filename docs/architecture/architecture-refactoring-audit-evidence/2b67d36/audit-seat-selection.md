@@ -342,20 +342,35 @@ import ts from 'typescript';
 const OLD = '6e239c8a128372bd9b2fb2d79464346792a5e81e';
 const req = createRequire(process.cwd() + '/package.json');
 const cache = new Map();
-const logger = { debug(){}, info(){}, warn(){}, error(){} };
+const logger = { debug() {}, info() {}, warn() {}, error() {} };
 function oldRequire(file) {
   if (cache.has(file)) return cache.get(file).exports;
   if (file === 'src/utils/logger/index.ts') return { logger };
-  const raw = execFileSync('git', ['show', OLD + ':' + file], { encoding:'utf8' });
-  const module = { exports:{} };
+  const raw = execFileSync('git', ['show', OLD + ':' + file], { encoding: 'utf8' });
+  const module = { exports: {} };
   cache.set(file, module);
-  const js = ts.transpileModule(raw, { compilerOptions: {
-    module:ts.ModuleKind.CommonJS, target:ts.ScriptTarget.ES2022, esModuleInterop:true,
-  }}).outputText;
-  new Function('require','exports','module','__filename','__dirname',js)(
-    name => name === 'bun:test' ? harness : name.startsWith('.')
-      ? oldRequire(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)).replace(/\.js$/, '.ts'))
-      : req(name), module.exports, module, file, path.posix.dirname(file),
+  const js = ts.transpileModule(raw, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+  }).outputText;
+  new Function('require', 'exports', 'module', '__filename', '__dirname', js)(
+    (name) =>
+      name === 'bun:test'
+        ? harness
+        : name.startsWith('.')
+          ? oldRequire(
+              path.posix
+                .normalize(path.posix.join(path.posix.dirname(file), name))
+                .replace(/\.js$/, '.ts'),
+            )
+          : req(name),
+    module.exports,
+    module,
+    file,
+    path.posix.dirname(file),
   );
   return module.exports;
 }
@@ -368,12 +383,25 @@ function oldRequire(file) {
 ```typescript
 const { OrderType, OrderStatus } = req('longbridge');
 const { resolveSellMergeDecision } = oldRequire('src/core/trader/utils.ts');
-console.log(JSON.stringify(resolveSellMergeDecision({
-  symbol:'OLD.HK',
-  pendingOrders:[{orderId:'OLD',submittedQuantity:60,executedQuantity:0,
-    orderType:OrderType.ELO,status:OrderStatus.New}],
-  newOrderQuantity:40,newOrderType:OrderType.ELO,isProtectiveLiquidation:false,
-})));
+console.log(
+  JSON.stringify(
+    resolveSellMergeDecision({
+      symbol: 'OLD.HK',
+      pendingOrders: [
+        {
+          orderId: 'OLD',
+          submittedQuantity: 60,
+          executedQuantity: 0,
+          orderType: OrderType.ELO,
+          status: OrderStatus.New,
+        },
+      ],
+      newOrderQuantity: 40,
+      newOrderType: OrderType.ELO,
+      isProtectiveLiquidation: false,
+    }),
+  ),
+);
 // 实际输出：{"action":"REPLACE","mergedQuantity":100,"targetOrderId":"OLD",
 // "pendingOrderIds":["OLD"],"pendingRemainingQuantity":60,"reason":"replace-and-merge"}
 ```
@@ -384,48 +412,119 @@ console.log(JSON.stringify(resolveSellMergeDecision({
 
 ```typescript
 import { createSwitchStateMachine as currentFactory } from './src/application/seatSwitch/switchStateMachine.ts';
-const oldFactory = oldRequire('src/services/autoSymbolManager/switchStateMachine.ts').createSwitchStateMachine;
+const oldFactory = oldRequire(
+  'src/services/autoSymbolManager/switchStateMachine.ts',
+).createSwitchStateMachine;
 async function run(current, scenario) {
-  const t = Date.parse('2026-03-13T03:00:00Z'), calls=[];
-  const state={direction:'LONG',switchMode:'DISTANCE',seatVersion:1,stage:'SELL_OUT',
-    oldSymbol:'OLD.HK',nextSymbol:'NEW.HK',nextCallPrice:current?'20000':20000,
-    sellSubmitted:false,sellOrderIdsAtAdmission:scenario==='released'?['OLD']:[],
-    sellSubmissionResolved:false,sellWaitOrderIds:scenario==='released'?['OLD']:[],
-    sellOrderId:null,shouldRebuy:true,quoteRetryAttempts:0,quoteRetryNextAt:null,
-    quoteRetryExhausted:false,cancelRequestSubmitted:true};
-  const position={symbol:'OLD.HK',quantity:100,availableQuantity:100};
-  const executeSignals=async signals=>{
-    calls.push(signals.map(s=>({action:s.action,symbol:s.symbol,quantity:s.quantity})));
-    return scenario==='rejected'
-      ? {executedOrderIds:[],quoteFailures:[],sellDecisionResults:signals.map(signal=>({signal,kind:'REJECTED'}))}
-      : {executedOrderIds:['NEWSELL'],quoteFailures:[]};
+  const t = Date.parse('2026-03-13T03:00:00Z'),
+    calls = [];
+  const state = {
+    direction: 'LONG',
+    switchMode: 'DISTANCE',
+    seatVersion: 1,
+    stage: 'SELL_OUT',
+    oldSymbol: 'OLD.HK',
+    nextSymbol: 'NEW.HK',
+    nextCallPrice: current ? '20000' : 20000,
+    sellSubmitted: false,
+    sellOrderIdsAtAdmission: scenario === 'released' ? ['OLD'] : [],
+    sellSubmissionResolved: false,
+    sellWaitOrderIds: scenario === 'released' ? ['OLD'] : [],
+    sellOrderId: null,
+    shouldRebuy: true,
+    quoteRetryAttempts: 0,
+    quoteRetryNextAt: null,
+    quoteRetryExhausted: false,
+    cancelRequestSubmitted: true,
   };
-  const cacheManager={getPendingOrders:async()=>[]};
-  const orderMonitor={getKnownSellOrderIds:()=>scenario==='released'?['OLD']:[],
-    getUnsettledSellOrderIds:()=>[],getSellOperationState:()=>'SETTLED_WITH_REMAINDER',
-    captureSellAvailabilityGuard:()=>()=>true,getSellOperationOrderIds:id=>[id]};
-  const deps={autoSearchConfig:{autoSearchEnabled:true},monitorSymbol:'HSI.HK',
-    symbolRegistry:{getSeatVersion:()=>1,getSeatState:()=>({symbol:'OLD.HK',status:'SWITCHING'})},
-    trader:{getPendingOrders:cacheManager.getPendingOrders,executeSignals},
-    cacheManager,orderMonitor,orderExecutor:{executeSignals},
-    orderHoldRegistry:{getHoldSymbols:()=>new Set()},readSwitchPositions:async()=>[position],
-    orderRecorder:{getSellRecordByOrderId:()=>null},riskChecker:{},
-    marketDataClient:{getQuotes:async()=>new Map([['OLD.HK',{symbol:'OLD.HK',name:'OLD',
-      price:current?'1':1,prevClose:current?'1':1,timestamp:t,lotSize:1}]])},
-    now:()=>new Date(t),switchStates:new Map([['LONG',state]]),periodicSwitchPending:new Map(),
-    resolveSuppression:()=>null,markSuppression(){},enterSwitchingSeat:()=>1,updateSeatState(){},
-    resolveDirectionSymbols:()=>({buyAction:'BUYCALL',sellAction:'SELLCALL'}),
-    buildOrderSignal:p=>p,pendingOrderStatuses:new Set(),buySide:current?'BUY':1,logger,
-    maxSearchFailuresPerDay:3,getHKDateKey:()=>'2026-03-13'};
-  let error=null,result=null;
-  try { result=await(current?currentFactory:oldFactory)(deps).advancePendingSwitch({
-    direction:'LONG',positions:[position],canContinue:()=>true,
-  }); } catch(e) { error=e.message; }
-  return {current,scenario,calls,result,error,resolved:current?state.sellSubmissionResolved:state.sellSubmitted,
-    retries:state.quoteRetryAttempts};
+  const position = { symbol: 'OLD.HK', quantity: 100, availableQuantity: 100 };
+  const executeSignals = async (signals) => {
+    calls.push(signals.map((s) => ({ action: s.action, symbol: s.symbol, quantity: s.quantity })));
+    return scenario === 'rejected'
+      ? {
+          executedOrderIds: [],
+          quoteFailures: [],
+          sellDecisionResults: signals.map((signal) => ({ signal, kind: 'REJECTED' })),
+        }
+      : { executedOrderIds: ['NEWSELL'], quoteFailures: [] };
+  };
+  const cacheManager = { getPendingOrders: async () => [] };
+  const orderMonitor = {
+    getKnownSellOrderIds: () => (scenario === 'released' ? ['OLD'] : []),
+    getUnsettledSellOrderIds: () => [],
+    getSellOperationState: () => 'SETTLED_WITH_REMAINDER',
+    captureSellAvailabilityGuard: () => () => true,
+    getSellOperationOrderIds: (id) => [id],
+  };
+  const deps = {
+    autoSearchConfig: { autoSearchEnabled: true },
+    monitorSymbol: 'HSI.HK',
+    symbolRegistry: {
+      getSeatVersion: () => 1,
+      getSeatState: () => ({ symbol: 'OLD.HK', status: 'SWITCHING' }),
+    },
+    trader: { getPendingOrders: cacheManager.getPendingOrders, executeSignals },
+    cacheManager,
+    orderMonitor,
+    orderExecutor: { executeSignals },
+    orderHoldRegistry: { getHoldSymbols: () => new Set() },
+    readSwitchPositions: async () => [position],
+    orderRecorder: { getSellRecordByOrderId: () => null },
+    riskChecker: {},
+    marketDataClient: {
+      getQuotes: async () =>
+        new Map([
+          [
+            'OLD.HK',
+            {
+              symbol: 'OLD.HK',
+              name: 'OLD',
+              price: current ? '1' : 1,
+              prevClose: current ? '1' : 1,
+              timestamp: t,
+              lotSize: 1,
+            },
+          ],
+        ]),
+    },
+    now: () => new Date(t),
+    switchStates: new Map([['LONG', state]]),
+    periodicSwitchPending: new Map(),
+    resolveSuppression: () => null,
+    markSuppression() {},
+    enterSwitchingSeat: () => 1,
+    updateSeatState() {},
+    resolveDirectionSymbols: () => ({ buyAction: 'BUYCALL', sellAction: 'SELLCALL' }),
+    buildOrderSignal: (p) => p,
+    pendingOrderStatuses: new Set(),
+    buySide: current ? 'BUY' : 1,
+    logger,
+    maxSearchFailuresPerDay: 3,
+    getHKDateKey: () => '2026-03-13',
+  };
+  let error = null,
+    result = null;
+  try {
+    result = await (current ? currentFactory : oldFactory)(deps).advancePendingSwitch({
+      direction: 'LONG',
+      positions: [position],
+      canContinue: () => true,
+    });
+  } catch (e) {
+    error = e.message;
+  }
+  return {
+    current,
+    scenario,
+    calls,
+    result,
+    error,
+    resolved: current ? state.sellSubmissionResolved : state.sellSubmitted,
+    retries: state.quoteRetryAttempts,
+  };
 }
-for(const scenario of ['released','rejected'])
-  for(const current of [false,true]) console.log(JSON.stringify(await run(current,scenario)));
+for (const scenario of ['released', 'rejected'])
+  for (const current of [false, true]) console.log(JSON.stringify(await run(current, scenario)));
 ```
 
 实际短结果：
@@ -441,40 +540,102 @@ rejected current: SELL(quantity=null由executor实时决定), error等待人工�
 
 ```typescript
 import { mapBrokerOrder } from './src/infrastructure/longbridge/trade/orderMapper.ts';
-import { OrderType,OrderStatus,OrderSide,Decimal } from 'longbridge';
+import { OrderType, OrderStatus, OrderSide, Decimal } from 'longbridge';
 import { createSeatActivationWorkflow } from './src/application/seatActivation/index.ts';
 import { createMonitorContext } from './tests/helpers/asyncProgram.ts';
 import { createSnapshotFixture } from './tests/helpers/accountPositionSnapshot.ts';
-import { createAccountSnapshotDouble,createQuoteSubscriptionRuntimeDouble } from './tests/helpers/testDoubles.ts';
+import {
+  createAccountSnapshotDouble,
+  createQuoteSubscriptionRuntimeDouble,
+} from './tests/helpers/testDoubles.ts';
 import { createDiagnosticObserverDouble } from './tests/helpers/diagnostics.ts';
 import { resolveOrderOwnership } from './src/domain/order/orderOwnership.ts';
-const now=new Date('2026-03-13T03:00:00Z');
-const order=mapBrokerOrder({orderId:'MANUAL-HK',symbol:'00005.HK',stockName:'HSBC HOLDINGS',
-  side:OrderSide.Buy,status:OrderStatus.Filled,orderType:OrderType.ELO,remark:'',
-  price:new Decimal('100'),quantity:new Decimal('10'),executedPrice:null,
-  executedQuantity:new Decimal('10'),submittedAt:new Date(+now-60000),updatedAt:now});
-const context=createMonitorContext();
-context.symbolRegistry.updateSeatState('LONG',{...context.symbolRegistry.getSeatState('LONG'),
-  status:'ACTIVATING',symbol:'BULL.HK',callPrice:'20000'});
-const snapshot=await createSnapshotFixture({account:createAccountSnapshotDouble('100000'),positions:[]});
-const calls={dailyPrepare:0,validate:0,commit:0};
-const workflow=createSeatActivationWorkflow({diagnostics:createDiagnosticObserverDouble(),
-  clock:{now:()=>now},config:{...context.config,orderOwnershipMapping:['HSI']},
-  symbolRegistry:context.symbolRegistry,
-  orders:{...context.orderRecorder,fetchAllOrdersFromAPI:async()=>[order],
-    validateRebuildSnapshot:()=>{calls.validate++},commitRebuildSnapshot:()=>{calls.commit++}},
-  dailyLoss:{...context.dailyLossTracker,prepareRecalculationFromAllOrders:()=>{
-    calls.dailyPrepare++;throw new Error('unexpected daily prepare');}},
-  risk:context.riskChecker,snapshot,subscriptions:createQuoteSubscriptionRuntimeDouble(),
-  getQuotes:async()=>new Map(),setDirectionSymbolName(){},logger:{debug(){},error(){}}});
-let error=null;
-try { await workflow.activate({dayEpoch:snapshot.getView().token.dayEpoch,direction:'LONG',
-  seatVersion:context.symbolRegistry.getSeatVersion('LONG'),previousSymbol:'OLD_BULL.HK',
-  nextSymbol:'BULL.HK',callPrice:'20000',symbolName:'BULL.HK'},()=>true);
-} catch(e) { error=e.message; }
-console.log(JSON.stringify({amount:order.executedAmount,
-  ownership:resolveOrderOwnership(order,{monitorSymbol:'HSI.HK',orderOwnershipMapping:['HSI']}),
-  error,calls,seat:context.symbolRegistry.getSeatState('LONG').status}));
+const now = new Date('2026-03-13T03:00:00Z');
+const order = mapBrokerOrder({
+  orderId: 'MANUAL-HK',
+  symbol: '00005.HK',
+  stockName: 'HSBC HOLDINGS',
+  side: OrderSide.Buy,
+  status: OrderStatus.Filled,
+  orderType: OrderType.ELO,
+  remark: '',
+  price: new Decimal('100'),
+  quantity: new Decimal('10'),
+  executedPrice: null,
+  executedQuantity: new Decimal('10'),
+  submittedAt: new Date(+now - 60000),
+  updatedAt: now,
+});
+const context = createMonitorContext();
+context.symbolRegistry.updateSeatState('LONG', {
+  ...context.symbolRegistry.getSeatState('LONG'),
+  status: 'ACTIVATING',
+  symbol: 'BULL.HK',
+  callPrice: '20000',
+});
+const snapshot = await createSnapshotFixture({
+  account: createAccountSnapshotDouble('100000'),
+  positions: [],
+});
+const calls = { dailyPrepare: 0, validate: 0, commit: 0 };
+const workflow = createSeatActivationWorkflow({
+  diagnostics: createDiagnosticObserverDouble(),
+  clock: { now: () => now },
+  config: { ...context.config, orderOwnershipMapping: ['HSI'] },
+  symbolRegistry: context.symbolRegistry,
+  orders: {
+    ...context.orderRecorder,
+    fetchAllOrdersFromAPI: async () => [order],
+    validateRebuildSnapshot: () => {
+      calls.validate++;
+    },
+    commitRebuildSnapshot: () => {
+      calls.commit++;
+    },
+  },
+  dailyLoss: {
+    ...context.dailyLossTracker,
+    prepareRecalculationFromAllOrders: () => {
+      calls.dailyPrepare++;
+      throw new Error('unexpected daily prepare');
+    },
+  },
+  risk: context.riskChecker,
+  snapshot,
+  subscriptions: createQuoteSubscriptionRuntimeDouble(),
+  getQuotes: async () => new Map(),
+  setDirectionSymbolName() {},
+  logger: { debug() {}, error() {} },
+});
+let error = null;
+try {
+  await workflow.activate(
+    {
+      dayEpoch: snapshot.getView().token.dayEpoch,
+      direction: 'LONG',
+      seatVersion: context.symbolRegistry.getSeatVersion('LONG'),
+      previousSymbol: 'OLD_BULL.HK',
+      nextSymbol: 'BULL.HK',
+      callPrice: '20000',
+      symbolName: 'BULL.HK',
+    },
+    () => true,
+  );
+} catch (e) {
+  error = e.message;
+}
+console.log(
+  JSON.stringify({
+    amount: order.executedAmount,
+    ownership: resolveOrderOwnership(order, {
+      monitorSymbol: 'HSI.HK',
+      orderOwnershipMapping: ['HSI'],
+    }),
+    error,
+    calls,
+    seat: context.symbolRegistry.getSeatState('LONG').status,
+  }),
+);
 // 实际：amount=null ownership=null error=[执行归一]...MANUAL-HK
 // calls={dailyPrepare:0,validate:0,commit:0} seat=ACTIVATING
 ```
@@ -488,75 +649,146 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import assert from 'node:assert/strict';
-const file=path.resolve('tests/integration/terminalSwitchFinalization.integration.test.ts');
-const base=fs.readFileSync(file,'utf8'), all=[];
-for(const mode of ['fresh-positive','fresh-flat']) {
-  globalThis.__auditFatalErrors=[];
+const file = path.resolve('tests/integration/terminalSwitchFinalization.integration.test.ts');
+const base = fs.readFileSync(file, 'utf8'),
+  all = [];
+for (const mode of ['fresh-positive', 'fresh-flat']) {
+  globalThis.__auditFatalErrors = [];
   let pending;
-  globalThis.__auditHarness={describe:(_,fn)=>fn(),it:(_,fn)=>{pending=fn()},expect:v=>({
-    toBeTrue:()=>assert.equal(v,true),toBe:x=>assert.equal(v,x),toEqual:x=>assert.deepEqual(v,x),
-  })};
-  let source=base.replace("import { describe, expect, it } from 'bun:test';",
-    'const {describe,expect,it}=globalThis.__auditHarness;');
-  source=source.replace(/from (['"])(\.[^'"\r\n]+)\1/g,(_,q,p)=>
-    'from '+q+pathToFileURL(path.resolve(path.dirname(file),p.replace(/\.js$/,'.ts'))).href+q);
-  source=source.replace('const actualAutoSymbolManager = createSeatSwitchWorkflow({',
-    'let freshReads=0; const actualAutoSymbolManager = createSeatSwitchWorkflow({');
-  source=source.replace('readSwitchPositions: async () => [],',
-    'readSwitchPositions: async (symbol) => {freshReads++; return account.getStockPositions({symbols:[symbol]});},');
-  source=source.replace(/reportFatalError: \(error\) => \{\s*throw error;\s*\}/g,
-    'reportFatalError: (error) => { globalThis.__auditFatalErrors.push(error); }');
-  if(mode==='fresh-flat') source=source.replace('switchWakeupRuntime.start();',
-    'native.setStockPositions([]); switchWakeupRuntime.start();');
-  source=source.replace('await waitUntil(() => advanceResults.length === 1);',mode==='fresh-positive'
-    ? 'await waitUntil(() => globalThis.__auditFatalErrors.length === 1);'
-    : 'await waitUntil(() => advanceResults.length === 1);');
-  const start=source.indexOf('      expect(advanceResults).toEqual([');
-  const last='      expect(native.nativeMutations()).toEqual([]);';
-  const end=source.indexOf(last,start);
-  assert(start>=0&&end>start);
-  source=source.slice(0,start)+'      globalThis.__auditResult={mode:'+JSON.stringify(mode)+
-    ',reads:freshReads,fatals:globalThis.__auditFatalErrors.map(e=>e.message),advanceResults,'+
-    'seat:symbolRegistry.getSeatState("LONG"),pending:actualAutoSymbolManager.hasPendingSwitch("LONG"),'+
-    'mutationCalls,nativeMutations:native.nativeMutations()};\n'+source.slice(end+last.length);
-  const js=new Bun.Transpiler({loader:'ts',target:'bun'}).transformSync(source);
-  await import('data:text/javascript;base64,'+Buffer.from(js+'\n//'+mode).toString('base64'));
+  globalThis.__auditHarness = {
+    describe: (_, fn) => fn(),
+    it: (_, fn) => {
+      pending = fn();
+    },
+    expect: (v) => ({
+      toBeTrue: () => assert.equal(v, true),
+      toBe: (x) => assert.equal(v, x),
+      toEqual: (x) => assert.deepEqual(v, x),
+    }),
+  };
+  let source = base.replace(
+    "import { describe, expect, it } from 'bun:test';",
+    'const {describe,expect,it}=globalThis.__auditHarness;',
+  );
+  source = source.replace(
+    /from (['"])(\.[^'"\r\n]+)\1/g,
+    (_, q, p) =>
+      'from ' +
+      q +
+      pathToFileURL(path.resolve(path.dirname(file), p.replace(/\.js$/, '.ts'))).href +
+      q,
+  );
+  source = source.replace(
+    'const actualAutoSymbolManager = createSeatSwitchWorkflow({',
+    'let freshReads=0; const actualAutoSymbolManager = createSeatSwitchWorkflow({',
+  );
+  source = source.replace(
+    'readSwitchPositions: async () => [],',
+    'readSwitchPositions: async (symbol) => {freshReads++; return account.getStockPositions({symbols:[symbol]});},',
+  );
+  source = source.replace(
+    /reportFatalError: \(error\) => \{\s*throw error;\s*\}/g,
+    'reportFatalError: (error) => { globalThis.__auditFatalErrors.push(error); }',
+  );
+  if (mode === 'fresh-flat')
+    source = source.replace(
+      'switchWakeupRuntime.start();',
+      'native.setStockPositions([]); switchWakeupRuntime.start();',
+    );
+  source = source.replace(
+    'await waitUntil(() => advanceResults.length === 1);',
+    mode === 'fresh-positive'
+      ? 'await waitUntil(() => globalThis.__auditFatalErrors.length === 1);'
+      : 'await waitUntil(() => advanceResults.length === 1);',
+  );
+  const start = source.indexOf('      expect(advanceResults).toEqual([');
+  const last = '      expect(native.nativeMutations()).toEqual([]);';
+  const end = source.indexOf(last, start);
+  assert(start >= 0 && end > start);
+  source =
+    source.slice(0, start) +
+    '      globalThis.__auditResult={mode:' +
+    JSON.stringify(mode) +
+    ',reads:freshReads,fatals:globalThis.__auditFatalErrors.map(e=>e.message),advanceResults,' +
+    'seat:symbolRegistry.getSeatState("LONG"),pending:actualAutoSymbolManager.hasPendingSwitch("LONG"),' +
+    'mutationCalls,nativeMutations:native.nativeMutations()};\n' +
+    source.slice(end + last.length);
+  const js = new Bun.Transpiler({ loader: 'ts', target: 'bun' }).transformSync(source);
+  await import('data:text/javascript;base64,' + Buffer.from(js + '\n//' + mode).toString('base64'));
   await pending;
-  const r=globalThis.__auditResult;
-  assert.equal(r.mutationCalls,0);assert.deepEqual(r.nativeMutations,[]);
-  if(mode==='fresh-positive') {
-    assert.equal(r.fatals.length,1);assert.match(r.fatals[0],/等待人工处理/);
-    assert.equal(r.seat.status,'SWITCHING');assert.equal(r.seat.symbol,'OLD_BULL.HK');
-    assert.equal(r.pending,true);
+  const r = globalThis.__auditResult;
+  assert.equal(r.mutationCalls, 0);
+  assert.deepEqual(r.nativeMutations, []);
+  if (mode === 'fresh-positive') {
+    assert.equal(r.fatals.length, 1);
+    assert.match(r.fatals[0], /等待人工处理/);
+    assert.equal(r.seat.status, 'SWITCHING');
+    assert.equal(r.seat.symbol, 'OLD_BULL.HK');
+    assert.equal(r.pending, true);
   } else {
-    assert.deepEqual(r.fatals,[]);assert.equal(r.advanceResults[0].driveResult.kind,'COMPLETED');
-    assert.equal(r.seat.status,'ACTIVATING');assert.equal(r.pending,false);
+    assert.deepEqual(r.fatals, []);
+    assert.equal(r.advanceResults[0].driveResult.kind, 'COMPLETED');
+    assert.equal(r.seat.status, 'ACTIVATING');
+    assert.equal(r.pending, false);
   }
   all.push(r);
 }
-console.log(JSON.stringify({validation:'V-C6',results:all}));
+console.log(JSON.stringify({ validation: 'V-C6', results: all }));
 ```
 
 ### C2 执行原develop集成（B0 + 以下片段，同一次stdin）
 
 ```typescript
 import assert from 'node:assert/strict';
-let pending,checks=0;
-const observations=[];
-function partial(v,x) { for(const[k,y]of Object.entries(x)) {
-  if(y&&typeof y==='object') partial(v[k],y); else assert.deepEqual(v[k],y);
-}}
-const harness={describe:(_,fn)=>fn(),it:(_,fn)=>{pending=fn()},expect:v=>({
-  toBeTrue:()=>{checks++;assert.equal(v,true)},
-  toBeFalse:()=>{checks++;assert.equal(v,false)},
-  toBe:x=>{checks++;assert.deepEqual(v,x)},
-  toEqual:x=>{checks++;observations.push(v);assert.deepEqual(v,x)},
-  toMatchObject:x=>{checks++;observations.push(v);partial(v,x)},
-})};
+let pending,
+  checks = 0;
+const observations = [];
+function partial(v, x) {
+  for (const [k, y] of Object.entries(x)) {
+    if (y && typeof y === 'object') partial(v[k], y);
+    else assert.deepEqual(v[k], y);
+  }
+}
+const harness = {
+  describe: (_, fn) => fn(),
+  it: (_, fn) => {
+    pending = fn();
+  },
+  expect: (v) => ({
+    toBeTrue: () => {
+      checks++;
+      assert.equal(v, true);
+    },
+    toBeFalse: () => {
+      checks++;
+      assert.equal(v, false);
+    },
+    toBe: (x) => {
+      checks++;
+      assert.deepEqual(v, x);
+    },
+    toEqual: (x) => {
+      checks++;
+      observations.push(v);
+      assert.deepEqual(v, x);
+    },
+    toMatchObject: (x) => {
+      checks++;
+      observations.push(v);
+      partial(v, x);
+    },
+  }),
+};
 oldRequire('tests/integration/terminalSwitchFinalization.integration.test.ts');
 await pending;
-console.log(JSON.stringify({validation:'V-C6-baseline-original',checks,observations,
-  loadedBaselineModules:cache.size}));
+console.log(
+  JSON.stringify({
+    validation: 'V-C6-baseline-original',
+    checks,
+    observations,
+    loadedBaselineModules: cache.size,
+  }),
+);
 // 实际exit0、checks3；FAILED/INVALID_QUOTE:SELL_OUT、EMPTY；loadedBaselineModules37。
 ```
 

@@ -69,7 +69,9 @@ export function mapBrokerOrder(order: BrokerOrderSdkFields): OrderFact {
   const quantity = safeQuantityNumber(order.quantity.toString());
   const executedQuantity = safeQuantityNumber(order.executedQuantity.toString());
   if (order.status === OrderStatus.Filled && executedQuantity === 0) {
-    throw new TypeError('[orderMapper] FILLED order requires positive cumulative execution quantity');
+    throw new TypeError(
+      '[orderMapper] FILLED order requires positive cumulative execution quantity',
+    );
   }
 
   const executedPrice =

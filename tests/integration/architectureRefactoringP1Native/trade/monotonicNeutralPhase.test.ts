@@ -19,8 +19,7 @@ const input = {
   updatedAtMs: 1700000000200,
 };
 function known(order: OrderFact): KnownOrderFact {
-  if (order.executedAmount === null)
-    throw new Error('fixture order must carry an executed amount');
+  if (order.executedAmount === null) throw new Error('fixture order must carry an executed amount');
 
   return {
     orderId: order.orderId,

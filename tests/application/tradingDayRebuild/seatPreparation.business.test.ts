@@ -200,7 +200,11 @@ function createStatusAdmissionHarness(overrides: Partial<PrepareSeatsForRuntimeD
     tradingConfig: createTradingConfig({ monitor }),
     symbolRegistry,
     marketDataClient,
-    logger: { warn: (...args) => { warnings.push(args); } },
+    logger: {
+      warn: (...args) => {
+        warnings.push(args);
+      },
+    },
     positions: ['OLD_LONG.HK', 'OLD_SHORT.HK'].map((symbol) => ({
       accountChannel: 'lb',
       symbol,
@@ -239,7 +243,8 @@ describe('历史持仓交易状态准入', () => {
     const harness = createStatusAdmissionHarness();
     harness.registry.updateSeatState('LONG', {
       ...harness.registry.getSeatState('LONG'),
-      symbol: null, status: 'EMPTY',
+      symbol: null,
+      status: 'EMPTY',
       searchFailCountToday: 2,
       frozenTradingDayKey: '2026-02-16',
     });
@@ -259,78 +264,109 @@ describe('历史持仓交易状态准入', () => {
   });
 
   it.each([
-    'HALTED', 'DELISTED', 'FUSE', 'PREPARE_LIST', 'CODE_MOVED', 'TO_BE_OPENED',
-    'SPLIT_STOCK_HALTS', 'EXPIRED', 'WARRANT_PREPARE_LIST', 'SUSPEND',
+    'HALTED',
+    'DELISTED',
+    'FUSE',
+    'PREPARE_LIST',
+    'CODE_MOVED',
+    'TO_BE_OPENED',
+    'SPLIT_STOCK_HALTS',
+    'EXPIRED',
+    'WARRANT_PREPARE_LIST',
+    'SUSPEND',
   ] as const)('已确认 %s 拒绝但不计寻标失败，日志带实际状态', async (status) => {
     const harness = createStatusAdmissionHarness({
       marketDataClient: {
-        getSecurityTradingStatuses: async () => new Map([
-          ['OLD_SHORT.HK', 'NORMAL'], ['OLD_LONG.HK', status],
-        ]),
+        getSecurityTradingStatuses: async () =>
+          new Map([
+            ['OLD_SHORT.HK', 'NORMAL'],
+            ['OLD_LONG.HK', status],
+          ]),
       },
     });
     harness.registry.updateSeatState('LONG', {
-      ...harness.registry.getSeatState('LONG'), symbol: null, status: 'EMPTY', searchFailCountToday: 1,
+      ...harness.registry.getSeatState('LONG'),
+      symbol: null,
+      status: 'EMPTY',
+      searchFailCountToday: 1,
     });
     await prepareSeatsForRuntime(harness.deps);
     expect(harness.registry.getSeatState('LONG')).toMatchObject({
-      symbol: null, status: 'EMPTY', searchFailCountToday: 1,
+      symbol: null,
+      status: 'EMPTY',
+      searchFailCountToday: 1,
     });
     expect(harness.registry.getSeatState('SHORT').symbol).toBe('OLD_SHORT.HK');
     expect(harness.quoteContext.getCalls('warrantList')).toHaveLength(0);
-    expect(harness.warnings[0]?.[0]).toContain(`方向 LONG 拒绝历史候选 OLD_LONG.HK，交易状态 ${status}`);
+    expect(harness.warnings[0]?.[0]).toContain(
+      `方向 LONG 拒绝历史候选 OLD_LONG.HK，交易状态 ${status}`,
+    );
     expect(harness.warnings[0]?.[0]).toContain('HSI.HK');
   });
 
-  it.each([false, true])('非正常候选按原门禁补席；frozen=%p 时不搜索且保留冻结/计数', async (frozen) => {
-    const harness = createStatusAdmissionHarness({
-      resolveCanAutoSearchNow: () => true,
-      marketDataClient: {
-        getSecurityTradingStatuses: async (symbols) => new Map(symbols.map((symbol) => [symbol, 'SUSPEND'] as const)),
-      },
-    });
-    if (frozen) {
-      for (const direction of ['LONG', 'SHORT'] as const) {
-        harness.registry.updateSeatState(direction, {
-          ...harness.registry.getSeatState(direction),
-          symbol: null, status: 'EMPTY',
-          frozenTradingDayKey: '2026-02-16', searchFailCountToday: 2,
-        });
-      }
-    }
-
-    seedAutoSearchCandidates(harness.quoteContext);
-    await prepareSeatsForRuntime(harness.deps);
-    expect(harness.quoteContext.getCalls('warrantList')).toHaveLength(frozen ? 0 : 2);
-    expect(harness.registry.getSeatState('LONG')).toMatchObject({
-      status: frozen ? 'EMPTY' : 'ACTIVATING',
-      symbol: frozen ? null : 'AUTO_BULL.HK',
-      searchFailCountToday: frozen ? 2 : 0,
-      frozenTradingDayKey: frozen ? '2026-02-16' : null,
-    });
-  });
-
-  it.each(['缺少第二方向', '外部请求失败'] as const)('%s 时两方向零提前发布、不寻标', async (failure) => {
-    const error = await createExternalApiRequestError({
-      operation: 'QuoteContext.quote', attempts: 1, cause: new Error('quote failed'),
-    });
-    const harness = createStatusAdmissionHarness({
-      resolveCanAutoSearchNow: () => true,
-      marketDataClient: {
-        getSecurityTradingStatuses: async () => {
-          if (failure === '外部请求失败') throw error;
-
-          return new Map([['OLD_LONG.HK', 'NORMAL']]);
+  it.each([false, true])(
+    '非正常候选按原门禁补席；frozen=%p 时不搜索且保留冻结/计数',
+    async (frozen) => {
+      const harness = createStatusAdmissionHarness({
+        resolveCanAutoSearchNow: () => true,
+        marketDataClient: {
+          getSecurityTradingStatuses: async (symbols) =>
+            new Map(symbols.map((symbol) => [symbol, 'SUSPEND'] as const)),
         },
-      },
-    });
-    const caught: unknown = await prepareSeatsForRuntime(harness.deps).then(() => null, (e: unknown) => e);
-    if (failure === '外部请求失败') expect(caught).toBe(error);
-    else expect(caught).toBeInstanceOf(TypeError);
+      });
+      if (frozen) {
+        for (const direction of ['LONG', 'SHORT'] as const) {
+          harness.registry.updateSeatState(direction, {
+            ...harness.registry.getSeatState(direction),
+            symbol: null,
+            status: 'EMPTY',
+            frozenTradingDayKey: '2026-02-16',
+            searchFailCountToday: 2,
+          });
+        }
+      }
 
-    expect(harness.publicationDirections).toEqual([]);
-    expect(harness.quoteContext.getCalls('warrantList')).toHaveLength(0);
-  });
+      seedAutoSearchCandidates(harness.quoteContext);
+      await prepareSeatsForRuntime(harness.deps);
+      expect(harness.quoteContext.getCalls('warrantList')).toHaveLength(frozen ? 0 : 2);
+      expect(harness.registry.getSeatState('LONG')).toMatchObject({
+        status: frozen ? 'EMPTY' : 'ACTIVATING',
+        symbol: frozen ? null : 'AUTO_BULL.HK',
+        searchFailCountToday: frozen ? 2 : 0,
+        frozenTradingDayKey: frozen ? '2026-02-16' : null,
+      });
+    },
+  );
+
+  it.each(['缺少第二方向', '外部请求失败'] as const)(
+    '%s 时两方向零提前发布、不寻标',
+    async (failure) => {
+      const error = await createExternalApiRequestError({
+        operation: 'QuoteContext.quote',
+        attempts: 1,
+        cause: new Error('quote failed'),
+      });
+      const harness = createStatusAdmissionHarness({
+        resolveCanAutoSearchNow: () => true,
+        marketDataClient: {
+          getSecurityTradingStatuses: async () => {
+            if (failure === '外部请求失败') throw error;
+
+            return new Map([['OLD_LONG.HK', 'NORMAL']]);
+          },
+        },
+      });
+      const caught: unknown = await prepareSeatsForRuntime(harness.deps).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      if (failure === '外部请求失败') expect(caught).toBe(error);
+      else expect(caught).toBeInstanceOf(TypeError);
+
+      expect(harness.publicationDirections).toEqual([]);
+      expect(harness.quoteContext.getCalls('warrantList')).toHaveLength(0);
+    },
+  );
 
   it.each([false, true])('等待状态期间原授权失效；损坏端口=%p 仍先暴露内部错误', async (broken) => {
     let authorized = true;
@@ -343,9 +379,16 @@ describe('历史持仓交易状态准入', () => {
     const pending = prepareSeatsForRuntime(harness.deps);
     expect(harness.publicationDirections).toEqual([]);
     authorized = false;
-    gate.resolve(new Map(broken ? [['OLD_LONG.HK', 'NORMAL']] : [
-      ['OLD_LONG.HK', 'SUSPEND'], ['OLD_SHORT.HK', 'NORMAL'],
-    ]));
+    gate.resolve(
+      new Map(
+        broken
+          ? [['OLD_LONG.HK', 'NORMAL']]
+          : [
+              ['OLD_LONG.HK', 'SUSPEND'],
+              ['OLD_SHORT.HK', 'NORMAL'],
+            ],
+      ),
+    );
 
     await (broken ? rejects(pending, TypeError) : pending);
     expect(harness.publicationDirections).toEqual([]);
@@ -356,7 +399,9 @@ describe('历史持仓交易状态准入', () => {
   it('状态请求抛错即使原授权已失效也保留外部失败身份，不静默返回', async () => {
     let authorized = true;
     const error = await createExternalApiRequestError({
-      operation: 'QuoteContext.quote', attempts: 1, cause: new Error('network unavailable'),
+      operation: 'QuoteContext.quote',
+      attempts: 1,
+      cause: new Error('network unavailable'),
     });
     const gate = Promise.withResolvers<ReadonlyMap<string, SecurityTradingStatus>>();
     const harness = createStatusAdmissionHarness({
@@ -383,17 +428,23 @@ describe('历史持仓交易状态准入', () => {
 
   it('最新完全成交候选被拒后不回溯更早持仓，也不改用未完全成交订单', async () => {
     const harness = createStatusAdmissionHarness({
-      marketDataClient: { getSecurityTradingStatuses: async () => new Map([['LATEST.HK', 'EXPIRED']]) },
+      marketDataClient: {
+        getSecurityTradingStatuses: async () => new Map([['LATEST.HK', 'EXPIRED']]),
+      },
     });
     await prepareSeatsForRuntime({
       ...harness.deps,
       orders: [
         createRecoveryOrder('EARLY.HK', 'LONG', new Date('2026-02-16T00:00:00Z')),
         createRecoveryOrder('LATEST.HK', 'LONG'),
-        { ...createRecoveryOrder('PARTIAL.HK', 'LONG', new Date('2026-02-16T01:30:00Z')), executionStatus: 'PARTIAL' },
+        {
+          ...createRecoveryOrder('PARTIAL.HK', 'LONG', new Date('2026-02-16T01:30:00Z')),
+          executionStatus: 'PARTIAL',
+        },
       ],
       positions: ['EARLY.HK', 'LATEST.HK', 'PARTIAL.HK'].map((symbol) => ({
-        ...harness.deps.positions[0]!, symbol,
+        ...harness.deps.positions[0]!,
+        symbol,
       })),
     });
     expect(harness.registry.getSeatState('LONG').symbol).toBeNull();

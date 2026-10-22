@@ -404,12 +404,15 @@ test.each(['cancel', 'doomsday', 'replace'] as const)(
     try {
       const requests = {
         cancel: () => f.monitor.cancelOrder('FIRST', { kind: 'ORDER_FACT' }),
-        doomsday: () => f.monitor.cancelDoomsdayOrder('FIRST', {
-          kind: 'DOOMSDAY_WINDOW', beforeBrokerCancel: () => true,
-        }),
-        replace: () => f.rateLimiter.withTradeMutation((permit) =>
-          f.monitor.replaceOrderPriceWithPermit('FIRST', '1.01', { kind: 'ORDER_FACT' }, permit),
-        ),
+        doomsday: () =>
+          f.monitor.cancelDoomsdayOrder('FIRST', {
+            kind: 'DOOMSDAY_WINDOW',
+            beforeBrokerCancel: () => true,
+          }),
+        replace: () =>
+          f.rateLimiter.withTradeMutation((permit) =>
+            f.monitor.replaceOrderPriceWithPermit('FIRST', '1.01', { kind: 'ORDER_FACT' }, permit),
+          ),
       };
       const error = await captureRejection(requests[operation]());
       expect(isExternalApiRequestError(error)).toBe(true);

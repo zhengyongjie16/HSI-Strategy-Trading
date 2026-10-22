@@ -167,7 +167,9 @@ test('closed terminal pure revision stores O/Daily watermark without economic/S/
     { executedPrice: '1.1', executedAmount: '22' },
     { updatedAtMs: now + 203 },
   ]) {
-    expect(() => { flow.handleOrderChangedWhenActive({ ...replay, ...invalid }); }).toThrow();
+    expect(() => {
+      flow.handleOrderChangedWhenActive({ ...replay, ...invalid });
+    }).toThrow();
     expect(dailyCalls).toBe(3);
     expect({
       fact: f.recorder.getExecutionFact('CLOSED'),

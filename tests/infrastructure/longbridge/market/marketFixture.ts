@@ -145,7 +145,8 @@ export async function createMarketFixture(): Promise<MarketFixture> {
 
         context.seedQuotes(
           quotes.map((quote) => {
-            const tradeStatus = quote.tradingStatus === 'SUSPEND' ? TradeStatus.Suspend : TradeStatus.Normal;
+            const tradeStatus =
+              quote.tradingStatus === 'SUSPEND' ? TradeStatus.Suspend : TradeStatus.Normal;
             return {
               symbol: quote.symbol,
               quote: {
@@ -200,12 +201,16 @@ export async function createMarketFixture(): Promise<MarketFixture> {
         const entered = Promise.withResolvers<undefined>();
         const released = Promise.withResolvers<undefined>();
         armedSecurityStatusGate = {
-          entered: () => { entered.resolve(); },
+          entered: () => {
+            entered.resolve();
+          },
           released: released.promise,
         };
         return {
           entered: entered.promise,
-          release: () => { released.resolve(); },
+          release: () => {
+            released.resolve();
+          },
         };
       },
       readSymbolCalls: (method) =>

@@ -97,159 +97,158 @@ None. 不把风格、纯注释缺项或仅测试使用的导出自动列为缺�
 
 ### 配置
 
-| current 生产文件 | 阅读等级 |
-| --- | --- |
-| `src/config/auth/index.ts:1` | A |
-| `src/config/auth/types.ts:1` | T |
-| `src/config/auth/utils.ts:1` | A |
-| `src/config/runtime/index.ts:1` | A |
-| `src/config/trading/index.ts:1` | A |
-| `src/config/trading/types.ts:1` | T |
-| `src/config/trading/utils.ts:1` | A |
-| `src/config/types.ts:1` | T |
-| `src/config/utils.ts:1` | A |
-| `src/config/validator/index.ts:1` | A |
-| `src/config/validator/types.ts:1` | T |
-| `src/config/validator/utils.ts:1` | A |
+| current 生产文件                  | 阅读等级 |
+| --------------------------------- | -------- |
+| `src/config/auth/index.ts:1`      | A        |
+| `src/config/auth/types.ts:1`      | T        |
+| `src/config/auth/utils.ts:1`      | A        |
+| `src/config/runtime/index.ts:1`   | A        |
+| `src/config/trading/index.ts:1`   | A        |
+| `src/config/trading/types.ts:1`   | T        |
+| `src/config/trading/utils.ts:1`   | A        |
+| `src/config/types.ts:1`           | T        |
+| `src/config/utils.ts:1`           | A        |
+| `src/config/validator/index.ts:1` | A        |
+| `src/config/validator/types.ts:1` | T        |
+| `src/config/validator/utils.ts:1` | A        |
 
 ### 常量
 
-| current 生产文件 | 阅读等级 |
-| --- | --- |
-| `src/constants/cleanup.ts:1` | A |
-| `src/constants/diagnostics.ts:1` | A |
-| `src/constants/financialConfig.ts:1` | A |
-| `src/constants/index.ts:1` | A |
-| `src/constants/orderOwnership.ts:1` | A |
-| `src/constants/orderReadMetadata.ts:1` | A |
-| `src/constants/strategy.ts:1` | A |
-| `src/constants/tradeRateLimit.ts:1` | A |
+| current 生产文件                       | 阅读等级 |
+| -------------------------------------- | -------- |
+| `src/constants/cleanup.ts:1`           | A        |
+| `src/constants/diagnostics.ts:1`       | A        |
+| `src/constants/financialConfig.ts:1`   | A        |
+| `src/constants/index.ts:1`             | A        |
+| `src/constants/orderOwnership.ts:1`    | A        |
+| `src/constants/orderReadMetadata.ts:1` | A        |
+| `src/constants/strategy.ts:1`          | A        |
+| `src/constants/tradeRateLimit.ts:1`    | A        |
 
 ### SDK market
 
-| current 生产文件 | 阅读等级 |
-| --- | --- |
-| `src/infrastructure/longbridge/market/candlestickCache.ts:1` | A |
-| `src/infrastructure/longbridge/market/candlestickMapper.ts:1` | A |
-| `src/infrastructure/longbridge/market/marketEnumMapper.ts:1` | A |
-| `src/infrastructure/longbridge/market/marketMetadataMapper.ts:1` | A |
-| `src/infrastructure/longbridge/market/quoteClient.ts:1` | A |
-| `src/infrastructure/longbridge/market/quoteFinancialMapper.ts:1` | A |
-| `src/infrastructure/longbridge/market/types.ts:1` | T |
-| `src/infrastructure/longbridge/market/warrantListCache/index.ts:1` | A |
-| `src/infrastructure/longbridge/market/warrantListCache/types.ts:1` | T |
-| `src/infrastructure/longbridge/market/warrantListReadAdapter.ts:1` | A |
-| `src/infrastructure/longbridge/market/warrantRequestMapper.ts:1` | A |
+| current 生产文件                                                   | 阅读等级 |
+| ------------------------------------------------------------------ | -------- |
+| `src/infrastructure/longbridge/market/candlestickCache.ts:1`       | A        |
+| `src/infrastructure/longbridge/market/candlestickMapper.ts:1`      | A        |
+| `src/infrastructure/longbridge/market/marketEnumMapper.ts:1`       | A        |
+| `src/infrastructure/longbridge/market/marketMetadataMapper.ts:1`   | A        |
+| `src/infrastructure/longbridge/market/quoteClient.ts:1`            | A        |
+| `src/infrastructure/longbridge/market/quoteFinancialMapper.ts:1`   | A        |
+| `src/infrastructure/longbridge/market/types.ts:1`                  | T        |
+| `src/infrastructure/longbridge/market/warrantListCache/index.ts:1` | A        |
+| `src/infrastructure/longbridge/market/warrantListCache/types.ts:1` | T        |
+| `src/infrastructure/longbridge/market/warrantListReadAdapter.ts:1` | A        |
+| `src/infrastructure/longbridge/market/warrantRequestMapper.ts:1`   | A        |
 
 ### SDK trade
 
-| current 生产文件 | 阅读等级 |
-| --- | --- |
-| `src/infrastructure/longbridge/trade/accountMapper.ts:1` | A |
-| `src/infrastructure/longbridge/trade/accountReadAdapter.ts:1` | A |
-| `src/infrastructure/longbridge/trade/brokerAccessAdapter.ts:1` | A |
-| `src/infrastructure/longbridge/trade/clientFactory/index.ts:1` | A |
-| `src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.ts:1` | A |
-| `src/infrastructure/longbridge/trade/clientFactory/types.ts:1` | T |
-| `src/infrastructure/longbridge/trade/mutationErrorClassification.ts:1` | A |
-| `src/infrastructure/longbridge/trade/orderDetailReadAdapter.ts:1` | A |
-| `src/infrastructure/longbridge/trade/orderMapper.ts:1` | A |
-| `src/infrastructure/longbridge/trade/orderPushAdapter.ts:1` | A |
-| `src/infrastructure/longbridge/trade/orderReadErrorClassification.ts:1` | A |
-| `src/infrastructure/longbridge/trade/orderSnapshotReadAdapter.ts:1` | A |
-| `src/infrastructure/longbridge/trade/orderValidation.ts:1` | A |
-| `src/infrastructure/longbridge/trade/pendingOrdersAdapter.ts:1` | A |
-| `src/infrastructure/longbridge/trade/sellPositionReadAdapter.ts:1` | A |
-| `src/infrastructure/longbridge/trade/tradeMutationAdapter.ts:1` | A |
-| `src/infrastructure/longbridge/trade/types.ts:1` | T |
+| current 生产文件                                                          | 阅读等级 |
+| ------------------------------------------------------------------------- | -------- |
+| `src/infrastructure/longbridge/trade/accountMapper.ts:1`                  | A        |
+| `src/infrastructure/longbridge/trade/accountReadAdapter.ts:1`             | A        |
+| `src/infrastructure/longbridge/trade/brokerAccessAdapter.ts:1`            | A        |
+| `src/infrastructure/longbridge/trade/clientFactory/index.ts:1`            | A        |
+| `src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.ts:1` | A        |
+| `src/infrastructure/longbridge/trade/clientFactory/types.ts:1`            | T        |
+| `src/infrastructure/longbridge/trade/mutationErrorClassification.ts:1`    | A        |
+| `src/infrastructure/longbridge/trade/orderDetailReadAdapter.ts:1`         | A        |
+| `src/infrastructure/longbridge/trade/orderMapper.ts:1`                    | A        |
+| `src/infrastructure/longbridge/trade/orderPushAdapter.ts:1`               | A        |
+| `src/infrastructure/longbridge/trade/orderReadErrorClassification.ts:1`   | A        |
+| `src/infrastructure/longbridge/trade/orderSnapshotReadAdapter.ts:1`       | A        |
+| `src/infrastructure/longbridge/trade/orderValidation.ts:1`                | A        |
+| `src/infrastructure/longbridge/trade/pendingOrdersAdapter.ts:1`           | A        |
+| `src/infrastructure/longbridge/trade/sellPositionReadAdapter.ts:1`        | A        |
+| `src/infrastructure/longbridge/trade/tradeMutationAdapter.ts:1`           | A        |
+| `src/infrastructure/longbridge/trade/types.ts:1`                          | T        |
 
 ### 显示／日志／持久化／外部错误／时间
 
-| current 生产文件 | 阅读等级 |
-| --- | --- |
-| `src/infrastructure/diagnostics/index.ts:1` | A |
-| `src/infrastructure/diagnostics/types.ts:1` | T |
-| `src/infrastructure/display/accountDisplay/index.ts:1` | A |
-| `src/infrastructure/display/marketMonitor/index.ts:1` | A |
-| `src/infrastructure/display/marketMonitor/priceDisplayInfo.ts:1` | A |
-| `src/infrastructure/display/marketMonitor/types.ts:1` | T |
-| `src/infrastructure/display/marketMonitor/utils.ts:1` | A |
-| `src/infrastructure/externalApi/errorClassification.ts:1` | A |
-| `src/infrastructure/externalApi/index.ts:1` | A |
-| `src/infrastructure/externalApi/types.ts:1` | T |
-| `src/infrastructure/logger/index.ts:1` | B |
-| `src/infrastructure/logger/types.ts:1` | T |
-| `src/infrastructure/persistence/mixedTradeLogRepository/index.ts:1` | B |
-| `src/infrastructure/persistence/mixedTradeLogRepository/tradeLogPath.ts:1` | A |
-| `src/infrastructure/persistence/mixedTradeLogRepository/types.ts:1` | T |
-| `src/infrastructure/time/index.ts:1` | A |
+| current 生产文件                                                           | 阅读等级 |
+| -------------------------------------------------------------------------- | -------- |
+| `src/infrastructure/diagnostics/index.ts:1`                                | A        |
+| `src/infrastructure/diagnostics/types.ts:1`                                | T        |
+| `src/infrastructure/display/accountDisplay/index.ts:1`                     | A        |
+| `src/infrastructure/display/marketMonitor/index.ts:1`                      | A        |
+| `src/infrastructure/display/marketMonitor/priceDisplayInfo.ts:1`           | A        |
+| `src/infrastructure/display/marketMonitor/types.ts:1`                      | T        |
+| `src/infrastructure/display/marketMonitor/utils.ts:1`                      | A        |
+| `src/infrastructure/externalApi/errorClassification.ts:1`                  | A        |
+| `src/infrastructure/externalApi/index.ts:1`                                | A        |
+| `src/infrastructure/externalApi/types.ts:1`                                | T        |
+| `src/infrastructure/logger/index.ts:1`                                     | B        |
+| `src/infrastructure/logger/types.ts:1`                                     | T        |
+| `src/infrastructure/persistence/mixedTradeLogRepository/index.ts:1`        | B        |
+| `src/infrastructure/persistence/mixedTradeLogRepository/tradeLogPath.ts:1` | A        |
+| `src/infrastructure/persistence/mixedTradeLogRepository/types.ts:1`        | T        |
+| `src/infrastructure/time/index.ts:1`                                       | A        |
 
 ### 公共 types
 
-| current 生产文件 | 阅读等级 |
-| --- | --- |
-| `src/types/account.ts:1` | A |
-| `src/types/accountPosition.ts:1` | A |
-| `src/types/accountReadPorts.ts:1` | T |
-| `src/types/apiFailure.ts:1` | T |
-| `src/types/brokerAccessPorts.ts:1` | A |
-| `src/types/brokerClientFactory.ts:1` | A |
-| `src/types/cleanup.ts:1` | T |
-| `src/types/config.ts:1` | T |
-| `src/types/data.ts:1` | T |
-| `src/types/diagnostics.ts:1` | A |
-| `src/types/display.ts:1` | T |
-| `src/types/events.ts:1` | T |
-| `src/types/lifecycle.ts:1` | T |
-| `src/types/logger.ts:1` | T |
-| `src/types/marketPorts.ts:1` | A |
-| `src/types/monitor.ts:1` | T |
-| `src/types/orderCancellation.ts:1` | T |
-| `src/types/orderDetailReadPorts.ts:1` | T |
-| `src/types/orderExecutionPorts.ts:1` | T |
-| `src/types/orderHold.ts:1` | T |
-| `src/types/orderPushPorts.ts:1` | T |
-| `src/types/orderReadMetadata.ts:1` | T |
-| `src/types/orderRecorder.ts:1` | T |
-| `src/types/orderSnapshotReadPorts.ts:1` | T |
-| `src/types/orderTracking.ts:1` | T |
-| `src/types/periodicSwitch.ts:1` | T |
-| `src/types/quote.ts:1` | T |
-| `src/types/quoteSubscription.ts:1` | T |
-| `src/types/rateLimit.ts:1` | T |
-| `src/types/risk.ts:1` | T |
-| `src/types/riskCheck.ts:1` | T |
-| `src/types/runtime.ts:1` | T |
-| `src/types/seat.ts:1` | T |
-| `src/types/seatSwitch.ts:1` | T |
-| `src/types/settlement.ts:1` | T |
-| `src/types/signal.ts:1` | T |
-| `src/types/strategy.ts:1` | T |
-| `src/types/timeControlPlane.ts:1` | T |
-| `src/types/timer.ts:1` | T |
-| `src/types/trade.ts:1` | A |
-| `src/types/tradeLog.ts:1` | T |
-| `src/types/tradeMutationPorts.ts:1` | A |
-| `src/types/tradingCalendar.ts:1` | T |
-| `src/types/unrealizedLoss.ts:1` | T |
-| `src/types/warrantRisk.ts:1` | T |
+| current 生产文件                        | 阅读等级 |
+| --------------------------------------- | -------- |
+| `src/types/account.ts:1`                | A        |
+| `src/types/accountPosition.ts:1`        | A        |
+| `src/types/accountReadPorts.ts:1`       | T        |
+| `src/types/apiFailure.ts:1`             | T        |
+| `src/types/brokerAccessPorts.ts:1`      | A        |
+| `src/types/brokerClientFactory.ts:1`    | A        |
+| `src/types/cleanup.ts:1`                | T        |
+| `src/types/config.ts:1`                 | T        |
+| `src/types/data.ts:1`                   | T        |
+| `src/types/diagnostics.ts:1`            | A        |
+| `src/types/display.ts:1`                | T        |
+| `src/types/events.ts:1`                 | T        |
+| `src/types/lifecycle.ts:1`              | T        |
+| `src/types/logger.ts:1`                 | T        |
+| `src/types/marketPorts.ts:1`            | A        |
+| `src/types/monitor.ts:1`                | T        |
+| `src/types/orderCancellation.ts:1`      | T        |
+| `src/types/orderDetailReadPorts.ts:1`   | T        |
+| `src/types/orderExecutionPorts.ts:1`    | T        |
+| `src/types/orderHold.ts:1`              | T        |
+| `src/types/orderPushPorts.ts:1`         | T        |
+| `src/types/orderReadMetadata.ts:1`      | T        |
+| `src/types/orderRecorder.ts:1`          | T        |
+| `src/types/orderSnapshotReadPorts.ts:1` | T        |
+| `src/types/orderTracking.ts:1`          | T        |
+| `src/types/periodicSwitch.ts:1`         | T        |
+| `src/types/quote.ts:1`                  | T        |
+| `src/types/quoteSubscription.ts:1`      | T        |
+| `src/types/rateLimit.ts:1`              | T        |
+| `src/types/risk.ts:1`                   | T        |
+| `src/types/riskCheck.ts:1`              | T        |
+| `src/types/runtime.ts:1`                | T        |
+| `src/types/seat.ts:1`                   | T        |
+| `src/types/seatSwitch.ts:1`             | T        |
+| `src/types/settlement.ts:1`             | T        |
+| `src/types/signal.ts:1`                 | T        |
+| `src/types/strategy.ts:1`               | T        |
+| `src/types/timeControlPlane.ts:1`       | T        |
+| `src/types/timer.ts:1`                  | T        |
+| `src/types/trade.ts:1`                  | A        |
+| `src/types/tradeLog.ts:1`               | T        |
+| `src/types/tradeMutationPorts.ts:1`     | A        |
+| `src/types/tradingCalendar.ts:1`        | T        |
+| `src/types/unrealizedLoss.ts:1`         | T        |
+| `src/types/warrantRisk.ts:1`            | T        |
 
 ### 工具／timer
 
-| current 生产文件 | 阅读等级 |
-| --- | --- |
-| `src/runtime/timer/index.ts:1` | B |
-| `src/utils/apiFailure/index.ts:1` | A |
-| `src/utils/display/index.ts:1` | A |
-| `src/utils/error/index.ts:1` | A |
-| `src/utils/helpers/index.ts:1` | A |
-| `src/utils/marketScope.ts:1` | A |
-| `src/utils/numeric/exact.ts:1` | A |
-| `src/utils/numeric/index.ts:1` | A |
-| `src/utils/numeric/types.ts:1` | T |
-| `src/utils/time/index.ts:1` | A |
-| `src/utils/time/types.ts:1` | T |
-
+| current 生产文件                  | 阅读等级 |
+| --------------------------------- | -------- |
+| `src/runtime/timer/index.ts:1`    | B        |
+| `src/utils/apiFailure/index.ts:1` | A        |
+| `src/utils/display/index.ts:1`    | A        |
+| `src/utils/error/index.ts:1`      | A        |
+| `src/utils/helpers/index.ts:1`    | A        |
+| `src/utils/marketScope.ts:1`      | A        |
+| `src/utils/numeric/exact.ts:1`    | A        |
+| `src/utils/numeric/index.ts:1`    | A        |
+| `src/utils/numeric/types.ts:1`    | T        |
+| `src/utils/time/index.ts:1`       | A        |
+| `src/utils/time/types.ts:1`       | T        |
 
 ## 按链路已核对的实际行为与 develop 来源
 

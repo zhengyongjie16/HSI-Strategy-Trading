@@ -243,7 +243,7 @@ None。不因行数、命名偏好或 G0 内部组装函数直接创建依赖而
 下表每行一个 current 生产文件。行号为真实符号/契约锚点；同文件其余分支与消费者已阅读。类型迁移允许多来源，表内列最相关 develop 定义，不声称一个旧文件只映射一个新文件。
 
 | # | current 文件与锚点 | develop 对照 | 检查点/验证 |
-| ---: | --- | --- | --- |
+| --: | --- | --- | --- |
 | 1 | `src/app/context/createMonitorContext.ts:92,111` | `src/app/context/createMonitorContext.ts:88,107` | 唯一 context/checker、名称派生、seat switch 窄能力、实时日历 getter |
 | 2 | `src/app/context/types.ts:22,40,58` | `src/types/state.ts:77`；`src/app/types.ts:252` | assembly 与业务 ports/名称可变边界 |
 | 3 | `src/app/lifecycle/createLifecycleRuntime.ts:38,169` | `src/app/lifecycle/createLifecycleRuntime.ts:37,153` | 六 cache domain 顺序、共享 owner、open rebuild 注入 |

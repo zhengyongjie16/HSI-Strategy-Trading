@@ -216,7 +216,8 @@ describe('dailyLossTracker segment flow', () => {
 
     for (const testCase of cases) {
       const tracker = createSegmentTracker();
-      recalculateDailyLoss(tracker,
+      recalculateDailyLoss(
+        tracker,
         [
           createExecutedOrder({
             status: 'FILLED',
@@ -331,7 +332,8 @@ describe('dailyLossTracker segment flow', () => {
     }
 
     const live = createSegmentTracker();
-    recalculateDailyLoss(live,
+    recalculateDailyLoss(
+      live,
       currentOrders,
       createMonitor(),
       new Date(currentUpdatedAtMs),
@@ -349,7 +351,8 @@ describe('dailyLossTracker segment flow', () => {
     expect(live.getLossOffset('LONG')).toBe('-60');
 
     const restarted = createSegmentTracker();
-    recalculateDailyLoss(restarted,
+    recalculateDailyLoss(
+      restarted,
       currentOrders,
       createMonitor(),
       new Date(currentUpdatedAtMs),
@@ -641,7 +644,8 @@ describe('dailyLossTracker segment flow', () => {
     });
 
     const restarted = createSegmentTracker();
-    recalculateDailyLoss(restarted,
+    recalculateDailyLoss(
+      restarted,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -696,7 +700,8 @@ describe('dailyLossTracker segment flow', () => {
   it('blocks restart when a persisted baseline identity conflicts with the current order', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -739,7 +744,8 @@ describe('dailyLossTracker segment flow', () => {
   it('blocks restart when a determinable pre-boundary order baseline is omitted', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -773,7 +779,8 @@ describe('dailyLossTracker segment flow', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
     const afterBoundaryMs = boundaryMs + 1;
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -817,7 +824,8 @@ describe('dailyLossTracker segment flow', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
     const finalExecutionMs = boundaryMs + 60_000;
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         // 业务事实为边界前 40@10、边界后累计 100@1600；RawOrder 只能给出折叠后的最终总值。
         {
@@ -879,7 +887,8 @@ describe('dailyLossTracker segment flow', () => {
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
     const preBoundaryExecutionMs = boundaryMs - 60_000;
     const finalExecutionMs = boundaryMs + 60_000;
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         // 业务事实为边界前 40@10、边界后累计 100@1600；RawOrder 只保留边界后的最终累计值。
         {
@@ -1506,13 +1515,13 @@ describe('dailyLossTracker segment flow', () => {
       }),
     ).toThrow(/无法精确冻结/);
 
-    expect(() =>
-      { tracker.restoreProtectionBoundary({
+    expect(() => {
+      tracker.restoreProtectionBoundary({
         direction: 'LONG',
         boundaryExecutedTimeMs: boundaryMs,
         orderBaselines: [],
-      }); },
-    ).toThrow(/cannot reconstruct.*CROSS-DAY-BUY/);
+      });
+    }).toThrow(/cannot reconstruct.*CROSS-DAY-BUY/);
   });
 
   it('keeps a pre-boundary partial watermark when an equal terminal revision arrives later', () => {
@@ -1914,7 +1923,8 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -1967,7 +1977,8 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -2009,7 +2020,8 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -2470,7 +2482,8 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -2554,7 +2567,8 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -2717,7 +2731,8 @@ describe('dailyLossTracker segment flow', () => {
       ['LONG', Date.parse('2026-03-03T01:10:00.000Z')],
     ]);
 
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -2785,7 +2800,8 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -2825,7 +2841,8 @@ describe('dailyLossTracker segment flow', () => {
     });
     expect(tracker.getLossOffset('LONG')).toBe('0');
 
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         createExecutedOrder({
           status: 'FILLED',
@@ -2892,7 +2909,8 @@ describe('dailyLossTracker segment flow', () => {
     const monitor = createMonitor();
     const now = new Date('2026-03-03T02:00:00.000Z');
 
-    recalculateDailyLoss(tracker,
+    recalculateDailyLoss(
+      tracker,
       [
         createExecutedOrder({
           orderId: 'buy-filled',
@@ -2953,7 +2971,8 @@ describe('dailyLossTracker segment flow', () => {
       executionTimeMs: Date.parse('2026-03-03T01:00:00.000Z'),
     });
     expect(() => {
-      recalculateDailyLoss(tracker,
+      recalculateDailyLoss(
+        tracker,
         [conflictingOrder3],
         monitor,
         now,
@@ -3052,7 +3071,8 @@ describe('dailyLossTracker segment flow', () => {
       executionTimeMs: Date.parse('2026-03-02T01:00:00.000Z'),
     });
     expect(() => {
-      recalculateDailyLoss(tracker,
+      recalculateDailyLoss(
+        tracker,
         [conflictingOrder4],
         monitor,
         new Date('2026-03-03T02:00:00.000Z'),

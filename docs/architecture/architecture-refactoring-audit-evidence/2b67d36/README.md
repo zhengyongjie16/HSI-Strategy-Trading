@@ -13,7 +13,7 @@
 ## 确认问题与独立证据
 
 | 最终编号 | 主题 | 首审／发现 | 独立二审 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | F01、F03 | 同毫秒在线BUY遗漏；closed-order重复／弱观察fatal | [订单审计](audit-order-execution.md) | [订单事实二审](audit-recheck-order-facts.md) |
 | F02 | 历史来源覆盖、completion自恢复失败 | [风险审计](audit-risk-account.md) | [保护边界二审](audit-recheck-risk-boundary.md) |
 | F04 | cancel／replace错误范围扩大 | [订单审计](audit-order-execution.md) | [mutation错误二审](audit-recheck-mutation-errors.md) |

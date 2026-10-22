@@ -20,8 +20,7 @@ function isKnownPhase(phase: unknown): boolean {
 /** 校验累计金额文本为非负规范十进制；金额始终保留原文精度。 */
 function assertCumulativeAmount(cumulativeAmount: string): string {
   const canonical = canonicalDecimal(cumulativeAmount);
-  if (exactCompare(canonical, '0') < 0)
-    throw new Error('[订单事实] 累计成交金额不得为负');
+  if (exactCompare(canonical, '0') < 0) throw new Error('[订单事实] 累计成交金额不得为负');
 
   return canonical;
 }
@@ -30,10 +29,7 @@ function assertCumulativeAmount(cumulativeAmount: string): string {
  * 校验累计事实的 identity、数量、金额、T 与 revision 自洽。
  * known 正成交必须携带正金额与有效 T；仅 baseline phase 允许未知（null）。observed 必须完整。
  */
-function assertExecutionPayload(
-  fact: KnownExecutionBaseline,
-  allowNullPhase = false,
-): void {
+function assertExecutionPayload(fact: KnownExecutionBaseline, allowNullPhase = false): void {
   if (
     fact.brokerOrderId.length === 0 ||
     fact.symbol.length === 0 ||
@@ -55,8 +51,7 @@ function assertExecutionPayload(
     return;
   }
 
-  if (exactCompare(amount, '0') === 0)
-    throw new Error('[订单事实] 正成交缺少可信金额');
+  if (exactCompare(amount, '0') === 0) throw new Error('[订单事实] 正成交缺少可信金额');
 
   if (!isValidPositiveMillis(fact.executionTimeMs))
     throw new Error('[订单事实] 正成交缺少可信执行时间');
@@ -109,8 +104,7 @@ export function mergeExecutionFact(
   if (observed.cumulativeQuantity < known.cumulativeQuantity)
     throw new Error('[订单事实] 同/新 revision 累计数量倒退');
 
-  const amountChanged =
-    exactCompare(known.cumulativeAmount, normalized.cumulativeAmount) !== 0;
+  const amountChanged = exactCompare(known.cumulativeAmount, normalized.cumulativeAmount) !== 0;
 
   if (quantityAdvanced) {
     if (exactCompare(normalized.cumulativeAmount, known.cumulativeAmount) <= 0)

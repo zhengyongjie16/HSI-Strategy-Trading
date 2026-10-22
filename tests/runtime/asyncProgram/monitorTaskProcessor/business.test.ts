@@ -2128,7 +2128,8 @@ describe('monitorTaskProcessor business flow', () => {
         callPrice: '20000',
       });
       const seedOrders = await createDailyLossSeedOrders(now, `unknown-${unknownSideCase.label}`);
-      recalculateDailyLoss(dailyLossTracker,
+      recalculateDailyLoss(
+        dailyLossTracker,
         toRecalculationOrders(seedOrders),
         context.config,
         now,
@@ -2315,7 +2316,8 @@ describe('monitorTaskProcessor business flow', () => {
         callPrice: '20000',
       });
       const seedOrders = await createDailyLossSeedOrders(now, `related-${relatedOrderCase.label}`);
-      recalculateDailyLoss(dailyLossTracker,
+      recalculateDailyLoss(
+        dailyLossTracker,
         toRecalculationOrders(seedOrders),
         context.config,
         now,

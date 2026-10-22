@@ -7,8 +7,7 @@ import { createBrokerIngressFixture } from './brokerIngressFixture.js';
 
 /** 已确认经济事实：本 fixture 的订单带价，金额不得缺失。 */
 function knownFrom(order: OrderFact): KnownOrderFact {
-  if (order.executedAmount === null)
-    throw new Error('fixture order must carry an executed amount');
+  if (order.executedAmount === null) throw new Error('fixture order must carry an executed amount');
 
   return {
     orderId: order.orderId,
@@ -55,7 +54,9 @@ test.each([null, '0'] as const)(
     if (price === null) f.setPushExecutedPriceMissing();
     else f.setPushExecutedPriceText(price);
 
-    expect(() => { f.emitOrderChanged(); }).toThrow(TypeError);
+    expect(() => {
+      f.emitOrderChanged();
+    }).toThrow(TypeError);
     expect(callbacks).toBe(1);
     expect(results).toEqual([]);
     expect(f.nativeReadCounts()).toEqual({ cancel: 0, detail: 0 });
@@ -71,24 +72,28 @@ test('complete registered terminal callback may revise amount without advancing 
     const mapped = decoder.decode();
     if (mapped === null) throw new Error('HK push sample must decode');
 
-    results.push(mergeMonotonicOrderFact(known, {
-      status: mapped.status,
-      executionPhase: mapped.executionPhase,
-      executedQuantity: mapped.executedQuantity,
-      executedAmount: mapped.executedAmount,
-      executedPrice: mapped.executedPrice,
-      executedTimeMs: mapped.executionTimeMs,
-      updatedAtMs: mapped.updatedAtMs,
-    }));
+    results.push(
+      mergeMonotonicOrderFact(known, {
+        status: mapped.status,
+        executionPhase: mapped.executionPhase,
+        executedQuantity: mapped.executedQuantity,
+        executedAmount: mapped.executedAmount,
+        executedPrice: mapped.executedPrice,
+        executedTimeMs: mapped.executionTimeMs,
+        updatedAtMs: mapped.updatedAtMs,
+      }),
+    );
   });
   f.emitOrderChangedFrame({ ...frame, status: 'Filled', executedPrice: '1.1', updatedAtMs: 200 });
-  expect(results).toEqual([{
-    status: 'FILLED',
-    executionPhase: 'TERMINAL',
-    executedQuantity: 40,
-    executedAmount: '44',
-    executedPrice: '1.1',
-    executedTimeMs: 150,
-    updatedAtMs: 200,
-  }]);
+  expect(results).toEqual([
+    {
+      status: 'FILLED',
+      executionPhase: 'TERMINAL',
+      executedQuantity: 40,
+      executedAmount: '44',
+      executedPrice: '1.1',
+      executedTimeMs: 150,
+      updatedAtMs: 200,
+    },
+  ]);
 });

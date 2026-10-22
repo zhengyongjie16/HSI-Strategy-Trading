@@ -138,10 +138,7 @@ function mapSnapshotOrder(order: Order): OrderFact {
  * 仅校验身份并过滤明确非 HK 订单；同一来源的 HK ID 重复必须在跨来源覆盖前拒绝。
  * 保留原始 SDK 对象，败选观察不触碰金融、状态或修订字段。
  */
-function indexScopedOrders(
-  raw: ReadonlyArray<unknown>,
-  operation: string,
-): Map<string, unknown> {
+function indexScopedOrders(raw: ReadonlyArray<unknown>, operation: string): Map<string, unknown> {
   const ordersById = new Map<string, unknown>();
   for (const order of raw) {
     assertOrderIdentity(order, operation);

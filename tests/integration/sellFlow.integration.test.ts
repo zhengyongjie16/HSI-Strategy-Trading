@@ -303,7 +303,8 @@ async function createSellMonitor(
   ingress: NativeSellIngress,
   deps: Parameters<NativeSellIngress['createMonitor']>[0],
 ) {
-  recalculateDailyLoss(deps.dailyLossTracker,
+  recalculateDailyLoss(
+    deps.dailyLossTracker,
     [],
     deps.tradingConfig.monitor,
     deps.now(),

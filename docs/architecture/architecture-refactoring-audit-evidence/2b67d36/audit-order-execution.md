@@ -62,7 +62,7 @@
 - **本次独立高层 executor 对照：**
 
   | 输入 | develop | current |
-  |---|---|---|
+  | --- | --- | --- |
   | available=0 | cancel=1，positions read=0，submit=0，awaitingAuthoritativeTerminalSymbols=[BULL.HK] | cancel=0，positions read=1，submit=0，reevaluationSymbols=[] |
   | available=40 | 同上，等待旧单终态 | cancel=0，positions read=1，立刻提交40股 ELO、现价1.9；旧SELL不变 |
 
@@ -82,14 +82,14 @@
 - **独立真实闭单链路：**两版真实 Monitor+Recorder+Daily；先 protective SELL100@0.45、Filled、T，落盘并关闭；以 T 提交 protection boundary、restoreCompletedBoundary；再推同单同量0.46、revision=T+30000，remark 必须使用真实 `QuantDemo|PL`。两版都不发 broker mutation。
 - **本次观测：**
 
-  | 项目 | develop：修订前→后 | current：修订前→后 |
-  |---|---|---|
-  | durable progress 次数 | 1→1 | 1→2 |
-  | settlement refresh 次数 | 1→1 | 1→2 |
-  | SELL 记录金额 | 45→45（旧记录price=0.45） | 45→46 |
-  | hold closed 次数 | 1→1 | 1→1 |
-  | DailyLoss | 0→0 | "0"→"0" |
-  | in-progress episode／pending | []／[] | []／[] |
+  | 项目                         | develop：修订前→后        | current：修订前→后 |
+  | ---------------------------- | ------------------------- | ------------------ |
+  | durable progress 次数        | 1→1                       | 1→2                |
+  | settlement refresh 次数      | 1→1                       | 1→2                |
+  | SELL 记录金额                | 45→45（旧记录price=0.45） | 45→46              |
+  | hold closed 次数             | 1→1                       | 1→1                |
+  | DailyLoss                    | 0→0                       | "0"→"0"            |
+  | in-progress episode／pending | []／[]                    | []／[]             |
 
 - **额外失败路径：**仅让第二次 progress persistence 抛 `AUDIT_DISK_UNAVAILABLE`，current 经真实 Monitor fatal=true，O 保持45、刷新不增加；develop closed event 根本不再进入落盘，不会触发这次持久化失败。此为新增可达的失败点，不把模拟故障写为已发生磁盘事故。
 - **重要反证／避免误报：**不能声称“develop settleOrder 收到边界前终态后 O/H/S 全部不更新”。旧 `settlementFlow.ts:636-658` 先本地 BUY／SELL 记账，`:660-687` 后调用 Daily，并在 authoritativeFactChanged=false 时主动补刷新，最终还会关 H/terminal。故首次 tracked terminal 的本地 SELL、占用释放与 refresh，旧版也会更新。这里确认的 closed-order 晚修订与 durable 差分，不能泛化到所有结算。
@@ -125,7 +125,7 @@ None. 不为凑数把新分层、文件长度、纯转发或类型别名机械�
 ## validation 原候选独立二审专节
 
 | validation 原 ID | 结论 | 独立证据／限定 |
-|---|---|---|
+| --- | --- | --- |
 | V-C1 | **confirmed（行为差分）；是否缺陷需授权裁决** | 真实旧／新 Monitor 相同 protective closed revision：durable 1→1 对1→2、refresh1→1对1→2；新第二次持久化故障会 fatal。方案`:828`一般closed合法修订条款为明确反证，封存准入是否在例外内不能由新测试倒推。详情 OE-004。 |
 | V-C1：develop 本地 O/H 完全不动的扩大解释 | **rejected** | 旧 settleOrder 首次 terminal 在 Daily 返回之前先写本地 O，false结果仍补 S，最终关H；不能从 Daily false 推导本地不变。 |
 | V-C1：重新入损／重复 episode／重启财务错误 | **rejected／not-assessed** | 实测 Daily两版均0、H只关一次、episode仍空；startup过滤旧进度，未证实财务损害；不以局部候选替代完整后果。 |
@@ -147,7 +147,7 @@ None. 不为凑数把新分层、文件长度、纯转发或类型别名机械�
 ## 七维审查结论
 
 | 维度 | 实际检查及结论 |
-|---|---|
+| --- | --- |
 | Implementation | 已追consumer→普通用例→授权/提交→monitor→WS/query→结算/累计事实→超时占用交接→恢复；OE-001/002/003与V-C1为具体行为证据，未用复杂度作为缺陷理由。 |
 | Project and Spec | 固定旧SHA为oracle；方案`docs/architecture/architecture-refactoring-implementation-plan.md:33-37`列明例外，`:35`特别限定submit UNKNOWN而非cancel/replace。新注释／测试不能反推授权；V-C1授权边界须主代理显式裁决。 |
 | Type Design | 阅读执行purpose、authorization闭包、mutation结果联合、累计fact、phase、terminal snapshot、pending/hold与route状态契约。closed lifecycle与phase不是同一个状态，OE-002展示强运行时校验放错入口的后果。未机械建议复杂品牌化或把一切校验移到类型层；大型types仅局部读，见覆盖账本。 |
@@ -180,70 +180,70 @@ None. 不为凑数把新分层、文件长度、纯转发或类型别名机械�
 **分级定义：**D=围绕真实业务链路深读并与旧对应实现比较，含关键正常/异常分支，不等于逐字符穷尽；E=主要做迁移/语义diff与调用消费者核对，不宣称模块全行为已证等价；P=局部契约或选段阅读，不能当完整审计；U=未深入。长输出曾截断的部分不因发起读取而算全文覆盖。
 
 | # | current生产文件 | 级别 | 实际分析焦点／旧对应 |
-|---:|---|:---:|---|
-|1|`src/application/orderExecution/buyThrottle.ts`|E|频率记录、冷却；旧orderExecutor同名|
-|2|`src/application/orderExecution/index.ts`|D|purpose、caller授权、executeSignals、末日专用入口；旧orderExecutor|
-|3|`src/application/orderExecution/quantityResolver.ts`|D|目标HK持仓、安全数量、限流后重校验；旧orderExecutor|
-|4|`src/application/orderExecution/rateLimiter.ts`|D|mutation permit生命周期、限流；旧core/trader/rateLimiter|
-|5|`src/application/orderExecution/submitFailureLogging.ts`|E|拒绝与UNKNOWN日志边界、消费者|
-|6|`src/application/orderExecution/submitFlow.ts`|D|普通/保护/末日提交、合并、关联、cancel等待、accepted本地同步|
-|7|`src/application/orderExecution/tradeMutationErrors.ts`|E|UNKNOWN与accepted错误原身份/订单ID保存|
-|8|`src/application/orderExecution/types.ts`|P|purpose/authorization/submit结果与deps；未全文证明|
-|9|`src/application/orderTracking/orderCacheManager.ts`|D|pending读取、cache失效与submit/monitor真实调用|
-|10|`src/application/orderTracking/orderHoldRegistry.ts`|D|seed/track/terminal关闭、symbol hold|
-|11|`src/application/orderTracking/orderMonitor/eventFlow.ts`|D|WS状态、重复乱序、缺价终态、closed新revision|
-|12|`src/application/orderTracking/orderMonitor/index.ts`|D|monitor装配/订阅/恢复、fatal、stop/drain、continuation|
-|13|`src/application/orderTracking/orderMonitor/orderObservation.ts`|E|经济/terminal观察通知、幂等边界|
-|14|`src/application/orderTracking/orderMonitor/orderOps.ts`|D|cancel/replace授权、重试、602012/602013/WAIT_WS_ONLY、query facts|
-|15|`src/application/orderTracking/orderMonitor/orderStatusQuery.ts`|D|权威detail映射、终态与QUERY_FAILED、保护性原始证据|
-|16|`src/application/orderTracking/orderMonitor/recoveryFlow.ts`|D|bootstrap缓冲、snapshot归属、pending关联、不匹配BUY关闭|
-|17|`src/application/orderTracking/orderMonitor/routeProcessor.ts`|D|timeout优先、cancel终态、follow-up MO占用连续、ACK后continuation|
-|18|`src/application/orderTracking/orderMonitor/routeRuntime.ts`|D|symbol generation、调度、旧await continuation、stop/drain|
-|19|`src/application/orderTracking/orderMonitor/routingIndex.ts`|E|attach/detach、bucket/timer、generation重置；旧同名diff|
-|20|`src/application/orderTracking/orderMonitor/settlementFlow.ts`|D|O/Daily/durable顺序、partial/terminal、H/S与episode|
-|21|`src/application/orderTracking/orderMonitor/types.ts`|P|tracked/runtime/route/terminal与deps相关字段，未全类型审查|
-|22|`src/application/orderTracking/recorder/index.ts`|D|事实准入、projection、rebuild/clear、刷新、去重|
-|23|`src/application/orderTracking/recorder/orderApiManager.ts`|D|history/today快照读取及归一交界；旧record API manager逻辑|
-|24|`src/application/orderTracking/recorder/orderStorage.ts`|D|BUY/SELL投影存储、pending占用、整笔选单、getCostBasis|
-|25|`src/application/orderTracking/recorder/types.ts`|P|factory/storage/deps与边界签名|
-|26|`src/application/orderTracking/tradeAudit/index.ts`|E|成交审计订阅、调用及异常边界；未全日志格式审计|
-|27|`src/application/orderTracking/tradeAudit/types.ts`|P|审计输入/依赖窄契约|
-|28|`src/application/orderTracking/types.ts`|P|OrderMonitor/hold/cache及runtime装配相关契约|
-|29|`src/application/ordinaryBuy/accountPositionsRead.ts`|D|双请求启动/排空、内错优先；旧utils/accountPositions|
-|30|`src/application/ordinaryBuy/index.ts`|D|普通BUY入口、授权与风险管线；旧signalProcessor|
-|31|`src/application/ordinaryBuy/riskChecks.ts`|D|轻检查顺序、实时account/positions、unrealized预筛；旧riskCheckPipeline|
-|32|`src/application/ordinaryBuy/types.ts`|P|普通BUY依赖和输出，未全跨域类型消费|
-|33|`src/application/ordinarySell/index.ts`|D|普通SELL入口、持仓与执行授权；旧signalProcessor|
-|34|`src/application/ordinarySell/quantityResolver.ts`|D|可卖量/普通智能平仓选择接口；旧sellQuantityCalculator|
-|35|`src/application/ordinarySell/quantitySelection.ts`|D|全仓/总体盈利/盈利单/超时单、占用排除|
-|36|`src/application/ordinarySell/types.ts`|P|SELL输入及依赖窄契约|
-|37|`src/domain/order/cancelOutcomePolicy.ts`|E|ACK与权威终态区分、真实末日/席位消费者；旧trader/utils等|
-|38|`src/domain/order/executionFact.ts`|D|累计量/金额/T/revision/phase、旧事实兼容及closed入口|
-|39|`src/domain/order/executionPolicy.ts`|E|action/orderType、跨日、protective判定；旧executor/utils|
-|40|`src/domain/order/executionProjection.ts`|D|完整消费输入、slice、clear与SELL整单投影|
-|41|`src/domain/order/orderAnalysis.ts`|E|daily分析组合依赖与真实Daily消费者；旧core/utils|
-|42|`src/domain/order/orderFactMerge.ts`|D|tracked观察、弱OPEN、普通缺价资源终态、保护性完整事实|
-|43|`src/domain/order/orderFilteringEngine.ts`|D|历史时间分区／整笔扣减与新在线消费；旧同名对照|
-|44|`src/domain/order/orderOwnership.ts`|D|monitor/direction/symbol归属及startup/push/最新标的消费者|
-|45|`src/domain/order/orderQuantity.ts`|E|整手与安全整数出口、精确总量；旧orderRecorder/utils|
-|46|`src/domain/order/orderReadLifecycle.ts`|E|open/terminal与priority，旧orderStatusLifecycle|
-|47|`src/domain/order/orderRecordPolicy.ts`|D|API分类、原始经济证据、盈利/超时选单与pending状态|
-|48|`src/domain/order/orderRemark.ts`|E|真实`|PL`provenance与submit/恢复消费者|
-|49|`src/domain/order/orderSnapshotPolicy.ts`|E|snapshot分类/读状态规则；旧orderStatusLifecycle|
-|50|`src/domain/order/orderTimeoutPolicy.ts`|D|cancel backoff、timeout terminal、remaining数量与优先级|
-|51|`src/domain/order/orderTrackingPolicy.ts`|E|配置秒转毫秒、关闭原因、price差值/归一；旧lifecycle|
-|52|`src/domain/order/orderTypePolicy.ts`|E|交易类型选择、protective与普通配置；旧trader/utils|
-|53|`src/domain/order/quoteReadiness.ts`|E|必要报价、缺失/无效类型；普通/末日真实消费者|
-|54|`src/domain/order/sellDeductionPolicy.ts`|D|低价优先整笔、关联精确扣减与develop在线对照|
-|55|`src/domain/order/sellMergePolicy.ts`|D|合单REPLACE/CANCEL_AND_SUBMIT、protective身份隔离|
-|56|`src/domain/order/smartClose.ts`|E|精确整体盈利、剩余量与阶段总量；旧signalProcessor/utils|
-|57|`src/domain/order/types.ts`|P|fact/known/ownership/timeout/command相关类型，未全文穷尽|
-|58|`src/runtime/asyncProgram/buyProcessor/index.ts`|D|BUY queue消费、异步门禁、错误fatal与用例调用；旧main同名|
-|59|`src/runtime/asyncProgram/buyProcessor/types.ts`|P|worker窄依赖|
-|60|`src/runtime/asyncProgram/sellProcessor/index.ts`|D|SELL queue消费、异步门禁、错误fatal与用例调用；旧main同名|
-|61|`src/runtime/asyncProgram/sellProcessor/types.ts`|P|worker窄依赖|
-|62|`src/runtime/orderTradeAuditListener/index.ts`|E|同步审计异常fatal再原样重抛、unsubscribe身份|
-|63|`src/runtime/orderTradeAuditListener/types.ts`|P|listener行为契约|
+| --: | --- | :-: | --- |
+| 1 | `src/application/orderExecution/buyThrottle.ts` | E | 频率记录、冷却；旧orderExecutor同名 |
+| 2 | `src/application/orderExecution/index.ts` | D | purpose、caller授权、executeSignals、末日专用入口；旧orderExecutor |
+| 3 | `src/application/orderExecution/quantityResolver.ts` | D | 目标HK持仓、安全数量、限流后重校验；旧orderExecutor |
+| 4 | `src/application/orderExecution/rateLimiter.ts` | D | mutation permit生命周期、限流；旧core/trader/rateLimiter |
+| 5 | `src/application/orderExecution/submitFailureLogging.ts` | E | 拒绝与UNKNOWN日志边界、消费者 |
+| 6 | `src/application/orderExecution/submitFlow.ts` | D | 普通/保护/末日提交、合并、关联、cancel等待、accepted本地同步 |
+| 7 | `src/application/orderExecution/tradeMutationErrors.ts` | E | UNKNOWN与accepted错误原身份/订单ID保存 |
+| 8 | `src/application/orderExecution/types.ts` | P | purpose/authorization/submit结果与deps；未全文证明 |
+| 9 | `src/application/orderTracking/orderCacheManager.ts` | D | pending读取、cache失效与submit/monitor真实调用 |
+| 10 | `src/application/orderTracking/orderHoldRegistry.ts` | D | seed/track/terminal关闭、symbol hold |
+| 11 | `src/application/orderTracking/orderMonitor/eventFlow.ts` | D | WS状态、重复乱序、缺价终态、closed新revision |
+| 12 | `src/application/orderTracking/orderMonitor/index.ts` | D | monitor装配/订阅/恢复、fatal、stop/drain、continuation |
+| 13 | `src/application/orderTracking/orderMonitor/orderObservation.ts` | E | 经济/terminal观察通知、幂等边界 |
+| 14 | `src/application/orderTracking/orderMonitor/orderOps.ts` | D | cancel/replace授权、重试、602012/602013/WAIT_WS_ONLY、query facts |
+| 15 | `src/application/orderTracking/orderMonitor/orderStatusQuery.ts` | D | 权威detail映射、终态与QUERY_FAILED、保护性原始证据 |
+| 16 | `src/application/orderTracking/orderMonitor/recoveryFlow.ts` | D | bootstrap缓冲、snapshot归属、pending关联、不匹配BUY关闭 |
+| 17 | `src/application/orderTracking/orderMonitor/routeProcessor.ts` | D | timeout优先、cancel终态、follow-up MO占用连续、ACK后continuation |
+| 18 | `src/application/orderTracking/orderMonitor/routeRuntime.ts` | D | symbol generation、调度、旧await continuation、stop/drain |
+| 19 | `src/application/orderTracking/orderMonitor/routingIndex.ts` | E | attach/detach、bucket/timer、generation重置；旧同名diff |
+| 20 | `src/application/orderTracking/orderMonitor/settlementFlow.ts` | D | O/Daily/durable顺序、partial/terminal、H/S与episode |
+| 21 | `src/application/orderTracking/orderMonitor/types.ts` | P | tracked/runtime/route/terminal与deps相关字段，未全类型审查 |
+| 22 | `src/application/orderTracking/recorder/index.ts` | D | 事实准入、projection、rebuild/clear、刷新、去重 |
+| 23 | `src/application/orderTracking/recorder/orderApiManager.ts` | D | history/today快照读取及归一交界；旧record API manager逻辑 |
+| 24 | `src/application/orderTracking/recorder/orderStorage.ts` | D | BUY/SELL投影存储、pending占用、整笔选单、getCostBasis |
+| 25 | `src/application/orderTracking/recorder/types.ts` | P | factory/storage/deps与边界签名 |
+| 26 | `src/application/orderTracking/tradeAudit/index.ts` | E | 成交审计订阅、调用及异常边界；未全日志格式审计 |
+| 27 | `src/application/orderTracking/tradeAudit/types.ts` | P | 审计输入/依赖窄契约 |
+| 28 | `src/application/orderTracking/types.ts` | P | OrderMonitor/hold/cache及runtime装配相关契约 |
+| 29 | `src/application/ordinaryBuy/accountPositionsRead.ts` | D | 双请求启动/排空、内错优先；旧utils/accountPositions |
+| 30 | `src/application/ordinaryBuy/index.ts` | D | 普通BUY入口、授权与风险管线；旧signalProcessor |
+| 31 | `src/application/ordinaryBuy/riskChecks.ts` | D | 轻检查顺序、实时account/positions、unrealized预筛；旧riskCheckPipeline |
+| 32 | `src/application/ordinaryBuy/types.ts` | P | 普通BUY依赖和输出，未全跨域类型消费 |
+| 33 | `src/application/ordinarySell/index.ts` | D | 普通SELL入口、持仓与执行授权；旧signalProcessor |
+| 34 | `src/application/ordinarySell/quantityResolver.ts` | D | 可卖量/普通智能平仓选择接口；旧sellQuantityCalculator |
+| 35 | `src/application/ordinarySell/quantitySelection.ts` | D | 全仓/总体盈利/盈利单/超时单、占用排除 |
+| 36 | `src/application/ordinarySell/types.ts` | P | SELL输入及依赖窄契约 |
+| 37 | `src/domain/order/cancelOutcomePolicy.ts` | E | ACK与权威终态区分、真实末日/席位消费者；旧trader/utils等 |
+| 38 | `src/domain/order/executionFact.ts` | D | 累计量/金额/T/revision/phase、旧事实兼容及closed入口 |
+| 39 | `src/domain/order/executionPolicy.ts` | E | action/orderType、跨日、protective判定；旧executor/utils |
+| 40 | `src/domain/order/executionProjection.ts` | D | 完整消费输入、slice、clear与SELL整单投影 |
+| 41 | `src/domain/order/orderAnalysis.ts` | E | daily分析组合依赖与真实Daily消费者；旧core/utils |
+| 42 | `src/domain/order/orderFactMerge.ts` | D | tracked观察、弱OPEN、普通缺价资源终态、保护性完整事实 |
+| 43 | `src/domain/order/orderFilteringEngine.ts` | D | 历史时间分区／整笔扣减与新在线消费；旧同名对照 |
+| 44 | `src/domain/order/orderOwnership.ts` | D | monitor/direction/symbol归属及startup/push/最新标的消费者 |
+| 45 | `src/domain/order/orderQuantity.ts` | E | 整手与安全整数出口、精确总量；旧orderRecorder/utils |
+| 46 | `src/domain/order/orderReadLifecycle.ts` | E | open/terminal与priority，旧orderStatusLifecycle |
+| 47 | `src/domain/order/orderRecordPolicy.ts` | D | API分类、原始经济证据、盈利/超时选单与pending状态 |
+| 48 | `src/domain/order/orderRemark.ts` | E | 真实` | PL`provenance与submit/恢复消费者 |
+| 49 | `src/domain/order/orderSnapshotPolicy.ts` | E | snapshot分类/读状态规则；旧orderStatusLifecycle |
+| 50 | `src/domain/order/orderTimeoutPolicy.ts` | D | cancel backoff、timeout terminal、remaining数量与优先级 |
+| 51 | `src/domain/order/orderTrackingPolicy.ts` | E | 配置秒转毫秒、关闭原因、price差值/归一；旧lifecycle |
+| 52 | `src/domain/order/orderTypePolicy.ts` | E | 交易类型选择、protective与普通配置；旧trader/utils |
+| 53 | `src/domain/order/quoteReadiness.ts` | E | 必要报价、缺失/无效类型；普通/末日真实消费者 |
+| 54 | `src/domain/order/sellDeductionPolicy.ts` | D | 低价优先整笔、关联精确扣减与develop在线对照 |
+| 55 | `src/domain/order/sellMergePolicy.ts` | D | 合单REPLACE/CANCEL_AND_SUBMIT、protective身份隔离 |
+| 56 | `src/domain/order/smartClose.ts` | E | 精确整体盈利、剩余量与阶段总量；旧signalProcessor/utils |
+| 57 | `src/domain/order/types.ts` | P | fact/known/ownership/timeout/command相关类型，未全文穷尽 |
+| 58 | `src/runtime/asyncProgram/buyProcessor/index.ts` | D | BUY queue消费、异步门禁、错误fatal与用例调用；旧main同名 |
+| 59 | `src/runtime/asyncProgram/buyProcessor/types.ts` | P | worker窄依赖 |
+| 60 | `src/runtime/asyncProgram/sellProcessor/index.ts` | D | SELL queue消费、异步门禁、错误fatal与用例调用；旧main同名 |
+| 61 | `src/runtime/asyncProgram/sellProcessor/types.ts` | P | worker窄依赖 |
+| 62 | `src/runtime/orderTradeAuditListener/index.ts` | E | 同步审计异常fatal再原样重抛、unsubscribe身份 |
+| 63 | `src/runtime/orderTradeAuditListener/types.ts` | P | listener行为契约 |
 
 主责清单 **63/63 已归档，无遗漏；D=34、E=18、P=11、U=0**（从报告表格机器计数，并与分组地图逐条核对，无缺漏、无重复）。**P级不是已完成全模块等价证明**；不能由63行误写成63个文件均已全文深读。
 

@@ -73,10 +73,10 @@ None. 不把字段/错误文案差异单独立项。
 
 **独立 probe A**：直接调用两个真实 wrapper，注入同一个 `Error('HTTP403...')` 请求拒绝：
 
-| 版本 | 请求次数 | 捕获对象严格等于原cause | error.name | 是否包装为ExternalApiRequestError |
-| --- | ---: | --- | --- | --- |
-| develop | 1 | true | Error | false |
-| current | 1 | true | Error | false |
+| 版本    | 请求次数 | 捕获对象严格等于原cause | error.name | 是否包装为ExternalApiRequestError |
+| ------- | -------: | ----------------------- | ---------- | --------------------------------- |
+| develop |        1 | true                    | Error      | false                             |
+| current |        1 | true                    | Error      | false                             |
 
 不能从“外部API FAIL_FAST”跳跃推断“旧版本最终也会 fatal”。fatal 与否必须继续读 owner catch；旧一般403正是在该处被正常收口。
 
@@ -113,7 +113,7 @@ None. 不把字段/错误文案差异单独立项。
 两版同一个 cause：
 
 ```typescript
-Object.assign(new Error('HTTP 403 permission denied'), { status: 403 })
+Object.assign(new Error('HTTP 403 permission denied'), { status: 403 });
 ```
 
 | 场景 | develop | current |

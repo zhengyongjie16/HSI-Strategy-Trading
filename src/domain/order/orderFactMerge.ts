@@ -75,7 +75,11 @@ function hasCompleteKnownEconomics(known: KnownOrderFact): boolean {
 export function isWeakOpenOrderObservation(
   known: Pick<
     KnownOrderFact,
-    'executionPhase' | 'executedQuantity' | 'executedAmount' | 'lastExecutedTimeMs' | 'lastOrderUpdateAtMs'
+    | 'executionPhase'
+    | 'executedQuantity'
+    | 'executedAmount'
+    | 'lastExecutedTimeMs'
+    | 'lastOrderUpdateAtMs'
   >,
   observed: OrderObservedFact,
 ): boolean {
@@ -283,20 +287,21 @@ export function assertProtectiveSellRawTerminalStateFactsReady(
 
 /** state-check 到达后、任何 cache/运行态写入前验证本次完整原始事实，禁止继承 known 补价。 */
 export function assertStateCheckRawExecutionFactsReady(
-  known: (KnownOrderFact & Partial<Pick<TrackedOrder, 'isProtectiveLiquidation'>>) | null | undefined,
+  known:
+    (KnownOrderFact & Partial<Pick<TrackedOrder, 'isProtectiveLiquidation'>>) | null | undefined,
   result: Exclude<OrderStateCheckResult, { kind: 'QUERY_FAILED' }>,
 ): void {
-  const observation: OrderObservedFact & Readonly<{ executionStatus: 'NONE' | 'PARTIAL' | 'FILLED' }> =
-    {
-      status: result.status,
-      executionPhase: result.kind,
-      executionStatus: result.executionStatus,
-      executedQuantity: result.executedQuantity,
-      executedAmount: result.executedAmount,
-      executedPrice: result.executedPrice,
-      executedTimeMs: result.executionTimeMs,
-      updatedAtMs: result.kind === 'OPEN' ? result.updatedAtMs : result.orderUpdatedAtMs,
-    };
+  const observation: OrderObservedFact &
+    Readonly<{ executionStatus: 'NONE' | 'PARTIAL' | 'FILLED' }> = {
+    status: result.status,
+    executionPhase: result.kind,
+    executionStatus: result.executionStatus,
+    executedQuantity: result.executedQuantity,
+    executedAmount: result.executedAmount,
+    executedPrice: result.executedPrice,
+    executedTimeMs: result.executionTimeMs,
+    updatedAtMs: result.kind === 'OPEN' ? result.updatedAtMs : result.orderUpdatedAtMs,
+  };
 
   assertOrderObservedFactsReady(observation);
 
@@ -524,7 +529,10 @@ export function mergeMonotonicOrderFact(
   let status: OrderReadStatus;
   if (merged.phase === 'TERMINAL') {
     status = observed.status;
-  } else if (known.lastOrderUpdateAtMs !== null && merged.updatedAtMs === known.lastOrderUpdateAtMs) {
+  } else if (
+    known.lastOrderUpdateAtMs !== null &&
+    merged.updatedAtMs === known.lastOrderUpdateAtMs
+  ) {
     status = resolveSameTimestampOpenStatus(known.status, observed.status);
   } else if (
     known.lastOrderUpdateAtMs !== null &&

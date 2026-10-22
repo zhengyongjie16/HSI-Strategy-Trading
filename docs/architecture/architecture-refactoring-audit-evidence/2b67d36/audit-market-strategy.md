@@ -410,7 +410,15 @@ git rev-parse HEAD develop origin/develop
 结果：exit 0，输出：
 
 ```json
-{"baseline":"6e239c8a128372bd9b2fb2d79464346792a5e81e","indicatorSnapshots":400,"strategyCases":24,"eventsPerStrategyCase":80,"cacheChecks":400,"baselineModules":24,"result":"all deepEqual"}
+{
+  "baseline": "6e239c8a128372bd9b2fb2d79464346792a5e81e",
+  "indicatorSnapshots": 400,
+  "strategyCases": 24,
+  "eventsPerStrategyCase": 80,
+  "cacheChecks": 400,
+  "baselineModules": 24,
+  "result": "all deepEqual"
+}
 ```
 
 复现脚本见附录 A；使用 Bun transpiler 把 `git show SHA:path` 的 TS 在内存递归转换为 data URL，仅运行纯策略/缓存和 fake scheduler，未创建 SDK context。覆盖所有七类指标、活动/确认/shift、缺 H/缺 volume、旧事件、四动作、空验证集、微小小数延迟、按方向取消、跨日 reset/destroy 和旧 timer 失效。
@@ -420,7 +428,10 @@ git rev-parse HEAD develop origin/develop
 离线注入同一个 deferred realtime SDK 替身，两个实现分别执行 subscribe→getQuotes 挂起→unsubscribe→resolve。exit 0，结果：
 
 ```json
-{"develop":{"name":null,"prevClose":0,"lotSize":null,"price":101.1},"current":{"name":"Captured Name","prevClose":"99.2","lotSize":100,"price":"101.1"}}
+{
+  "develop": { "name": null, "prevClose": 0, "lotSize": null, "price": 101.1 },
+  "current": { "name": "Captured Name", "prevClose": "99.2", "lotSize": 100, "price": "101.1" }
+}
 ```
 
 验证该项是明确列出的改进差异，而不是将不同输出伪称字节等价。现有对应生产回归位于 `tests/infrastructure/longbridge/market/quoteClient.test.ts:763`。
@@ -528,6 +539,7 @@ native-candle-listener → native-quote-listener → subscribe-start
 4. 接收方 `switchWakeupRuntime.ts:1007-1049` 再检查 running/termination/lifecycle、原 epoch、context identity、publishedRoute 与 seatVersion，只登记 wakeups；handoff 本身不调用 advance/executeSignals。
 
 **可达收益证据**：真实 publication fixture 的两项定向测试分别在 publication 前后越过 15:55：
+
 - **前**：席位仍 ACTIVE，gate 失效后没有发布、handoff、advance 或 mock broker 调用。
 - **后**：席位已 SWITCHING，keeper 被原 epoch owner 接收，timer 可存在；手动触发 timer 后 advance=0、mock broker=0，原 publishedRoute 仍可识别；day-cut/stop 后资源清空，重交旧 handoff 被拒绝。
 
@@ -566,15 +578,15 @@ native-candle-listener → native-quote-listener → subscribe-start
 
 **S2：固定 develop 与当前 switchWakeupRuntime 的独立内存探针**。同一 fake snapshot/event bus/manager 注入到两个真实 runtime；manager 在 await 之后再次调用真实 runtime 签发的 canContinue，只有 true 才累加受测 mutation。不是拿测试新语义定义旧行为，也不是运行真实交易。
 
-| 探针 | develop | 当前 |
-| --- | --- | --- |
-| 午休中在途 callback 的 mutation | 0 | 0 |
-| 午休中 quote/order 事件造成额外 advance | 0 | 0 |
-| 午后 gate 恢复后该 route 合法 mutation | 1 | 1 |
-| 接管窗口内 callback 的 mutation | 0 | 0 |
-| 接管窗口内 quote/order/fresh 造成额外 advance | 0 | 0 |
-| 接管后保留返回的 retry timer | 0 | 1（触发仍被 gate 阻断） |
-| lifecycle 关闭后 mutation；drain 后 listeners/timers | 0；0/0 | 0；0/0 |
+| 探针                                                 | develop | 当前                    |
+| ---------------------------------------------------- | ------- | ----------------------- |
+| 午休中在途 callback 的 mutation                      | 0       | 0                       |
+| 午休中 quote/order 事件造成额外 advance              | 0       | 0                       |
+| 午后 gate 恢复后该 route 合法 mutation               | 1       | 1                       |
+| 接管窗口内 callback 的 mutation                      | 0       | 0                       |
+| 接管窗口内 quote/order/fresh 造成额外 advance        | 0       | 0                       |
+| 接管后保留返回的 retry timer                         | 0       | 1（触发仍被 gate 阻断） |
+| lifecycle 关闭后 mutation；drain 后 listeners/timers | 0；0/0  | 0；0/0                  |
 
 S2 exit 0。额外 listener 数当前为 5、旧为 4，是 sell-operation 事件接棒，不是新交易动作；表中 mutation 是 fake manager 的受权操作计数，不能当实盘 broker 数量。真实 state machine 的发布前后、ACK 与最终门禁另由上文源码及下列定向测试交叉证明。
 

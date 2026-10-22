@@ -2578,41 +2578,44 @@ describe('orderMonitor state-check 原始成交事实预检', () => {
     { side: 'BUY' as const, protective: false },
     { side: 'SELL' as const, protective: false },
     { side: 'SELL' as const, protective: true },
-  ])('已确认 40 的 $side protective=$protective 等量终态缺少原始价/revision 时在缓存前拒绝', async ({ side, protective }) => {
-    const harness = createStateCheckRawFactHarness({
-      operation: 'cancel',
-      side,
-      executionSide: side,
-      isProtectiveLiquidation: protective,
-      stateCheckResult: {
-        executionStatus: nativeCanceled40.executionStatus,
-        executedAmount: '40.8',
-        executionTimeMs: null,
-        kind: 'TERMINAL',
-        closedReason: 'CANCELED',
-        status: nativeCanceledZero.status,
-        submittedQuantity: 100,
-        executedPrice: null,
-        executedQuantity: 40,
-        orderUpdatedAtMs: null,
-      },
-    });
-    harness.trackedOrder.status = nativePartial.status;
-    harness.trackedOrder.executionPhase = nativePartial.executionPhase;
-    harness.trackedOrder.executedQuantity = 40;
-    harness.trackedOrder.executedAmount = '40.8';
-    harness.trackedOrder.executedPrice = '1.02';
-    harness.trackedOrder.lastExecutedTimeMs = 100;
-    harness.trackedOrder.lastOrderUpdateAtMs = 100;
-    const trackedOrderBefore = { ...harness.trackedOrder };
+  ])(
+    '已确认 40 的 $side protective=$protective 等量终态缺少原始价/revision 时在缓存前拒绝',
+    async ({ side, protective }) => {
+      const harness = createStateCheckRawFactHarness({
+        operation: 'cancel',
+        side,
+        executionSide: side,
+        isProtectiveLiquidation: protective,
+        stateCheckResult: {
+          executionStatus: nativeCanceled40.executionStatus,
+          executedAmount: '40.8',
+          executionTimeMs: null,
+          kind: 'TERMINAL',
+          closedReason: 'CANCELED',
+          status: nativeCanceledZero.status,
+          submittedQuantity: 100,
+          executedPrice: null,
+          executedQuantity: 40,
+          orderUpdatedAtMs: null,
+        },
+      });
+      harness.trackedOrder.status = nativePartial.status;
+      harness.trackedOrder.executionPhase = nativePartial.executionPhase;
+      harness.trackedOrder.executedQuantity = 40;
+      harness.trackedOrder.executedAmount = '40.8';
+      harness.trackedOrder.executedPrice = '1.02';
+      harness.trackedOrder.lastExecutedTimeMs = 100;
+      harness.trackedOrder.lastOrderUpdateAtMs = 100;
+      const trackedOrderBefore = { ...harness.trackedOrder };
 
-    await expectStateCheckRawFactFailure(
-      () => runStateCheckOperation('cancel', harness),
-      /正累计成交缺少本次原始价格或金额/,
-    );
+      await expectStateCheckRawFactFailure(
+        () => runStateCheckOperation('cancel', harness),
+        /正累计成交缺少本次原始价格或金额/,
+      );
 
-    expectNoStateCheckRawFactSideEffects(harness, trackedOrderBefore);
-  });
+      expectNoStateCheckRawFactSideEffects(harness, trackedOrderBefore);
+    },
+  );
 
   it('累计量推进且 revision 相同的终态可使用本次 broker observation', async () => {
     const harness = createStateCheckRawFactHarness({

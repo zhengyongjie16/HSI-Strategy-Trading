@@ -29,7 +29,7 @@
 **证据别名（报告行号，非源码行号）**：B=`audit-baseline-map.md`；R0–R6为七组原报告；SP=`audit-coverage-supplement-platform.md`；SO=`audit-coverage-supplement-orders.md`；RF=`audit-recheck-order-facts.md`；RM=`audit-recheck-mutation-errors.md`。源码读范围来自具名报告明确陈述，不以本次未读取的源码扩大主张。
 
 | 唯一主审 | 文件数 | 原始等级（保留） | 运行码 / 类型 / JSON | 当前运行码D | 本次补齐 | 仍无D运行码 |
-| --- | ---: | --- | --- | ---: | ---: | ---: |
+| --- | --: | --- | --- | --: | --: | --: |
 | G0 `audit-global-wiring.md` | 39 | D39 | 27 / 12 / 0 | 27 | 0 | 0 |
 | G1 `audit-lifecycle.md` | 34 | D28 / E6 | 25 / 9 / 0 | 25 | 5 | 0 |
 | G2 `audit-market-strategy.md` | 42 | D42 | 32 / 9 / 1 | 32 | 0 | 0 |

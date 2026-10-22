@@ -5,7 +5,9 @@ import { createBrokerIngressFixture, type BrokerIngressInput } from './brokerIng
 import type { OrderSnapshotReadFixture, OrderSnapshotTimerHarness } from './types.js';
 
 /** 默认 frame 自身合法；缺失 revision/price 必须经 native reply 控制显式制造。 */
-export function createSnapshotInput(overrides: Partial<BrokerIngressInput> = {}): BrokerIngressInput {
+export function createSnapshotInput(
+  overrides: Partial<BrokerIngressInput> = {},
+): BrokerIngressInput {
   return {
     orderId: 'ORDER',
     symbol: 'BULL.HK',
@@ -57,18 +59,26 @@ export function createOrderSnapshotTimerHarness(): OrderSnapshotTimerHarness {
 
       const handle = originalSetTimeout(() => {}, 0);
       originalClearTimeout(handle);
-      timers.set(handle, { atMs: nowMs + (timeout ?? 0), callback: () => { handler(); } });
+      timers.set(handle, {
+        atMs: nowMs + (timeout ?? 0),
+        callback: () => {
+          handler();
+        },
+      });
       return handle;
     },
     { __promisify__: originalSetTimeout.__promisify__ },
   );
   Date.now = () => nowMs;
   globalThis.setTimeout = fakeSetTimeout;
-  globalThis.clearTimeout = (handle) => { timers.delete(handle); };
+  globalThis.clearTimeout = (handle) => {
+    timers.delete(handle);
+  };
 
   return {
     nowMs: () => nowMs,
-    pendingDelays: () => [...timers.values()].map((timer) => timer.atMs - nowMs).sort((a, b) => a - b),
+    pendingDelays: () =>
+      [...timers.values()].map((timer) => timer.atMs - nowMs).sort((a, b) => a - b),
     advanceBy: async (delayMs) => {
       nowMs += delayMs;
       for (const [handle, timer] of timers) {

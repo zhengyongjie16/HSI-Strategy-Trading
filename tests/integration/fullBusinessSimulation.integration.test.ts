@@ -180,9 +180,7 @@ async function createSimulationOrderRecorder(
     const [order] = await ingress.createQueryOrdersReader(frame.orderId)();
     if (order === undefined) throw new Error('Simulation native observation missing');
 
-    expect(order.executionTimeMs).toBe(
-      frame.executedQuantity === '0' ? null : frame.updatedAtMs,
-    );
+    expect(order.executionTimeMs).toBe(frame.executedQuantity === '0' ? null : frame.updatedAtMs);
     expect(order.updatedAtMs).toBe(frame.updatedAtMs);
     orders.push(order);
   }
@@ -209,7 +207,8 @@ async function createSimulationOrderRecorder(
       snapshot.isCurrent(token, { account: true, positions: true, paired: true });
     if (!isCurrent()) throw new Error('Simulation O baseline requires paired H');
 
-    recalculateDailyLoss(dailyLossTracker,
+    recalculateDailyLoss(
+      dailyLossTracker,
       orders.map((order) => {
         if (order.executedQuantity > 0 && order.executedAmount === null)
           throw new Error('Simulation order missing economic amount');

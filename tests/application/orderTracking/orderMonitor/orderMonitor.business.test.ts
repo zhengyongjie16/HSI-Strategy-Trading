@@ -4147,7 +4147,6 @@ describe('orderMonitor business flow', () => {
       },
     ];
     native.setOrderDetailReplies(buyFrames);
-;
     for (const buy of buyFrames) {
       const [observation] = await native.createQueryOrdersReader(buy.orderId)();
       if (observation === undefined) throw new Error('real BUY seed missing');
@@ -4223,11 +4222,7 @@ describe('orderMonitor business flow', () => {
       updatedAtMs: Date.parse('2026-02-25T03:12:00.000Z'),
     });
 
-    await waitForCondition(
-      () => true,
-      'removed IO assertion',
-      80,
-    );
+    await waitForCondition(() => true, 'removed IO assertion', 80);
     await monitor.stopRuntimeAndDrain();
     expect(partialCount).toBe(1);
     expect(cancelCount).toBe(1);
@@ -4386,7 +4381,6 @@ describe('orderMonitor business flow', () => {
       },
     ];
     native.setOrderDetailReplies(buyFrames);
-;
     for (const buy of buyFrames) {
       const [observation] = await native.createQueryOrdersReader(buy.orderId)();
       if (observation === undefined) throw new Error('real BUY seed missing');
@@ -5485,7 +5479,6 @@ describe('orderMonitor business flow', () => {
       },
     ];
     native.setOrderDetailReplies(buyFrames);
-;
     for (const buy of buyFrames) {
       const [observation] = await native.createQueryOrdersReader(buy.orderId)();
       if (observation === undefined) throw new Error('real BUY seed missing');
@@ -5909,11 +5902,7 @@ describe('orderMonitor business flow', () => {
     );
     const afterFirst = economic.snapshot.getView().token.snapshotGeneration;
     native.emitOrderChangedFrame(frame);
-    await waitForCondition(
-      () => true,
-      'removed IO assertion',
-      60,
-    );
+    await waitForCondition(() => true, 'removed IO assertion', 60);
 
     for (let index = 0; index < 10; index++) await flushMicrotasks();
 
@@ -6025,11 +6014,7 @@ describe('orderMonitor business flow', () => {
     );
     const generation = economic.snapshot.getView().token.snapshotGeneration;
     native.emitOrderChangedFrame({ ...frame, updatedAtMs: duplicateTerminalRevisionMs });
-    await waitForCondition(
-      () => true,
-      'removed IO assertion',
-      60,
-    );
+    await waitForCondition(() => true, 'removed IO assertion', 60);
 
     for (let index = 0; index < 10; index++) await flushMicrotasks();
 
@@ -6049,7 +6034,6 @@ describe('orderMonitor business flow', () => {
         orderId: 'BUY-PARTIAL-WITHDRAWAL',
       })),
     );
-
 
     expect(refreshNeeds).toEqual([
       {

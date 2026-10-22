@@ -68,7 +68,7 @@ format     = prettier --write . && eslint . --fix
 所有命令在下表 cwd 的 TEMP 导出副本串行执行；耗时为 wall clock。current 与 baseline 不并发跑门禁。原始 stdout/stderr 与 JSON 元数据保留，没有只截取绿色总计。
 
 | 版本 / cwd | 实际有效命令 | exit | Wall | 有效数量 / 输出 | 元数据（相对证据根） |
-| --- | --- | ---: | ---: | --- | --- |
+| --- | --- | --: | --: | --- | --- |
 | current | `bun --no-env-file run type-check` | 0 | **7.682s** | `tsc -p tsconfig.json`，0 TS diagnostics | `validation/current-type-check.json` |
 | current | `bun --no-env-file run lint` | 0 | **92.477s** | `eslint .`，0 lint diagnostics | `validation/current-lint.json` |
 | current | `bun --no-env-file run test` | 0 | **305.161s** | **3288 pass / 0 fail；317 files；19669 expect() calls**；Bun 304.69s | `validation/current-test.json` |
@@ -100,15 +100,15 @@ format     = prettier --write . && eslint . --fix
 
 TEMP `compare-test-contracts.cjs` 用 TypeScript AST 遍历 test/it/describe，记录标题、文件行、inline expect语法数、去空白callback哈希，产出 `test-comparison/*-inventory.json`、`develop-to-head.{json,md}`、`focus-to-head.{json,md}`。
 
-| 静态测试声明视角 | develop → HEAD | d2aa590父提交 → HEAD |
-| --- | ---: | ---: |
-| 旧版静态 test/it declarations | 1688 | 2381 |
-| 当前静态 declarations | 2458 | 2458 |
-| 标题匹配的旧声明 | 1489 | 2316 |
-| 未匹配旧标题（删除或重命名候选） | 199 | 65 |
-| 新增/重命名标题 | 969 | 142 |
-| 匹配且callback去空白哈希相同 | 323 | 2071 |
-| 同名但inline expect语法数更少 | 58 | 58 |
+| 静态测试声明视角                 | develop → HEAD | d2aa590父提交 → HEAD |
+| -------------------------------- | -------------: | -------------------: |
+| 旧版静态 test/it declarations    |           1688 |                 2381 |
+| 当前静态 declarations            |           2458 |                 2458 |
+| 标题匹配的旧声明                 |           1489 |                 2316 |
+| 未匹配旧标题（删除或重命名候选） |            199 |                   65 |
+| 新增/重命名标题                  |            969 |                  142 |
+| 匹配且callback去空白哈希相同     |            323 |                 2071 |
+| 同名但inline expect语法数更少    |             58 |                   58 |
 
 这些都**不是行为等价或覆盖率**：each/循环会展开，helper中的断言不会计入调用点；同名并不代表语义相同；旧新标题不匹配不等于删失保护。develop匹配中有4项同名歧义，未自动认定映射。
 

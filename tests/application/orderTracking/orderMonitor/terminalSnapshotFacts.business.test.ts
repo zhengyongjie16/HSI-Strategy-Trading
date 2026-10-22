@@ -78,7 +78,9 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
           createKnownFact({ executionSide: sideText }),
           createTerminalState({ orderUpdatedAtMs: null }),
         );
-      }).toThrow(/订单观察缺少有效 broker revision|保护性 SELL 存在成交事实但本次观察缺少有效成交价|保护性 SELL 存在成交事实但本次观察缺少有效 broker revision/);
+      }).toThrow(
+        /订单观察缺少有效 broker revision|保护性 SELL 存在成交事实但本次观察缺少有效成交价|保护性 SELL 存在成交事实但本次观察缺少有效 broker revision/,
+      );
     });
 
     it(`rejects ordinary ${sideText} terminal execution advance with a stale raw broker revision`, () => {
@@ -219,6 +221,8 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
 
     expect(() => {
       assertProtectiveSellRawTerminalStateFactsReady(knownFact, terminalState);
-    }).toThrow(/订单观察缺少有效 broker revision|保护性 SELL 存在成交事实但本次观察缺少有效成交价|保护性 SELL 存在成交事实但本次观察缺少有效 broker revision/);
+    }).toThrow(
+      /订单观察缺少有效 broker revision|保护性 SELL 存在成交事实但本次观察缺少有效成交价|保护性 SELL 存在成交事实但本次观察缺少有效 broker revision/,
+    );
   });
 });

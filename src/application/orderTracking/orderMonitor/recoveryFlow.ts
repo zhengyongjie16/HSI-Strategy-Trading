@@ -356,7 +356,9 @@ export function createRecoveryFlow(deps: RecoveryFlowDeps): RecoveryFlow {
         exactCompare(order.executedPrice, '0') <= 0 ||
         exactCompare(order.executedAmount, '0') <= 0
       ) {
-        throw new Error(`[订单监控] 恢复部分成交订单 ${order.orderId} 缺少完整原始价格/金额，阻断恢复`);
+        throw new Error(
+          `[订单监控] 恢复部分成交订单 ${order.orderId} 缺少完整原始价格/金额，阻断恢复`,
+        );
       }
 
       trackedOrder.executedQuantity = executedQuantity;

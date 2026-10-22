@@ -2,9 +2,7 @@
 
 > **文档状态：设计与原批次实施历史记录；F03 本轮修复、全链路二审及独立复验已完成；未实盘验证**
 >
-> **F03 最终全仓离线总览（最新）**：**320 files／3420 tests：3418 pass／2 fail，22767 assertions，330.48s**；两项失败均在干净基线中重现，非 F03 新增，**不能称全仓全绿**，详见 §14.2。
-> 普通同量终态沿用 known 价额、正量终态缺价映射 `null` 的旧前提已撤销；`Filled + Q=0` 也已由 mapper／domain 两处 guard 首次拒绝。Monitor 公共 operation 与 seatActivation 的 fatal 时序问题已最小修复，原两位 reviewer 独立复验全部关闭。
-> 规则见 §5.1、§6.1–§6.3、§13.1；完整证据及未覆盖边界见[审计 F03 本轮补记](./architecture-refactoring-full-chain-audit.md#f03-implementation-verification)。本轮仅 F03，不代表 F05 或全报告已修。
+> **F03 最终全仓离线总览（最新）**：**320 files／3420 tests：3418 pass／2 fail，22767 assertions，330.48s**；两项失败均在干净基线中重现，非 F03 新增，**不能称全仓全绿**，详见 §14.2。普通同量终态沿用 known 价额、正量终态缺价映射 `null` 的旧前提已撤销；`Filled + Q=0` 也已由 mapper／domain 两处 guard 首次拒绝。Monitor 公共 operation 与 seatActivation 的 fatal 时序问题已最小修复，原两位 reviewer 独立复验全部关闭。规则见 §5.1、§6.1–§6.3、§13.1；完整证据及未覆盖边界见[审计 F03 本轮补记](./architecture-refactoring-full-chain-audit.md#f03-implementation-verification)。本轮仅 F03，不代表 F05 或全报告已修。
 >
 > - 以下原批次记录供维护与回溯使用，**不是当前全仓验证结论**，以后续明确确认／复审结论为准。
 > - 原批次结果（详见 §10、§13.4）：A reviewer 同轮 **APPROVE 且原 P1 关闭**（195 pass / 11 files + 真实链路 / terminal / crossday probes）；B 优化 **APPROVE**（75 pass / 9 files + 9 probes）；此前的 final-review-financial 同轮 APPROVE（A/B/C 全闭）、final-review-boundaries APPROVE W4 两项、W2 原三项关闭均保留为历史记录。
@@ -93,11 +91,11 @@
 
 `logs/sdk/trade/2026-10-19.log`：
 
-| 日志位置 | 内容 | 含义 |
-| --- | --- | --- |
-| 第 45 行 | `historyOrders` = 42 | 历史订单 42 条，含 US 混合账户订单 |
-| 第 47 行 | `todayOrders` = 0 | 当日订单为空 |
-| 第 49 行 | `historyExecutions` = 38 | 新增的逐笔成交明细请求 |
+| 日志位置 | 内容                     | 含义                               |
+| -------- | ------------------------ | ---------------------------------- |
+| 第 45 行 | `historyOrders` = 42     | 历史订单 42 条，含 US 混合账户订单 |
+| 第 47 行 | `todayOrders` = 0        | 当日订单为空                       |
+| 第 49 行 | `historyExecutions` = 38 | 新增的逐笔成交明细请求             |
 
 - API 返回码 `code 0`（请求本身成功），失败发生在**本地**。
 - 首个失败项：第 33 条成交记录 `SNDK.US`，`qty = 0.0006`；另有 `YANG` 0.036、`MSOS` 0.2、`GDXD` 0.026 同类碎股。
@@ -162,12 +160,12 @@ BrokerOrderExecutionFact ── mergeExecutionFact(known, observed) ──> Brok
 
 ### 5.1 `OrderFact`（冻结字段）
 
-| 字段 | 类型（冻结） | 语义 |
-| --- | --- | --- |
-| `executedPrice` | `string \| null` | 精确价格文本；不可用时 `null` |
-| `executedAmount` | `string \| null` | 精确金额文本；不可伪造成 `"0"` |
-| `executionTimeMs` | `number \| null` | 成交时间；无真实事实必须 `null` |
-| `updatedAtMs` | `number` | 本次观测时间代理（**不是**逐笔成交时间） |
+| 字段              | 类型（冻结）     | 语义                                     |
+| ----------------- | ---------------- | ---------------------------------------- |
+| `executedPrice`   | `string \| null` | 精确价格文本；不可用时 `null`            |
+| `executedAmount`  | `string \| null` | 精确金额文本；不可伪造成 `"0"`           |
+| `executionTimeMs` | `number \| null` | 成交时间；无真实事实必须 `null`          |
+| `updatedAtMs`     | `number`         | 本次观测时间代理（**不是**逐笔成交时间） |
 
 生成规则（必须逐条满足）：
 
@@ -319,13 +317,13 @@ isHongKongSymbol(symbol: unknown): symbol is string
 
 ### 8.2 US 隔离清单
 
-| 区域 | US 行为 |
-| --- | --- |
-| pending BUY / SELL | 不 cancel、不 replace、不读 detail、不 block |
-| 配置 / candidate / seat / submit / doomsday | 全部隔离，不产生 US 交易动作 |
-| 快照与展示 | 保留 US 全账户持仓与必要 quote 估值展示 |
-| available lookup | HK-only |
-| 目标 qty / lot 提交 | 严格校验（HK 才进入该路径） |
+| 区域                                        | US 行为                                      |
+| ------------------------------------------- | -------------------------------------------- |
+| pending BUY / SELL                          | 不 cancel、不 replace、不读 detail、不 block |
+| 配置 / candidate / seat / submit / doomsday | 全部隔离，不产生 US 交易动作                 |
+| 快照与展示                                  | 保留 US 全账户持仓与必要 quote 估值展示      |
+| available lookup                            | HK-only                                      |
+| 目标 qty / lot 提交                         | 严格校验（HK 才进入该路径）                  |
 
 注意：**"报价集合"不等于"交易授权"**——展示用 quote 不得成为下单依据。
 
@@ -413,8 +411,7 @@ isHongKongSymbol(symbol: unknown): symbol is string
 3. boundary 之后 BUY 10、cost 100。
 4. SELL 增量 qty 20、amt 170、T = after。
 
-期望：该 segment 卖出额 = `170 - 90 = 80`，loss = `-20`。
-修复前：结果为 `-10`，因为 baseline 在 later snapshot 被重选为 `80`。
+期望：该 segment 卖出额 = `170 - 90 = 80`，loss = `-20`。修复前：结果为 `-10`，因为 baseline 在 later snapshot 被重选为 `80`。
 
 **正确设计**：
 

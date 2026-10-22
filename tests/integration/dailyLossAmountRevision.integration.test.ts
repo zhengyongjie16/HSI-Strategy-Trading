@@ -552,7 +552,8 @@ describe('DailyLoss protective amount revision integration', () => {
     const [currentOrder] = await actors.native.createQueryOrdersReader(trackedOrder.orderId)();
     if (currentOrder === undefined) throw new Error('expected actual revised order');
 
-    recalculateDailyLoss(restartedTracker,
+    recalculateDailyLoss(
+      restartedTracker,
       toRecalculationOrders([currentOrder]),
       createTradingConfig().monitor,
       new Date(secondRevisionMs),

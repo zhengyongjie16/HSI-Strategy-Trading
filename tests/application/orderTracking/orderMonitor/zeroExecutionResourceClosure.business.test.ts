@@ -13,7 +13,11 @@ import { createBrokerIngressFixture } from '../../../integration/architectureRef
 import { createExecutionFixture } from '../recorder/executionFixture.js';
 
 const now = Date.parse('2026-07-14T02:00:00.000Z');
-async function setup(status: 'Canceled' | 'Rejected', side: 'BUY' | 'SELL' = 'SELL', protective = true) {
+async function setup(
+  status: 'Canceled' | 'Rejected',
+  side: 'BUY' | 'SELL' = 'SELL',
+  protective = true,
+) {
   const native = await createBrokerIngressFixture({
     orderId: 'ZERO-RESOURCE',
     symbol: 'BULL.HK',
@@ -143,53 +147,59 @@ for (const [status, reason] of [
   });
 }
 
-test.each(['BUY', 'SELL'] as const)('ordinary %s FILLED zero execution cannot mutate tracking or terminal confirmation', async (side) => {
-  const { f, native } = await setup('Canceled', side, false);
-  const flow = createEventFlow({
-    diagnostics: createDiagnosticObserverDouble(),
-    logger: createLoggerDouble(),
-    runtime: f.runtime,
-    monitorConfig: createMonitorConfigDouble(),
-    now: () => new Date(now),
-    orderRecorder: f.recorder,
-    recordCumulativeExecution: (params) => {
-      f.flow.recordCumulativeExecution(params);
-    },
-    prepareProtectiveTerminalExecution: f.flow.prepareProtectiveTerminalExecution,
-    settleOrder: f.flow.settleOrder,
-    cacheBootstrappingEvent: () => {
-      throw new Error('active order cannot bootstrap');
-    },
-    triggerRoute: () => {
-      throw new Error('invalid fact cannot wake a route');
-    },
-  });
-  const observe = () => structuredClone({
-    tracked: [...f.runtime.trackedOrders],
-    lifecycles: [...f.runtime.trackedOrderLifecycles],
-    indexed: [...f.runtime.trackedOrderIdsBySymbol],
-    closed: [...f.runtime.closedOrderIds],
-    fact: f.recorder.getExecutionFact('ZERO-RESOURCE'),
-    buys: f.recorder.getBuyOrdersForSymbol('BULL.HK', true),
-    sell: f.recorder.getSellRecordByOrderId('ZERO-RESOURCE'),
-    holds: [...f.holds.getHoldSymbols()],
-    pending: f.recorder.getPendingSellSnapshot(),
-    loss: f.daily.getLossOffset('LONG'),
-    episode: f.episode.getInProgressEpisodes(),
-    events: f.events,
-    snapshot: f.snapshot.getView().token,
-    consistency: f.sink.getStatus(),
-  });
-  const before = observe();
-  expect(before.tracked).toHaveLength(1);
-  expect(before.lifecycles).toHaveLength(1);
-  // 显式绕过 SDK mapper 检查共享 domain 边界；不是让不可达坏输入进入 settlement 后补救。
-  expect(() => { flow.handleOrderChangedWhenActive({
-    ...native.queryObservation,
-    status: 'FILLED',
-    executionStatus: 'FILLED',
-  }); }).toThrow('FILLED 观察必须具有正累计成交数量');
-  expect(observe()).toEqual(before);
-  expect(native.nativeReadCounts()).toEqual({ cancel: 0, detail: 0 });
-  expect(native.nativeMutations()).toEqual([]);
-});
+test.each(['BUY', 'SELL'] as const)(
+  'ordinary %s FILLED zero execution cannot mutate tracking or terminal confirmation',
+  async (side) => {
+    const { f, native } = await setup('Canceled', side, false);
+    const flow = createEventFlow({
+      diagnostics: createDiagnosticObserverDouble(),
+      logger: createLoggerDouble(),
+      runtime: f.runtime,
+      monitorConfig: createMonitorConfigDouble(),
+      now: () => new Date(now),
+      orderRecorder: f.recorder,
+      recordCumulativeExecution: (params) => {
+        f.flow.recordCumulativeExecution(params);
+      },
+      prepareProtectiveTerminalExecution: f.flow.prepareProtectiveTerminalExecution,
+      settleOrder: f.flow.settleOrder,
+      cacheBootstrappingEvent: () => {
+        throw new Error('active order cannot bootstrap');
+      },
+      triggerRoute: () => {
+        throw new Error('invalid fact cannot wake a route');
+      },
+    });
+    const observe = () =>
+      structuredClone({
+        tracked: [...f.runtime.trackedOrders],
+        lifecycles: [...f.runtime.trackedOrderLifecycles],
+        indexed: [...f.runtime.trackedOrderIdsBySymbol],
+        closed: [...f.runtime.closedOrderIds],
+        fact: f.recorder.getExecutionFact('ZERO-RESOURCE'),
+        buys: f.recorder.getBuyOrdersForSymbol('BULL.HK', true),
+        sell: f.recorder.getSellRecordByOrderId('ZERO-RESOURCE'),
+        holds: [...f.holds.getHoldSymbols()],
+        pending: f.recorder.getPendingSellSnapshot(),
+        loss: f.daily.getLossOffset('LONG'),
+        episode: f.episode.getInProgressEpisodes(),
+        events: f.events,
+        snapshot: f.snapshot.getView().token,
+        consistency: f.sink.getStatus(),
+      });
+    const before = observe();
+    expect(before.tracked).toHaveLength(1);
+    expect(before.lifecycles).toHaveLength(1);
+    // 显式绕过 SDK mapper 检查共享 domain 边界；不是让不可达坏输入进入 settlement 后补救。
+    expect(() => {
+      flow.handleOrderChangedWhenActive({
+        ...native.queryObservation,
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+      });
+    }).toThrow('FILLED 观察必须具有正累计成交数量');
+    expect(observe()).toEqual(before);
+    expect(native.nativeReadCounts()).toEqual({ cancel: 0, detail: 0 });
+    expect(native.nativeMutations()).toEqual([]);
+  },
+);

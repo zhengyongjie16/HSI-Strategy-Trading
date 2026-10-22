@@ -88,28 +88,28 @@
 
 ### 5.1 顶层统计
 
-| 顶层 | develop 文件数 | current 文件数 |
-| --- | ---: | ---: |
-| app | 20 | 23 |
-| core | 85 | 0 |
-| main | 73 | 0 |
-| services | 28 | 0 |
-| application | 0 | 80 |
-| domain | 0 | 50 |
-| runtime | 0 | 66 |
-| infrastructure | 0 | 44 |
-| strategies | 0 | 29 |
-| config | 11 | 12 |
-| constants | 3 | 8 |
-| types | 14 | 45 |
-| utils | 28 | 10 |
-| index.ts | 1 | 1 |
-| **合计** | **263** | **368** |
+| 顶层           | develop 文件数 | current 文件数 |
+| -------------- | -------------: | -------------: |
+| app            |             20 |             23 |
+| core           |             85 |              0 |
+| main           |             73 |              0 |
+| services       |             28 |              0 |
+| application    |              0 |             80 |
+| domain         |              0 |             50 |
+| runtime        |              0 |             66 |
+| infrastructure |              0 |             44 |
+| strategies     |              0 |             29 |
+| config         |             11 |             12 |
+| constants      |              3 |              8 |
+| types          |             14 |             45 |
+| utils          |             28 |             10 |
+| index.ts       |              1 |              1 |
+| **合计**       |        **263** |        **368** |
 
 ### 5.2 唯一主责分组（覆盖不等于已审完）
 
 | 组 | current 文件数 | 首要范围 | 分派/边界 |
-| --- | ---: | --- | --- |
+| --- | --: | --- | --- |
 | G0 总装配与跨链 wiring | **39** | `app/**` 23、`runtime/asyncProgram` 共享编排 10、`runtime/businessEventProgram/**` 4、`application/types.ts`、`index.ts` | **五条业务链+infra 之外的显式剩余组**；建议续派本代理全局审计。业务代理可读相关装配，不能因此默认 39 个文件已有人完整覆盖 |
 | G1 生命周期与时间门禁 | **34** | tradingDayRebuild 12、runtime/lifecycle 12、timeWakeupEvaluation/Planner/Runtime 各2、tradingGateEventRuntime 2、domain/tradingSession 2 | 已有 lifecycle 代理；与 G0/G3/G5 双向核对 |
 | G2 行情与策略 | **42** | strategies 29、domain/strategy 2、monitorQuoteEventRuntime 4、quoteSubscriptionRuntime 2、monitorDisplayRuntime 2、tradingQuoteDisplayRuntime 2、application/quoteRetry.ts | 已有 market-strategy；adapter 与配置实现归 G6，但端到端不可省略 |

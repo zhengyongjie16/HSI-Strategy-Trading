@@ -52,10 +52,7 @@ describe('SEAT_REFRESH API 归一失败', () => {
     spyOn(context.orderRecorder, 'fetchAllOrdersFromAPI').mockImplementation(async () => [
       positiveOrderMissingAmount(),
     ]);
-    const dailyPrepare = spyOn(
-      context.dailyLossTracker,
-      'prepareRecalculationFromAllOrders',
-    );
+    const dailyPrepare = spyOn(context.dailyLossTracker, 'prepareRecalculationFromAllOrders');
     const dailyPublish = spyOn(context.dailyLossTracker, 'publishRecalculation');
     const validate = spyOn(context.orderRecorder, 'validateRebuildSnapshot');
     const commit = spyOn(context.orderRecorder, 'commitRebuildSnapshot');

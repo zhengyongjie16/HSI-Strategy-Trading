@@ -14,9 +14,15 @@ describe('OrderSnapshotReadAdapter', () => {
   it('唯一 fetchAllOrders 每次重新读取，保留精确金融文本和独立提交/修订时间', async () => {
     let throttles = 0;
     const first = createSnapshotInput({ status: 'New', executedQuantity: '0' });
-    const { native, port } = await createOrderSnapshotReadFixture([], [first], createRateLimiterDouble({
-      onThrottle: () => { throttles += 1; },
-    }));
+    const { native, port } = await createOrderSnapshotReadFixture(
+      [],
+      [first],
+      createRateLimiterDouble({
+        onThrottle: () => {
+          throttles += 1;
+        },
+      }),
+    );
     expect(Object.keys(port)).toEqual(['fetchAllOrders']);
     const initial = await port.fetchAllOrders();
     native.setOrderSnapshotReplies([], [createSnapshotInput()]);
@@ -59,7 +65,10 @@ describe('OrderSnapshotReadAdapter', () => {
     );
     native.setOrderSnapshotBeforeReply('history', () => historyReply.promise);
     let published = false;
-    const read = port.fetchAllOrders().then((orders) => { published = true; return orders; });
+    const read = port.fetchAllOrders().then((orders) => {
+      published = true;
+      return orders;
+    });
     await flushSnapshotMicrotasks();
     expect(admissions).toBe(1);
     expect(native.orderSnapshotReadCounts()).toEqual({ history: 0, today: 0 });
@@ -77,28 +86,34 @@ describe('OrderSnapshotReadAdapter', () => {
     it(`${firstSource} 先返回也不影响整条 today 覆盖；today 修订更早仍获选且不同 ID 保留`, async () => {
       const historyReply = Promise.withResolvers<undefined>();
       const todayReply = Promise.withResolvers<undefined>();
-      const { native, port } = await createOrderSnapshotReadFixture([
-        createSnapshotInput({ orderId: 'SHARED', updatedAtMs: 9000 }),
-        createSnapshotInput({ orderId: 'HISTORY-ONLY' }),
-      ], [
-        createSnapshotInput({
-          orderId: 'SHARED',
-          side: 'SELL',
-          status: 'Canceled',
-          remark: 'TODAY-ONLY',
-          quantity: '200',
-          executedQuantity: '50',
-          executedPrice: '2.000000000000000001',
-          submittedPrice: '3.000000000000000001',
-          submittedAtMs: 500,
-          updatedAtMs: 2000,
-        }),
-        createSnapshotInput({ orderId: 'TODAY-ONLY' }),
-      ]);
+      const { native, port } = await createOrderSnapshotReadFixture(
+        [
+          createSnapshotInput({ orderId: 'SHARED', updatedAtMs: 9000 }),
+          createSnapshotInput({ orderId: 'HISTORY-ONLY' }),
+        ],
+        [
+          createSnapshotInput({
+            orderId: 'SHARED',
+            side: 'SELL',
+            status: 'Canceled',
+            remark: 'TODAY-ONLY',
+            quantity: '200',
+            executedQuantity: '50',
+            executedPrice: '2.000000000000000001',
+            submittedPrice: '3.000000000000000001',
+            submittedAtMs: 500,
+            updatedAtMs: 2000,
+          }),
+          createSnapshotInput({ orderId: 'TODAY-ONLY' }),
+        ],
+      );
       native.setOrderSnapshotBeforeReply('history', () => historyReply.promise);
       native.setOrderSnapshotBeforeReply('today', () => todayReply.promise);
       let published = false;
-      const read = port.fetchAllOrders().then((orders) => { published = true; return orders; });
+      const read = port.fetchAllOrders().then((orders) => {
+        published = true;
+        return orders;
+      });
       await flushSnapshotMicrotasks();
       expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
       (firstSource === 'history' ? historyReply : todayReply).resolve();
@@ -106,7 +121,9 @@ describe('OrderSnapshotReadAdapter', () => {
       expect(published).toBe(false);
       (firstSource === 'history' ? todayReply : historyReply).resolve();
       const orders = await read;
-      expect(orders.map((order) => order.orderId).sort((left, right) => left.localeCompare(right))).toEqual(['HISTORY-ONLY', 'SHARED', 'TODAY-ONLY']);
+      expect(
+        orders.map((order) => order.orderId).sort((left, right) => left.localeCompare(right)),
+      ).toEqual(['HISTORY-ONLY', 'SHARED', 'TODAY-ONLY']);
       expect(orders.find((order) => order.orderId === 'SHARED')).toMatchObject({
         executionSide: 'SELL',
         status: 'CANCELED',
@@ -144,34 +161,52 @@ describe('OrderSnapshotReadAdapter', () => {
       native.setOrderSnapshotNonArray(source);
       const failure: unknown = await port.fetchAllOrders().catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(TypeError);
-      expect(failure).toHaveProperty('message', `[订单记录] TradeContext.${source}Orders 返回值不是数组`);
+      expect(failure).toHaveProperty(
+        'message',
+        `[订单记录] TradeContext.${source}Orders 返回值不是数组`,
+      );
       expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
     });
   }
 
-  for (const status of ['Filled', 'Canceled', 'Expired', 'Rejected', 'PartialWithdrawal'] as const) {
+  for (const status of [
+    'Filled',
+    'Canceled',
+    'Expired',
+    'Rejected',
+    'PartialWithdrawal',
+  ] as const) {
     for (const defect of ['PRICE', 'NULL_REVISION', 'OMITTED_REVISION'] as const) {
       it(`正成交终态 ${status} 的 history ${defect} 在完整 today 覆盖后成功，不提前映射废弃行`, async () => {
         const history = createSnapshotInput({ status, updatedAtMs: 9000 });
         const today = createSnapshotInput({ status, side: 'SELL', updatedAtMs: 2000 });
         const { native, port } = await createOrderSnapshotReadFixture([history], [today]);
         if (defect === 'PRICE') native.setOrderSnapshotExecutedPriceMissing('history');
-        else native.setOrderSnapshotUpdatedAtAbsent('history', defect === 'NULL_REVISION' ? 'NULL' : 'OMITTED');
+        else
+          native.setOrderSnapshotUpdatedAtAbsent(
+            'history',
+            defect === 'NULL_REVISION' ? 'NULL' : 'OMITTED',
+          );
 
-        expect(await port.fetchAllOrders()).toMatchObject([{
-          orderId: 'ORDER',
-          executionSide: 'SELL',
-          executedQuantity: 100,
-          executedAmount: '123.45678901234567890123456789',
-          updatedAtMs: 2000,
-          executionTimeMs: 2000,
-        }]);
+        expect(await port.fetchAllOrders()).toMatchObject([
+          {
+            orderId: 'ORDER',
+            executionSide: 'SELL',
+            executedQuantity: 100,
+            executedAmount: '123.45678901234567890123456789',
+            updatedAtMs: 2000,
+            executionTimeMs: 2000,
+          },
+        ]);
       });
     }
   }
 
   it('history 同时缺价及 revision 的正成交终态也可以被完整 today 整条覆盖', async () => {
-    const { native, port } = await createOrderSnapshotReadFixture([createSnapshotInput()], [createSnapshotInput()]);
+    const { native, port } = await createOrderSnapshotReadFixture(
+      [createSnapshotInput()],
+      [createSnapshotInput()],
+    );
     native.setOrderSnapshotExecutedPriceMissing('history');
     native.setOrderSnapshotUpdatedAtAbsent('history', 'NULL');
     expect(await port.fetchAllOrders()).toHaveLength(1);
@@ -185,12 +220,18 @@ describe('OrderSnapshotReadAdapter', () => {
           [createSnapshotInput({ orderId: source === 'history' ? 'UNRELATED' : 'ORDER' })],
         );
         if (defect === 'PRICE') native.setOrderSnapshotExecutedPriceMissing(source);
-        else native.setOrderSnapshotUpdatedAtAbsent(source, defect === 'NULL_REVISION' ? 'NULL' : 'OMITTED');
+        else
+          native.setOrderSnapshotUpdatedAtAbsent(
+            source,
+            defect === 'NULL_REVISION' ? 'NULL' : 'OMITTED',
+          );
 
         const failure: unknown = await port.fetchAllOrders().catch((error: unknown) => error);
         expect(failure).toBeInstanceOf(TypeError);
         expect(failure instanceof Error ? failure.message : '').toMatch(
-          defect === 'PRICE' ? /cumulative execution quantity\/price/ : /independent broker revision/,
+          defect === 'PRICE'
+            ? /cumulative execution quantity\/price/
+            : /independent broker revision/,
         );
         expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
       });
@@ -204,7 +245,9 @@ describe('OrderSnapshotReadAdapter', () => {
             source === 'history' ? [bad] : [createSnapshotInput()],
             source === 'today' ? [bad] : [],
           );
-          expect(await port.fetchAllOrders().catch((error: unknown) => error)).toBeInstanceOf(TypeError);
+          expect(await port.fetchAllOrders().catch((error: unknown) => error)).toBeInstanceOf(
+            TypeError,
+          );
           expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
         });
       }
@@ -220,7 +263,9 @@ describe('OrderSnapshotReadAdapter', () => {
         else if (defect === 'REVISION_PRIMITIVE') native.setOrderSnapshotUpdatedAtInvalid(source);
         else native.setOrderSnapshotPriceMalformed('ORDER');
 
-        expect(await port.fetchAllOrders().catch((error: unknown) => error)).toBeInstanceOf(TypeError);
+        expect(await port.fetchAllOrders().catch((error: unknown) => error)).toBeInstanceOf(
+          TypeError,
+        );
         expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
       });
     }
@@ -233,7 +278,9 @@ describe('OrderSnapshotReadAdapter', () => {
       );
       native.setOrderSnapshotMetadataInvalid(source, 'side', 'UNKNOWN');
 
-      expect(await port.fetchAllOrders().catch((error: unknown) => error)).toBeInstanceOf(TypeError);
+      expect(await port.fetchAllOrders().catch((error: unknown) => error)).toBeInstanceOf(
+        TypeError,
+      );
       expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
     });
 
@@ -245,7 +292,9 @@ describe('OrderSnapshotReadAdapter', () => {
             source === 'today' ? [createSnapshotInput()] : [],
           );
           native.setOrderSnapshotMetadataInvalid(source, field, kind);
-          expect(await port.fetchAllOrders().catch((error: unknown) => error)).toBeInstanceOf(TypeError);
+          expect(await port.fetchAllOrders().catch((error: unknown) => error)).toBeInstanceOf(
+            TypeError,
+          );
           expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
         });
       }
@@ -262,13 +311,18 @@ describe('OrderSnapshotReadAdapter', () => {
 
       if (defect === 'EMPTY_SYMBOL') native.setOrderSnapshotSymbolEmpty('history');
 
-      expect(await port.fetchAllOrders().catch((error: unknown) => error)).toBeInstanceOf(TypeError);
+      expect(await port.fetchAllOrders().catch((error: unknown) => error)).toBeInstanceOf(
+        TypeError,
+      );
       expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
     });
   }
 
   it('history 身份 getter 的原始错误不可被覆盖吞掉，也不阻止已准入 today 请求', async () => {
-    const { native, port } = await createOrderSnapshotReadFixture([createSnapshotInput()], [createSnapshotInput()]);
+    const { native, port } = await createOrderSnapshotReadFixture(
+      [createSnapshotInput()],
+      [createSnapshotInput()],
+    );
     const cause = new RangeError('native identity getter');
     native.setOrderSnapshotGetterFailure('history', 'ORDER', 'orderId', cause);
     expect(await port.fetchAllOrders().catch((error: unknown) => error)).toBe(cause);
@@ -276,16 +330,33 @@ describe('OrderSnapshotReadAdapter', () => {
   });
 
   it('废弃 history 的非身份 getter 不读取，获选 today 才进入严格 mapper', async () => {
-    const { native, port } = await createOrderSnapshotReadFixture([createSnapshotInput()], [createSnapshotInput()]);
-    native.setOrderSnapshotGetterFailure('history', 'ORDER', 'remark', new TypeError('discarded provenance'));
-    expect(await port.fetchAllOrders()).toMatchObject([{ orderId: 'ORDER', remark: 'QuantDemo|PL' }]);
+    const { native, port } = await createOrderSnapshotReadFixture(
+      [createSnapshotInput()],
+      [createSnapshotInput()],
+    );
+    native.setOrderSnapshotGetterFailure(
+      'history',
+      'ORDER',
+      'remark',
+      new TypeError('discarded provenance'),
+    );
+    expect(await port.fetchAllOrders()).toMatchObject([
+      { orderId: 'ORDER', remark: 'QuantDemo|PL' },
+    ]);
   });
 
   it('合法非HK碎股和非HK同来源重复先过滤，既不映射也不与HK同 ID 冲突', async () => {
-    const us = createSnapshotInput({ orderId: 'ORDER', symbol: 'AAPL.US', quantity: '1.5', executedQuantity: '1.5' });
+    const us = createSnapshotInput({
+      orderId: 'ORDER',
+      symbol: 'AAPL.US',
+      quantity: '1.5',
+      executedQuantity: '1.5',
+    });
     const hk = createSnapshotInput();
     const { port } = await createOrderSnapshotReadFixture([us, us, hk], [us, us]);
-    expect(await port.fetchAllOrders()).toMatchObject([{ orderId: 'ORDER', symbol: 'BULL.HK', quantity: 100 }]);
+    expect(await port.fetchAllOrders()).toMatchObject([
+      { orderId: 'ORDER', symbol: 'BULL.HK', quantity: 100 },
+    ]);
   });
 
   it('非HK也必须先有完整身份，缺失 ID 不能当作范围外订单跳过', async () => {
@@ -300,19 +371,24 @@ describe('OrderSnapshotReadAdapter', () => {
   for (const mode of ['NULL', 'OMITTED'] as const) {
     for (const status of ['New', 'Canceled', 'Rejected'] as const) {
       it(`合法零成交 ${status} 缺价及 ${mode} revision 不误拒，不伪造执行时间`, async () => {
-        const { native, port } = await createOrderSnapshotReadFixture([], [createSnapshotInput({ status, executedQuantity: '0' })]);
+        const { native, port } = await createOrderSnapshotReadFixture(
+          [],
+          [createSnapshotInput({ status, executedQuantity: '0' })],
+        );
         native.setOrderSnapshotExecutedPriceMissing('today');
         native.setOrderSnapshotSubmittedPriceNull('ORDER');
         native.setOrderSnapshotUpdatedAtAbsent('today', mode);
-        expect(await port.fetchAllOrders()).toMatchObject([{
-          executedQuantity: 0,
-          executedPrice: null,
-          executedAmount: '0',
-          price: null,
-          updatedAt: null,
-          updatedAtMs: 1000,
-          executionTimeMs: null,
-        }]);
+        expect(await port.fetchAllOrders()).toMatchObject([
+          {
+            executedQuantity: 0,
+            executedPrice: null,
+            executedAmount: '0',
+            price: null,
+            updatedAt: null,
+            updatedAtMs: 1000,
+            executionTimeMs: null,
+          },
+        ]);
       });
     }
   }
@@ -327,9 +403,18 @@ describe('OrderSnapshotReadAdapter', () => {
         [createSnapshotInput({ orderId: 'TODAY' })],
       );
       native.setOrderSnapshotBeforeReply(source, () => failedReply.promise);
-      native.setOrderSnapshotBeforeReply(source === 'history' ? 'today' : 'history', () => lateReply.promise);
+      native.setOrderSnapshotBeforeReply(
+        source === 'history' ? 'today' : 'history',
+        () => lateReply.promise,
+      );
       const deliveries: ReadonlyArray<OrderFact>[] = [];
-      const read = port.fetchAllOrders().then((orders) => { deliveries.push(orders); return orders; }).catch((error: unknown) => error);
+      const read = port
+        .fetchAllOrders()
+        .then((orders) => {
+          deliveries.push(orders);
+          return orders;
+        })
+        .catch((error: unknown) => error);
       await flushSnapshotMicrotasks();
       expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
       failedReply.reject(failure);
@@ -346,14 +431,20 @@ describe('OrderSnapshotReadAdapter', () => {
   }
 
   it('后面的获选记录映射失败不交付已成功映射前缀，原始 getter error identity 保留', async () => {
-    const { native, port } = await createOrderSnapshotReadFixture([], [
-      createSnapshotInput({ orderId: 'GOOD' }),
-      createSnapshotInput({ orderId: 'BAD' }),
-    ]);
+    const { native, port } = await createOrderSnapshotReadFixture(
+      [],
+      [createSnapshotInput({ orderId: 'GOOD' }), createSnapshotInput({ orderId: 'BAD' })],
+    );
     const failure = new TypeError('native selected provenance getter');
     native.setOrderSnapshotGetterFailure('today', 'BAD', 'remark', failure);
     const deliveries: ReadonlyArray<OrderFact>[] = [];
-    const result: unknown = await port.fetchAllOrders().then((orders) => { deliveries.push(orders); return orders; }).catch((error: unknown) => error);
+    const result: unknown = await port
+      .fetchAllOrders()
+      .then((orders) => {
+        deliveries.push(orders);
+        return orders;
+      })
+      .catch((error: unknown) => error);
     expect(result).toBe(failure);
     expect(deliveries).toEqual([]);
     expect(native.orderSnapshotReadCounts()).toEqual({ history: 1, today: 1 });
@@ -365,19 +456,28 @@ describe('OrderSnapshotReadAdapter', () => {
       const limiter = createRateLimiter({
         logger: createLoggerDouble(),
         nowMonotonicMs: timers.nowMs,
-        wait: (delayMs) => new Promise((resolve) => { setTimeout(resolve, delayMs); }),
+        wait: (delayMs) =>
+          new Promise((resolve) => {
+            setTimeout(resolve, delayMs);
+          }),
       });
       let throttles = 0;
       const { native, port } = await createOrderSnapshotReadFixture(
         [createSnapshotInput({ orderId: 'HISTORY' })],
         [createSnapshotInput({ orderId: 'TODAY' })],
-        { throttle: async () => { throttles += 1; await limiter.throttle(); } },
+        {
+          throttle: async () => {
+            throttles += 1;
+            await limiter.throttle();
+          },
+        },
       );
       const attempts: Array<Readonly<{ source: string; atMs: number }>> = [];
       for (const source of ['history', 'today'] as const) {
         native.setOrderSnapshotBeforeReply(source, async () => {
           attempts.push({ source, atMs: timers.nowMs() });
-          if (native.orderSnapshotReadCounts()[source] < 3) throw new Error('network temporarily unavailable');
+          if (native.orderSnapshotReadCounts()[source] < 3)
+            throw new Error('network temporarily unavailable');
         });
       }
 
@@ -420,12 +520,24 @@ describe('OrderSnapshotReadAdapter', () => {
         const { native, port } = await createOrderSnapshotReadFixture(
           [createSnapshotInput({ orderId: 'HISTORY' })],
           [createSnapshotInput({ orderId: 'TODAY' })],
-          createRateLimiterDouble({ onThrottle: () => { throttles += 1; } }),
+          createRateLimiterDouble({
+            onThrottle: () => {
+              throttles += 1;
+            },
+          }),
         );
         const cause = new Error('network timeout');
-        native.setOrderSnapshotBeforeReply(source, async () => { throw cause; });
+        native.setOrderSnapshotBeforeReply(source, async () => {
+          throw cause;
+        });
         const deliveries: ReadonlyArray<OrderFact>[] = [];
-        const read = port.fetchAllOrders().then((orders) => { deliveries.push(orders); return orders; }).catch((error: unknown) => error);
+        const read = port
+          .fetchAllOrders()
+          .then((orders) => {
+            deliveries.push(orders);
+            return orders;
+          })
+          .catch((error: unknown) => error);
         await flushSnapshotMicrotasks();
         expect(timers.pendingDelays()).toEqual([300]);
         await timers.advanceBy(299);
@@ -434,7 +546,12 @@ describe('OrderSnapshotReadAdapter', () => {
         expect(native.orderSnapshotReadCounts()[source]).toBe(2);
         await timers.advanceBy(300);
         const failure = await read;
-        expect(failure).toMatchObject({ name: 'ExternalApiRequestError', operation: `TradeContext.${source}Orders`, attempts: 3, cause });
+        expect(failure).toMatchObject({
+          name: 'ExternalApiRequestError',
+          operation: `TradeContext.${source}Orders`,
+          attempts: 3,
+          cause,
+        });
         expect(failure instanceof Error ? failure.cause : null).toBe(cause);
         expect(native.orderSnapshotReadCounts()[source]).toBe(3);
         expect(throttles).toBe(4);

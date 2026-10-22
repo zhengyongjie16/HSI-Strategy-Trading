@@ -823,7 +823,9 @@ describe('orderMonitor eventFlow', () => {
       else terminalEvent.native.setPushExecutedPriceText(String(incomingPrice));
 
       const before = structuredClone(trackedOrder);
-      expect(() => { eventFlow.handleOrderChangedWhenActive(terminalEvent); }).toThrow(TypeError);
+      expect(() => {
+        eventFlow.handleOrderChangedWhenActive(terminalEvent);
+      }).toThrow(TypeError);
 
       expect(settlements).toEqual([]);
       expect(trackedOrder).toEqual(before);

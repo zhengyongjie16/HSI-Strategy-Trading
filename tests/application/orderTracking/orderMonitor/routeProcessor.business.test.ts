@@ -222,7 +222,8 @@ function createActualDailyTracker(now = new Date('2026-04-08T09:00:00.000Z')) {
     ...orderAnalysis,
     toHongKongTimeIso,
   });
-  recalculateDailyLoss(daily,
+  recalculateDailyLoss(
+    daily,
     [],
     { monitorSymbol: 'HSI.HK', orderOwnershipMapping: ['HSI'] },
     now,
@@ -2587,7 +2588,9 @@ describe('orderMonitor routeProcessor', () => {
     }
 
     expect(caughtError).toBeInstanceOf(Error);
-    expect((caughtError as Error).message).toContain('保护性 SELL 存在成交事实但本次观察缺少原始累计成交数量');
+    expect((caughtError as Error).message).toContain(
+      '保护性 SELL 存在成交事实但本次观察缺少原始累计成交数量',
+    );
 
     expect(settlementCalls).toBe(0);
     expect(runtime.closedOrderIds.has(trackedOrder.orderId)).toBe(false);
@@ -2950,7 +2953,9 @@ describe('orderMonitor routeProcessor', () => {
     }
 
     expect(caughtError).toBeInstanceOf(Error);
-    expect((caughtError as Error).message).toContain('保护性 SELL 存在成交事实但本次观察缺少原始累计成交数量');
+    expect((caughtError as Error).message).toContain(
+      '保护性 SELL 存在成交事实但本次观察缺少原始累计成交数量',
+    );
     expect(runtime.queriedTerminalStateByOrderId.get(trackedOrder.orderId)).toBe(rawTerminal);
     expect(settlementCalls).toBe(0);
     expect(runtime.closedOrderIds.has(trackedOrder.orderId)).toBe(false);

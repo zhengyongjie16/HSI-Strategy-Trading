@@ -159,13 +159,9 @@ function createHarness(failPersistence = false) {
       refreshNeeds.push(need);
     },
   };
-  const owner = createSettlementRecorder(
-    sink,
-    {},
-    (fact, relatedBuyOrderIds) => {
-      commits.push({ fact, relatedBuyOrderIds });
-    },
-  );
+  const owner = createSettlementRecorder(sink, {}, (fact, relatedBuyOrderIds) => {
+    commits.push({ fact, relatedBuyOrderIds });
+  });
   const recorder = {
     ...owner,
     markSellFilled: (orderId: string) => {
@@ -852,7 +848,10 @@ it('真实旧 boundary 同量45→46保留权威/durable与刷新，冻结日损
     closed: string[] = [],
     events: OrderStateChangedEvent[] = [];
   const episodeOwner = createProtectiveLiquidationEpisodeTracker();
-  episodeOwner.restoreCompletedBoundary({ direction: 'LONG', boundaryExecutedTimeMs: now.getTime() });
+  episodeOwner.restoreCompletedBoundary({
+    direction: 'LONG',
+    boundaryExecutedTimeMs: now.getTime(),
+  });
   const flow = createSettlementFlow({
     diagnostics: createDiagnosticObserverDouble(),
     now: () => new Date('2031-01-02T03:04:05.000Z'),
@@ -890,19 +889,31 @@ it('真实旧 boundary 同量45→46保留权威/durable与刷新，冻结日损
     preparedProtectiveTerminalExecution: initialDaily,
   });
   expect(result.handled).toBe(true);
-  expect(recorder.getExecutionFact(initial.orderId)).toMatchObject({ cumulativeAmount: '46', updatedAtMs: now.getTime() + 30000, phase: 'TERMINAL' });
+  expect(recorder.getExecutionFact(initial.orderId)).toMatchObject({
+    cumulativeAmount: '46',
+    updatedAtMs: now.getTime() + 30000,
+    phase: 'TERMINAL',
+  });
   expect(recorder.getCostBasis(initial.symbol, true)).toEqual(before.cost);
   expect(recorder.getSellRecordByOrderId(initial.orderId)).toMatchObject({ costAmount: '46' });
   expect(
-    daily.prepareProtectionBoundary({
-      direction: 'LONG',
-      boundaryExecutedTimeMs: now.getTime() + 1,
-    }).orderBaselines.find((b) => b.orderId === initial.orderId),
+    daily
+      .prepareProtectionBoundary({
+        direction: 'LONG',
+        boundaryExecutedTimeMs: now.getTime() + 1,
+      })
+      .orderBaselines.find((b) => b.orderId === initial.orderId),
   ).toMatchObject({ cumulativeAmount: '46', orderRevisionMs: now.getTime() + 30000 });
   expect(daily.getLossOffset('LONG')).toBe(before.loss);
   expect(snapshot.getView().token).toEqual(before.token);
-  expect(gate.getStatus()).toEqual({ ...before.gate, ready: false, staleVersion: before.gate.staleVersion + 1 });
-  expect(persisted).toMatchObject([{ cumulativeAmount: '46', orderRevisionMs: now.getTime() + 30000 }]);
+  expect(gate.getStatus()).toEqual({
+    ...before.gate,
+    ready: false,
+    staleVersion: before.gate.staleVersion + 1,
+  });
+  expect(persisted).toMatchObject([
+    { cumulativeAmount: '46', orderRevisionMs: now.getTime() + 30000 },
+  ]);
   expect(episodeOwner.getInProgressEpisodes()).toEqual([]);
   expect(closed).toEqual([initial.orderId]);
   expect(events).toHaveLength(1);

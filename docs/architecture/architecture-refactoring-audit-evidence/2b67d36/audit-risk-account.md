@@ -114,7 +114,7 @@ bun test tests/domain/risk tests/domain/liquidation tests/application/accountPos
 等级定义：**D 已深读**＝当前主要业务实现、对应develop关键分支及真实调用链已分析（长文件按下述关注边界，非声称所有行都已穷举证明）；**E 迁移／契约diff核对**＝已读接口并追踪装配/消费者，确认数据owner与授权传播，未单独证明其所有合法状态等价。**U 未深入**＝不把名称或单次grep当深读。G5分派36个均有实质D/E检查：25 D／11 E；G5内无完全未读文件，但U边界仍明确列于后文。
 
 | current文件（相对仓库根） | 等级 | develop对照／实际关注内容 |
-|---|---|---|
+| --- | --- | --- |
 | `src/application/accountPositionSnapshot/index.ts` | D | 旧refreshHelpers＋positionCache；深不可变、请求合并、在途撤销、epoch/generation/paired提交与drain |
 | `src/application/accountPositionSnapshot/types.ts` | E | 旧state；COMMITTED/ABORTED、请求dayEpoch和account/positions能力边界 |
 | `src/application/accountQuery/index.ts` | D | 旧core/trader/accountService；账户与positions并行读取、只查不提交owner状态 |
@@ -195,7 +195,7 @@ bun test tests/domain/risk tests/domain/liquidation tests/application/accountPos
 ## 历史提交校正与修复完整性
 
 | 项目 | 判定 | 证据／边界 |
-|---|---|---|
+| --- | --- | --- |
 | `executionTime <= revision`前提 | 历史已修；不能报成develop无此判断 | develop本来有前提，但两个时间均来自updatedAt代理。重构曾拆成独立时间使前提失效；d2aa590删实时fill、启动扫描、progress恢复三处检查。当前仍校验正安全时间，不恢复错误跨时钟排序 |
 | 执行时间驱动启动／归属 | 2b67d36在本范围修复可见；不证明所有输入 | 当前orderMapper正成交T=该单updatedAt代理；DailyLoss重建同量保留known T，API最终事实与durable完整历史分开预检。不能把旧updatedAt有效性／当日过滤当重构新增 |
 | 全账户数量整数化／市场范围扩大 | 已在本组相关出口校正 | accountMapper canonical允许非HK正小数；sellPositionReadAdapter/quantityResolver仅验证目标HK原始数量；doomsday只过滤HK再做席位归属。US负持仓合法性仍缺业务证据，不升格缺陷 |
@@ -208,7 +208,7 @@ bun test tests/domain/risk tests/domain/liquidation tests/application/accountPos
 ## 七个review lenses
 
 | 维度 | 检查与结果 | 未深入／限制 |
-|---|---|---|
+| --- | --- | --- |
 | Implementation | 追踪完整事实/快照/结算/风险/清仓链；独立复现G5-RA01；V-C1/C4/C5区别处理 | 未真实broker回放所有乱序、跨进程crash、市场延迟 |
 | Project & Spec | develop为行为oracle；计划中UNKNOWN、精度及accepted≠flat例外显式记录；其余变化仍需证明／授权 | 新skill、新测试和“fix”提交不能自行授权；用户最终策略选择不由本代理替代 |
 | Type Design | readonly候选、明确COMMITTED/ABORTED和receipt/position token、同步prepare/publish；G5-RA01显示boolean来源仍可非法升级 | 未为所有接口枚举非法构造；SDK品牌与私有permit完整设计由G6/G4 |

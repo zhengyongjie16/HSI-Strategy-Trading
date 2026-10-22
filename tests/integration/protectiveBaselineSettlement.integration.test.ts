@@ -544,8 +544,11 @@ test('C2 sealed same-quantity same-amount higher revision advances only the revi
     await f.sink.waitForFresh();
     expect(f.recorder.getExecutionFact(sell.orderId)).toMatchObject({ updatedAtMs: T + 200 });
     expect(h.repository.loadExecutionProgressRecords(day)).toHaveLength(3);
-    expect(f.daily.prepareProtectionBoundary({ direction: 'LONG', boundaryExecutedTimeMs: T + 1 })
-      .orderBaselines.find((baseline) => baseline.orderId === sell.orderId)?.orderRevisionMs).toBe(T + 200);
+    expect(
+      f.daily
+        .prepareProtectionBoundary({ direction: 'LONG', boundaryExecutedTimeMs: T + 1 })
+        .orderBaselines.find((baseline) => baseline.orderId === sell.orderId)?.orderRevisionMs,
+    ).toBe(T + 200);
     expect(f.episode.getInProgressEpisodes()).toEqual([]);
     expect(h.repository.loadCompletionRecords(day)).toHaveLength(1);
     expect(h.cooldownCommits()).toBe(1);
@@ -591,9 +594,8 @@ test('C2 sealed same-quantity legal amount revision updates recorder/economy/dur
     await complete(h, T);
     expect(
       h.repository
-        .loadCompletionRecords(day)[0]?.orderBaselines.find(
-          (baseline) => baseline.orderId === sell.orderId,
-        )?.cumulativeAmount,
+        .loadCompletionRecords(day)[0]
+        ?.orderBaselines.find((baseline) => baseline.orderId === sell.orderId)?.cumulativeAmount,
     ).toBe('95');
   } finally {
     await f.sink.stopAndDrain();
@@ -631,7 +633,9 @@ test('C2 sealed amount revision durable failure keeps every projection and retri
       updatedAt: new Date(T + 100),
     };
     failCorrection = true;
-    expect(() => { events.handleOrderChanged(corrected); }).toThrow(fault);
+    expect(() => {
+      events.handleOrderChanged(corrected);
+    }).toThrow(fault);
     expect(f.recorder.getExecutionFact(sell.orderId)).toBe(before.fact);
     expect(f.daily.getLossOffset('LONG')).toBe(before.loss);
     expect(h.repository.loadExecutionProgressRecords(day)).toEqual(before.progress);
@@ -687,31 +691,61 @@ test('P1 completed boundary retains 10/120 and revision-only authority, then rej
     const watermark = { ...correction, updatedAtMs: T + 200, updatedAt: new Date(T + 200) };
     events.handleOrderChanged(watermark);
     expect(f.recorder.getExecutionFact(sell.orderId)).toMatchObject({
-      cumulativeQuantity: 10, cumulativeAmount: '120', executionTimeMs: T, updatedAtMs: T + 200,
+      cumulativeQuantity: 10,
+      cumulativeAmount: '120',
+      executionTimeMs: T,
+      updatedAtMs: T + 200,
     });
 
-    expect(f.daily.prepareProtectionBoundary({ direction: 'LONG', boundaryExecutedTimeMs: T + 1 })
-      .orderBaselines.find((baseline) => baseline.orderId === sell.orderId)).toMatchObject({
-        cumulativeQuantity: '10', cumulativeAmount: '120', orderRevisionMs: T + 200,
-      });
+    expect(
+      f.daily
+        .prepareProtectionBoundary({ direction: 'LONG', boundaryExecutedTimeMs: T + 1 })
+        .orderBaselines.find((baseline) => baseline.orderId === sell.orderId),
+    ).toMatchObject({
+      cumulativeQuantity: '10',
+      cumulativeAmount: '120',
+      orderRevisionMs: T + 200,
+    });
     expect(f.daily.getLossOffset('LONG')).toBe('0');
     const progress = h.repository.loadExecutionProgressRecords(day);
     expect(progress).toHaveLength(3);
     for (const invalid of [
-      { ...watermark, executedQuantity: 20, executedPrice: '5.5', executedAmount: '110', executionTimeMs: T + 300, updatedAtMs: T + 300 },
-      { ...watermark, executedQuantity: 9, executedPrice: '12', executedAmount: '108', updatedAtMs: T + 300 },
+      {
+        ...watermark,
+        executedQuantity: 20,
+        executedPrice: '5.5',
+        executedAmount: '110',
+        executionTimeMs: T + 300,
+        updatedAtMs: T + 300,
+      },
+      {
+        ...watermark,
+        executedQuantity: 9,
+        executedPrice: '12',
+        executedAmount: '108',
+        updatedAtMs: T + 300,
+      },
       { ...watermark, executedAmount: '121', executedPrice: '12.1' },
       { ...watermark, executionPhase: 'OPEN' as const, updatedAtMs: T + 300 },
-    ]) expect(() => { events.handleOrderChanged(invalid); }).toThrow();
+    ])
+      expect(() => {
+        events.handleOrderChanged(invalid);
+      }).toThrow();
 
-    expect(f.recorder.getExecutionFact(sell.orderId)).toMatchObject({ cumulativeAmount: '120', updatedAtMs: T + 200 });
+    expect(f.recorder.getExecutionFact(sell.orderId)).toMatchObject({
+      cumulativeAmount: '120',
+      updatedAtMs: T + 200,
+    });
     expect(h.repository.loadExecutionProgressRecords(day)).toEqual(progress);
     expect(f.episode.getInProgressEpisodes()).toEqual([]);
     expect(f.events).toHaveLength(1);
     expect(f.holds.getHoldSymbols().size).toBe(0);
     await f.sink.waitForFresh();
     expect(h.repository.loadCompletionRecords(day)).toEqual(frozen);
-    expect(frozen[0]?.orderBaselines.find((baseline) => baseline.orderId === sell.orderId)?.cumulativeAmount).toBe('90');
+    expect(
+      frozen[0]?.orderBaselines.find((baseline) => baseline.orderId === sell.orderId)
+        ?.cumulativeAmount,
+    ).toBe('90');
     expect(h.cooldownCommits()).toBe(1);
   } finally {
     await f.sink.stopAndDrain();

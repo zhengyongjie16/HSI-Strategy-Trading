@@ -155,8 +155,12 @@ const path = require('path');
 const root = 'D:/Code/HSI-Strategy-Trading';
 const OLD = '6e239c8a128372bd9b2fb2d79464346792a5e81e';
 const HEAD = '2b67d36479ed2f3b5f46df9e5bc9fa18f88ab144';
-Object.assign(process.env, { APP_RUNTIME_PROFILE: 'test', APP_ENABLE_PROCESS_HOOKS: 'false',
-  APP_LOG_ROOT_DIR: 'C:/Users/65459/AppData/Local/Temp/hsi-architecture-audit-20261020/infra-test-logs' });
+Object.assign(process.env, {
+  APP_RUNTIME_PROFILE: 'test',
+  APP_ENABLE_PROCESS_HOOKS: 'false',
+  APP_LOG_ROOT_DIR:
+    'C:/Users/65459/AppData/Local/Temp/hsi-architecture-audit-20261020/infra-test-logs',
+});
 const req = require('module').createRequire(root + '/package.json');
 const ts = req('typescript');
 const modules = new Map();
@@ -164,152 +168,467 @@ function load(p, ref = HEAD) {
   const key = ref + ':' + p;
   if (modules.has(key)) return modules.get(key).exports;
   const source = cp.execFileSync('git', ['show', key], { cwd: root, encoding: 'utf8' });
-  const module = { exports: {} }; modules.set(key, module);
-  const js = ts.transpileModule(source, { compilerOptions: {
-    module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
-  const local = q => q.startsWith('.')
-    ? load(path.posix.normalize(path.posix.join(path.posix.dirname(p), q)).replace(/\.js$/, '.ts'), ref)
-    : req(q);
+  const module = { exports: {} };
+  modules.set(key, module);
+  const js = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  const local = (q) =>
+    q.startsWith('.')
+      ? load(
+          path.posix.normalize(path.posix.join(path.posix.dirname(p), q)).replace(/\.js$/, '.ts'),
+          ref,
+        )
+      : req(q);
   new Function('require', 'module', 'exports', '__dirname', '__filename', js)(
-    local, module, module.exports, root + '/' + path.posix.dirname(p), root + '/' + p);
+    local,
+    module,
+    module.exports,
+    root + '/' + path.posix.dirname(p),
+    root + '/' + p,
+  );
   return module.exports;
 }
 const no = () => {};
 const lifeOwner = () => ({ start: no, stop: no, stopAndDrain: async () => {}, restart: no });
-async function flush() { for (let i = 0; i < 220; i++) await Promise.resolve(); }
-function check(x, label) { if (!x) throw new Error('ASSERT: ' + label); }
-async function scenario({ name, half = false, session = 'morning', interval = 5, branch = 'boundary', failures = 4 }) {
+async function flush() {
+  for (let i = 0; i < 220; i++) await Promise.resolve();
+}
+function check(x, label) {
+  if (!x) throw new Error('ASSERT: ' + label);
+}
+async function scenario({
+  name,
+  half = false,
+  session = 'morning',
+  interval = 5,
+  branch = 'boundary',
+  failures = 4,
+}) {
   let at = Date.parse('2026-04-29T00:00:00+08:00');
   const clock = { now: () => new Date(at) };
-  const fatals = [], events = [], auths = [], tasks = [], orderListeners = new Set(), quoteListeners = new Set();
-  const termination = { isTerminated: () => fatals.length !== 0, reportFatalError: e => fatals.push(String(e)) };
+  const fatals = [],
+    events = [],
+    auths = [],
+    tasks = [],
+    orderListeners = new Set(),
+    quoteListeners = new Set();
+  const termination = {
+    isTerminated: () => fatals.length !== 0,
+    reportFatalError: (e) => fatals.push(String(e)),
+  };
   const logger = { info: no, warn: no, error: no, debug: no };
   const diagnostics = { record: no };
   function schedulerFor(label) {
-    const timers = new Map(); let sequence = 0;
-    return { timers, scheduleTimer: (f, delay) => { const id = ++sequence; timers.set(id, { f, at: at + delay }); return id; },
-      clearTimer: id => timers.delete(id), label };
+    const timers = new Map();
+    let sequence = 0;
+    return {
+      timers,
+      scheduleTimer: (f, delay) => {
+        const id = ++sequence;
+        timers.set(id, { f, at: at + delay });
+        return id;
+      },
+      clearTimer: (id) => timers.delete(id),
+      label,
+    };
   }
-  const system = schedulerFor('system'), periodicTimers = schedulerFor('periodic'), background = schedulerFor('background');
+  const system = schedulerFor('system'),
+    periodicTimers = schedulerFor('periodic'),
+    background = schedulerFor('background');
   const initial = Date.parse('2026-04-28T15:59:00+08:00');
-  const autoSearchConfig = { autoSearchEnabled: true, switchIntervalMinutes: interval, autoSearchOpenDelayMinutes: 0 };
-  const config = { monitorSymbol: 'HSI.HK', longSymbol: 'BULL.HK', shortSymbol: 'BEAR.HK',
-    autoSearchConfig, orderOwnershipMapping: ['HSI'], liquidationCooldown: { mode: 'minutes' } };
-  const tradingConfig = { monitor: config, global: { doomsdayProtection: false,
-    openProtection: { morning: { enabled: true, minutes: 15 }, afternoon: { enabled: false, minutes: null } } } };
+  const autoSearchConfig = {
+    autoSearchEnabled: true,
+    switchIntervalMinutes: interval,
+    autoSearchOpenDelayMinutes: 0,
+  };
+  const config = {
+    monitorSymbol: 'HSI.HK',
+    longSymbol: 'BULL.HK',
+    shortSymbol: 'BEAR.HK',
+    autoSearchConfig,
+    orderOwnershipMapping: ['HSI'],
+    liquidationCooldown: { mode: 'minutes' },
+  };
+  const tradingConfig = {
+    monitor: config,
+    global: {
+      doomsdayProtection: false,
+      openProtection: {
+        morning: { enabled: true, minutes: 15 },
+        afternoon: { enabled: false, minutes: null },
+      },
+    },
+  };
   const registry = load('src/domain/seat/symbolRegistry.ts').createSymbolRegistry(config);
-  registry.updateSeatState('LONG', { symbol: 'BULL.HK', status: 'ACTIVE', lastSwitchAt: null, lastSearchAt: null,
-    lastSeatActivatedAt: initial, callPrice: '95', searchFailCountToday: 0, frozenTradingDayKey: null });
-  const lifecycleState = { currentDayKey: '2026-04-28', lifecycleState: 'ACTIVE', pendingOpenRebuild: false, isTradingEnabled: true };
+  registry.updateSeatState('LONG', {
+    symbol: 'BULL.HK',
+    status: 'ACTIVE',
+    lastSwitchAt: null,
+    lastSearchAt: null,
+    lastSeatActivatedAt: initial,
+    callPrice: '95',
+    searchFailCountToday: 0,
+    frozenTradingDayKey: null,
+  });
+  const lifecycleState = {
+    currentDayKey: '2026-04-28',
+    lifecycleState: 'ACTIVE',
+    pendingOpenRebuild: false,
+    isTradingEnabled: true,
+  };
   const tradingTimeState = { canTrade: false, isHalfDay: null, openProtectionActive: null };
   const calendar = { cachedTradingDayInfo: null, tradingCalendarSnapshot: new Map() };
-  const market = { isTradingDay: async date => ({ isTradingDay: true, isHalfDay: half && date.getTime() < Date.parse('2026-04-30T00:00:00+08:00') }),
+  const market = {
+    isTradingDay: async (date) => ({
+      isTradingDay: true,
+      isHalfDay: half && date.getTime() < Date.parse('2026-04-30T00:00:00+08:00'),
+    }),
     resetRuntimeSubscriptionsAndCaches: async () => {},
-    onQuoteUpdated: f => { quoteListeners.add(f); return () => quoteListeners.delete(f); } };
+    onQuoteUpdated: (f) => {
+      quoteListeners.add(f);
+      return () => quoteListeners.delete(f);
+    },
+  };
   let held = true;
-  const snapshot = load('src/application/accountPositionSnapshot/index.ts').createAccountPositionSnapshot({
-    dayEpoch: 1, clock, diagnostics, reportFatalError: termination.reportFatalError, scheduler: { schedule: queueMicrotask },
-    readPort: { getAccountSnapshot: async () => ({ currency: 'HKD', totalCash: '10000', netAssets: '11000',
-      positionValue: '1000', cashInfos: [{ currency: 'HKD', availableCash: '10000' }] }),
-      getStockPositions: async () => held ? [{ symbol: 'BULL.HK', symbolName: 'HSI RC', accountChannel: 'cash',
-        currency: 'HKD', quantity: 100, availableQuantity: 100, costPrice: '10' }] : [] } });
+  const snapshot = load(
+    'src/application/accountPositionSnapshot/index.ts',
+  ).createAccountPositionSnapshot({
+    dayEpoch: 1,
+    clock,
+    diagnostics,
+    reportFatalError: termination.reportFatalError,
+    scheduler: { schedule: queueMicrotask },
+    readPort: {
+      getAccountSnapshot: async () => ({
+        currency: 'HKD',
+        totalCash: '10000',
+        netAssets: '11000',
+        positionValue: '1000',
+        cashInfos: [{ currency: 'HKD', availableCash: '10000' }],
+      }),
+      getStockPositions: async () =>
+        held
+          ? [
+              {
+                symbol: 'BULL.HK',
+                symbolName: 'HSI RC',
+                accountChannel: 'cash',
+                currency: 'HKD',
+                quantity: 100,
+                availableQuantity: 100,
+                costPrice: '10',
+              },
+            ]
+          : [],
+    },
+  });
   const api = load('src/utils/apiFailure/index.ts');
-  const settlement = load('src/application/postTradeSettlement/index.ts').createPostTradeSettlementWorkflow({
-    snapshot, clock, diagnostics, scheduler: background, termination, logger, isExternalFailure: api.isExternalApiRequestError,
-    retryDelayMs: 1000, hasPendingProtectiveOrders: () => false, onPositionsCommitted: async () => {} });
-  settlement.bindBusinessDeps({ monitorSymbol: config.monitorSymbol, seats: registry,
-    episodes: { getInProgressEpisodes: () => [], prepareCompletion: () => null, commitCompletion: no },
-    lossBoundaries: { getLossOffset: () => '0' }, completionPersistence: {}, cooldownTriggers: {},
-    riskProjection: { prepare: symbol => ({ symbol, data: { r1: '0', n1: 0 } }), publish: no } });
-  const bus = load('src/runtime/tradingGateEventRuntime/index.ts').createTradingGateEventRuntime({ logger });
-  bus.onGateStateChanged(e => events.push(e));
-  bus.onAutoSearchAuthorizationChanged(e => auths.push(e));
-  const orderMonitor = { onOrderStateChanged: f => { orderListeners.add(f); return () => orderListeners.delete(f); },
-    stopRuntimeAndDrain: async () => {}, startRuntime: no, clearTrackedOrders: no };
-  const queue = { scheduleLatest: task => { tasks.push(task); return true; }, clearAll: () => 0 };
+  const settlement = load(
+    'src/application/postTradeSettlement/index.ts',
+  ).createPostTradeSettlementWorkflow({
+    snapshot,
+    clock,
+    diagnostics,
+    scheduler: background,
+    termination,
+    logger,
+    isExternalFailure: api.isExternalApiRequestError,
+    retryDelayMs: 1000,
+    hasPendingProtectiveOrders: () => false,
+    onPositionsCommitted: async () => {},
+  });
+  settlement.bindBusinessDeps({
+    monitorSymbol: config.monitorSymbol,
+    seats: registry,
+    episodes: {
+      getInProgressEpisodes: () => [],
+      prepareCompletion: () => null,
+      commitCompletion: no,
+    },
+    lossBoundaries: { getLossOffset: () => '0' },
+    completionPersistence: {},
+    cooldownTriggers: {},
+    riskProjection: { prepare: (symbol) => ({ symbol, data: { r1: '0', n1: 0 } }), publish: no },
+  });
+  const bus = load('src/runtime/tradingGateEventRuntime/index.ts').createTradingGateEventRuntime({
+    logger,
+  });
+  bus.onGateStateChanged((e) => events.push(e));
+  bus.onAutoSearchAuthorizationChanged((e) => auths.push(e));
+  const orderMonitor = {
+    onOrderStateChanged: (f) => {
+      orderListeners.add(f);
+      return () => orderListeners.delete(f);
+    },
+    stopRuntimeAndDrain: async () => {},
+    startRuntime: no,
+    clearTrackedOrders: no,
+  };
+  const queue = {
+    scheduleLatest: (task) => {
+      tasks.push(task);
+      return true;
+    },
+    clearAll: () => 0,
+  };
   const duration = load('src/domain/tradingSession/index.ts');
-  const context = { config, symbolRegistry: registry, strategy: { resetForTradingDay: no, invalidateAll: no },
-    riskChecker: { clearUnrealizedLossData: no, clearLongWarrantInfo: no, clearShortWarrantInfo: no } };
-  const periodic = load('src/runtime/periodicSwitchWakeupRuntime/index.ts').createPeriodicSwitchWakeupRuntime({
-    termination, snapshot, getCanTradeNow: () => !termination.isTerminated() && lifecycleState.isTradingEnabled && tradingTimeState.canTrade === true,
-    monitorContext: context, symbolRegistry: registry, monitorTaskQueue: queue, orderMonitor,
-    postTradeConsistencyRuntime: settlement, tradingGateEventRuntime: bus,
-    calculateDueAtMs: ({ startMs, switchIntervalMinutes }) => duration.calculateTradingDurationDueAtMs({
-      startMs, targetDurationMs: switchIntervalMinutes * 60000, calendarSnapshot: calendar.tradingCalendarSnapshot }),
-    now: clock.now, scheduleTimer: periodicTimers.scheduleTimer, clearTimer: periodicTimers.clearTimer });
-  const autoSearch = load('src/runtime/autoSearchWakeupRuntime/index.ts').createAutoSearchWakeupRuntime({
-    termination, symbolRegistry: registry, autoSearchConfig, tradingTimeState, lifecycleState, tradingGateEventRuntime: bus,
-    doomsdayProtectionEnabled: false, now: clock.now, scheduleTimer: background.scheduleTimer, clearTimer: background.clearTimer,
-    autoSearch: { maybeSearchOnEvent: async () => {}, cancelSearch: no } });
+  const context = {
+    config,
+    symbolRegistry: registry,
+    strategy: { resetForTradingDay: no, invalidateAll: no },
+    riskChecker: {
+      clearUnrealizedLossData: no,
+      clearLongWarrantInfo: no,
+      clearShortWarrantInfo: no,
+    },
+  };
+  const periodic = load(
+    'src/runtime/periodicSwitchWakeupRuntime/index.ts',
+  ).createPeriodicSwitchWakeupRuntime({
+    termination,
+    snapshot,
+    getCanTradeNow: () =>
+      !termination.isTerminated() &&
+      lifecycleState.isTradingEnabled &&
+      tradingTimeState.canTrade === true,
+    monitorContext: context,
+    symbolRegistry: registry,
+    monitorTaskQueue: queue,
+    orderMonitor,
+    postTradeConsistencyRuntime: settlement,
+    tradingGateEventRuntime: bus,
+    calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
+      duration.calculateTradingDurationDueAtMs({
+        startMs,
+        targetDurationMs: switchIntervalMinutes * 60000,
+        calendarSnapshot: calendar.tradingCalendarSnapshot,
+      }),
+    now: clock.now,
+    scheduleTimer: periodicTimers.scheduleTimer,
+    clearTimer: periodicTimers.clearTimer,
+  });
+  const autoSearch = load(
+    'src/runtime/autoSearchWakeupRuntime/index.ts',
+  ).createAutoSearchWakeupRuntime({
+    termination,
+    symbolRegistry: registry,
+    autoSearchConfig,
+    tradingTimeState,
+    lifecycleState,
+    tradingGateEventRuntime: bus,
+    doomsdayProtectionEnabled: false,
+    now: clock.now,
+    scheduleTimer: background.scheduleTimer,
+    clearTimer: background.clearTimer,
+    autoSearch: { maybeSearchOnEvent: async () => {}, cancelSearch: no },
+  });
   const seatSwitch = load('src/application/seatSwitch/index.ts').createSeatSwitchWorkflow({
-    monitorConfig: config, symbolRegistry: registry, clock, logger, marketDataClient: market, cacheManager: {},
-    orderHoldRegistry: { getHoldSymbols: () => new Set() }, orderMonitor, orderExecutor: {},
-    orderRecorder: { getBuyOrdersForSymbol: () => held ? [{ orderId: 'BUY' }] : [] }, readSwitchPositions: async () => [],
-    riskChecker: { getWarrantDistanceInfo: () => ({ distanceNumerator: '5', distanceDenominator: '100' }) },
+    monitorConfig: config,
+    symbolRegistry: registry,
+    clock,
+    logger,
+    marketDataClient: market,
+    cacheManager: {},
+    orderHoldRegistry: { getHoldSymbols: () => new Set() },
+    orderMonitor,
+    orderExecutor: {},
+    orderRecorder: { getBuyOrdersForSymbol: () => (held ? [{ orderId: 'BUY' }] : []) },
+    readSwitchPositions: async () => [],
+    riskChecker: {
+      getWarrantDistanceInfo: () => ({ distanceNumerator: '5', distanceDenominator: '100' }),
+    },
     candidateSearch: { resolveDistanceRange: () => ({ min: '1', max: '10' }) },
-    getTradingCalendarSnapshot: () => calendar.tradingCalendarSnapshot });
+    getTradingCalendarSnapshot: () => calendar.tradingCalendarSnapshot,
+  });
   context.seatSwitch = seatSwitch;
-  const quote = load('src/runtime/monitorQuoteEventRuntime/monitorQuoteEventRuntime.ts').createDefaultMonitorQuoteEventRuntime({
-    logger, marketDataClient: market, monitorContext: context, now: clock.now, scheduleTimer: background.scheduleTimer,
-    clearTimer: background.clearTimer, tradingTimeState, lifecycleState, snapshot,
-    postTradeConsistencyRuntime: settlement, doomsdayProtectionEnabled: false, termination });
+  const quote = load(
+    'src/runtime/monitorQuoteEventRuntime/monitorQuoteEventRuntime.ts',
+  ).createDefaultMonitorQuoteEventRuntime({
+    logger,
+    marketDataClient: market,
+    monitorContext: context,
+    now: clock.now,
+    scheduleTimer: background.scheduleTimer,
+    clearTimer: background.clearTimer,
+    tradingTimeState,
+    lifecycleState,
+    snapshot,
+    postTradeConsistencyRuntime: settlement,
+    doomsdayProtectionEnabled: false,
+    termination,
+  });
   const activation = load('src/application/seatActivation/rebuiltSeats.ts');
   const carry = load('src/application/tradingDayRebuild/seatActivationCarryover.ts');
   let loads = 0;
   async function loader() {
     loads++;
     if (session === 'afternoon' ? at < Date.parse('2026-04-29T13:01:00+08:00') : loads <= failures)
-      throw api.createExternalApiRequestError({ operation: 'Probe.account', attempts: 1, cause: new Error('network unavailable') });
-    const receipt = await snapshot.requestRefresh({ source: 'LIFECYCLE_REBUILD', dayEpoch: snapshot.getStatus().token.dayEpoch,
-      refreshAccount: true, refreshPositions: true }).result;
+      throw api.createExternalApiRequestError({
+        operation: 'Probe.account',
+        attempts: 1,
+        cause: new Error('network unavailable'),
+      });
+    const receipt = await snapshot.requestRefresh({
+      source: 'LIFECYCLE_REBUILD',
+      dayEpoch: snapshot.getStatus().token.dayEpoch,
+      refreshAccount: true,
+      refreshPositions: true,
+    }).result;
     check(receipt.status === 'COMMITTED', 'H committed');
-    await load('src/application/tradingDayRebuild/seatPreparation.ts').prepareSeatsForRuntime({ tradingConfig, symbolRegistry: registry,
-      positions: snapshot.getView().positions, orders: [{ stockName: 'HSI RC', symbol: 'BULL.HK', executionStatus: 'FILLED', updatedAt: new Date(initial) }],
-      startupSeatSearch: { searchSeat: async () => {} }, canContinue: () => snapshot.isCurrent(receipt.view.token,
-        { account: true, positions: true, paired: true }), now: clock.now, resolveCanAutoSearchNow: () => false });
-    return { status: 'COMMITTED', snapshotToken: receipt.view.token, allOrders: [], quotesMap: new Map() };
+    await load('src/application/tradingDayRebuild/seatPreparation.ts').prepareSeatsForRuntime({
+      tradingConfig,
+      symbolRegistry: registry,
+      positions: snapshot.getView().positions,
+      orders: [
+        {
+          stockName: 'HSI RC',
+          symbol: 'BULL.HK',
+          executionStatus: 'FILLED',
+          updatedAt: new Date(initial),
+        },
+      ],
+      startupSeatSearch: { searchSeat: async () => {} },
+      canContinue: () =>
+        snapshot.isCurrent(receipt.view.token, { account: true, positions: true, paired: true }),
+      now: clock.now,
+      resolveCanAutoSearchNow: () => false,
+    });
+    return {
+      status: 'COMMITTED',
+      snapshotToken: receipt.view.token,
+      allOrders: [],
+      quotesMap: new Map(),
+    };
   }
   async function rebuild({ snapshotToken }) {
     calendar.tradingCalendarSnapshot = new Map([
-      ['2026-04-28', { isTradingDay: true, isHalfDay: false }], ['2026-04-29', { isTradingDay: true, isHalfDay: half }],
+      ['2026-04-28', { isTradingDay: true, isHalfDay: false }],
+      ['2026-04-29', { isTradingDay: true, isHalfDay: half }],
       ['2026-04-30', { isTradingDay: true, isHalfDay: false }],
     ]);
     const seat = registry.getSeatState('LONG');
-    const ok = activation.commitRebuiltSeatActivation({ symbolRegistry: registry, snapshot,
-      getIsTradingEnabled: () => lifecycleState.isTradingEnabled, isTerminated: termination.isTerminated },
-      { snapshotToken, seats: [{ direction: 'LONG', symbol: seat.symbol, status: seat.status,
-        seatVersion: registry.getSeatVersion('LONG'), lastSeatActivatedAt: carry.resolveSeatActivationCarryover({
-          symbolRegistry: registry, direction: 'LONG', symbol: seat.symbol }) ?? at }] });
-    check(ok, 'rebuilt activation committed'); carry.clearSeatActivationCarryover(registry);
+    const ok = activation.commitRebuiltSeatActivation(
+      {
+        symbolRegistry: registry,
+        snapshot,
+        getIsTradingEnabled: () => lifecycleState.isTradingEnabled,
+        isTerminated: termination.isTerminated,
+      },
+      {
+        snapshotToken,
+        seats: [
+          {
+            direction: 'LONG',
+            symbol: seat.symbol,
+            status: seat.status,
+            seatVersion: registry.getSeatVersion('LONG'),
+            lastSeatActivatedAt:
+              carry.resolveSeatActivationCarryover({
+                symbolRegistry: registry,
+                direction: 'LONG',
+                symbol: seat.symbol,
+              }) ?? at,
+          },
+        ],
+      },
+    );
+    check(ok, 'rebuilt activation committed');
+    carry.clearSeatActivationCarryover(registry);
     return { status: 'COMMITTED', snapshotToken };
   }
   const quoteSubscriptionRuntime = { ...lifeOwner(), reconcileFromCurrentTruth: async () => {} };
-  const post = { monitorContext: context, snapshot, lifecycleState, tradingTimeState,
-    tradingCalendarState: calendar, quoteSubscriptionState: { allTradingSymbols: new Set() },
-    periodicSwitchWakeupRuntime: periodic, autoSearchWakeupRuntime: autoSearch,
-    monitorQuoteEventRuntime: quote, postTradeConsistencyRuntime: settlement, quoteSubscriptionRuntime,
-    buyTaskQueue: { clearAll: () => 0 }, sellTaskQueue: { clearAll: () => 0 }, monitorTaskQueue: queue,
-    tradingRiskEventRuntime: lifeOwner(), monitorDisplayRuntime: lifeOwner(), tradingQuoteDisplayRuntime: lifeOwner(),
-    switchWakeupRuntime: lifeOwner(), seatActivationDispatcher: lifeOwner(), seatRuntimeCleanupDispatcher: lifeOwner(),
-    ordinaryBuy: { resetRiskCheckCooldown: no }, dailyLossTracker: { resetAll: no }, protectiveLiquidationEpisodeTracker: { resetAll: no },
-    liquidationCooldownTracker: { clearMidnightEligible: no, resetAllTriggerCounts: no }, loadTradingDayRuntimeSnapshot: loader,
-    tradeRuntime: { orderMonitor, orderRecorder: { resetAll: no }, cacheManager: { clearCache: no },
-      orderHoldRegistry: { clear: no }, orderExecutor: { resetBuyThrottle: no } } };
-  const manager = load('src/app/lifecycle/createLifecycleRuntime.ts').createLifecycleRuntime({ logger, termination,
-    preGateRuntime: { symbolRegistry: registry, warrantListCache: { clear: no }, marketDataClient: market, diagnostics },
-    postGateRuntime: post, asyncRuntime: { buyProcessor: lifeOwner(), sellProcessor: lifeOwner(), monitorTaskProcessor: lifeOwner() },
-    businessEventProgram: lifeOwner(), rebuildTradingDayState: rebuild });
-  const evaluate = () => load('src/runtime/timeWakeupEvaluationProgram/index.ts').timeWakeupEvaluationProgram({
-    logger, marketDataClient: market, cacheManager: {}, orderMonitor, orderExecutor: {}, tradingTimeState, lifecycleState,
-    tradingCalendarState: calendar, snapshot, doomsdayClearanceWorkflow: {}, tradingConfig, monitorContext: context,
-    tradingGateEventRuntime: bus, dayLifecycleManager: manager, now: clock.now });
+  const post = {
+    monitorContext: context,
+    snapshot,
+    lifecycleState,
+    tradingTimeState,
+    tradingCalendarState: calendar,
+    quoteSubscriptionState: { allTradingSymbols: new Set() },
+    periodicSwitchWakeupRuntime: periodic,
+    autoSearchWakeupRuntime: autoSearch,
+    monitorQuoteEventRuntime: quote,
+    postTradeConsistencyRuntime: settlement,
+    quoteSubscriptionRuntime,
+    buyTaskQueue: { clearAll: () => 0 },
+    sellTaskQueue: { clearAll: () => 0 },
+    monitorTaskQueue: queue,
+    tradingRiskEventRuntime: lifeOwner(),
+    monitorDisplayRuntime: lifeOwner(),
+    tradingQuoteDisplayRuntime: lifeOwner(),
+    switchWakeupRuntime: lifeOwner(),
+    seatActivationDispatcher: lifeOwner(),
+    seatRuntimeCleanupDispatcher: lifeOwner(),
+    ordinaryBuy: { resetRiskCheckCooldown: no },
+    dailyLossTracker: { resetAll: no },
+    protectiveLiquidationEpisodeTracker: { resetAll: no },
+    liquidationCooldownTracker: { clearMidnightEligible: no, resetAllTriggerCounts: no },
+    loadTradingDayRuntimeSnapshot: loader,
+    tradeRuntime: {
+      orderMonitor,
+      orderRecorder: { resetAll: no },
+      cacheManager: { clearCache: no },
+      orderHoldRegistry: { clear: no },
+      orderExecutor: { resetBuyThrottle: no },
+    },
+  };
+  const manager = load('src/app/lifecycle/createLifecycleRuntime.ts').createLifecycleRuntime({
+    logger,
+    termination,
+    preGateRuntime: {
+      symbolRegistry: registry,
+      warrantListCache: { clear: no },
+      marketDataClient: market,
+      diagnostics,
+    },
+    postGateRuntime: post,
+    asyncRuntime: {
+      buyProcessor: lifeOwner(),
+      sellProcessor: lifeOwner(),
+      monitorTaskProcessor: lifeOwner(),
+    },
+    businessEventProgram: lifeOwner(),
+    rebuildTradingDayState: rebuild,
+  });
+  const evaluate = () =>
+    load('src/runtime/timeWakeupEvaluationProgram/index.ts').timeWakeupEvaluationProgram({
+      logger,
+      marketDataClient: market,
+      cacheManager: {},
+      orderMonitor,
+      orderExecutor: {},
+      tradingTimeState,
+      lifecycleState,
+      tradingCalendarState: calendar,
+      snapshot,
+      doomsdayClearanceWorkflow: {},
+      tradingConfig,
+      monitorContext: context,
+      tradingGateEventRuntime: bus,
+      dayLifecycleManager: manager,
+      now: clock.now,
+    });
   const tw = load('src/runtime/timeWakeupRuntime/index.ts').createTimeWakeupRuntime({
-    termination, logger, now: clock.now, scheduleTimer: system.scheduleTimer, clearTimer: system.clearTimer, evaluate });
-  await tw.start(); await flush();
+    termination,
+    logger,
+    now: clock.now,
+    scheduleTimer: system.scheduleTimer,
+    clearTimer: system.clearTimer,
+    evaluate,
+  });
+  await tw.start();
+  await flush();
   async function wake(iso) {
-    at = Date.parse(iso); let runs = 0;
-    while ([...system.timers.values()].some(t => t.at <= at)) {
-      const [id, t] = [...system.timers].find(([id, t]) => t.at <= at); system.timers.delete(id); t.f(); await flush();
+    at = Date.parse(iso);
+    let runs = 0;
+    while ([...system.timers.values()].some((t) => t.at <= at)) {
+      const [id, t] = [...system.timers].find(([id, t]) => t.at <= at);
+      system.timers.delete(id);
+      t.f();
+      await flush();
       if (++runs > 10) throw new Error('unexpected system loop');
     }
   }
@@ -320,7 +639,7 @@ async function scenario({ name, half = false, session = 'morning', interval = 5,
     }
   } else {
     for (let i = 0; i < 60 && !lifecycleState.isTradingEnabled; i++) {
-      const next = Math.min(...[...system.timers.values()].map(t => t.at));
+      const next = Math.min(...[...system.timers.values()].map((t) => t.at));
       check(Number.isFinite(next), 'afternoon system retry timer exists');
       await wake(new Date(next).toISOString());
     }
@@ -329,34 +648,62 @@ async function scenario({ name, half = false, session = 'morning', interval = 5,
   const restored = registry.getSeatState('LONG').lastSeatActivatedAt === initial;
   const before = tasks.length;
   const periodicTimersAtRecovery = periodicTimers.timers.size;
-  const nextSystemAtRecovery = new Date(Math.min(...[...system.timers.values()].map(t => t.at))).toISOString();
-  check(restored && lifecycleState.isTradingEnabled && tradingTimeState.canTrade === true && (session === 'morning' ? loads === failures + 1 : loads > 5), name + ': valid restored current baseline');
+  const nextSystemAtRecovery = new Date(
+    Math.min(...[...system.timers.values()].map((t) => t.at)),
+  ).toISOString();
+  check(
+    restored &&
+      lifecycleState.isTradingEnabled &&
+      tradingTimeState.canTrade === true &&
+      (session === 'morning' ? loads === failures + 1 : loads > 5),
+    name + ': valid restored current baseline',
+  );
   check(before === (failures === 0 ? 1 : 0), name + ': expected dispatch count');
-  const gateEdges = events.length, authEdges = auths.length;
+  const gateEdges = events.length,
+    authEdges = auths.length;
   if (!half && session === 'morning') held = false;
   for (const f of orderListeners) f({ symbol: 'BULL.HK' });
   settlement.recordSettlementRefreshNeed({ refreshAccount: true, refreshPositions: true });
   for (let rounds = 0; rounds < 3; rounds++) {
-    for (const [id, t] of [...background.timers]) if (t.at <= at) { background.timers.delete(id); t.f(); }
+    for (const [id, t] of [...background.timers])
+      if (t.at <= at) {
+        background.timers.delete(id);
+        t.f();
+      }
     await flush();
   }
   const fresh = settlement.isCurrent(await settlement.waitForFresh());
   for (const f of orderListeners) f({ symbol: 'BULL.HK' });
   for (let i = 0; i < 8; i++) {
-    for (const f of quoteListeners) f({ symbol: 'HSI.HK', quote: { price: '100' }, timestamp: at, revision: i });
+    for (const f of quoteListeners)
+      f({ symbol: 'HSI.HK', quote: { price: '100' }, timestamp: at, revision: i });
     await flush();
   }
-  await evaluate(); await flush(); periodic.start(); await flush();
-  check(tasks.length === before, name + ': order/fresh/quote/true-eval/idempotent-start did not wake');
-  registry.updateSeatState('SHORT', registry.getSeatState('SHORT')); await flush();
+  await evaluate();
+  await flush();
+  periodic.start();
+  await flush();
+  check(
+    tasks.length === before,
+    name + ': order/fresh/quote/true-eval/idempotent-start did not wake',
+  );
+  registry.updateSeatState('SHORT', registry.getSeatState('SHORT'));
+  await flush();
   check(tasks.length === before, 'other-direction truth does not replan LONG');
   const normalBypassTasks = tasks.length;
-  if (branch === 'control') { /* Normal first opening already dispatched once. */ }
-  else if (branch === 'sameTruth') registry.updateSeatState('LONG', registry.getSeatState('LONG'));
+  if (branch === 'control') {
+    /* Normal first opening already dispatched once. */
+  } else if (branch === 'sameTruth')
+    registry.updateSeatState('LONG', registry.getSeatState('LONG'));
   else if (interval > 5) {
-    for (const [id, t] of [...periodicTimers.timers]) if (t.at <= at + 3600000) {
-      at = t.at; periodicTimers.timers.delete(id); t.f(); await flush(); break;
-    }
+    for (const [id, t] of [...periodicTimers.timers])
+      if (t.at <= at + 3600000) {
+        at = t.at;
+        periodicTimers.timers.delete(id);
+        t.f();
+        await flush();
+        break;
+      }
   } else {
     if (session === 'morning') {
       await wake('2026-04-29T09:45:00+08:00');
@@ -375,81 +722,212 @@ async function scenario({ name, half = false, session = 'morning', interval = 5,
     check(tasks.length === 1, 'next trading open reseeds due route');
   }
   const latestTaskAuthorized = tasks.at(-1)?.data.canContinue() ?? null;
-  if (branch !== 'control' && tasks.length > 0) check(latestTaskAuthorized, 'rescue task keeps genuine current authorization');
-  console.log(JSON.stringify({ name, recoveredAt, loads, restored, fresh, tasksAtRecovery: before, normalBypassTasks,
-    tasksAfterBranch, tasksAfterNextOpen: tasks.length, latestTaskAuthorized, periodicTimersAtRecovery, nextSystemAtRecovery, periodicTimers: periodicTimers.timers.size, gateEdgesAtRecovery: gateEdges,
-    authEdgesAtRecovery: authEdges, gateEdgesAfterBranch: events.length, state: lifecycleState.lifecycleState, fatals }));
-  await tw.stopAndDrain(); await quote.stopAndDrain(); await autoSearch.stopAndDrain(); await periodic.stopAndDrain(); await settlement.stopAndDrain();
+  if (branch !== 'control' && tasks.length > 0)
+    check(latestTaskAuthorized, 'rescue task keeps genuine current authorization');
+  console.log(
+    JSON.stringify({
+      name,
+      recoveredAt,
+      loads,
+      restored,
+      fresh,
+      tasksAtRecovery: before,
+      normalBypassTasks,
+      tasksAfterBranch,
+      tasksAfterNextOpen: tasks.length,
+      latestTaskAuthorized,
+      periodicTimersAtRecovery,
+      nextSystemAtRecovery,
+      periodicTimers: periodicTimers.timers.size,
+      gateEdgesAtRecovery: gateEdges,
+      authEdgesAtRecovery: authEdges,
+      gateEdgesAfterBranch: events.length,
+      state: lifecycleState.lifecycleState,
+      fatals,
+    }),
+  );
+  await tw.stopAndDrain();
+  await quote.stopAndDrain();
+  await autoSearch.stopAndDrain();
+  await periodic.stopAndDrain();
+  await settlement.stopAndDrain();
 }
 async function developControl() {
   const logger = { info: no, warn: no, error: no, debug: no };
-  const errors = [], observations = [];
-  const termination = { isTerminated: () => false, reportFatalError: e => errors.push(String(e)) };
-  const state = { currentDayKey: '2026-04-29', pendingOpenRebuild: true, lifecycleState: 'OPEN_REBUILD_FAILED', isTradingEnabled: false };
+  const errors = [],
+    observations = [];
+  const termination = {
+    isTerminated: () => false,
+    reportFatalError: (e) => errors.push(String(e)),
+  };
+  const state = {
+    currentDayKey: '2026-04-29',
+    pendingOpenRebuild: true,
+    lifecycleState: 'OPEN_REBUILD_FAILED',
+    isTradingEnabled: false,
+  };
   const now = () => new Date('2026-04-29T09:37:30+08:00');
-  const config = { monitorSymbol: 'HSI.HK', longSymbol: 'BULL.HK', shortSymbol: 'BEAR.HK',
-    autoSearchConfig: { autoSearchEnabled: true, switchIntervalMinutes: 5 } };
-  const registry = load('src/services/autoSymbolManager/utils.ts', OLD).createSymbolRegistry(config);
-  registry.updateSeatState('LONG', { symbol: 'BULL.HK', status: 'ACTIVE', lastSeatActivatedAt: now().getTime() - 600000,
-    lastSearchAt: null, lastSwitchAt: null, callPrice: null, searchFailCountToday: 0, frozenTradingDayKey: null });
-  const queue = load('src/main/asyncProgram/monitorTaskQueue/index.ts', OLD).createMonitorTaskQueue();
-  const periodic = load('src/main/periodicSwitchWakeupRuntime/index.ts', OLD).createPeriodicSwitchWakeupRuntime({
-    termination, monitorContext: { config }, symbolRegistry: registry, monitorTaskQueue: queue,
-    trader: { onOrderStateChanged: () => no }, postTradeConsistencyRuntime: { onFreshReached: () => no },
-    tradingGateEventRuntime: { onGateStateChanged: () => no }, calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
-      load('src/utils/time/index.ts', OLD).calculateTradingDurationDueAtMs({ startMs,
+  const config = {
+    monitorSymbol: 'HSI.HK',
+    longSymbol: 'BULL.HK',
+    shortSymbol: 'BEAR.HK',
+    autoSearchConfig: { autoSearchEnabled: true, switchIntervalMinutes: 5 },
+  };
+  const registry = load('src/services/autoSymbolManager/utils.ts', OLD).createSymbolRegistry(
+    config,
+  );
+  registry.updateSeatState('LONG', {
+    symbol: 'BULL.HK',
+    status: 'ACTIVE',
+    lastSeatActivatedAt: now().getTime() - 600000,
+    lastSearchAt: null,
+    lastSwitchAt: null,
+    callPrice: null,
+    searchFailCountToday: 0,
+    frozenTradingDayKey: null,
+  });
+  const queue = load(
+    'src/main/asyncProgram/monitorTaskQueue/index.ts',
+    OLD,
+  ).createMonitorTaskQueue();
+  const periodic = load(
+    'src/main/periodicSwitchWakeupRuntime/index.ts',
+    OLD,
+  ).createPeriodicSwitchWakeupRuntime({
+    termination,
+    monitorContext: { config },
+    symbolRegistry: registry,
+    monitorTaskQueue: queue,
+    trader: { onOrderStateChanged: () => no },
+    postTradeConsistencyRuntime: { onFreshReached: () => no },
+    tradingGateEventRuntime: { onGateStateChanged: () => no },
+    calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
+      load('src/utils/time/index.ts', OLD).calculateTradingDurationDueAtMs({
+        startMs,
         targetDurationMs: switchIntervalMinutes * 60000,
-        calendarSnapshot: new Map([['2026-04-29', { isTradingDay: true, isHalfDay: false }]]) }),
-    now, scheduleTimer: () => { throw new Error('unexpected old due timer'); }, clearTimer: no });
-  const context = { config, symbolRegistry: registry, strategy: {}, autoSymbolManager: {
-    evaluatePeriodicSwitchDue: async () => { observations.push(state.isTradingEnabled); return { kind: 'NOOP' }; },
-    getPeriodicSwitchPendingState: () => ({ pending: true }) } };
-  const handler = load('src/main/asyncProgram/monitorTaskProcessor/handlers/autoSymbol.ts', OLD).createAutoSymbolTickHandler({
-    monitorContext: context, switchWakeupRuntime: {}, periodicSwitchWakeupRuntime: periodic,
-    getCanTradeNow: () => state.isTradingEnabled });
-  const runner = load('src/main/asyncProgram/monitorTaskProcessor/queueRunner.ts', OLD).createQueueRunner({
-    monitorTaskQueue: queue, termination, processQueue: async () => {
+        calendarSnapshot: new Map([['2026-04-29', { isTradingDay: true, isHalfDay: false }]]),
+      }),
+    now,
+    scheduleTimer: () => {
+      throw new Error('unexpected old due timer');
+    },
+    clearTimer: no,
+  });
+  const context = {
+    config,
+    symbolRegistry: registry,
+    strategy: {},
+    autoSymbolManager: {
+      evaluatePeriodicSwitchDue: async () => {
+        observations.push(state.isTradingEnabled);
+        return { kind: 'NOOP' };
+      },
+      getPeriodicSwitchPendingState: () => ({ pending: true }),
+    },
+  };
+  const handler = load(
+    'src/main/asyncProgram/monitorTaskProcessor/handlers/autoSymbol.ts',
+    OLD,
+  ).createAutoSymbolTickHandler({
+    monitorContext: context,
+    switchWakeupRuntime: {},
+    periodicSwitchWakeupRuntime: periodic,
+    getCanTradeNow: () => state.isTradingEnabled,
+  });
+  const runner = load(
+    'src/main/asyncProgram/monitorTaskProcessor/queueRunner.ts',
+    OLD,
+  ).createQueueRunner({
+    monitorTaskQueue: queue,
+    termination,
+    processQueue: async () => {
       while (!queue.isEmpty()) await handler(queue.pop());
-    }, onQueueError: e => errors.push(String(e)), onAlreadyRunning: no });
-  const signal = load('src/main/lifecycle/cacheDomains/signalRuntimeDomain.ts', OLD).createSignalRuntimeDomain({
-    logger, termination, monitorContext: context, buyProcessor: lifeOwner(), sellProcessor: lifeOwner(), monitorTaskProcessor: runner,
-    businessEventProgram: lifeOwner(), tradingRiskEventRuntime: lifeOwner(), monitorQuoteEventRuntime: lifeOwner(),
-    monitorDisplayRuntime: lifeOwner(), tradingQuoteDisplayRuntime: lifeOwner(), switchWakeupRuntime: lifeOwner(),
-    periodicSwitchWakeupRuntime: periodic, quoteSubscriptionRuntime: { ...lifeOwner(), reconcileFromCurrentTruth: async () => {} },
-    autoSearchWakeupRuntime: lifeOwner(), seatActivationDispatcher: lifeOwner(), seatRuntimeCleanupDispatcher: lifeOwner(),
-    trader: { startOrderMonitorRuntime: no }, postTradeConsistencyRuntime: { resetAbort: no, start: no, completeRebuildBaseline: no } });
+    },
+    onQueueError: (e) => errors.push(String(e)),
+    onAlreadyRunning: no,
+  });
+  const signal = load(
+    'src/main/lifecycle/cacheDomains/signalRuntimeDomain.ts',
+    OLD,
+  ).createSignalRuntimeDomain({
+    logger,
+    termination,
+    monitorContext: context,
+    buyProcessor: lifeOwner(),
+    sellProcessor: lifeOwner(),
+    monitorTaskProcessor: runner,
+    businessEventProgram: lifeOwner(),
+    tradingRiskEventRuntime: lifeOwner(),
+    monitorQuoteEventRuntime: lifeOwner(),
+    monitorDisplayRuntime: lifeOwner(),
+    tradingQuoteDisplayRuntime: lifeOwner(),
+    switchWakeupRuntime: lifeOwner(),
+    periodicSwitchWakeupRuntime: periodic,
+    quoteSubscriptionRuntime: { ...lifeOwner(), reconcileFromCurrentTruth: async () => {} },
+    autoSearchWakeupRuntime: lifeOwner(),
+    seatActivationDispatcher: lifeOwner(),
+    seatRuntimeCleanupDispatcher: lifeOwner(),
+    trader: { startOrderMonitorRuntime: no },
+    postTradeConsistencyRuntime: { resetAbort: no, start: no, completeRebuildBaseline: no },
+  });
   const manager = load('src/main/lifecycle/dayLifecycleManager.ts', OLD).createDayLifecycleManager({
-    mutableState: state, cacheDomains: [signal], logger, termination });
+    mutableState: state,
+    cacheDomains: [signal],
+    logger,
+    termination,
+  });
   await manager.tick(now(), { dayKey: '2026-04-29', canTradeNow: true, isTradingDay: true });
   const queuedBeforeImmediate = !queue.isEmpty();
-  await new Promise(resolve => setImmediate(resolve)); await flush();
-  check(queuedBeforeImmediate && observations.length === 1 && observations[0] === true && errors.length === 0,
-    'develop queued before gate restored, then real worker handled after gate enabled');
-  console.log(JSON.stringify({ name: 'develop-real-signal-manager-queue-runner-handler', queuedBeforeImmediate,
-    gateAtExecution: observations, state: state.lifecycleState, errors }));
-  await runner.stopAndDrain(); periodic.stop();
+  await new Promise((resolve) => setImmediate(resolve));
+  await flush();
+  check(
+    queuedBeforeImmediate &&
+      observations.length === 1 &&
+      observations[0] === true &&
+      errors.length === 0,
+    'develop queued before gate restored, then real worker handled after gate enabled',
+  );
+  console.log(
+    JSON.stringify({
+      name: 'develop-real-signal-manager-queue-runner-handler',
+      queuedBeforeImmediate,
+      gateAtExecution: observations,
+      state: state.lifecycleState,
+      errors,
+    }),
+  );
+  await runner.stopAndDrain();
+  periodic.stop();
 }
 (async () => {
   await developControl();
-  await scenario({ name: 'first-open-false-true-control', failures: 0, interval: 1, branch: 'control' });
+  await scenario({
+    name: 'first-open-false-true-control',
+    failures: 0,
+    interval: 1,
+    branch: 'control',
+  });
   await scenario({ name: 'morning-boundary' });
   await scenario({ name: 'morning-same-truth', branch: 'sameTruth' });
   await scenario({ name: 'halfday-no-afternoon', half: true });
   await scenario({ name: 'afternoon-no-opening-edge', session: 'afternoon' });
   await scenario({ name: 'not-yet-due-control', interval: 15 });
-})().catch(error => { console.error(error.stack); process.exitCode = 1; });
+})().catch((error) => {
+  console.error(error.stack);
+  process.exitCode = 1;
+});
 ```
 
 ## 附录 B：复运行命令与最终输出
 
 在仓库根目录执行下列 PowerShell，只读附录中的 JavaScript 并内存运行；无仓库写入、无网络：
 
-```powershell
+````powershell
 $report = 'C:/Users/65459/AppData/Local/Temp/hsi-architecture-audit-20261020/audit-recheck-lifecycle.md'
 $text = [IO.File]::ReadAllText($report)
 $probe = [regex]::Match($text, '(?s)```javascript\r?\n(.*?)\r?\n```').Groups[1].Value
 bun --no-env-file --eval $probe
-```
+````
 
 最终复运行 exit=0；原样输出如下（时间为UTC，+8为港时）。loads 对半日/下午样例含次日成功重建；不是失败数。正常first-open控制在后续fresh注入后旧receipt失效，因此最后latestTaskAuthorized=false是预期保护，不是恢复失败；后续救回的各案例均为true。
 

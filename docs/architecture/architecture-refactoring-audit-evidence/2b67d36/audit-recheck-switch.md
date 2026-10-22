@@ -10,7 +10,7 @@
 ### 逐项裁决
 
 | 子项 | 裁决 | 独立结论 |
-|---|---|---|
+| --- | --- | --- |
 | G3-C1：合法普通非 protective ELO 合并／200→80 | **confirmed** | 用两版相同、允许 REPLACE 的空关联普通旧 SELL 跑完整链；都真实卖出金额 200，develop 回补 200 股，current 回补 80 股。拆单可以是实现选择，缩减回补范围不是纯实现差异。 |
 | G3-C1：任意旧 SELL 都应合并／原 fixture 的 BUY-OLD=60 也必然回补 200 | **rejected** | 关联集合仅覆盖 60、却需 REPLACE 到 100 时，develop 本来拒绝改单。独立 negative control 已执行，不能把 helper 的 REPLACE 决定冒充最终 native 成功。 |
 | G3-C2：首次 submit 结构化明确拒绝、无本次 ACK | **confirmed** | develop 有限重试后实际 SELL→settlement→REBUY 成功；current 一次 REJECTED 后核仓 positive 即 fatal，关闭全局 gate。 |

@@ -160,11 +160,13 @@ describe('assertExecutionHistory', () => {
     }).toThrow(/exceeds current fact/);
 
     expect(
-      assertExecutionHistory({ snapshots: [
-        snap({ factStage: 'OPEN', cumulativeAmount: '44' }),
-        snap({ factStage: 'TERMINAL', cumulativeAmount: '45' }),
-        snap({ factStage: null, cumulativeAmount: '45' }),
-      ] }),
+      assertExecutionHistory({
+        snapshots: [
+          snap({ factStage: 'OPEN', cumulativeAmount: '44' }),
+          snap({ factStage: 'TERMINAL', cumulativeAmount: '45' }),
+          snap({ factStage: null, cumulativeAmount: '45' }),
+        ],
+      }),
     ).toMatchObject({ factStage: 'TERMINAL', cumulativeAmount: '45' });
   });
 });

@@ -28,19 +28,36 @@ test('真实 recorder 读取完整 today 覆盖的正成交终态，只在显式
   let throttles = 0;
   const recorder = native.createRecorder({
     logger: createLoggerDouble(),
-    rateLimiter: createRateLimiterDouble({ onThrottle: () => { throttles += 1; } }),
-    settlementRefreshNeedRecorder: { recordSettlementRefreshNeed: () => { refreshNeeds += 1; } },
+    rateLimiter: createRateLimiterDouble({
+      onThrottle: () => {
+        throttles += 1;
+      },
+    }),
+    settlementRefreshNeedRecorder: {
+      recordSettlementRefreshNeed: () => {
+        refreshNeeds += 1;
+      },
+    },
   });
   const orders = await recorder.fetchAllOrdersFromAPI();
-  expect(orders).toMatchObject([{
-    orderId: frame.orderId,
-    executedAmount: '123.45678901234567890123456789',
-    executionTimeMs: 3000,
-    updatedAtMs: 3000,
-  }]);
+  expect(orders).toMatchObject([
+    {
+      orderId: frame.orderId,
+      executedAmount: '123.45678901234567890123456789',
+      executionTimeMs: 3000,
+      updatedAtMs: 3000,
+    },
+  ]);
   expect(recorder.getBuyOrdersForSymbol(frame.symbol, true)).toEqual([]);
   expect(recorder.getExecutionFact(frame.orderId)).toBeNull();
-  expect(recorder.commitRebuildSnapshot([{ symbol: frame.symbol, isLongSymbol: true }], orders, () => true, 'REBUILD')).toEqual({ status: 'COMMITTED' });
+  expect(
+    recorder.commitRebuildSnapshot(
+      [{ symbol: frame.symbol, isLongSymbol: true }],
+      orders,
+      () => true,
+      'REBUILD',
+    ),
+  ).toEqual({ status: 'COMMITTED' });
   expect(recorder.getCostBasis(frame.symbol, true)).toEqual({
     quantity: 100,
     costAmount: '123.45678901234567890123456789',
@@ -60,12 +77,20 @@ test('真实 recorder 的后续读取失败保留原错误及已提交列表，�
     settlementRefreshNeedRecorder: { recordSettlementRefreshNeed: () => {} },
   });
   const initial = await recorder.fetchAllOrdersFromAPI();
-  recorder.commitRebuildSnapshot([{ symbol: frame.symbol, isLongSymbol: true }], initial, () => true, 'REBUILD');
+  recorder.commitRebuildSnapshot(
+    [{ symbol: frame.symbol, isLongSymbol: true }],
+    initial,
+    () => true,
+    'REBUILD',
+  );
   const before = recorder.getBuyOrdersForSymbol(frame.symbol, true);
-  native.setOrderSnapshotReplies([], [
-    { ...frame, orderId: 'NEW-GOOD' },
-    { ...frame, orderId: 'NEW-BAD' },
-  ]);
+  native.setOrderSnapshotReplies(
+    [],
+    [
+      { ...frame, orderId: 'NEW-GOOD' },
+      { ...frame, orderId: 'NEW-BAD' },
+    ],
+  );
   const failure = new TypeError('native selected order provenance');
   native.setOrderSnapshotGetterFailure('today', 'NEW-BAD', 'remark', failure);
   expect(await recorder.fetchAllOrdersFromAPI().catch((error: unknown) => error)).toBe(failure);

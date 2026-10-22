@@ -8,7 +8,10 @@ import type { OrderFact } from '../../types/trade.js';
 import { exactCompare } from '../../utils/numeric/exact.js';
 import type { NormalizedExecutionOrder, StaleObservationPolicy } from './types.js';
 
-function keepKnownExecution(known: KnownExecutionBaseline, order: OrderFact): NormalizedExecutionOrder {
+function keepKnownExecution(
+  known: KnownExecutionBaseline,
+  order: OrderFact,
+): NormalizedExecutionOrder {
   if (known.phase === null)
     throw new Error(`[执行归一] stale 观察缺少 known phase，不能补造: ${order.orderId}`);
 

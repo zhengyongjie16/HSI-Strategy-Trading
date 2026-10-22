@@ -27,7 +27,7 @@
 **正常 pending 关联场景：**B1 BUY100@1，T-100ms；B2 BUY100@2，T；然后真实 `selectSellableOrders(ALL,max100)` 选择 B1、`submitSellOrder` 登记 pending，再跟踪并接收 S Filled100@1.5，T。T=`2026-10-07T10:00:00+08:00`，同一 BULL.HK、普通 ELO、非保护性。不是必须省略正常 pending 关联才触发。
 
 | 实际读取/计算 | develop | HEAD |
-|---|---|---|
+| --- | --- | --- |
 | S 前 BUY 经济数量 | 100 + 100 | 100 + 100 |
 | S 后剩余 BUY | B2，100股，成本200 | 空列表 |
 | 两版真实 Daily offset | -150 | -150 |
@@ -60,7 +60,7 @@
 基础 SELL 控制：track普通SELL100 → PartialFilled50@1,T+10 → Canceled50@1,T+20。两版均真实 settle，pending=0、hold空、终态事件1；HEAD `getSellOperationState=SETTLED_WITH_REMAINDER` 且 recorder fact.phase=TERMINAL。源码 `settlementFlow.ts:431-443` 删除 tracked，`routingIndex.ts:111-133` 移除 bucket/空route并清timer，证明不是仅把订单status改为closed仍留route。
 
 | settle/detach 后新增 raw 观察 | develop | HEAD |
-|---|---|---|
+| --- | --- | --- |
 | 同 revision PartialFilled50@1 | 忽略，无fatal | `fact stage regression: TERMINAL -> OPEN`，关门 |
 | 更旧 revision PartialFilled50@1 | 忽略，无fatal | 无fatal，不增加终态事件 |
 | 更新 revision PartialFilled50@1 | 忽略，无fatal | stage regression fatal；此行只记观察结果，不额外认定broker应允许状态倒退 |
@@ -92,7 +92,7 @@ None.
 ## 逐项确认 / 否证边界
 
 | 主张 | 独立二审判定 |
-|---|---|
+| --- | --- |
 | OE-001：在线SELL导致未卖出的等时BUY被遗漏 | **confirmed**；真实Monitor、无关联和正常pending关联均复现。 |
 | “旧历史严格边界是重构新引入” | **rejected**；旧历史本来如此，历史两版输出相同。 |
 | “缺陷只因探针省略pending/related IDs” | **rejected**；正式选单→pending提交→Monitor Filled仍复现。 |
@@ -124,6 +124,7 @@ None.
 ## 实际阅读范围与 not assessed
 
 **新增深读的当前生产区段：**
+
 - `src/application/orderTracking/recorder/index.ts:1-218,253-303`；`recorder/orderStorage.ts:1-90,146-157,267-303,325-369`。
 - `src/domain/order/executionProjection.ts:1-244` 全文；`orderFilteringEngine.ts:1-178` 全文；`executionFact.ts:1-176` 全文；`orderFactMerge.ts:77-189,325-424,470-600`；`orderOwnership.ts:1-117`；`sellDeductionPolicy.ts:1-98`。
 - `src/application/orderTracking/orderMonitor/index.ts:70-244,575-729,755-854`；`eventFlow.ts:1-260,290-430`；`settlementFlow.ts:1-49,45-264,298-459`；`orderOps.ts:200-304,405-513`；`routingIndex.ts:1-150`；`routeProcessor.ts:66-161,510-656,820-985`。

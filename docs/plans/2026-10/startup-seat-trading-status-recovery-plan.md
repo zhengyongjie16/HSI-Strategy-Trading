@@ -155,19 +155,19 @@ status = ACTIVATING
 
 SDK `QuoteContext.quote(symbols)` 返回的 `SecurityQuote.tradeStatus` 可用于本次准入，并且该请求不要求先订阅。
 
-| SDK 枚举 | 官方业务含义 | 恢复准入 |
-| --- | --- | --- |
-| `TradeStatus.Normal` | 正常交易 | 允许进入原恢复流程 |
-| `TradeStatus.Halted` | 停牌 | 拒绝 |
-| `TradeStatus.Delisted` | 退市 | 拒绝 |
-| `TradeStatus.Fuse` | 熔断 | 拒绝 |
-| `TradeStatus.PrepareList` | 新股待上市 | 拒绝 |
-| `TradeStatus.CodeMoved` | 代码变更 | 拒绝 |
-| `TradeStatus.ToBeOpened` | 待开盘 | 拒绝 |
-| `TradeStatus.SplitStockHalts` | 拆合股暂停交易 | 拒绝 |
-| `TradeStatus.Expired` | 已到期，衍生品 | 拒绝 |
-| `TradeStatus.WarrantPrepareList` | 轮证待上市 | 拒绝 |
-| `TradeStatus.Suspend` | 终止交易 | 拒绝 |
+| SDK 枚举                         | 官方业务含义   | 恢复准入           |
+| -------------------------------- | -------------- | ------------------ |
+| `TradeStatus.Normal`             | 正常交易       | 允许进入原恢复流程 |
+| `TradeStatus.Halted`             | 停牌           | 拒绝               |
+| `TradeStatus.Delisted`           | 退市           | 拒绝               |
+| `TradeStatus.Fuse`               | 熔断           | 拒绝               |
+| `TradeStatus.PrepareList`        | 新股待上市     | 拒绝               |
+| `TradeStatus.CodeMoved`          | 代码变更       | 拒绝               |
+| `TradeStatus.ToBeOpened`         | 待开盘         | 拒绝               |
+| `TradeStatus.SplitStockHalts`    | 拆合股暂停交易 | 拒绝               |
+| `TradeStatus.Expired`            | 已到期，衍生品 | 拒绝               |
+| `TradeStatus.WarrantPrepareList` | 轮证待上市     | 拒绝               |
+| `TradeStatus.Suspend`            | 终止交易       | 拒绝               |
 
 实现应使用 SDK 命名枚举，不硬编码数字。
 
@@ -274,16 +274,16 @@ getSecurityTradingStatuses(symbols)
 
 ### 5.5 失败分类
 
-| 情况 | 判定与处理 |
-| --- | --- |
-| 返回 `Normal` | 按原规则恢复为 `ACTIVATING`，不是立即放行交易 |
-| 返回其他已知枚举值 | 记录拒绝原因，不绑定该标的；方向按原规则进入 `EMPTY` |
-| 成功响应中缺少请求标的 | 状态未取得，报错并阻断本轮恢复；不能解释为退市或无持仓 |
-| 返回行缺少状态，或状态为 null/undefined | 状态契约不完整，报错并阻断 |
-| 应用层实际看到未知状态值 | 无法确认状态，报错并阻断 |
-| 非法字段类型或损坏对象 | 按契约错误直接暴露，不包装成可忽略业务失败 |
-| 明确的外部请求失败 | 保留原外部错误分类，由启动或生命周期恢复机制处理 |
-| 查询成功但原快照授权失效 | 不发布、不继续寻标，交原上层失效分支处理 |
+| 情况                                    | 判定与处理                                             |
+| --------------------------------------- | ------------------------------------------------------ |
+| 返回 `Normal`                           | 按原规则恢复为 `ACTIVATING`，不是立即放行交易          |
+| 返回其他已知枚举值                      | 记录拒绝原因，不绑定该标的；方向按原规则进入 `EMPTY`   |
+| 成功响应中缺少请求标的                  | 状态未取得，报错并阻断本轮恢复；不能解释为退市或无持仓 |
+| 返回行缺少状态，或状态为 null/undefined | 状态契约不完整，报错并阻断                             |
+| 应用层实际看到未知状态值                | 无法确认状态，报错并阻断                               |
+| 非法字段类型或损坏对象                  | 按契约错误直接暴露，不包装成可忽略业务失败             |
+| 明确的外部请求失败                      | 保留原外部错误分类，由启动或生命周期恢复机制处理       |
+| 查询成功但原快照授权失效                | 不发布、不继续寻标，交原上层失效分支处理               |
 
 已知非正常状态与状态未知必须区别处理。前者可以按空席位补席；后者按用户确认必须阻断恢复。
 

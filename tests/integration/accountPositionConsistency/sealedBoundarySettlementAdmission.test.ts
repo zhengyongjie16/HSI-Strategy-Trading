@@ -235,24 +235,36 @@ it('admits original 9.2/T/revision+1 authority through shared O/Daily/S without 
     };
     expect(flow.settleOrder(close)).toEqual({ handled: true, relatedBuyOrderIds: null });
     expect(flow.settleOrder(close)).toEqual({ handled: false, relatedBuyOrderIds: null });
-    expect(owner.getExecutionFact('OFFLINE-SELL')).toMatchObject({ cumulativeAmount: '46', updatedAtMs: revision + 1 });
+    expect(owner.getExecutionFact('OFFLINE-SELL')).toMatchObject({
+      cumulativeAmount: '46',
+      updatedAtMs: revision + 1,
+    });
     expect(owner.getSellRecordByOrderId('OFFLINE-SELL')).toMatchObject({ costAmount: '46' });
     expect(owner.getBuyOrdersForSymbol('BULL.HK', true)).toEqual(before.buyList);
     expect(owner.getCostBasis('BULL.HK', true)).toEqual(before.cost);
     expect(
-      daily.prepareProtectionBoundary({
-        direction: 'LONG',
-        boundaryExecutedTimeMs: executionT + 1,
-      }).orderBaselines.find((baseline) => baseline.orderId === 'OFFLINE-SELL'),
+      daily
+        .prepareProtectionBoundary({
+          direction: 'LONG',
+          boundaryExecutedTimeMs: executionT + 1,
+        })
+        .orderBaselines.find((baseline) => baseline.orderId === 'OFFLINE-SELL'),
     ).toMatchObject({ cumulativeAmount: '46', orderRevisionMs: revision + 1 });
     expect(daily.getLossOffset('LONG')).toBe('0');
     expect(episode.getInProgressEpisodes()).toEqual(before.episode);
-    expect(snapshot.getView().token.snapshotGeneration).toBe(before.snapshotToken.snapshotGeneration + 1);
-    expect(sink.getStatus()).toEqual({ ...before.sinkStatus, staleVersion: before.sinkStatus.staleVersion + 1 });
+    expect(snapshot.getView().token.snapshotGeneration).toBe(
+      before.snapshotToken.snapshotGeneration + 1,
+    );
+    expect(sink.getStatus()).toEqual({
+      ...before.sinkStatus,
+      staleVersion: before.sinkStatus.staleVersion + 1,
+    });
     expect(repository.loadExecutionProgressRecords(dayKey)).toHaveLength(3);
     expect(repository.loadCompletionRecords(dayKey)).toHaveLength(1);
     expect(fs.readFileSync(logFile).subarray(0, originalBytes.length)).toEqual(originalBytes);
-    expect(repository.loadCompletionRecords(dayKey)[0]?.orderBaselines).toEqual(sealed.orderBaselines);
+    expect(repository.loadCompletionRecords(dayKey)[0]?.orderBaselines).toEqual(
+      sealed.orderBaselines,
+    );
     expect(owner.getPendingSellSnapshot()).toEqual([]);
     expect(holds.getHoldSymbols().size).toBe(0);
     expect(runtime.closedOrderIds.has('OFFLINE-SELL')).toBe(true);

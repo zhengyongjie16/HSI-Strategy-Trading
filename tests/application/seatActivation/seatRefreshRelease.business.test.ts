@@ -276,14 +276,16 @@ async function captureHandlerFailure(
   });
 
   let thrown: unknown = 'not-thrown';
-  const handling = handler.activate(createSeatRefreshTask(), () => true).then(
-    (result) => {
-      if (result.status === 'retry' || result.status === 'failed') thrown = result.error;
-    },
-    (error: unknown) => {
-      thrown = error;
-    },
-  );
+  const handling = handler
+    .activate(createSeatRefreshTask(), () => true)
+    .then(
+      (result) => {
+        if (result.status === 'retry' || result.status === 'failed') thrown = result.error;
+      },
+      (error: unknown) => {
+        thrown = error;
+      },
+    );
   await releaseStarted.promise;
   try {
     if ('bodyFailure' in params && !isExternalApiRequestError(params.bodyFailure)) {

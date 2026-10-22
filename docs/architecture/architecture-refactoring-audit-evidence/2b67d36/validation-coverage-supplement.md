@@ -35,7 +35,7 @@ None. 不报告风格、重复断言或单纯覆盖率意见。
 `coverage-unknown-probe.test.ts` 向两版注入同一个 `Error('network timeout') + code='ETIMEDOUT'`；使用两版真实 doomsday owner、time evaluation 和 timer runtime，当前真实 mutation adapter，以及真实 termination runtime 记录关闭结果。无真实网络调用。
 
 | 观察量 | develop | HEAD |
-|---|---|---|
+| --- | --- | --- |
 | 顺序调用 | submit → positions → subscriptions | 仅 submit |
 | 返回后的持仓数 | 0（注入的刷新结果） | 1（保持原 canonical） |
 | 下一次 timer | 1000ms | 无 |
@@ -61,7 +61,7 @@ None. 不报告风格、重复断言或单纯覆盖率意见。
 下列为**具体测试断言的定位/抽查**，不是对相关生产模块全链等价背书。它们已由此前有效全量门禁执行，本轮只定向读断言，不重复跑全量。
 
 | 旧保护线索（develop 测试） | 当前可运行保护证据 / 本轮结论 |
-|---|---|
+| --- | --- |
 | `tests/app/runtime/createPostGateRuntime.tradeLogPersistence.test.ts:264` 后续工厂失败前登记 listener disposal | 当前同文件 `:327-360`：真实工厂失败后 cleanup 两次，unsubscribe 只一次。保护仍在，不是删测。 |
 | `tests/app/runtime/createPostTradeConsistencyRuntime.test.ts:1237` pending work 清除后才推进 freshness | `tests/application/postTradeSettlement/postTradeSettlement.business.test.ts:1397-1444`：invalid baseline 不清 pending、不发 fresh；真实 rebuild commit 后才到 version1/fresh。迁至 application owner。 |
 | 同旧文件 `:1653` 正常终止等待晚到持仓订阅提交，双 owner 排空后不得 mutation | 当前 `postTradeSettlement.business.test.ts:1832-1906`：订阅未完成时 drain 等待；posttrade drain → quote drain；后续 retain/reconcile 不再 mutation。 |
@@ -79,7 +79,7 @@ None. 不报告风格、重复断言或单纯覆盖率意见。
 ## 实际源码覆盖（本补充新增阅读；不冒充全文件审计）
 
 | 当前生产文件 | 本轮深读区段 / 限制 |
-|---|---|
+| --- | --- |
 | `src/runtime/timeWakeupEvaluationProgram/index.ts` | `183-227,340-411`；其余为既有阅读/符号核对，不新增全文件覆盖声明。 |
 | `src/application/doomsdayClearance/index.ts` | `260-504,620-847`；不宣称本轮完整审清所有 retry 状态分支。 |
 | `src/application/orderExecution/submitFlow.ts` | `452-570`；UNKNOWN/accepted/私有授权取消上抛；其他入口只是符号定位，已有 V-C4 不在此重复判定。 |

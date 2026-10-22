@@ -141,8 +141,8 @@ test('explicit non-HK push decodes to null and never enters management; bad symb
   expect(decoded).toEqual([null]);
 
   // 坏 symbol 结构不得降级为“非HK”静默丢弃：保留原始内部错误。
-  expect(() => { f.emitOrderChangedFrame({ ...input, symbol: 'BROKEN' }); }).toThrow(
-    /symbol structure/,
-  );
+  expect(() => {
+    f.emitOrderChangedFrame({ ...input, symbol: 'BROKEN' });
+  }).toThrow(/symbol structure/);
   expect(decoded).toEqual([null]);
 });

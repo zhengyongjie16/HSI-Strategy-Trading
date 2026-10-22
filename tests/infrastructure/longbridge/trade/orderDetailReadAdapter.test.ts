@@ -50,19 +50,26 @@ test('HK order matching the requested id maps to a neutral fact', async () => {
   });
 });
 
-test.each([null, new Decimal('0')])('first positive terminal detail with price %s throws without issuing another read', async (executedPrice) => {
-  let reads = 0;
-  const adapter = createOrderDetailReadAdapter({
-    orderDetail: async () => {
-      reads++;
-      return detail({ status: OrderStatus.Filled, executedQuantity: new Decimal('100'), executedPrice });
-    },
-  });
-  const error = await rejection(() => adapter.read('WANTED'));
-  expect(error).toBeInstanceOf(TypeError);
-  expect(String(error)).toContain('invalid cumulative execution quantity/price');
-  expect(reads).toBe(1);
-});
+test.each([null, new Decimal('0')])(
+  'first positive terminal detail with price %s throws without issuing another read',
+  async (executedPrice) => {
+    let reads = 0;
+    const adapter = createOrderDetailReadAdapter({
+      orderDetail: async () => {
+        reads++;
+        return detail({
+          status: OrderStatus.Filled,
+          executedQuantity: new Decimal('100'),
+          executedPrice,
+        });
+      },
+    });
+    const error = await rejection(() => adapter.read('WANTED'));
+    expect(error).toBeInstanceOf(TypeError);
+    expect(String(error)).toContain('invalid cumulative execution quantity/price');
+    expect(reads).toBe(1);
+  },
+);
 
 test('wrong orderId is rejected before mapping', async () => {
   const adapter = adapterReturning(detail({ orderId: 'OTHER' }));

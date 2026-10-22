@@ -68,11 +68,11 @@
 
 新增 `RUNTIME.DATA_ROOT_DIR_ENV_KEY: 'APP_DATA_ROOT_DIR'` 和 `resolveDataRootDir(env)`。
 
-| 配置情形 | 结果 |
-| --- | --- |
+| 配置情形                         | 结果                                                      |
+| -------------------------------- | --------------------------------------------------------- |
 | `APP_DATA_ROOT_DIR` 为非空白路径 | 去除首尾空白，按 `cwd` 解析为绝对路径；绝对路径保持其含义 |
-| 未配置或值为空白，档位为 app | `<cwd>/data` |
-| 未配置或值为空白，档位为 test | `<cwd>/tests/data` |
+| 未配置或值为空白，档位为 app     | `<cwd>/data`                                              |
+| 未配置或值为空白，档位为 test    | `<cwd>/tests/data`                                        |
 
 复用现有运行档位判断：显式 `APP_RUNTIME_PROFILE` 优先，其次按 `BUN_TEST` 推断，其他情况为 app；不新增另一套档位规则。
 

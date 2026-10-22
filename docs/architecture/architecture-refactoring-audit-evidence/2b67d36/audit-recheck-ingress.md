@@ -10,7 +10,7 @@
 ### 逐项裁决
 
 | 初审编号 | 裁决 | 严重性 | 独立复核的具体结论 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | INF-C1 | **confirmed** | major | SDK 合法 nullable 的 history 旧观察在 today 请求之前被完整事实 mapper 拒绝；原本应获选的完整 today 根本没有机会覆盖。相同来源内的被淘汰旧观察也存在同根问题。**不确认“所有终态缺价 history 都阻断”这一过宽描述**：有有效 revision 的普通终态缺价可映射为 null，完整 today 能覆盖，实测两版均通过。 |
 | INF-C2 | **confirmed** | major | 已知终态、零累计成交、`OrderSide.Unknown` 在 develop 明确非 fatal 且不分类；current 无条件拒绝 side，连 current 仍保留的 domain 零成交终态豁免都不可达。不是获准的全局 fail-fast 加强。 |
 | G3-C3 | **confirmed** | major | 与席位无关、无本系统 ownership 的合法 HK 普通终态缺价记录，通过实际 adapter/mapper 后，先在全账户 normalize 抛错，早于相关标的/归属选择；真实 activation 和真实启动 loader 均复现。真实监控队列把该内部 Error 送入 termination，全局交易与生产准入被关闭。 |
@@ -132,7 +132,7 @@ None。本次证据是扩大 fail-fast 范围导致的可用性/恢复回归；�
 #### 5. 同根残留的有界核查（不再另加独立 finding 数量）
 
 | 直接边界 | 裁决及证据 | 验证边界 |
-|---|---|---|
+| --- | --- | --- |
 | 同来源择新之前的旧观察 | **confirmed**。today 数组依次含缺价旧 PartialFilled 和完整更新 Filled，同 ID；develop 留下完整新观察，current 在 mapper 拒绝。位置仍为 snapshot adapter `:142–153`、snapshot policy `:38–40,75–91`。 | 是 INF-C1 的直接同根补例；不声称检查了任意字段畸形组合。 |
 | 非系统 HK 终态缺 revision | **confirmed**。00005.HK/HSBC HOLDINGS 完整价格、`updatedAt=null`，ownership=null；develop 真实 activation ACTIVE，current 在 history mapper 失败，甚至到不了 C3 normalize。 | 只改 application 的 related filter 仍残留此上游路径；位置 mapper `:107–109`。 |
 | 名称可归属但非 related 的缺价终态 | **confirmed**。OTHER.HK/HSI RC、非席位、无 known/pending/durable 引用，正量但 executedPrice=null：develop 真实 activation ACTIVE、Daily loss=0，current 在全量 normalize 失败。原 Daily `src/core/riskController/dailyLossTracker.ts:648–656` 在 ownership 解析前就用 hasValidExecution 排除该观察；它并非原 owner 真正选入的经济事实。 | 同根选择顺序残留，不新增计数；与完整 OTHER.HK 往返日损=-10 的控制必须同时保护。不能笼统说“所有可归属单都必须在全账户 mapper 完整校验”，也不能反过来忽略相关/known/durable 错误。 |

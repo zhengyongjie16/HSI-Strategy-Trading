@@ -354,9 +354,7 @@ describe('OrderRecorder rebuild refresh', () => {
     };
     expect(rawOrder.executedPrice).toBeNull();
     expect(rawOrder.executedAmount).toBeNull();
-    expect(() => publishSnapshot(f, 'BULL.HK', true, [rawOrder])).toThrow(
-      /正成交缺少可持久化金额/,
-    );
+    expect(() => publishSnapshot(f, 'BULL.HK', true, [rawOrder])).toThrow(/正成交缺少可持久化金额/);
     expect(summarizeOrders(f.recorder.getBuyOrdersForSymbol('BULL.HK', true))).toEqual(before);
     expect(
       f.snapshot.isCurrent(f.snapshotToken, { account: true, positions: true, paired: true }),

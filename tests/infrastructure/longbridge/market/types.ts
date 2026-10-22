@@ -43,7 +43,8 @@ export type MarketQuoteReadGate = {
 };
 
 /** fixture 允许观察的 SDK 调用；只发布请求标的，不发布 SDK 参数或 context。 */
-export type MarketFixtureCallMethod = 'quote' | 'subscribe' | 'unsubscribe' | 'realtimeQuote' | 'warrantList';
+export type MarketFixtureCallMethod =
+  'quote' | 'subscribe' | 'unsubscribe' | 'realtimeQuote' | 'warrantList';
 
 /** 真实行情 adapter 的离线控制能力；只接收中性输入，不暴露 SDK context 或原生 push。 */
 export interface MarketFixtureController {

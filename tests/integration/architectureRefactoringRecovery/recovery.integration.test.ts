@@ -1746,17 +1746,39 @@ for (const route of ['ONLINE', 'SEAT_REFRESH', 'RESTART'] as const) {
     await withOfflineLog(async (root) => {
       let state = await createOfflineRecovery(root, []);
       const t = fixture.boundaryMs;
-      const frame = (orderId: string, side: 'BUY' | 'SELL', price: string, time: number, quantity = 10) => ({
-        orderId, symbol: 'BULL.HK', stockName: 'HSI RC', remark: side === 'SELL' ? '|PL' : '',
-        side, status: 'Filled' as const, orderType: 'LO' as const,
-        quantity: String(quantity), executedQuantity: String(quantity),
-        submittedPrice: price, executedPrice: price, submittedAtMs: time - 1, updatedAtMs: time,
+      const frame = (
+        orderId: string,
+        side: 'BUY' | 'SELL',
+        price: string,
+        time: number,
+        quantity = 10,
+      ) => ({
+        orderId,
+        symbol: 'BULL.HK',
+        stockName: 'HSI RC',
+        remark: side === 'SELL' ? '|PL' : '',
+        side,
+        status: 'Filled' as const,
+        orderType: 'LO' as const,
+        quantity: String(quantity),
+        executedQuantity: String(quantity),
+        submittedPrice: price,
+        executedPrice: price,
+        submittedAtMs: time - 1,
+        updatedAtMs: time,
       });
       const sendNew = (input: ReturnType<typeof frame>) => {
         state.monitor.trackOrder({
-          orderId: input.orderId, symbol: input.symbol, side: input.side, executionSide: input.side,
-          orderType: 'LO', price: input.submittedPrice, initialSubmittedPrice: input.submittedPrice,
-          quantity: Number(input.quantity), isLongSymbol: true, monitorSymbol: 'HSI.HK',
+          orderId: input.orderId,
+          symbol: input.symbol,
+          side: input.side,
+          executionSide: input.side,
+          orderType: 'LO',
+          price: input.submittedPrice,
+          initialSubmittedPrice: input.submittedPrice,
+          quantity: Number(input.quantity),
+          isLongSymbol: true,
+          monitorSymbol: 'HSI.HK',
           isProtectiveLiquidation: input.side === 'SELL',
         });
         state.native.emitOrderChangedFrame(input);
@@ -1772,10 +1794,16 @@ for (const route of ['ONLINE', 'SEAT_REFRESH', 'RESTART'] as const) {
         await state.postTrade.waitForFresh();
         const firstCompletion = state.repository.loadCompletionRecords(fixture.dayKey);
         expect(firstCompletion).toHaveLength(1);
-        expect(firstCompletion[0]?.orderBaselines.find((b) => b.orderId === 'P1-A')?.cumulativeAmount).toBe('90');
+        expect(
+          firstCompletion[0]?.orderBaselines.find((b) => b.orderId === 'P1-A')?.cumulativeAmount,
+        ).toBe('90');
         state.native.emitOrderChangedFrame(correction);
         await state.postTrade.waitForFresh();
-        expect(state.recorder.getExecutionFact('P1-A')).toMatchObject({ cumulativeAmount: '80', executionTimeMs: t, updatedAtMs: t + 100 });
+        expect(state.recorder.getExecutionFact('P1-A')).toMatchObject({
+          cumulativeAmount: '80',
+          executionTimeMs: t,
+          updatedAtMs: t + 100,
+        });
         expect(state.daily.getLossOffset('LONG')).toBe('0');
         expect(state.repository.loadCompletionRecords(fixture.dayKey)).toEqual(firstCompletion);
         state.native.setOrderSnapshotReplies([], [buy, correction]);
@@ -1802,7 +1830,10 @@ for (const route of ['ONLINE', 'SEAT_REFRESH', 'RESTART'] as const) {
         expect(completions).toHaveLength(2);
         expect(completions[0]).toEqual(firstCompletion[0]);
         expect(completions[1]?.orderBaselines.find((b) => b.orderId === 'P1-A')).toMatchObject({
-          cumulativeQuantity: '10', cumulativeAmount: '80', lastExecutionTimeMs: t, orderRevisionMs: t + 100,
+          cumulativeQuantity: '10',
+          cumulativeAmount: '80',
+          lastExecutionTimeMs: t,
+          orderRevisionMs: t + 100,
         });
         expect(state.episode.getInProgressEpisodes()).toEqual([]);
         await state.postTrade.stopAndDrain();
@@ -1821,7 +1852,10 @@ for (const route of ['ONLINE', 'SEAT_REFRESH', 'RESTART'] as const) {
         state.native.emitOrderChangedFrame(frame('P1-A', 'SELL', '8.5', t + 500, 20));
         // B2 后仅卖出增量 20-10=10、金额 170-80=90，对应 D 的 100 成本，亏损 -10。
         expect(state.daily.getLossOffset('LONG')).toBe('-10');
-        expect(state.recorder.getExecutionFact('P1-A')).toMatchObject({ cumulativeQuantity: 20, cumulativeAmount: '170' });
+        expect(state.recorder.getExecutionFact('P1-A')).toMatchObject({
+          cumulativeQuantity: 20,
+          cumulativeAmount: '170',
+        });
         expect(state.repository.loadCompletionRecords(fixture.dayKey)).toEqual(completions);
         expect(state.getSubmitCallCount()).toBe(0);
       } finally {
