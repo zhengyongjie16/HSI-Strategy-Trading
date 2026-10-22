@@ -407,14 +407,15 @@ describe('createPostGateRuntime trade log persistence', () => {
           executedTimeMs: protectiveExecutedTimeMs,
           orderUpdatedAtMs: protectiveExecutedTimeMs,
         },
-        (snapshot) =>
-          { tradeDeps.persistProtectiveLiquidationExecutionProgress({
+        (snapshot) => {
+          tradeDeps.persistProtectiveLiquidationExecutionProgress({
             ...snapshot,
             monitorSymbol: 'HSI.HK',
             direction: 'LONG',
             symbol: 'BULL.HK',
             orderId: 'PL-DATA-001',
-          }); },
+          });
+        },
       );
 
       runtime.protectiveLiquidationEpisodeTracker.recordProtectiveFillProgress({

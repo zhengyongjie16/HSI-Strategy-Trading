@@ -1,7 +1,7 @@
 # Prettier 移除与 Bun 原生格式化迁移方案
 
 - 日期：2026-10-23
-- 状态：方案已编写；尚未实施依赖卸载、配置迁移或编辑器调整。
+- 状态：已在独立 worktree 实施，自动化验收通过；VS Code 实际保存行为按用户确认保留为待人工验证，实施记录见 §10。
 - 验证基线：Bun 1.4.4；项目原有 Prettier 3.9.6。
 - 目标：移除 `prettier` 格式化引擎及 `.prettierrc`，由 `bun fmt` 统一执行格式化，格式规则收敛到根目录 `bunfig.toml`。
 - 范围：格式配置、开发依赖与锁文件、格式脚本、VS Code 工作区配置、直接受影响的现行使用说明。
@@ -367,21 +367,23 @@ bun run format:check
 
 ## 8. 完成清单
 
-以下项目在正式实施时填写；当前均未表示已完成迁移。
+以下记录对应 2026-10-23 的独立实施，实际结果与验证边界见 §10。
 
-- [ ] `prettier` 引擎依赖已移除，锁文件变更范围已审查。
-- [ ] `.prettierrc` 已删除，原有有效样式已迁入 `bunfig.toml`。
-- [ ] 不再保留无实际用途的 `*.lock` 格式覆盖，包管理器独占生成锁文件维护职责。
-- [ ] `[test]` 行为保持不变，未混入格式配置。
-- [ ] `format`、`format:check` 和 Bun 版本基线已明确。
-- [ ] VS Code 不再绑定 Prettier，命令式格式化的行为变化已说明并验证。
-- [ ] `eslint-config-prettier` 保留，相关注释准确，Lint 规则顺序不变。
-- [ ] 当前操作指引已更新，历史验收证据未改写。
-- [ ] 文件选择差异已逐项确认，无意外漏检。
-- [ ] 无旧 `node_modules` 的安装与格式化验收通过。
-- [ ] 定向格式检查、全仓只读格式检查、Lint 与类型检查通过；未解决问题已关闭。
-- [ ] 最终 diff 无无关格式化、依赖升级或业务变更，临时文件已清理。
-- [ ] 实际命令、退出码、编辑器验证结果及与本方案的偏差已记录后，再宣告完成。
+- [x] `prettier` 引擎依赖已移除，锁文件变更范围已审查。
+- [x] `.prettierrc` 已删除，原有有效样式已迁入 `bunfig.toml`。
+- [x] 不再保留无实际用途的 `*.lock` 格式覆盖，包管理器独占生成锁文件维护职责。
+- [x] `[test]` 行为保持不变，未混入格式配置。
+- [x] `format`、`format:check` 和 Bun 版本基线已明确。
+- [x] VS Code 不再绑定 Prettier，配置已核对，命令式格式化的行为变化已说明。
+- [ ] VS Code 实际保存行为待用户人工验证；用户已接受该验收边界，不冒充已验证。
+- [x] `eslint-config-prettier` 保留，相关注释准确，Lint 规则顺序不变。
+- [x] 当前操作指引已更新，历史验收证据未改写。
+- [x] 文件选择差异已逐项确认，无意外漏检。
+- [x] 无旧 `node_modules` 的安装与格式化验收通过。
+- [x] 定向及全仓只读格式检查、隔离 `lint:fix` 与随后类型检查通过；既有无关 Lint 排版增量未回流，边界见 §10.4。
+- [x] 最终 diff 无无关格式化、依赖升级或业务变更；两项额外定向格式化均经用户确认。
+- [x] 临时样本、验收副本和检查输出清理完成。
+- [x] 实际命令、退出码、编辑器验证边界及与本方案的偏差已记录。
 
 ## 9. 官方依据
 
@@ -393,3 +395,82 @@ bun run format:check
 - [bunfig.toml：Formatter](https://bun.com/docs/runtime/bunfig#formatter)
 - [bunfig.toml：Overrides](https://bun.com/docs/runtime/bunfig#format-overrides)
 - [Prettier VS Code：本地版本与扩展内置版本](https://github.com/prettier/prettier-vscode#prettier-resolution)
+
+## 10. 实施记录（2026-10-23）
+
+### 10.1 隔离基线与实际范围
+
+- 实施分支为 `refactor/bun-fmt-migration`，独立 worktree 目录名为 `bun-fmt-migration`。原分支 `beta-V2` 未切换，原 HEAD 与暂存区未改动。
+- 从原 HEAD `0418b60fc62216e4a1ce79055a7f6eda43b2615f` 复制当时工作区的 858 个已跟踪及非忽略未跟踪文件，逐文件校验内容，形成独立基线提交 `d9b1f47e9a3de846274d03ca63c66c45bef034c3`。该提交包含用户已有修改，不能把它们计为本次迁移增量；迁移 diff 以该提交为基准。
+- Bun 实际版本为 `1.4.4`。配置、依赖、脚本、编辑器及 §4 指定现行说明均已迁移，未修改运行、构建、业务配置或测试 preload。
+- 用户另行明确授权：定向格式化既有 `tests/app/runtime/createPostGateRuntime.tradeLogPersistence.test.ts`，以及新增检查范围中的 `.codex/config.toml`。前者仅回调块排版，后者仅缩进与末尾换行，不改变测试行为或 Codex 权限值。
+- 不执行全仓写入式格式化，不启动应用、构建产物或 SDK 会话。隔离安装/验收副本不带业务环境文件、凭据或运行数据；验证子进程使用系统变量白名单、隔离 HOME/TEMP 及 `BUN_OPTIONS=--no-env-file`。
+
+### 10.2 迁移前后文件选择与格式债务
+
+| 阶段 | 实际命令 | 退出码 | 结果 |
+| --- | --- | --- | --- |
+| 迁移前 | `bun --no-env-file fmt --doctor` | 0 | 加载 `.prettierrc`，848 个文件均可原生处理，提示可以移除 Prettier |
+| 迁移前 | `bun --no-env-file fmt --list-files` | 0 | 848 个候选文件，完整列表在仓库外保存并用于差集比较 |
+| 迁移前 | `bun --no-env-file fmt --check` | 1 | 仅 `tests/app/runtime/createPostGateRuntime.tradeLogPersistence.test.ts` 格式不符，无解析失败 |
+| 配置迁移后、定向修正前 | `bun --no-env-file fmt --doctor` / `bun --no-env-file fmt --list-files` | 各 0 | 使用 `bunfig.toml`，候选仍为 848 个 |
+| 配置迁移后、定向修正前 | `bun --no-env-file fmt --check` | 1 | `.codex/config.toml`、`bunfig.toml`、`README.md` 及上述既有测试文件需格式化，无解析失败 |
+| 定向修正后 | `bun --no-env-file run format:check` | 0 | `All 848 files are formatted.` |
+
+候选集合变化逐项为：
+
+- 新增 `.codex/config.toml` 与 `bunfig.toml`：原生模式纳入现存 TOML 文件，不只有根配置文件。
+- 减少 `.prettierrc`：已删除旧规则来源。
+- 减少 `bun.lock`：由包管理器维护，不再通过旧 `*.lock` override 纳入默认格式化。
+- 其余候选路径完全一致，没有源码或测试意外漏检；不能仅从总数相同得出此结论。
+
+上述测试文件属于迁移前既有格式债务；`.codex/config.toml` 属于新增检查范围的既有排版；`bunfig.toml`、`README.md` 属于本次修改文件的待格式化内容。它们已分别归因，并只对明确文件列表运行 `bun fmt`，未新增忽略规则或放宽样式。
+
+### 10.3 依赖与配置语义核对
+
+`bun --no-env-file remove prettier` 退出 0。Bun 将旧锁文件的展开排版改写为包管理器原生紧凑排版，文本由 1623 行变为 370 行；发现大面积文本变化后先停止并做 JSONC 结构比较，确认语义只删除：
+
+1. 根 workspace 的 `devDependencies.prettier`。
+2. `packages.prettier` 包节点。
+
+其余版本、校验值、依赖关系及元数据完全一致。没有手工编辑、重序列化或格式化锁文件；`eslint-config-prettier`、ESLint、TypeScript 与业务依赖均保留。
+
+其他可运行语义核对均通过：
+
+- TOML 解析比较确认 `[test].root`、`[test].preload` 不变，十项通用样式和 Markdown 覆盖准确迁入，没有额外格式功能。
+- `.codex/config.toml` 解析值完全一致；VS Code 仅预定的 formatter、formatOnSave 与 Prettier 配置字段变化，ESLint 保存动作及其他设置不变。
+- TypeScript parser 的 token 序列及去注释转译结果确认 `eslint.config.js` 和获准格式化的测试文件逻辑完全一致，ESLint 配置顺序未变。
+- 仓库外 TS、TSX、JSON、嵌套 Markdown 样本分别使用旧 `.prettierrc` 与新 `bunfig.toml`，共同文件的输出逐字节一致；另验证 TOML 格式化前后语义不变。
+- 样本明确验证单/双引号、分号、2 空格、LF、尾逗号、100 列换行参考、嵌套 Markdown 的 `proseWrap=never`，并验证导入和 package 字段不排序。样本 `fmt --check` 退出 0，再格式化内容不变。
+- 临时语义检查最初使用独立词法扫描器，未处理模板字符串恢复，误把后续注释纳入 token，退出 1；改为 TypeScript parser 提供的 token 树后退出 0，并增加去注释转译内容比较。该失败来自临时检查器，不是项目代码回归；未因此修改业务逻辑。
+
+### 10.4 安装、Lint、类型与定向测试
+
+以下在无旧 `node_modules` 的仓库外隔离验收副本中执行，不在原工作区运行写入式 Lint：
+
+| 实际命令或检查 | 退出码 | 结果 |
+| --- | --- | --- |
+| `bun --no-env-file install --frozen-lockfile` | 0 | 安装 159 个包，锁文件指纹不变 |
+| 直接加载 `eslint.config.js`、解析 Prettier 可用性并扫描已安装依赖声明 | 0 | ESLint 配置可加载；Prettier 不可解析，未发现要求引擎的 runtime/peer/optional 消费者；静态配置包仅要求 ESLint peer |
+| `bun --no-env-file fmt --doctor` | 0 | 使用 `bunfig.toml`，848 个文件均原生处理，无安装 Prettier、fallback 或 unsupported 提示 |
+| `bun --no-env-file fmt --check package.json bunfig.toml .vscode/settings.json` | 0 | 干净安装环境中的格式检查正常 |
+| `bun --no-env-file run lint:fix` | 0 | 完整 Lint 修复检查通过；写入增量仅一处既有空行，见下文 |
+| 随后 `bun --no-env-file run type-check` | 0 | 781 个文件，无类型错误 |
+| `bun --no-env-file test tests/app/runtime/createPostGateRuntime.tradeLogPersistence.test.ts` | 0 | 11 pass / 0 fail，51 个断言；既有离线 SDK guard 生效 |
+| 撤回隔离副本无关空行后，再执行 `bun --no-env-file run type-check` | 0 | 精确交付代码内容仍为 781 个文件，无类型错误 |
+
+`lint:fix` 仅在隔离副本的 `tests/infrastructure/persistence/mixedTradeLogRepository/business.test.ts` 两个既有断言之间补一行空白。该内容与基线一致，属于既有 Lint 排版问题，不是迁移引入；按 §6.1 未带回交付 worktree，并从隔离副本按精确文件内容撤回。**因此这里记录的是隔离 `lint:fix` 成功，不声称未修复基线已经通过只读 `bun lint`。**
+
+任务期间只读比对还观察到原工作区同一文件新增了相同空行；本次所有项目写入均限定在独立 worktree 或隔离副本，没有回滚或同步该外部变化。原分支、HEAD、暂存区指纹和状态路径集合保持原样。
+
+本次没有交易逻辑变化，依方案不执行构建和全量业务测试；针对唯一格式化的测试文件额外运行了上述离线检查，没有扩展业务重构范围。
+
+### 10.5 最终审查与验收边界
+
+- 当前操作说明已更新；三个含历史命令的指定文档仅增加当前入口说明，旧命令、日志、数字和退出码原样保留。历史审计目录和 2026-09 历史计划未改写。
+- 定向检查未发现额外现行 Prettier CLI、插件消费者或编辑器绑定；保留静态 ESLint 配置及历史事实。仓库内未发现相关 CI/hook 配置，当前 Git hook 路径无有效本地 hook；不据此推断个人全局设置或远端 CI 状态。
+- 独立只读复审未发现已确认缺陷。生产源码、mock、TypeScript 配置和测试 preload 没有本次增量；全部变更仅限方案文件及两项已授权格式清理。
+- 补写记录后曾有一次定向格式化的 cwd 落在原工作区：虽然绝对文件参数只写入本 worktree 的方案文档，但未按目标原生配置执行；随后检查退出 1，仅本方案排版不符。改从正确 worktree 根目录定向格式化后复检通过，未格式化原工作区文件。
+- 最终 11 个修改文件的显式 `bun --no-env-file fmt --check <文件列表>`、全仓 848 个候选文件的只读 `bun --no-env-file run format:check` 和 scoped `git diff --check -- <变更路径>` 均退出 0；完整列表包含本方案，排除已删除配置和生成锁文件的格式检查。
+- 用户已确认接受 VS Code 实际保存行为**待人工验证**。静态配置核对不替代 UI 验证；应在此 worktree 打开 VS Code，核对有效语言设置，确认显式保存不再触发 Prettier，ESLint 保存修复仍按原设置运行。不得用其他个人扩展行为作为恢复 Prettier fallback 的理由。
+- 临时样本、干净安装副本、校验脚本、原始检查输出及隔离运行目录已清理；未向仓库新增永久迁移工具，后续可使用当前命令重新验证。

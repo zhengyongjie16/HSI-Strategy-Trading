@@ -656,6 +656,8 @@ bun type-check
 
 这组命令用于实际代码实施，已按序执行，实际结果与 819 个文件指纹一致性见 §2.4。本次仅更新文档时，不重跑会重写全仓的 `bun format`；对本文只做 `prettier --check` 与必要的同文件 `--write`。
 
+**当前格式检查入口（Bun 1.4.4）：**仅检查本文时使用 `bun fmt --check docs/plans/strategy-module-cohesion-refactoring-plan.md`；需要修正排版时使用 `bun fmt docs/plans/strategy-module-cohesion-refactoring-plan.md`。上段 Prettier 用法保留为当时的文档处理说明，不再作为当前入口。
+
 ### 11.2 迁移后的定向验证
 
 ```powershell
