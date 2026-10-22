@@ -23,7 +23,7 @@ export type DailyLogFileFingerprint = {
   readonly changedTimeNs: bigint;
 };
 
-/** adapter 工厂只接日志根目录解析；具体 filesystem durable append 留在此基础设施边界。 */
+/** adapter 工厂只接交易日志目录；具体 filesystem durable append 留在此基础设施边界。 */
 export interface MixedTradeLogRepositoryDeps {
-  readonly resolveLogRootDir: () => string;
+  readonly tradesDir: string;
 }

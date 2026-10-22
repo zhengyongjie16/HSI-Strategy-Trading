@@ -58,6 +58,7 @@ test('真实 recorder 读取完整 today 覆盖的正成交终态，只在显式
       'REBUILD',
     ),
   ).toEqual({ status: 'COMMITTED' });
+
   expect(recorder.getCostBasis(frame.symbol, true)).toEqual({
     quantity: 100,
     costAmount: '123.45678901234567890123456789',

@@ -8,12 +8,12 @@
     "build": "bun run clean && tsc -p tsconfig.build.json",
     "start": "bun src/index.ts",
     "dev": "cross-env RUN_MODE=dev bun start",
-    "type-check": "tsc -p tsconfig.json",
+    "type-check": "bun check -p tsconfig.json",
     "test": "bun test",
     "clean": "rimraf dist",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "format": "prettier --write . && eslint . --fix"
+    "format": "bun fmt"
   },
   "dependencies": {
     "bignumber.js": "9.3.1",

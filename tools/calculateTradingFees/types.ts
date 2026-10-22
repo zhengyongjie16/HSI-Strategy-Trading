@@ -1,6 +1,6 @@
 /**
- * 交易记录类型：用于描述日志文件中的单笔订单数据。
- * 数据来源：`logs/trades/*.jsonl` 中无 `recordType` 的普通成交行。
+ * 交易记录类型：用于描述交易持久化文件中的单笔订单数据。
+ * 数据来源：固定 `<cwd>/data/trades/*.jsonl` 中无 `recordType` 的普通成交行。
  * 使用范围：仅 `tools/calculateTradingFees` 工具内部。
  */
 export type Trade = {

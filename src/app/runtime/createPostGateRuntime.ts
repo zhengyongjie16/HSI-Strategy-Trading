@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { wait, nowMonotonicMs } from '../../infrastructure/time/index.js';
 import { scheduleBoundedOneShotAt } from '../../runtime/timer/index.js';
 import { createOrderTradeAudit } from '../../application/orderTracking/tradeAudit/index.js';
@@ -26,7 +27,7 @@ import { createTradeLogHydrator } from '../../application/protectiveLiquidation/
 import { createWarrantRiskRefresh } from '../../application/riskRefresh/warrantRiskRefresh.js';
 import { createSeatActivationWorkflow } from '../../application/seatActivation/index.js';
 import { createStaticLiquidationExecutor } from '../../application/staticLiquidation/index.js';
-import { TIME } from '../../constants/index.js';
+import { TIME, TRADE_PERSISTENCE } from '../../constants/index.js';
 import { createLiquidationCooldownTracker } from '../../domain/liquidation/cooldown/index.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../domain/liquidation/episode/index.js';
 import { orderAnalysis } from '../../domain/order/orderAnalysis.js';
@@ -63,7 +64,6 @@ import type { TradingCalendarState } from '../../types/tradingCalendar.js';
 import type { QuoteSubscriptionState } from '../../types/quoteSubscription.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { formatDecimal } from '../../utils/numeric/exact.js';
-import { resolveLogRootDir } from '../../config/runtime/index.js';
 import {
   calculateTradingDurationDueAtMs,
   getTradingMinutesSinceOpen,
@@ -122,7 +122,6 @@ function createPostGateRuntimeFactory(
     params: CreatePostGateRuntimeParams,
   ): Promise<PostGateRuntime | null> {
     const {
-      env,
       preGateRuntime,
       now,
       clock,
@@ -176,7 +175,7 @@ function createPostGateRuntimeFactory(
     });
     const protectiveLiquidationEpisodeTracker = createProtectiveLiquidationEpisodeTracker();
     const mixedTradeLogRepository = buildMixedTradeLogRepository({
-      resolveLogRootDir: () => resolveLogRootDir(env),
+      tradesDir: path.join(process.cwd(), TRADE_PERSISTENCE.RELATIVE_DIR),
     });
     const initialDayKey = getRequiredHKDateKey(now);
     const initialTradingDayInfo =

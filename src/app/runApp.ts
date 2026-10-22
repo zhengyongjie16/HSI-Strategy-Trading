@@ -134,7 +134,6 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
 
       const startupNow = SYSTEM_RUNTIME_CLOCK.now();
       const postGateRuntime = await buildPostGateRuntime({
-        env: runtimeEnv,
         preGateRuntime,
         now: startupNow,
         clock: SYSTEM_RUNTIME_CLOCK,

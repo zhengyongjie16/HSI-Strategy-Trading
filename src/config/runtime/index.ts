@@ -1,7 +1,7 @@
 /**
  * 运行环境配置解析
  *
- * 职责：解析 app/test 档位、日志根目录与进程钩子开关，保持环境变量优先级不变。
+ * 职责：解析 app/test 档位、日志根目录及进程钩子开关，保持环境变量优先级不变。
  */
 import path from 'node:path';
 import { RUNTIME } from '../../constants/index.js';

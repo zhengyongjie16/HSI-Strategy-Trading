@@ -5,6 +5,8 @@ node_modules/
 .env.*.local
 .env.local
 
+/data/
+
 # Logs
 logs/
 tests/logs/

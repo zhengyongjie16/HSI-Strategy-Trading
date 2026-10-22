@@ -70,7 +70,7 @@ test('same native tracking owners wait for real position subscription ack before
   });
   const tradingConfig = createTradingConfig({ monitor: config });
   const symbolRegistry = createSymbolRegistryDouble();
-  const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => root });
+  const repository = createMixedTradeLogRepository({ tradesDir: path.join(root, 'trades') });
   const rateLimiter = createRateLimiter({
     wait: wait,
     nowMonotonicMs: nowMonotonicMs,

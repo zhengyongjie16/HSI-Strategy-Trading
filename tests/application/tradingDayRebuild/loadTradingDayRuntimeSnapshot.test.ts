@@ -750,15 +750,18 @@ describe('真实 loader 的历史席位交易状态准入', () => {
             ? 'kind' in result && result.kind
             : 'status' in result && result.status,
         ).toBe(source === 'STARTUP' ? 'READY' : 'COMMITTED');
+
         expect(harness.market.controller.readSymbolCalls('quote')[0]).toEqual([
           'BULL.HK',
           'BEAR.HK',
         ]);
+
         expect(harness.deps.symbolRegistry.getSeatState('LONG')).toMatchObject({
           symbol: null,
           status: 'EMPTY',
           searchFailCountToday: 0,
         });
+
         expect(harness.deps.symbolRegistry.getSeatState('SHORT')).toMatchObject({
           symbol: 'BEAR.HK',
           status: 'ACTIVATING',
@@ -841,6 +844,7 @@ describe('真实 loader 的历史席位交易状态准入', () => {
     spyOn(externalHarness.deps.marketDataClient, 'getSecurityTradingStatuses').mockRejectedValue(
       external,
     );
+
     try {
       expect(await externalHarness.startup()).toEqual({ kind: 'API_RETRY_PENDING' });
       expect(externalHarness.deps.lifecycleState).toMatchObject({
@@ -1967,7 +1971,9 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     try {
-      const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => tempRoot });
+      const repository = createMixedTradeLogRepository({
+        tradesDir: path.join(tempRoot, 'trades'),
+      });
       // 在线事实：先 100 落盘，再同量更高 revision 合法减额 90 落盘；T 不随同量修订变化。
       repository.appendExecutionProgressIdempotent({
         monitorSymbol: 'HSI.HK',
@@ -2051,7 +2057,9 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       let hydrateCalls = 0;
 
       try {
-        const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => tempRoot });
+        const repository = createMixedTradeLogRepository({
+          tradesDir: path.join(tempRoot, 'trades'),
+        });
         for (const stage of fileOrder) {
           repository.appendExecutionProgressIdempotent({
             monitorSymbol: 'HSI.HK',
@@ -2133,7 +2141,9 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     let hydrateCalls = 0;
 
     try {
-      const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => tempRoot });
+      const repository = createMixedTradeLogRepository({
+        tradesDir: path.join(tempRoot, 'trades'),
+      });
       repository.appendExecutionProgressIdempotent({
         monitorSymbol: 'HSI.HK',
         direction: 'LONG',
@@ -2241,7 +2251,9 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     try {
-      const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => tempRoot });
+      const repository = createMixedTradeLogRepository({
+        tradesDir: path.join(tempRoot, 'trades'),
+      });
       repository.appendExecutionProgressIdempotent({
         monitorSymbol: 'HSI.HK',
         direction: 'LONG',
@@ -3388,7 +3400,9 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       });
 
     try {
-      const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => tempRoot });
+      const repository = createMixedTradeLogRepository({
+        tradesDir: path.join(tempRoot, 'trades'),
+      });
       repository.appendExecutionProgressIdempotent({
         monitorSymbol: 'HSI.HK',
         direction: 'LONG',
@@ -3420,7 +3434,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
       );
 
-      const logFile = buildTradeLogPath(tempRoot, now);
+      const logFile = buildTradeLogPath(path.join(tempRoot, 'trades'), now);
       expect(path.basename(logFile)).toBe('2026-03-13.jsonl');
       expect(fs.existsSync(logFile)).toBe(true);
       expect(repository.loadCompletionRecords('2026-03-13')).toHaveLength(1);
@@ -3430,7 +3444,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       expect(episodeTracker.getInProgressEpisodes()).toEqual([]);
 
       const restartedRepository = createMixedTradeLogRepository({
-        resolveLogRootDir: () => tempRoot,
+        tradesDir: path.join(tempRoot, 'trades'),
       });
       const restartedEpisodeTracker = createProtectiveTrackerRecorder();
       const tradeInstances41 = createReadyTrader({

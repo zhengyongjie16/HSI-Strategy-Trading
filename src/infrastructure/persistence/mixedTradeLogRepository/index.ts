@@ -6,7 +6,7 @@
 import fs, { type BigIntStats } from 'node:fs';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
-import { LOGGING } from '../../../constants/index.js';
+import { TRADE_PERSISTENCE } from '../../../constants/index.js';
 import { isRecord } from '../../../utils/helpers/index.js';
 import { buildTradeLogPath } from './tradeLogPath.js';
 import { getHKDateKey } from '../../../utils/time/index.js';
@@ -411,12 +411,12 @@ export function parseMixedRecord(raw: unknown): MixedTradeLogRecord {
   return parseTradeRecord(raw);
 }
 
-function resolveLogFile(rootDir: string, tradingDayKey: string): string {
+function resolveLogFile(tradesDir: string, tradingDayKey: string): string {
   if (!isValidTradingDayKey(tradingDayKey)) {
     throw new TypeError(`[MixedTradeLogRepository] invalid trading day key: ${tradingDayKey}`);
   }
 
-  return buildTradeLogPath(rootDir, new Date(`${tradingDayKey}T00:00:00+08:00`));
+  return buildTradeLogPath(tradesDir, new Date(`${tradingDayKey}T00:00:00+08:00`));
 }
 
 function createEmptyDailyLogState(): DailyLogState {
@@ -697,8 +697,7 @@ function compareDayKeysDescending(left: string, right: string): number {
 export function createMixedTradeLogRepository(
   deps: MixedTradeLogRepositoryDeps,
 ): MixedTradeLogRepository {
-  const rootDir = deps.resolveLogRootDir();
-  const tradesDir = path.join(rootDir, 'trades');
+  const tradesDir = deps.tradesDir;
   const dailyStates = new Map<string, DailyLogState>();
   const fingerprintsByDayKey = new Map<string, DailyLogFileFingerprint>();
   scanTradeLogDirectory(tradesDir, dailyStates, fingerprintsByDayKey);
@@ -732,7 +731,7 @@ export function createMixedTradeLogRepository(
 
     let actualFingerprint: DailyLogFileFingerprint;
     try {
-      actualFingerprint = readFileFingerprint(resolveLogFile(rootDir, tradingDayKey));
+      actualFingerprint = readFileFingerprint(resolveLogFile(tradesDir, tradingDayKey));
     } catch (error: unknown) {
       return blockRepository(
         new Error(
@@ -767,10 +766,12 @@ export function createMixedTradeLogRepository(
     const candidates = new Set(dailyStates.keys());
     candidates.add(targetDayKey);
     const descendingDayKeys = [...candidates].sort(compareDayKeysDescending);
-    const retainedDayKeys = new Set(descendingDayKeys.slice(0, LOGGING.MAX_RETAINED_LOG_FILES));
+    const retainedDayKeys = new Set(
+      descendingDayKeys.slice(0, TRADE_PERSISTENCE.MAX_RETAINED_DAILY_FILES),
+    );
     if (!retainedDayKeys.has(targetDayKey)) {
       throw new Error(
-        `[MixedTradeLogRepository] target day is outside the latest ${LOGGING.MAX_RETAINED_LOG_FILES} daily-file window: ${targetDayKey}`,
+        `[MixedTradeLogRepository] target day is outside the latest ${TRADE_PERSISTENCE.MAX_RETAINED_DAILY_FILES} daily-file window: ${targetDayKey}`,
       );
     }
 
@@ -795,7 +796,7 @@ export function createMixedTradeLogRepository(
     verifiedFingerprint?: DailyLogFileFingerprint,
   ): void {
     const prunedDayKeys = resolvePrunedDayKeys(tradingDayKey);
-    const logFile = resolveLogFile(rootDir, tradingDayKey);
+    const logFile = resolveLogFile(tradesDir, tradingDayKey);
     const fileExists = dailyStates.has(tradingDayKey);
     try {
       const prunedFiles = prunedDayKeys.map((dayKey) => {
@@ -832,7 +833,7 @@ export function createMixedTradeLogRepository(
       fingerprintsByDayKey.set(tradingDayKey, pathFingerprint);
 
       for (const { dayKey, expectedFingerprint } of prunedFiles) {
-        const prunedLogFile = resolveLogFile(rootDir, dayKey);
+        const prunedLogFile = resolveLogFile(tradesDir, dayKey);
         try {
           const actualFingerprint = readFileFingerprint(prunedLogFile);
           if (!sameFileFingerprint(expectedFingerprint, actualFingerprint)) {

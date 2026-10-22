@@ -2,7 +2,7 @@
  * 运行环境配置业务测试
  *
  * 功能：
- * - 验证运行时档位解析、日志根目录解析与进程钩子开关解析。
+ * - 验证运行时档位解析、日志根目录与进程钩子开关解析。
  */
 import { describe, expect, it } from 'bun:test';
 import path from 'node:path';

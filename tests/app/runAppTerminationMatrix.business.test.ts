@@ -2,6 +2,7 @@ import { strategyDefinition } from '../../src/strategies/intradayRegression/defi
 
 /** T20/T21：离线真实 post-gate owner 的 root 挂起终止矩阵，不访问账户或入口。 */
 import { describe, expect, it, mock } from 'bun:test';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createCleanup } from '../../src/app/shutdown/createCleanup.js';
@@ -46,6 +47,8 @@ async function harness(
   stage: 'tradeRuntime' | 'rebuild' | 'quote' | 'time',
   teardownError?: Error,
 ) {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'post-gate-matrix-'));
+  const tradesDir = path.join(tempRoot, 'trades');
   const controlled = Promise.withResolvers<undefined>();
   const reached = Promise.withResolvers<undefined>();
   const trace: string[] = [];
@@ -103,8 +106,7 @@ async function harness(
       createMixedTradeLogRepository: (repositoryDeps: MixedTradeLogRepositoryDeps) =>
         createMixedTradeLogRepository({
           ...repositoryDeps,
-          resolveLogRootDir: () =>
-            path.join(os.tmpdir(), `post-gate-matrix-${process.pid}-${importSequence}`),
+          tradesDir,
         }),
     },
   }));
@@ -259,10 +261,14 @@ async function harness(
   mock.module('../../src/app/runAppDeps.js', () => ({ DEFAULT_RUN_APP_DEPS: deps }));
   const root = await import(`../../src/app/runApp.js?termination-matrix=${importSequence++}`);
   const runApp = root.runApp as (params: AppEnvironmentParams) => Promise<void>;
-  const outcome = runApp({ env: { APP_RUNTIME_PROFILE: 'test' } }).then(
-    () => ({ error: undefined }),
-    (error: unknown) => ({ error }),
-  );
+  const outcome = runApp({ env: { APP_RUNTIME_PROFILE: 'test' } })
+    .then(
+      () => ({ error: undefined }),
+      (error: unknown) => ({ error }),
+    )
+    .finally(() => {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    });
   await Promise.race([
     reached.promise,
     outcome.then(({ error }) => {

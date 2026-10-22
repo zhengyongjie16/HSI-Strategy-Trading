@@ -124,6 +124,7 @@ describe('OrderSnapshotReadAdapter', () => {
       expect(
         orders.map((order) => order.orderId).sort((left, right) => left.localeCompare(right)),
       ).toEqual(['HISTORY-ONLY', 'SHARED', 'TODAY-ONLY']);
+
       expect(orders.find((order) => order.orderId === 'SHARED')).toMatchObject({
         executionSide: 'SELL',
         status: 'CANCELED',
@@ -340,6 +341,7 @@ describe('OrderSnapshotReadAdapter', () => {
       'remark',
       new TypeError('discarded provenance'),
     );
+
     expect(await port.fetchAllOrders()).toMatchObject([
       { orderId: 'ORDER', remark: 'QuantDemo|PL' },
     ]);

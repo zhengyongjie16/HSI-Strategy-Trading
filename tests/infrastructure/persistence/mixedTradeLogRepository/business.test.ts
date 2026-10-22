@@ -27,7 +27,7 @@ function createRootDir(): string {
 }
 
 function createStore(rootDir: string): ReturnType<typeof createMixedTradeLogRepository> {
-  return createMixedTradeLogRepository({ resolveLogRootDir: () => rootDir });
+  return createMixedTradeLogRepository({ tradesDir: path.join(rootDir, 'trades') });
 }
 
 afterEach(() => {
@@ -146,7 +146,10 @@ function writeJsonl(
   tradingDayKey: string,
   records: ReadonlyArray<unknown>,
 ): string {
-  const logFile = buildTradeLogPath(rootDir, new Date(`${tradingDayKey}T10:00:00+08:00`));
+  const logFile = buildTradeLogPath(
+    path.join(rootDir, 'trades'),
+    new Date(`${tradingDayKey}T10:00:00+08:00`),
+  );
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   fs.writeFileSync(logFile, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
   return logFile;
@@ -164,7 +167,7 @@ function listDailyFiles(rootDir: string): ReadonlyArray<string> {
 
 describe('mixedTradeLogRepository', () => {
   it('creates missing directories on first append and fsyncs only the file, then remains writable', () => {
-    const rootDir = path.join(createRootDir(), 'not-created', 'logs');
+    const rootDir = path.join(createRootDir(), 'not-created', 'data');
     const record = createRecord();
     const originalFsyncSync = fs.fsyncSync;
     const fsyncSpy = spyOn(fs, 'fsyncSync').mockImplementation((descriptor) => {
@@ -182,7 +185,10 @@ describe('mixedTradeLogRepository', () => {
       store.appendTradeRecord(createTradeRecordForDay('2026-07-11'));
       expect(fsyncSpy).toHaveBeenCalledTimes(2);
 
-      const logFile = buildTradeLogPath(rootDir, new Date(completionBoundaryMs));
+      const logFile = buildTradeLogPath(
+        path.join(rootDir, 'trades'),
+        new Date(completionBoundaryMs),
+      );
       expect(fs.readFileSync(logFile, 'utf8').split('\n')).toEqual([
         JSON.stringify(record),
         JSON.stringify(createTradeRecordForDay('2026-07-11')),
@@ -254,7 +260,7 @@ describe('mixedTradeLogRepository', () => {
     store.appendTradeRecord(trade);
     store.appendTradeRecord(trade);
 
-    const logFile = buildTradeLogPath(rootDir, new Date(trade.executedAtMs));
+    const logFile = buildTradeLogPath(path.join(rootDir, 'trades'), new Date(trade.executedAtMs));
     const rows = fs
       .readFileSync(logFile, 'utf8')
       .trimEnd()
@@ -263,9 +269,9 @@ describe('mixedTradeLogRepository', () => {
     expect(rows).toEqual([completion, trade, trade]);
   });
 
-  it('starts with a fresh missing log root without creating it', () => {
+  it('starts with a fresh missing data root without creating it', () => {
     const parentDir = createRootDir();
-    const rootDir = path.join(parentDir, 'not-created', 'logs');
+    const rootDir = path.join(parentDir, 'not-created', 'data');
     const store = createStore(rootDir);
 
     expect(store.loadCompletionRecords('2026-07-11')).toEqual([]);
@@ -354,7 +360,7 @@ describe('mixedTradeLogRepository', () => {
 
   it('rejects old JSON files and same-day dual formats without altering either file', () => {
     const rootDir = createRootDir();
-    const logFile = buildTradeLogPath(rootDir, new Date(completionBoundaryMs));
+    const logFile = buildTradeLogPath(path.join(rootDir, 'trades'), new Date(completionBoundaryMs));
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     const legacyFile = logFile.replace(/\.jsonl$/, '.json');
     fs.writeFileSync(legacyFile, JSON.stringify([createRecord()]));
@@ -386,7 +392,10 @@ describe('mixedTradeLogRepository', () => {
 
     for (const testCase of cases) {
       const rootDir = createRootDir();
-      const logFile = buildTradeLogPath(rootDir, new Date(completionBoundaryMs));
+      const logFile = buildTradeLogPath(
+        path.join(rootDir, 'trades'),
+        new Date(completionBoundaryMs),
+      );
       fs.mkdirSync(path.dirname(logFile), { recursive: true });
       fs.writeFileSync(logFile, testCase.content);
       expect(() => createStore(rootDir)).toThrow(testCase.error);
@@ -503,7 +512,10 @@ describe('mixedTradeLogRepository', () => {
       expect(() => {
         store.appendCompletionIdempotent(toCompletionInput(record));
       }).toThrow('write result uncertain');
-      const logFile = buildTradeLogPath(rootDir, new Date(completionBoundaryMs));
+      const logFile = buildTradeLogPath(
+        path.join(rootDir, 'trades'),
+        new Date(completionBoundaryMs),
+      );
       expect(fs.readFileSync(logFile, 'utf8')).toBe('');
       expect(() => store.loadCompletionRecords('2026-07-11')).toThrow(/blocked after uncertain/);
       expect(() => {
@@ -543,7 +555,10 @@ describe('mixedTradeLogRepository', () => {
       expect(() => {
         store.appendTradeRecord(createTradeRecordForDay('2026-07-11'));
       }).toThrow('partial append uncertain');
-      const logFile = buildTradeLogPath(rootDir, new Date('2026-07-11T10:00:00+08:00'));
+      const logFile = buildTradeLogPath(
+        path.join(rootDir, 'trades'),
+        new Date('2026-07-11T10:00:00+08:00'),
+      );
       expect(fs.readFileSync(logFile, 'utf8').endsWith('\n')).toBe(false);
       expect(() => {
         store.appendTradeRecord(createTradeRecordForDay('2026-07-11'));
@@ -645,9 +660,11 @@ describe('mixedTradeLogRepository', () => {
     }
 
     expect(listDailyFiles(rootDir)).toEqual(dayKeys.slice(1).map((dayKey) => `${dayKey}.jsonl`));
-    expect(fs.existsSync(buildTradeLogPath(rootDir, new Date('2026-05-01T10:00:00+08:00')))).toBe(
-      false,
-    );
+    expect(
+      fs.existsSync(
+        buildTradeLogPath(path.join(rootDir, 'trades'), new Date('2026-05-01T10:00:00+08:00')),
+      ),
+    ).toBe(false);
   });
 
   it('keeps a changed retention victim while appending the current daily record', () => {
@@ -666,9 +683,15 @@ describe('mixedTradeLogRepository', () => {
       store.appendTradeRecord(createTradeRecordForDay(dayKey));
     }
 
-    const oldestFile = buildTradeLogPath(rootDir, new Date(`${dayKeys[0]}T10:00:00+08:00`));
+    const oldestFile = buildTradeLogPath(
+      path.join(rootDir, 'trades'),
+      new Date(`${dayKeys[0]}T10:00:00+08:00`),
+    );
     fs.appendFileSync(oldestFile, `${JSON.stringify(createTradeRecordForDay(dayKeys[0]!))}\n`);
-    const targetFile = buildTradeLogPath(rootDir, new Date('2001-07-12T10:00:00+08:00'));
+    const targetFile = buildTradeLogPath(
+      path.join(rootDir, 'trades'),
+      new Date('2001-07-12T10:00:00+08:00'),
+    );
 
     expect(() => {
       store.appendTradeRecord(createTradeRecordForDay('2001-07-12'));
@@ -694,8 +717,14 @@ describe('mixedTradeLogRepository', () => {
       store.appendTradeRecord(createTradeRecordForDay(dayKey));
     }
 
-    const firstPrunedFile = buildTradeLogPath(rootDir, new Date(`${dayKeys[0]}T10:00:00+08:00`));
-    const secondPrunedFile = buildTradeLogPath(rootDir, new Date(`${dayKeys[1]}T10:00:00+08:00`));
+    const firstPrunedFile = buildTradeLogPath(
+      path.join(rootDir, 'trades'),
+      new Date(`${dayKeys[0]}T10:00:00+08:00`),
+    );
+    const secondPrunedFile = buildTradeLogPath(
+      path.join(rootDir, 'trades'),
+      new Date(`${dayKeys[1]}T10:00:00+08:00`),
+    );
     const originalUnlinkSync = fs.unlinkSync;
     let firstPrunedFileAttempts = 0;
     const unlinkSpy = spyOn(fs, 'unlinkSync').mockImplementation((filePath) => {
@@ -712,11 +741,11 @@ describe('mixedTradeLogRepository', () => {
     const firstTargetDayKey = '2001-07-12';
     const secondTargetDayKey = '2001-07-13';
     const firstTargetFile = buildTradeLogPath(
-      rootDir,
+      path.join(rootDir, 'trades'),
       new Date(`${firstTargetDayKey}T10:00:00+08:00`),
     );
     const secondTargetFile = buildTradeLogPath(
-      rootDir,
+      path.join(rootDir, 'trades'),
       new Date(`${secondTargetDayKey}T10:00:00+08:00`),
     );
 
@@ -759,7 +788,10 @@ describe('mixedTradeLogRepository', () => {
       store.appendTradeRecord(createTradeRecordForDay(dayKey));
     }
 
-    const lateLog = buildTradeLogPath(rootDir, new Date('2000-01-01T10:00:00+08:00'));
+    const lateLog = buildTradeLogPath(
+      path.join(rootDir, 'trades'),
+      new Date('2000-01-01T10:00:00+08:00'),
+    );
     expect(() => {
       store.appendTradeRecord(createTradeRecordForDay('2000-01-01'));
     }).toThrow(/outside the latest 7 daily-file window/);
@@ -785,7 +817,10 @@ describe('mixedTradeLogRepository', () => {
 
     store.loadCompletionRecords(dayKeys[0]!);
 
-    const nextFile = buildTradeLogPath(rootDir, new Date('2020-08-01T10:00:00+08:00'));
+    const nextFile = buildTradeLogPath(
+      path.join(rootDir, 'trades'),
+      new Date('2020-08-01T10:00:00+08:00'),
+    );
     expect(() => {
       store.appendTradeRecord(createTradeRecordForDay('2020-08-01'));
     }).toThrow(/current or recovery-required day file/);
@@ -794,9 +829,12 @@ describe('mixedTradeLogRepository', () => {
 
   it('builds the JSONL path from the Hong Kong day and rejects invalid dates', () => {
     const rootDir = createRootDir();
-    expect(buildTradeLogPath(rootDir, new Date('2026-07-11T16:30:00.000Z'))).toBe(
-      path.join(rootDir, 'trades', '2026-07-12.jsonl'),
+    expect(
+      buildTradeLogPath(path.join(rootDir, 'trades'), new Date('2026-07-11T16:30:00.000Z')),
+    ).toBe(path.join(rootDir, 'trades', '2026-07-12.jsonl'));
+
+    expect(() => buildTradeLogPath(path.join(rootDir, 'trades'), new Date(Number.NaN))).toThrow(
+      /日志日期无效/,
     );
-    expect(() => buildTradeLogPath(rootDir, new Date(Number.NaN))).toThrow(/日志日期无效/);
   });
 });
