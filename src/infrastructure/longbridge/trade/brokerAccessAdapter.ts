@@ -8,9 +8,10 @@ import { createOrderSnapshotReadAdapter } from './orderSnapshotReadAdapter.js';
 import { createPendingOrdersAdapter } from './pendingOrdersAdapter.js';
 import { createSellPositionReadAdapter } from './sellPositionReadAdapter.js';
 import { createTradeMutationAdapter } from './tradeMutationAdapter.js';
+import type { BrokerSdkContext } from './types.js';
 
 /** 捕获已存在的私有 context，只返回延迟 adapter 工厂，不提前构造 adapter。 */
-export function createBrokerAccessAdapter(context: TradeContext): BrokerAccess {
+export function createBrokerAccessAdapter(context: BrokerSdkContext): BrokerAccess {
   return {
     createTradeMutationPort: () => createTradeMutationAdapter(context),
     createPendingOrdersReader: () => createPendingOrdersAdapter(context),

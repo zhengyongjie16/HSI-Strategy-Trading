@@ -67,6 +67,8 @@ type MinimalOrder = {
   symbol: string;
   orderType: OrderType;
   updatedAt: Date;
+  readonly multiLeg: Order['multiLeg'];
+  readonly delayedUntil: Order['delayedUntil'];
 };
 
 /**
@@ -95,6 +97,8 @@ function createOrderFromSubmit(
     symbol: options.symbol,
     orderType: options.orderType,
     updatedAt: submittedAt,
+    multiLeg: null,
+    delayedUntil: null,
   };
 }
 
@@ -159,6 +163,7 @@ function asPushEvent(event: PushOrderChanged | MinimalOrder): PushOrderChanged {
     submittedAt: event.submittedAt,
     updatedAt: event.updatedAt,
     currency: 'HKD',
+    multiLeg: event.multiLeg,
   };
 
   return converted as unknown as PushOrderChanged;

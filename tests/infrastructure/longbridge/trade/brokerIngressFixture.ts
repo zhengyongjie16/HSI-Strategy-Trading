@@ -16,7 +16,6 @@ import {
   DeductionStatus,
   type OrderDetail,
   type PushOrderChanged,
-  type TradeContext,
   TopicType,
   type StockPositionsResponse,
   type AccountBalance,
@@ -26,7 +25,10 @@ import {
   mapBrokerOrder,
   mapBrokerOrderPush,
 } from '../../../../src/infrastructure/longbridge/trade/orderMapper.js';
-import type { BrokerOrderSdkFields } from '../../../../src/infrastructure/longbridge/trade/types.js';
+import type {
+  BrokerOrderSdkFields,
+  BrokerSdkContext,
+} from '../../../../src/infrastructure/longbridge/trade/types.js';
 import type { OrderSnapshotMetadataControl } from './types.js';
 import {
   isValidatedOrderSide,
@@ -336,6 +338,7 @@ export async function createBrokerIngressFixture(input: BrokerIngressInput): Pro
     limitOffset: null,
     lastShare: null,
     lastPrice: null,
+    multiLeg: null,
     toString: () => input.orderId,
     toJSON: () => ({ orderId: input.orderId }),
   };
@@ -407,6 +410,8 @@ export async function createBrokerIngressFixture(input: BrokerIngressInput): Pro
     history: [],
     chargeDetail: null,
     attachedOrders: [],
+    multiLeg: null,
+    delayedUntil: null,
     toString: () => input.orderId,
     toJSON: () => ({ orderId: input.orderId }),
   };
@@ -608,7 +613,7 @@ export async function createBrokerIngressFixture(input: BrokerIngressInput): Pro
   let historyOrderReads = 0;
   let todayOrderReads = 0;
   // 故意不提供 execution 读取能力：任何残余 ledger 调用都会在 fixture 边界失败。
-  const context: Omit<TradeContext, 'todayExecutions' | 'historyExecutions'> = {
+  const context: BrokerSdkContext = {
     setOnOrderChanged: (handler) => {
       orderChangedHandler = handler;
     },
@@ -734,8 +739,6 @@ export async function createBrokerIngressFixture(input: BrokerIngressInput): Pro
 
       return [accountReply];
     },
-    cashFlow: unexpected,
-    fundPositions: unexpected,
     stockPositions: async (symbols) => {
       positionsReadCount++;
       positionsSymbols.push(symbols === null || symbols === undefined ? symbols : [...symbols]);
@@ -756,7 +759,6 @@ export async function createBrokerIngressFixture(input: BrokerIngressInput): Pro
         })),
       };
     },
-    marginRatio: unexpected,
     orderDetail: async (orderId) => {
       detailReadCount++;
       if (orderDetailBeforeReply !== null) await orderDetailBeforeReply(orderId);
@@ -799,12 +801,6 @@ export async function createBrokerIngressFixture(input: BrokerIngressInput): Pro
 
       return applyQueryControls(detail);
     },
-    usQueryOrders: unexpected,
-    usOrderDetail: unexpected,
-    usAssetOverview: unexpected,
-    usRealizedPl: unexpected,
-    orderDetailAttached: unexpected,
-    estimateMaxPurchaseQuantity: unexpected,
   };
   return {
     setOrderSnapshotReplies: (history, today) => {
@@ -989,9 +985,9 @@ export async function createBrokerIngressFixture(input: BrokerIngressInput): Pro
       contextCreations++;
       if (contextCreationFailure !== null) throw contextCreationFailure;
 
-      return createBrokerAccessAdapter(context as TradeContext);
+      return createBrokerAccessAdapter(context);
     },
-    ports: createBrokerAccessAdapter(context as TradeContext),
+    ports: createBrokerAccessAdapter(context),
     queryObservation: mapBrokerOrder(order),
     pushObservation: requirePushObservation(push),
     failReplace: (error) => {
@@ -1131,6 +1127,7 @@ export async function createBrokerIngressFixture(input: BrokerIngressInput): Pro
         limitOffset: null,
         lastShare: null,
         lastPrice: null,
+        multiLeg: null,
         toString: () => frame.orderId,
         toJSON: () => ({ orderId: frame.orderId }),
       };

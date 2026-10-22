@@ -3,7 +3,7 @@
  * 仅检查 adapter 边界，不导入业务 recorder；该窄 warrant mapper 不处理 lot/quantity。
  */
 import { describe, expect, it } from 'bun:test';
-import { Decimal } from 'longbridge';
+import { Decimal, WarrantStatus } from 'longbridge';
 import {
   mapQuoteDecimal,
   mapWarrantQuote,
@@ -23,7 +23,7 @@ describe('Longbridge quoteFinancialMapper boundary', () => {
       symbol: 'BULL.HK',
       name: '高精度牛证',
       warrantType: 7,
-      status: 2,
+      status: WarrantStatus.Normal,
       callPrice: new Decimal(CALL_PRICE),
       toCallPrice: new Decimal(TO_CALL_PRICE),
       turnover: new Decimal(TURNOVER),
@@ -47,6 +47,16 @@ describe('Longbridge quoteFinancialMapper boundary', () => {
       category: 1,
     });
     expect(sdk.turnover.toString()).toBe(TURNOVER);
+  });
+
+  it('accepts only the named Normal warrant status and keeps other SDK statuses non-normal', () => {
+    expect(mapWarrantListItem({ symbol: 'BULL.HK', status: WarrantStatus.Normal }).status).toBe(
+      'NORMAL',
+    );
+
+    for (const status of [WarrantStatus.Unknown, WarrantStatus.Suspend, WarrantStatus.PrepareList]) {
+      expect(mapWarrantListItem({ symbol: 'BULL.HK', status }).status).toBe('NON_NORMAL');
+    }
   });
 
   it('uses actual native toString evidence, never promises to reconstruct digits already lost inside SDK construction', () => {

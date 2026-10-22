@@ -15,6 +15,12 @@ test('native metadata preserves side identity and rejects unknown native side/st
   expect(() => mapBrokerOrderStatus(OrderStatus.Unknown)).toThrow();
 });
 
+test('unsupported delayed orders fail detailed status mapping instead of acquiring a neutral status', () => {
+  expect(() => mapBrokerOrderStatus(OrderStatus.DelayedNotReported)).toThrow(
+    /unknown SDK order status/,
+  );
+});
+
 test('every native order kind retains its real neutral identity; no market/limit default or financial change', () => {
   const kinds: ReadonlyArray<readonly [OrderType, OrderReadType]> = [
     [OrderType.LO, 'LO'],
