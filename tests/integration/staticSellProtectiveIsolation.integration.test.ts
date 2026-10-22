@@ -148,11 +148,11 @@ async function createHarness(
     readonly progress?: ReadonlyArray<BrokerIngressInput>;
     readonly history?: ReadonlyArray<BrokerIngressInput>;
     readonly completion?: SettlementProtectionCompletion;
-    readonly logRoot?: string;
+    readonly dataRoot?: string;
     readonly orderSnapshotReadPort?: OrderSnapshotReadPort;
   } = {},
 ) {
-  const root = params.logRoot ?? mkdtempSync(path.join(tmpdir(), 'p3f-static-'));
+  const root = params.dataRoot ?? mkdtempSync(path.join(tmpdir(), 'p3f-static-'));
   const initial = params.initial ?? ZERO;
   const history = params.history ?? [];
   const inputOrders = [...(params.associated ? [BUY] : []), ...history, initial];
@@ -165,8 +165,8 @@ async function createHarness(
   const logger = createLoggerDouble();
   const trace: string[] = [];
   const fatal: unknown[] = [];
-  const repositoryOwner = createMixedTradeLogRepository({ resolveLogRootDir: () => root });
-  if (params.logRoot === undefined) {
+  const repositoryOwner = createMixedTradeLogRepository({ tradesDir: path.join(root, 'trades') });
+  if (params.dataRoot === undefined) {
     for (const progress of params.progress ?? (initial.executedQuantity === '0' ? [] : [initial]))
       repositoryOwner.appendExecutionProgressIdempotent(progressOf(progress));
 
@@ -1065,7 +1065,7 @@ describe('static purpose isolation with full recovery', () => {
         updatedAtMs: T + 4010,
       };
       const restart = await createHarness({
-        logRoot: f.root,
+        dataRoot: f.root,
         initial: { ...ZERO, status: 'Canceled', updatedAtMs: T + 2000 },
         history: [previous, newFill],
         progress: [],

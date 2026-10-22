@@ -911,6 +911,7 @@ it('真实旧 boundary 同量45→46保留权威/durable与刷新，冻结日损
     ready: false,
     staleVersion: before.gate.staleVersion + 1,
   });
+
   expect(persisted).toMatchObject([
     { cumulativeAmount: '46', orderRevisionMs: now.getTime() + 30000 },
   ]);

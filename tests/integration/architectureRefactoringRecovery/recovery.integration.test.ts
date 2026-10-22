@@ -184,7 +184,9 @@ async function createOfflineRecovery(
   const tradingConfig = createTradingConfig({ monitor: config });
   const symbolRegistry = createSymbolRegistry(config);
   const termination = createTerminationDouble();
-  const durableRepository = createMixedTradeLogRepository({ resolveLogRootDir: () => root });
+  const durableRepository = createMixedTradeLogRepository({
+    tradesDir: path.join(root, 'trades'),
+  });
   const repository =
     appendFailure === undefined
       ? durableRepository
@@ -520,7 +522,7 @@ async function withOfflineLog(
   text = originalPayload,
 ): Promise<void> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hsi-p0-offline-recovery-'));
-  const logFile = buildTradeLogPath(root, new Date(fixture.now));
+  const logFile = buildTradeLogPath(path.join(root, 'trades'), new Date(fixture.now));
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   if (text !== '') fs.writeFileSync(logFile, text);
 

@@ -93,7 +93,7 @@ async function harness(
     executedPrice: String(100 / quantity),
   };
   native.setOrderSnapshotReplies([], [buy, sellInput]);
-  const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => root });
+  const repository = createMixedTradeLogRepository({ tradesDir: path.join(root, 'trades') });
   const persisted: ProtectiveLiquidationExecutionProgressInput[] = [];
   const persist = (p: ProtectiveLiquidationExecutionProgressInput) => {
     onPersist?.(p);

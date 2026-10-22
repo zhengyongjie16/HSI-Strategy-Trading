@@ -167,12 +167,11 @@ export type PreGateRuntime = Readonly<{
 
 /**
  * post-gate runtime 创建参数。
- * 类型用途：封装 createPostGateRuntime 所需的环境、pre-gate runtime 与统一时间源。
+ * 类型用途：封装 createPostGateRuntime 所需的 pre-gate runtime 与统一时间源。
  * 数据来源：由 app 顶层装配在 pre-gate runtime 创建后组装传入。
  * 使用范围：仅 post-gate runtime 创建链路使用。
  */
 export type CreatePostGateRuntimeParams = Readonly<{
-  env: NodeJS.ProcessEnv;
   preGateRuntime: PreGateRuntime;
   now: Date;
   clock: RuntimeClock;

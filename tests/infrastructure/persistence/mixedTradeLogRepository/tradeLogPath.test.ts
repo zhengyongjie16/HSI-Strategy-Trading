@@ -9,19 +9,19 @@ import { buildTradeLogPath } from '../../../../src/infrastructure/persistence/mi
 
 describe('trade log repository path', () => {
   it('uses the Hong Kong trading date across UTC midnight boundaries', () => {
-    const root = path.join('custom', 'logs');
+    const tradesDir = path.join('custom', 'data', 'trades');
 
-    expect(buildTradeLogPath(root, new Date('2026-09-18T15:59:59.999Z'))).toBe(
-      path.join(root, 'trades', '2026-09-18.jsonl'),
+    expect(buildTradeLogPath(tradesDir, new Date('2026-09-18T15:59:59.999Z'))).toBe(
+      path.join(tradesDir, '2026-09-18.jsonl'),
     );
 
-    expect(buildTradeLogPath(root, new Date('2026-09-18T16:00:00.000Z'))).toBe(
-      path.join(root, 'trades', '2026-09-19.jsonl'),
+    expect(buildTradeLogPath(tradesDir, new Date('2026-09-18T16:00:00.000Z'))).toBe(
+      path.join(tradesDir, '2026-09-19.jsonl'),
     );
   });
 
   it('rejects invalid dates rather than selecting another day file', () => {
-    expect(() => buildTradeLogPath('logs', new Date(Number.NaN))).toThrow(
+    expect(() => buildTradeLogPath(path.join('data', 'trades'), new Date(Number.NaN))).toThrow(
       '[tradeLogPath] 日志日期无效',
     );
   });

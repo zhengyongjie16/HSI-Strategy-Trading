@@ -2,7 +2,7 @@
  * calculateTradingFees 入口业务测试
  *
  * 覆盖：
- * - 校验工具读取默认交易日志 JSONL 路径并输出普通成交费用与汇总
+ * - 校验工具读取临时 cwd 下固定 data/trades 中的 JSONL 文件并输出普通成交费用与汇总
  * - 确保护性清仓混合记录不参与成交费用统计
  */
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -36,17 +36,17 @@ const validTrade: PersistableTradeRecord = {
   isProtectiveClearance: false,
 };
 
-describe('calculateTradingFees index entry flow', () => {
+describe.serial('calculateTradingFees index entry flow', () => {
   it('reads repository-written mixed JSONL and calculates fees only for ordinary trades', async () => {
     const originalCwd = process.cwd();
     const originalConsoleLog = console.log;
     const root = mkdtempSync(path.join(tmpdir(), 'calculate-trading-fees-'));
     const logCalls: string[] = [];
-    const logRoot = path.join(root, 'logs');
-    const tradesFile = path.join(logRoot, 'trades', `${TRADING_DAY}.jsonl`);
+    const tradesDir = path.join(root, 'data', 'trades');
+    const tradesFile = path.join(tradesDir, `${TRADING_DAY}.jsonl`);
 
     try {
-      const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => logRoot });
+      const repository = createMixedTradeLogRepository({ tradesDir });
       const secondTrade: PersistableTradeRecord = { ...validTrade, orderId: 'order-2345678901' };
 
       repository.appendTradeRecord(validTrade);
@@ -80,7 +80,7 @@ describe('calculateTradingFees index entry flow', () => {
       });
       expect(readFileSync(tradesFile, 'utf8').split('\n')).toHaveLength(5);
 
-      // 默认路径由入口求值时的 cwd 决定；仓储写入隔离临时日志目录。
+      // 切换到临时 cwd，让入口固定读取同一 data/trades 目录。
       process.chdir(root);
       console.log = (...args: ReadonlyArray<unknown>) => {
         logCalls.push(args.map(String).join(' '));
@@ -104,6 +104,7 @@ describe('calculateTradingFees index entry flow', () => {
     expect(logCalls.some((line) => line.includes('总费用：34.06 HKD'))).toBeTrue();
     expect(process.cwd()).toBe(originalCwd);
     expect(console.log).toBe(originalConsoleLog);
+
     // 清理后读取必须回到真实文件系统，不能返回费用 fixture 的内容。
     expect(() => readFileSync(tradesFile, 'utf8')).toThrow();
   });

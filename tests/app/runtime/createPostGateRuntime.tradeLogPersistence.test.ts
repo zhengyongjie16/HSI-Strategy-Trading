@@ -5,7 +5,7 @@ import type { RuntimeTermination } from '../../../src/types/runtime.js';
  * createPostGateRuntime 交易日志持久化测试
  *
  * 功能：
- * - 验证订单状态事件可落盘为严格 JSONL trade log
+ * - 验证固定生产目录接线，普通成交、保护性进度与完成记录仅落盘至隔离测试目录
  * - 验证旧格式与损坏日文件会在创建 Trader 前拒绝
  * - 验证保护性 FILLED 订单不会提前写入 episode 完成语义
  */
@@ -18,6 +18,7 @@ import { createTradingConfig, createMonitorConfig } from '../../../mock/factorie
 import { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
 import { createWarrantListCache } from '../../../src/infrastructure/longbridge/market/warrantListCache/index.js';
 import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
+import type { MixedTradeLogRepositoryDeps } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/types.js';
 import { buildTradeLogPath } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/tradeLogPath.js';
 import {
   createAccountSnapshotDouble,
@@ -35,6 +36,8 @@ import type { OrderStateChangedEvent } from '../../../src/types/orderTracking.js
 
 const TEST_TEMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'post-gate-runtime-'));
 const TEST_LOG_ROOT_DIR = path.join(TEST_TEMP_DIR, 'logs');
+const TEST_TRADES_DIR = path.join(TEST_TEMP_DIR, 'data', 'trades');
+let capturedTradesDir: string | undefined;
 let activeTermination: RuntimeTermination;
 let capturedOrderStateChangedListener: ((event: OrderStateChangedEvent) => void) | null = null;
 
@@ -54,7 +57,10 @@ mock.module('../../../src/app/runtime/createPostGateRuntimeDeps.js', () => ({
     createTradeRuntime: (deps: CreateTradeRuntimeDeps) => createTradeRuntimeForTest(deps),
     createMonitorContext: (params: Parameters<typeof productionCreateMonitorContext>[0]) =>
       createMonitorContextForTest(params),
-    createMixedTradeLogRepository,
+    createMixedTradeLogRepository: (deps: MixedTradeLogRepositoryDeps) => {
+      capturedTradesDir = deps.tradesDir;
+      return createMixedTradeLogRepository({ tradesDir: TEST_TRADES_DIR });
+    },
   },
 }));
 
@@ -77,13 +83,6 @@ async function waitForFatalError(): Promise<unknown> {
   return fatalState.error;
 }
 
-function createTestEnv(): NodeJS.ProcessEnv {
-  return {
-    APP_RUNTIME_PROFILE: 'test',
-    APP_LOG_ROOT_DIR: TEST_LOG_ROOT_DIR,
-  };
-}
-
 function createRuntimeParams(
   params: {
     readonly marketDataClient?: CreatePostGateRuntimeParams['preGateRuntime']['marketDataClient'];
@@ -102,7 +101,6 @@ function createRuntimeParams(
     termination: activeTermination,
     resources: {},
     strategy: createMonitorContextDouble().strategy,
-    env: createTestEnv(),
     now: new Date('2026-03-13T09:30:00+08:00'),
     clock: { now: () => new Date('2026-03-13T09:30:00+08:00') },
     scheduler: {
@@ -195,6 +193,8 @@ describe('createPostGateRuntime trade log persistence', () => {
 
   beforeEach(() => {
     fs.rmSync(TEST_LOG_ROOT_DIR, { recursive: true, force: true });
+    fs.rmSync(TEST_TRADES_DIR, { recursive: true, force: true });
+    capturedTradesDir = undefined;
     capturedOrderStateChangedListener = null;
     createTradeRuntimeForTest = async (_deps) => createTradeRuntimeDouble();
     createMonitorContextForTest = productionCreateMonitorContext;
@@ -360,7 +360,7 @@ describe('createPostGateRuntime trade log persistence', () => {
     expect(unsubscribeCount).toBe(1);
   });
 
-  it('persists FILLED buy order state event into daily trade log', async () => {
+  it('persists all three record types in isolation with fixed production wiring', async () => {
     const executedTimeMs = Date.parse('2026-03-13T09:35:00+08:00');
     const event: OrderStateChangedEvent = {
       orderId: 'BUY-001',
@@ -374,39 +374,110 @@ describe('createPostGateRuntime trade log persistence', () => {
       executedQuantity: 100,
       executedTimeMs,
     };
+    configurePostGateRuntimeTrader();
+    const buildTrader = createTradeRuntimeForTest;
+    let capturedDeps: CreateTradeRuntimeDeps | undefined;
+    createTradeRuntimeForTest = async (deps) => {
+      capturedDeps = deps;
+      return buildTrader(deps);
+    };
+    const params = createRuntimeParams();
+    const runtime = await createPostGateRuntime(params);
 
-    await emitOrderStateChangedThroughPostGateRuntime(event);
+    try {
+      if (capturedDeps === undefined) {
+        throw new Error('expected createPostGateRuntime to inject trade runtime dependencies');
+      }
 
-    const logFile = buildTradeLogPath(TEST_LOG_ROOT_DIR, new Date(executedTimeMs));
-    expect(fs.existsSync(logFile)).toBe(true);
+      expect(capturedTradesDir).toBe(path.join(process.cwd(), 'data', 'trades'));
+      const tradeDeps = capturedDeps;
+      requireCapturedOrderStateChangedListener()(event);
+      const protectiveExecutedTimeMs = executedTimeMs + 60_000;
+      runtime.dailyLossTracker.resetAll(params.now);
+      // Trader 替身驱动正式注入的 progress 端口，完成记录仍由真实刷新事务提交。
+      runtime.dailyLossTracker.recordCumulativeExecution(
+        {
+          direction: 'LONG',
+          symbol: 'BULL.HK',
+          orderId: 'PL-DATA-001',
+          side: 'SELL',
+          factStage: 'TERMINAL',
+          executedPrice: '1.01',
+          executedQuantity: 100,
+          executedTimeMs: protectiveExecutedTimeMs,
+          orderUpdatedAtMs: protectiveExecutedTimeMs,
+        },
+        (snapshot) =>
+          { tradeDeps.persistProtectiveLiquidationExecutionProgress({
+            ...snapshot,
+            monitorSymbol: 'HSI.HK',
+            direction: 'LONG',
+            symbol: 'BULL.HK',
+            orderId: 'PL-DATA-001',
+          }); },
+      );
 
-    const records = fs
-      .readFileSync(logFile, 'utf8')
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as unknown) as ReadonlyArray<{
-      readonly action: string | null;
-      readonly side: string | null;
-      readonly status: string | null;
-      readonly reason: string | null;
-      readonly executedAtMs: number | null;
-      readonly isProtectiveClearance: boolean | null;
-    }>;
+      runtime.protectiveLiquidationEpisodeTracker.recordProtectiveFillProgress({
+        direction: 'LONG',
+        symbol: 'BULL.HK',
+        executedTimeMs: protectiveExecutedTimeMs,
+      });
 
-    expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({
-      action: 'BUYCALL',
-      side: 'BUY',
-      status: 'FILLED',
-      reason: null,
-      executedAtMs: executedTimeMs,
-      isProtectiveClearance: false,
-    });
+      runtime.postTradeConsistencyRuntime.recordSettlementRefreshNeed({
+        refreshAccount: true,
+        refreshPositions: true,
+      });
+      runtime.postTradeConsistencyRuntime.start();
+      await runtime.postTradeConsistencyRuntime.waitForFresh();
+      await runtime.postTradeConsistencyRuntime.stopAndDrain();
+
+      const logFile = buildTradeLogPath(TEST_TRADES_DIR, new Date(executedTimeMs));
+      expect(fs.existsSync(logFile)).toBe(true);
+      const records = fs
+        .readFileSync(logFile, 'utf8')
+        .trimEnd()
+        .split('\n')
+        .map((line) => JSON.parse(line) as unknown);
+      expect(records).toHaveLength(3);
+      expect(records[0]).toMatchObject({
+        action: 'BUYCALL',
+        side: 'BUY',
+        status: 'FILLED',
+        reason: null,
+        executedAtMs: executedTimeMs,
+        isProtectiveClearance: false,
+      });
+
+      expect(records[1]).toMatchObject({
+        recordType: 'PROTECTIVE_LIQUIDATION_EXECUTION_PROGRESS',
+        orderId: 'PL-DATA-001',
+        cumulativeQuantity: '100',
+        cumulativeAmount: '101',
+        lastExecutionTimeMs: protectiveExecutedTimeMs,
+      });
+
+      expect(records[2]).toMatchObject({
+        recordType: 'PROTECTIVE_LIQUIDATION_COMPLETION',
+        monitorSymbol: 'HSI.HK',
+        direction: 'LONG',
+        boundaryExecutedTimeMs: protectiveExecutedTimeMs,
+        orderBaselines: [
+          {
+            orderId: 'PL-DATA-001',
+            cumulativeQuantity: '100',
+            cumulativeAmount: '101',
+          },
+        ],
+      });
+      expect(fs.existsSync(path.join(TEST_LOG_ROOT_DIR, 'trades'))).toBe(false);
+    } finally {
+      await params.cleanup.execute();
+    }
   });
 
   it('rejects malformed JSONL before constructing Trader and preserves the damaged file', async () => {
     const executedTimeMs = Date.parse('2026-03-13T09:40:00+08:00');
-    const logFile = buildTradeLogPath(TEST_LOG_ROOT_DIR, new Date(executedTimeMs));
+    const logFile = buildTradeLogPath(TEST_TRADES_DIR, new Date(executedTimeMs));
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     fs.writeFileSync(logFile, '{invalid json}\n', 'utf8');
     let traderCreated = false;
@@ -428,7 +499,7 @@ describe('createPostGateRuntime trade log persistence', () => {
   });
 
   it('rejects legacy JSON before constructing Trader without migrating or deleting it', async () => {
-    const logFile = buildTradeLogPath(TEST_LOG_ROOT_DIR, new Date('2026-03-13T09:45:00+08:00'));
+    const logFile = buildTradeLogPath(TEST_TRADES_DIR, new Date('2026-03-13T09:45:00+08:00'));
     const legacyFile = logFile.replace(/\.jsonl$/, '.json');
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     fs.writeFileSync(legacyFile, '[{}]', 'utf8');
@@ -471,7 +542,7 @@ describe('createPostGateRuntime trade log persistence', () => {
 
     await emitOrderStateChangedThroughPostGateRuntime(event);
 
-    const logFile = buildTradeLogPath(TEST_LOG_ROOT_DIR, new Date(executedTimeMs));
+    const logFile = buildTradeLogPath(TEST_TRADES_DIR, new Date(executedTimeMs));
     const records = fs
       .readFileSync(logFile, 'utf8')
       .trimEnd()

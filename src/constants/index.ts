@@ -110,6 +110,15 @@ export const LIFECYCLE = {
 /** 买入风险检查入口的同标的共用限流窗口，不属于策略验证政策。 */
 export const BUY_RISK_CHECK_COOLDOWN_MS = 10_000;
 
+/** 交易持久化相关常量 */
+export const TRADE_PERSISTENCE = {
+  /** 相对工作目录的固定交易持久化目录 */
+  RELATIVE_DIR: 'data/trades',
+
+  /** 按香港交易日分文件，最多保留最新日文件数 */
+  MAX_RETAINED_DAILY_FILES: 7,
+} as const;
+
 /** 日志相关常量，用于 pino 日志系统 */
 export const LOGGING = {
   /** 文件流 drain 超时时间（毫秒），程序退出时等待日志写入 */

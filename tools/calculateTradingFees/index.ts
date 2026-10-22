@@ -1,10 +1,11 @@
 /**
  * 港股交易费用计算工具。
- * 职责：读取指定交易日志，逐单计算费用并输出明细与汇总。
+ * 职责：读取指定交易持久化数据，逐单计算费用并输出明细与汇总。
  * 流程：读取交易数据 -> 逐单计算费用 -> 累加汇总 -> 输出结果。
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { TRADE_PERSISTENCE } from '../../src/constants/index.js';
 import type { HKFeeRates, Trade } from './types.js';
 import {
   accumulateFees,
@@ -38,8 +39,12 @@ const HK_FEE_RATES: HKFeeRates = {
   },
 };
 
-/** 默认交易日志文件路径 */
-const DEFAULT_TRADES_FILE = path.join(process.cwd(), 'logs', 'trades', '2026-01-21.jsonl');
+/** 交易持久化文件路径，固定基于进程当前工作目录。 */
+const DEFAULT_TRADES_FILE = path.join(
+  process.cwd(),
+  TRADE_PERSISTENCE.RELATIVE_DIR,
+  '2026-01-21.jsonl',
+);
 
 function main(): void {
   const rawTradeLog = readFileSync(DEFAULT_TRADES_FILE, 'utf8');

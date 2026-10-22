@@ -44,11 +44,11 @@ it('admits original 9.2/T/revision+1 authority through shared O/Daily/S without 
   );
   const originalBytes = Buffer.concat([originalProgress, originalCompletion]);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hsi-p1-shared-settlement-'));
-  const logFile = buildTradeLogPath(root, new Date(executionT));
+  const logFile = buildTradeLogPath(path.join(root, 'trades'), new Date(executionT));
   try {
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     fs.writeFileSync(logFile, originalBytes);
-    const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => root });
+    const repository = createMixedTradeLogRepository({ tradesDir: path.join(root, 'trades') });
     const io = createOfflineBrokerPort();
     const lifecycleClosures: string[] = [];
     const termination = createTerminationRuntime({
@@ -255,6 +255,7 @@ it('admits original 9.2/T/revision+1 authority through shared O/Daily/S without 
     expect(snapshot.getView().token.snapshotGeneration).toBe(
       before.snapshotToken.snapshotGeneration + 1,
     );
+
     expect(sink.getStatus()).toEqual({
       ...before.sinkStatus,
       staleVersion: before.sinkStatus.staleVersion + 1,

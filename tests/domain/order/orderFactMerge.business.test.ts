@@ -690,6 +690,7 @@ describe('normalizeTerminalStateSnapshot：本次完整原始证据先于任何 
     expect(() => {
       assertStateCheckRawExecutionFactsReady(known, terminal);
     }).toThrow(error);
+
     expect(() => {
       assertStateCheckRawExecutionFactsReady(null, terminal);
     }).toThrow(error);

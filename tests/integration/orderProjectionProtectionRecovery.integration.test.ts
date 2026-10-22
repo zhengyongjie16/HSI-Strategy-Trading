@@ -145,7 +145,7 @@ async function createChain(
   });
   const episode = createProtectiveLiquidationEpisodeTracker();
   const cooldown = createLiquidationCooldownTracker();
-  const repository = createMixedTradeLogRepository({ resolveLogRootDir: () => root });
+  const repository = createMixedTradeLogRepository({ tradesDir: path.join(root, 'trades') });
   const termination = createTerminationRuntime({
     closeTradingGate: () => {
       tradingGate = false;
