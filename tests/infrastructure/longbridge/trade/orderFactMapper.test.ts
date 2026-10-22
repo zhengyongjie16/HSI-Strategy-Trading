@@ -271,6 +271,7 @@ test('push decodes the same neutral fact for HK and drops explicit non-HK withou
     limitOffset: null,
     lastShare: null,
     lastPrice: null,
+    multiLeg: null,
     toString: () => 'US-ODD',
     toJSON: () => ({}),
   });

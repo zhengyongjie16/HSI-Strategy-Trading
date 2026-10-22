@@ -17,6 +17,16 @@ import {
 } from '../../../../mock/factories/tradeFactory.js';
 
 describe('TradeContext mock contract', () => {
+  it('creates ordinary order DTOs with explicit null fields and only multiLeg on pushes', () => {
+    const order = createOrder({ orderId: 'FACTORY-001', symbol: '700.HK' });
+    const push = createPushOrderChanged({ orderId: order.orderId, symbol: order.symbol });
+
+    expect(order.multiLeg).toBeNull();
+    expect(order.delayedUntil).toBeNull();
+    expect(push.multiLeg).toBeNull();
+    expect(Object.hasOwn(push, 'delayedUntil')).toBe(false);
+  });
+
   it('implements required trade APIs and exposes deterministic state transitions', async () => {
     const tradeCtx = createTradeContextMock();
     tradeCtx.seedTodayOrders([
@@ -71,11 +81,50 @@ describe('TradeContext mock contract', () => {
     const historyOrders = await tradeCtx.historyOrders();
     const balances = await tradeCtx.accountBalance('HKD');
     const positions = await tradeCtx.stockPositions(['700.HK']);
+    const detail = await tradeCtx.orderDetail(submitResp.orderId);
+    const submittedOrder = todayOrders.find((order) => order.orderId === submitResp.orderId);
 
-    expect(todayOrders.some((order) => order.orderId === submitResp.orderId)).toBe(true);
+    assert.ok(submittedOrder);
+    expect(submittedOrder.multiLeg).toBeNull();
+    expect(submittedOrder.delayedUntil).toBeNull();
+    expect(detail.multiLeg).toBeNull();
+    expect(detail.delayedUntil).toBeNull();
     expect(historyOrders).toHaveLength(1);
     expect(balances).toHaveLength(1);
     expect(positions.channels[0]?.positions).toHaveLength(1);
+  });
+
+  it('converts internal ordinary orders to push DTOs without adding delayedUntil or delivering early', () => {
+    const tradeCtx = createTradeContextMock();
+    const submittedAt = new Date('2026-02-16T01:00:00.000Z');
+    let receivedCount = 0;
+    tradeCtx.setOnOrderChanged((_err, event) => {
+      receivedCount += 1;
+      expect(event.orderId).toBe('INTERNAL-001');
+      expect(event.multiLeg).toBeNull();
+      expect(Object.hasOwn(event, 'delayedUntil')).toBe(false);
+    });
+
+    tradeCtx.emitOrderChanged({
+      orderId: 'INTERNAL-001',
+      status: OrderStatus.New,
+      stockName: '700.HK',
+      quantity: toMockDecimal(100),
+      executedQuantity: toMockDecimal(0),
+      price: toMockDecimal(320),
+      executedPrice: toMockDecimal(0),
+      submittedAt,
+      side: OrderSide.Buy,
+      symbol: '700.HK',
+      orderType: OrderType.ELO,
+      updatedAt: submittedAt,
+      multiLeg: null,
+      delayedUntil: null,
+    });
+
+    expect(receivedCount).toBe(0);
+    expect(tradeCtx.flushAllEvents()).toBe(1);
+    expect(receivedCount).toBe(1);
   });
 
   it('supports order changed push callbacks and topic subscription', async () => {
@@ -158,6 +207,7 @@ describe('TradeContext mock contract', () => {
     const tradeCtx = createTradeContextMock();
     expect('todayExecutions' in tradeCtx).toBe(false);
     expect('historyExecutions' in tradeCtx).toBe(false);
+    expect('allExecutions' in tradeCtx).toBe(false);
     expect('seedTodayExecutions' in tradeCtx).toBe(false);
   });
 

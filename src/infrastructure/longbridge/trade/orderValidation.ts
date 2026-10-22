@@ -22,7 +22,7 @@ const validOrderTypes: ReadonlySet<number> = new Set([
   OrderType.SLO,
 ]);
 
-/** 穷尽 SDK 生命周期真值表；SDK 数值只存在 adapter 内。 */
+/** 本系统明确支持的生命周期真值表；未批准状态（含延迟单）拒绝，SDK 数值只存在 adapter 内。 */
 const orderStatusLifecycles: ReadonlyMap<number, 'OPEN' | 'TERMINAL'> = new Map([
   [OrderStatus.NotReported, 'OPEN'],
   [OrderStatus.ReplacedNotReported, 'OPEN'],

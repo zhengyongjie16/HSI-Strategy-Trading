@@ -56,6 +56,8 @@ export function createOrder(params: OrderFactoryParams): Order {
     triggerCount: 0,
     monitorPrice: Decimal.ZERO(),
     remark: '',
+    multiLeg: null,
+    delayedUntil: null,
   };
 
   return order as unknown as Order;
@@ -92,6 +94,7 @@ export function createPushOrderChanged(params: PushOrderChangedParams): PushOrde
     lastShare: Decimal.ZERO(),
     lastPrice: Decimal.ZERO(),
     remark: '',
+    multiLeg: null,
   };
 
   return event as unknown as PushOrderChanged;

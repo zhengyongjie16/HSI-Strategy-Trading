@@ -18,6 +18,8 @@ function detail(overrides: Readonly<Record<string, unknown>> = {}): OrderDetail 
     executedQuantity: new Decimal('0'),
     submittedAt: new Date(1700000000000),
     updatedAt: new Date(1700000000200),
+    multiLeg: null,
+    delayedUntil: null,
     ...overrides,
   } as unknown as OrderDetail;
 }

@@ -1,4 +1,20 @@
-import type { Order, OrderSide, OrderStatus, OrderType } from 'longbridge';
+import type { Order, OrderSide, OrderStatus, OrderType, TradeContext } from 'longbridge';
+import type { PendingOrder } from '../../../types/orderReadMetadata.js';
+
+/** 交易基础设施实际消费的同一 SDK Context 能力，不向业务公共端口暴露。 */
+export interface BrokerSdkContext {
+  readonly setOnOrderChanged: TradeContext['setOnOrderChanged'];
+  readonly subscribe: TradeContext['subscribe'];
+  readonly unsubscribe: TradeContext['unsubscribe'];
+  readonly historyOrders: TradeContext['historyOrders'];
+  readonly todayOrders: TradeContext['todayOrders'];
+  readonly orderDetail: TradeContext['orderDetail'];
+  readonly submitOrder: TradeContext['submitOrder'];
+  readonly replaceOrder: TradeContext['replaceOrder'];
+  readonly cancelOrder: TradeContext['cancelOrder'];
+  readonly accountBalance: TradeContext['accountBalance'];
+  readonly stockPositions: TradeContext['stockPositions'];
+}
 
 /** 已验证 SDK 订单方向，仅在 trade adapter 入站边界使用；Unknown 不可进入内部事实。 */
 export type ValidatedOrderSide = OrderSide.Buy | OrderSide.Sell;
@@ -38,7 +54,6 @@ export type ValidatedOrderType =
   | OrderType.TSMAMT
   | OrderType.TSMPCT
   | OrderType.SLO;
-import type { PendingOrder } from '../../../types/orderReadMetadata.js';
 
 /** 今日挂单SDK映射能力，只返回cache实际消费的保真文本及安全数量事实。 */
 export interface PendingOrdersAdapter {

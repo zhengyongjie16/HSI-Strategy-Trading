@@ -1,7 +1,7 @@
 /**
  * OrderStatus 生命周期分类测试
  *
- * 覆盖 SDK 当前全部状态的 OPEN / TERMINAL 穷尽分类，以及未知状态 fail-fast。
+ * 覆盖本系统明确支持状态的 OPEN / TERMINAL 分类，以及延迟单、未知状态的拒绝政策。
  */
 import { describe, expect, it } from 'bun:test';
 import { OrderStatus } from 'longbridge';
@@ -41,6 +41,13 @@ describe('OrderStatus 生命周期分类', () => {
   it.each(terminalStatuses)('将 SDK 终态 %s 分类为 TERMINAL', (status) => {
     expect(classifyBrokerOrderStatusLifecycle(status)).toBe('TERMINAL');
     expect(isValidatedOrderStatus(status)).toBe(true);
+  });
+
+  it('拒绝未支持的延迟单状态，不将其归为 OPEN', () => {
+    expect(isValidatedOrderStatus(OrderStatus.DelayedNotReported)).toBe(false);
+    expect(() => classifyBrokerOrderStatusLifecycle(OrderStatus.DelayedNotReported)).toThrow(
+      /未知订单状态/,
+    );
   });
 
   it('对 SDK Unknown 和未来未识别数值 fail-fast', () => {

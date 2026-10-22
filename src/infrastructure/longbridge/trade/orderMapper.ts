@@ -162,7 +162,8 @@ export function mapBrokerOrderSide(value: OrderSide): 'BUY' | 'SELL' {
 /** 唯一SDK元数据映射，保详细在途/终态意义，不把状态/类型数值返回域。 */
 export function mapBrokerOrderStatus(value: OrderStatus): OrderReadStatus {
   switch (value) {
-    case OrderStatus.Unknown: {
+    case OrderStatus.Unknown:
+    case OrderStatus.DelayedNotReported: {
       throw new TypeError('[orderMapper] unknown SDK order status');
     }
 
