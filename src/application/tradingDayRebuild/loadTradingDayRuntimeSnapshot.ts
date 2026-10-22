@@ -522,6 +522,8 @@ export function createLoadTradingDayRuntimeSnapshot(
       symbolRegistry,
       positions: canonicalView.positions,
       orders: allOrders,
+      marketDataClient,
+      logger,
       startupSeatSearch,
       canContinue: () => resolveReceiptInvalidation() === null,
       now: () => now,

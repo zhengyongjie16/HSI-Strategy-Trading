@@ -242,7 +242,7 @@ export type PrewarmTradingCalendarSnapshotParams = Readonly<{
 
 /**
  * prepareSeatsForRuntime() 的依赖注入对象。
- * 类型用途：统一表达交易日快照加载时恢复席位所需的配置、持仓、订单、启动寻标与同步准入判断。
+ * 类型用途：统一表达恢复候选、批量交易状态准入、拒绝日志、启动寻标及原快照授权。
  * 数据来源：由运行时快照加载链路组装传入。
  * 使用范围：仅席位恢复流程使用。
  */
@@ -251,6 +251,8 @@ export interface PrepareSeatsForRuntimeDeps {
   readonly symbolRegistry: SymbolRegistry;
   readonly positions: ReadonlyArray<Position>;
   readonly orders: ReadonlyArray<OrderFact>;
+  readonly marketDataClient: Pick<MarketDataClient, 'getSecurityTradingStatuses'>;
+  readonly logger: Pick<Logger, 'warn'>;
   readonly startupSeatSearch: StartupSeatSearch;
   readonly canContinue: () => boolean;
   readonly now: () => Date;

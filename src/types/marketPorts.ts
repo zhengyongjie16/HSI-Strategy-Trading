@@ -143,6 +143,24 @@ export interface MarketQuoteContext {
 }
 
 /**
+ * 已确认的证券交易状态。
+ * 数据来源：market adapter 严格映射 SDK TradeStatus；缺失、未知或损坏响应通过错误通道暴露。
+ * 使用范围：启动与开盘重建的历史持仓候选准入；SUSPEND 表示终止交易，不等同于 HALTED 停牌。
+ */
+export type SecurityTradingStatus =
+  | 'NORMAL'
+  | 'HALTED'
+  | 'DELISTED'
+  | 'FUSE'
+  | 'PREPARE_LIST'
+  | 'CODE_MOVED'
+  | 'TO_BE_OPENED'
+  | 'SPLIT_STOCK_HALTS'
+  | 'EXPIRED'
+  | 'WARRANT_PREPARE_LIST'
+  | 'SUSPEND';
+
+/**
  * 中性行情客户端端口。
  * 数据来源：composition root 组装的唯一 market adapter。
  * 使用范围：行情订阅、事件路由与 application 读路径；不携带 SDK 枚举、Decimal 或 candle。
@@ -150,6 +168,11 @@ export interface MarketQuoteContext {
 export interface MarketDataClient {
   readonly getQuoteContext: () => Promise<MarketQuoteContext>;
   readonly getQuotes: (symbols: Iterable<string>) => Promise<Map<string, Quote | null>>;
+
+  /** 无需订阅，按次读取并完整校验所有请求标的的交易状态，不缓存结果。 */
+  readonly getSecurityTradingStatuses: (
+    symbols: ReadonlyArray<string>,
+  ) => Promise<ReadonlyMap<string, SecurityTradingStatus>>;
   readonly subscribeSymbols: (symbols: ReadonlyArray<string>) => Promise<void>;
   readonly unsubscribeSymbols: (symbols: ReadonlyArray<string>) => Promise<void>;
   readonly onQuoteUpdated: (listener: (event: QuoteUpdatedEvent) => void) => () => void;

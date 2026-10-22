@@ -12,7 +12,10 @@ import {
  * - 验证席位解析与就绪状态的场景与边界。
  */
 import { describe, expect, it } from 'bun:test';
-import type { MarketQuoteContext } from '../../../src/types/marketPorts.js';
+import { rejects } from 'node:assert/strict';
+import type { MarketQuoteContext, SecurityTradingStatus } from '../../../src/types/marketPorts.js';
+import type { PrepareSeatsForRuntimeDeps } from '../../../src/application/tradingDayRebuild/types.js';
+import type { OrderFact } from '../../../src/types/trade.js';
 
 import { prepareSeatsForRuntime } from '../../../src/application/tradingDayRebuild/seatPreparation.js';
 import { createWarrantCandidateSearch } from '../../../src/application/autoSearch/candidateSearch.js';
@@ -141,6 +144,263 @@ function seedAutoSearchCandidates(quoteCtx: ReturnType<typeof createWarrantQuote
   ]);
 }
 
+/** 带真实归属信息的最近完全成交订单，候选准入不改变其买卖方向口径。 */
+function createRecoveryOrder(
+  symbol: string,
+  direction: 'LONG' | 'SHORT',
+  updatedAt = new Date('2026-02-16T01:00:00.000Z'),
+): OrderFact {
+  return {
+    orderId: `${symbol}-${updatedAt.getTime()}`,
+    symbol,
+    stockName: direction === 'LONG' ? 'HSI RC' : 'HSI RP',
+    executionSide: 'BUY',
+    executionStatus: 'FILLED',
+    executionPhase: 'TERMINAL',
+    status: 'FILLED',
+    orderType: 'ELO',
+    price: '1',
+    quantity: 100,
+    executedPrice: '1',
+    executedQuantity: 100,
+    executedAmount: '100',
+    executionTimeMs: updatedAt.getTime(),
+    updatedAtMs: updatedAt.getTime(),
+    submittedAt: updatedAt,
+    updatedAt,
+  };
+}
+
+/** 原候选、真实启动寻标与可控状态端口，直接见证发布与寻标边界。 */
+function createStatusAdmissionHarness(overrides: Partial<PrepareSeatsForRuntimeDeps> = {}) {
+  const monitor = createMonitorConfigDouble({
+    ...createAutoSearchMonitor(),
+    orderOwnershipMapping: ['HSI'],
+  });
+  const registry = createEmptySymbolRegistry();
+  const quoteContext = createWarrantQuoteHarness();
+  const warnings: unknown[][] = [];
+  const statusRequests: ReadonlyArray<string>[] = [];
+  const publicationDirections: string[] = [];
+  const symbolRegistry = {
+    ...registry,
+    updateSeatState: (...args: Parameters<typeof registry.updateSeatState>) => {
+      publicationDirections.push(args[0]);
+      registry.updateSeatState(...args);
+    },
+  };
+  const marketDataClient = createMarketDataClientDouble({
+    getQuoteContext: async () => quoteContext.port,
+    getSecurityTradingStatuses: async (symbols) => {
+      statusRequests.push(symbols);
+      return new Map(symbols.map((symbol) => [symbol, 'NORMAL'] as const));
+    },
+  });
+  const deps: PrepareSeatsForRuntimeDeps = {
+    tradingConfig: createTradingConfig({ monitor }),
+    symbolRegistry,
+    marketDataClient,
+    logger: { warn: (...args) => { warnings.push(args); } },
+    positions: ['OLD_LONG.HK', 'OLD_SHORT.HK'].map((symbol) => ({
+      accountChannel: 'lb',
+      symbol,
+      symbolName: symbol,
+      quantity: 100,
+      availableQuantity: 0,
+      currency: 'HKD',
+      costPrice: '1',
+    })),
+    orders: [
+      createRecoveryOrder('OLD_LONG.HK', 'LONG'),
+      createRecoveryOrder('OLD_SHORT.HK', 'SHORT'),
+    ],
+    startupSeatSearch: createStartupSeatSearch({
+      monitorSymbol: monitor.monitorSymbol,
+      symbolRegistry,
+      candidateSearch: createWarrantCandidateSearch({
+        monitorSymbol: monitor.monitorSymbol,
+        autoSearchConfig: monitor.autoSearchConfig,
+        marketDataClient,
+        logger: createLoggerStub(),
+        getTradingMinutesSinceOpen: () => 10,
+      }),
+      logger: createLoggerStub(),
+    }),
+    now: () => new Date('2026-02-16T02:00:00.000Z'),
+    canContinue: () => true,
+    resolveCanAutoSearchNow: () => false,
+    ...overrides,
+  };
+  return { deps, registry, quoteContext, warnings, statusRequests, publicationDirections };
+}
+
+describe('历史持仓交易状态准入', () => {
+  it('正常交易批量准入两方向，只进入 ACTIVATING，清零计数与冻结；零可用持仓仍是候选', async () => {
+    const harness = createStatusAdmissionHarness();
+    harness.registry.updateSeatState('LONG', {
+      ...harness.registry.getSeatState('LONG'),
+      symbol: null, status: 'EMPTY',
+      searchFailCountToday: 2,
+      frozenTradingDayKey: '2026-02-16',
+    });
+    await prepareSeatsForRuntime(harness.deps);
+    expect(harness.statusRequests).toEqual([['OLD_LONG.HK', 'OLD_SHORT.HK']]);
+    for (const direction of ['LONG', 'SHORT'] as const) {
+      expect(harness.registry.getSeatState(direction)).toMatchObject({
+        symbol: `OLD_${direction}.HK`,
+        status: 'ACTIVATING',
+        lastSeatActivatedAt: null,
+        searchFailCountToday: 0,
+        frozenTradingDayKey: null,
+      });
+    }
+
+    expect(harness.warnings).toHaveLength(0);
+  });
+
+  it.each([
+    'HALTED', 'DELISTED', 'FUSE', 'PREPARE_LIST', 'CODE_MOVED', 'TO_BE_OPENED',
+    'SPLIT_STOCK_HALTS', 'EXPIRED', 'WARRANT_PREPARE_LIST', 'SUSPEND',
+  ] as const)('已确认 %s 拒绝但不计寻标失败，日志带实际状态', async (status) => {
+    const harness = createStatusAdmissionHarness({
+      marketDataClient: {
+        getSecurityTradingStatuses: async () => new Map([
+          ['OLD_SHORT.HK', 'NORMAL'], ['OLD_LONG.HK', status],
+        ]),
+      },
+    });
+    harness.registry.updateSeatState('LONG', {
+      ...harness.registry.getSeatState('LONG'), symbol: null, status: 'EMPTY', searchFailCountToday: 1,
+    });
+    await prepareSeatsForRuntime(harness.deps);
+    expect(harness.registry.getSeatState('LONG')).toMatchObject({
+      symbol: null, status: 'EMPTY', searchFailCountToday: 1,
+    });
+    expect(harness.registry.getSeatState('SHORT').symbol).toBe('OLD_SHORT.HK');
+    expect(harness.quoteContext.getCalls('warrantList')).toHaveLength(0);
+    expect(harness.warnings[0]?.[0]).toContain(`方向 LONG 拒绝历史候选 OLD_LONG.HK，交易状态 ${status}`);
+    expect(harness.warnings[0]?.[0]).toContain('HSI.HK');
+  });
+
+  it.each([false, true])('非正常候选按原门禁补席；frozen=%p 时不搜索且保留冻结/计数', async (frozen) => {
+    const harness = createStatusAdmissionHarness({
+      resolveCanAutoSearchNow: () => true,
+      marketDataClient: {
+        getSecurityTradingStatuses: async (symbols) => new Map(symbols.map((symbol) => [symbol, 'SUSPEND'] as const)),
+      },
+    });
+    if (frozen) {
+      for (const direction of ['LONG', 'SHORT'] as const) {
+        harness.registry.updateSeatState(direction, {
+          ...harness.registry.getSeatState(direction),
+          symbol: null, status: 'EMPTY',
+          frozenTradingDayKey: '2026-02-16', searchFailCountToday: 2,
+        });
+      }
+    }
+
+    seedAutoSearchCandidates(harness.quoteContext);
+    await prepareSeatsForRuntime(harness.deps);
+    expect(harness.quoteContext.getCalls('warrantList')).toHaveLength(frozen ? 0 : 2);
+    expect(harness.registry.getSeatState('LONG')).toMatchObject({
+      status: frozen ? 'EMPTY' : 'ACTIVATING',
+      symbol: frozen ? null : 'AUTO_BULL.HK',
+      searchFailCountToday: frozen ? 2 : 0,
+      frozenTradingDayKey: frozen ? '2026-02-16' : null,
+    });
+  });
+
+  it.each(['缺少第二方向', '外部请求失败'] as const)('%s 时两方向零提前发布、不寻标', async (failure) => {
+    const error = await createExternalApiRequestError({
+      operation: 'QuoteContext.quote', attempts: 1, cause: new Error('quote failed'),
+    });
+    const harness = createStatusAdmissionHarness({
+      resolveCanAutoSearchNow: () => true,
+      marketDataClient: {
+        getSecurityTradingStatuses: async () => {
+          if (failure === '外部请求失败') throw error;
+
+          return new Map([['OLD_LONG.HK', 'NORMAL']]);
+        },
+      },
+    });
+    const caught: unknown = await prepareSeatsForRuntime(harness.deps).then(() => null, (e: unknown) => e);
+    if (failure === '外部请求失败') expect(caught).toBe(error);
+    else expect(caught).toBeInstanceOf(TypeError);
+
+    expect(harness.publicationDirections).toEqual([]);
+    expect(harness.quoteContext.getCalls('warrantList')).toHaveLength(0);
+  });
+
+  it.each([false, true])('等待状态期间原授权失效；损坏端口=%p 仍先暴露内部错误', async (broken) => {
+    let authorized = true;
+    const gate = Promise.withResolvers<ReadonlyMap<string, SecurityTradingStatus>>();
+    const harness = createStatusAdmissionHarness({
+      resolveCanAutoSearchNow: () => true,
+      canContinue: () => authorized,
+      marketDataClient: { getSecurityTradingStatuses: () => gate.promise },
+    });
+    const pending = prepareSeatsForRuntime(harness.deps);
+    expect(harness.publicationDirections).toEqual([]);
+    authorized = false;
+    gate.resolve(new Map(broken ? [['OLD_LONG.HK', 'NORMAL']] : [
+      ['OLD_LONG.HK', 'SUSPEND'], ['OLD_SHORT.HK', 'NORMAL'],
+    ]));
+
+    await (broken ? rejects(pending, TypeError) : pending);
+    expect(harness.publicationDirections).toEqual([]);
+    expect(harness.quoteContext.getCalls('warrantList')).toHaveLength(0);
+    expect(harness.warnings).toHaveLength(0);
+  });
+
+  it('状态请求抛错即使原授权已失效也保留外部失败身份，不静默返回', async () => {
+    let authorized = true;
+    const error = await createExternalApiRequestError({
+      operation: 'QuoteContext.quote', attempts: 1, cause: new Error('network unavailable'),
+    });
+    const gate = Promise.withResolvers<ReadonlyMap<string, SecurityTradingStatus>>();
+    const harness = createStatusAdmissionHarness({
+      canContinue: () => authorized,
+      marketDataClient: { getSecurityTradingStatuses: () => gate.promise },
+    });
+    const pending = prepareSeatsForRuntime(harness.deps);
+    authorized = false;
+    gate.reject(error);
+    expect(await pending.catch((caught: unknown) => caught)).toBe(error);
+    expect(harness.publicationDirections).toEqual([]);
+    expect(harness.quoteContext.getCalls('warrantList')).toHaveLength(0);
+  });
+
+  it('入口授权失效不读状态；无候选不发状态请求', async () => {
+    const unauthorized = createStatusAdmissionHarness({ canContinue: () => false });
+    await prepareSeatsForRuntime(unauthorized.deps);
+    expect(unauthorized.statusRequests).toEqual([]);
+    expect(unauthorized.publicationDirections).toEqual([]);
+    const empty = createStatusAdmissionHarness({ positions: [] });
+    await prepareSeatsForRuntime(empty.deps);
+    expect(empty.statusRequests).toEqual([]);
+  });
+
+  it('最新完全成交候选被拒后不回溯更早持仓，也不改用未完全成交订单', async () => {
+    const harness = createStatusAdmissionHarness({
+      marketDataClient: { getSecurityTradingStatuses: async () => new Map([['LATEST.HK', 'EXPIRED']]) },
+    });
+    await prepareSeatsForRuntime({
+      ...harness.deps,
+      orders: [
+        createRecoveryOrder('EARLY.HK', 'LONG', new Date('2026-02-16T00:00:00Z')),
+        createRecoveryOrder('LATEST.HK', 'LONG'),
+        { ...createRecoveryOrder('PARTIAL.HK', 'LONG', new Date('2026-02-16T01:30:00Z')), executionStatus: 'PARTIAL' },
+      ],
+      positions: ['EARLY.HK', 'LATEST.HK', 'PARTIAL.HK'].map((symbol) => ({
+        ...harness.deps.positions[0]!, symbol,
+      })),
+    });
+    expect(harness.registry.getSeatState('LONG').symbol).toBeNull();
+    expect(harness.warnings[0]?.[0]).toContain('LATEST.HK');
+  });
+});
+
 describe('recovery seat preparation business flow', () => {
   it('restores configured symbols on startup when auto-search is disabled', async () => {
     const startupTime = '2026-02-16T01:00:00.000Z';
@@ -186,6 +446,12 @@ describe('recovery seat preparation business flow', () => {
 
     let quoteContextCalls = 0;
     await prepareSeatsForRuntime({
+      marketDataClient: {
+        getSecurityTradingStatuses: async () => {
+          throw new Error('静态模式不得查询交易状态');
+        },
+      },
+      logger: createLoggerStub(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -218,6 +484,8 @@ describe('recovery seat preparation business flow', () => {
     const shortSeat = symbolRegistry.getSeatState('SHORT');
     expect(longSeat.lastSeatActivatedAt).toBeNull();
     expect(shortSeat.lastSeatActivatedAt).toBeNull();
+    expect(longSeat).toMatchObject({ symbol: 'BULL.HK', status: 'ACTIVATING' });
+    expect(shortSeat).toMatchObject({ symbol: 'BEAR.HK', status: 'ACTIVATING' });
   });
 
   it('tracks failure counts when auto-search cannot find candidates on startup', async () => {
@@ -261,6 +529,8 @@ describe('recovery seat preparation business flow', () => {
     const quoteCtx = createWarrantQuoteHarness();
 
     await prepareSeatsForRuntime({
+      marketDataClient: createMarketDataClientDouble(),
+      logger: createLoggerStub(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -316,6 +586,8 @@ describe('recovery seat preparation business flow', () => {
     });
 
     await prepareSeatsForRuntime({
+      marketDataClient: createMarketDataClientDouble(),
+      logger: createLoggerStub(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -371,6 +643,8 @@ describe('recovery seat preparation business flow', () => {
     let error: unknown = null;
     try {
       await prepareSeatsForRuntime({
+        marketDataClient: createMarketDataClientDouble(),
+        logger: createLoggerStub(),
         tradingConfig: createTradingConfig({ monitor }),
         symbolRegistry,
         positions: [],
@@ -443,6 +717,8 @@ describe('recovery seat preparation business flow', () => {
     let error: unknown = null;
     try {
       await prepareSeatsForRuntime({
+        marketDataClient: createMarketDataClientDouble(),
+        logger: createLoggerStub(),
         tradingConfig: createTradingConfig({ monitor }),
         symbolRegistry,
         positions: [],
@@ -507,6 +783,8 @@ describe('recovery seat preparation business flow', () => {
     });
     const currentTime = new Date('2026-02-16T01:35:00.000Z');
     await prepareSeatsForRuntime({
+      marketDataClient: createMarketDataClientDouble(),
+      logger: createLoggerStub(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -592,6 +870,8 @@ describe('recovery seat preparation business flow', () => {
     ]);
 
     await prepareSeatsForRuntime({
+      marketDataClient: createMarketDataClientDouble(),
+      logger: createLoggerStub(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -630,6 +910,8 @@ describe('recovery seat preparation business flow', () => {
     seedAutoSearchCandidates(quoteCtx);
 
     await prepareSeatsForRuntime({
+      marketDataClient: createMarketDataClientDouble(),
+      logger: createLoggerStub(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -665,6 +947,8 @@ describe('recovery seat preparation business flow', () => {
     seedAutoSearchCandidates(quoteCtx);
 
     await prepareSeatsForRuntime({
+      marketDataClient: createMarketDataClientDouble(),
+      logger: createLoggerStub(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -704,6 +988,8 @@ describe('recovery seat preparation business flow', () => {
     seedAutoSearchCandidates(quoteCtx);
 
     await prepareSeatsForRuntime({
+      marketDataClient: createMarketDataClientDouble(),
+      logger: createLoggerStub(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],
@@ -791,6 +1077,8 @@ describe('recovery seat preparation business flow', () => {
     ]);
 
     await prepareSeatsForRuntime({
+      marketDataClient: createMarketDataClientDouble(),
+      logger: createLoggerStub(),
       tradingConfig: createTradingConfig({ monitor }),
       symbolRegistry,
       positions: [],

@@ -10,6 +10,7 @@ import type { RuntimeStateFixtures } from '../../helpers/types.js';
  */
 
 import { describe, expect, it, spyOn } from 'bun:test';
+import { rejects } from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,9 +27,16 @@ import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracke
 import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 import { createMixedTradeLogRepository } from '../../../src/infrastructure/persistence/mixedTradeLogRepository/index.js';
 import { createLoadTradingDayRuntimeSnapshot } from '../../../src/application/tradingDayRebuild/loadTradingDayRuntimeSnapshot.js';
+import { loadStartupSnapshot } from '../../../src/application/tradingDayRebuild/startupSnapshot.js';
+import { executeTradingDayOpenRebuild } from '../../../src/application/tradingDayRebuild/openRebuild.js';
+import { applyStartupSnapshotFailureState } from '../../../src/application/tradingDayRebuild/startupFailureState.js';
+import { createDayLifecycleManager } from '../../../src/runtime/lifecycle/dayLifecycleManager.js';
+import { createMarketFixture } from '../../infrastructure/longbridge/market/marketFixture.js';
+import { createQuoteSubscriptionRuntime } from '../../../src/runtime/quoteSubscriptionRuntime/index.js';
 import type {
   LoadTradingDayRuntimeSnapshotDeps,
   LoadTradingDayRuntimeSnapshotParams,
+  RunTradingDayOpenRebuildParams,
 } from '../../../src/application/tradingDayRebuild/types.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
@@ -83,6 +91,9 @@ function createTradingConfig(
 /** loader 测试夹具：除注入依赖外保留真实 termination 的 reportFatalError，供 snapshot fatal 验证使用。 */
 type LoadTradingDayRuntimeSnapshotHarness = LoadTradingDayRuntimeSnapshotDeps & {
   readonly reportFatalError: (error: unknown) => void;
+  readonly termination: ReturnType<typeof createTerminationRuntime>;
+  readonly postTradeConsistencyRuntime: ReturnType<typeof createPostTradeConsistencyRuntime>;
+  readonly lifecycleState: RuntimeStateFixtures['lifecycleState'];
 };
 
 function createBaseDeps(
@@ -183,6 +194,8 @@ function createBaseDeps(
     seatActivationDispatcher:
       overrides.seatActivationDispatcher ?? createSeatActivationDispatcherDouble(),
     reportFatalError,
+    termination,
+    postTradeConsistencyRuntime: postTrade,
     ...overrides,
   };
 }
@@ -597,6 +610,209 @@ function drainMonitorTasks(
 
   return tasks;
 }
+
+/** 使用真实行情 adapter、canonical snapshot、loader 与原启动寻标组装状态准入场景。 */
+async function createTradingStatusRecoveryHarness(tradingStatus: 'NORMAL' | 'SUSPEND' | null) {
+  const now = new Date('2026-02-16T01:31:00.000Z');
+  const monitor = createMonitorConfigDouble({
+    ...createAutoSearchMonitor(), orderOwnershipMapping: ['HSI'],
+  });
+  const market = await createMarketFixture();
+  market.controller.seedQuotes(['HSI.HK', 'BULL.HK', 'BEAR.HK'].map((symbol) => ({
+    symbol, name: symbol, price: '1', previousClose: '1', timestampMs: now.getTime(),
+    lotSize: 100, tradingStatus: symbol === 'BULL.HK' ? tradingStatus : 'NORMAL',
+  })));
+  const orders = await Promise.all((['LONG', 'SHORT'] as const).map(async (direction) => {
+    const ingress = await createBrokerIngressFixture({
+      ...createStartupSnapshotOrderInput(now.getTime()),
+      orderId: `STATUS-${direction}`,
+      symbol: direction === 'LONG' ? 'BULL.HK' : 'BEAR.HK',
+      stockName: direction === 'LONG' ? 'HSI RC' : 'HSI RP',
+      status: 'Filled',
+    });
+    return ingress.queryObservation;
+  }));
+  const positions = ['BULL.HK', 'BEAR.HK'].map((symbol) => ({
+    accountChannel: 'lb', symbol, symbolName: symbol,
+    quantity: 10, availableQuantity: 0, currency: 'HKD', costPrice: '12',
+  }));
+  const trader = createReadyTrader({
+    accountService: { getStockPositions: async () => positions },
+    orderRecorder: { fetchAllOrdersFromAPI: async () => orders },
+  });
+  const warnings: unknown[][] = [];
+  const deps = createBaseDeps({
+    tradingConfig: createTradingConfig(monitor),
+    marketDataClient: {
+      ...market.client,
+      getQuotes: (symbols) => market.client.getQuotes([...symbols]),
+      isTradingDay: async () => ({ isTradingDay: true, isHalfDay: false }),
+    },
+    accountService: trader.accountService,
+    orderRecorder: trader.orderRecorder,
+    orderMonitor: trader.orderMonitor,
+    orderHoldRegistry: trader.orderHoldRegistry,
+    logger: { ...createLoggerDouble(), warn: (...args) => { warnings.push(args); } },
+  });
+  const publications: string[] = [];
+  const updateSeatState = deps.symbolRegistry.updateSeatState;
+  spyOn(deps.symbolRegistry, 'updateSeatState').mockImplementation((direction, state) => {
+    publications.push(direction);
+    updateSeatState(direction, state);
+  });
+  const quoteSubscriptionRuntime = createQuoteSubscriptionRuntime({
+    snapshot: deps.snapshot, termination: deps.termination,
+    symbolRegistry: deps.symbolRegistry, tradingConfig: deps.tradingConfig,
+    orderHoldRegistry: trader.orderHoldRegistry, quoteSubscriptionState: deps.quoteSubscriptionState,
+    logger: deps.logger, marketDataClient: deps.marketDataClient,
+  });
+  const load = createLoadTradingDayRuntimeSnapshot(deps);
+  const rebuiltOrders: ReadonlyArray<OrderFact>[] = [];
+  const openParams: RunTradingDayOpenRebuildParams = {
+    now, termination: deps.termination, snapshot: deps.snapshot,
+    loadTradingDayRuntimeSnapshot: load,
+    rebuildTradingDayState: async ({ snapshotToken, allOrders }) => {
+      rebuiltOrders.push(allOrders);
+      return { status: 'COMMITTED', snapshotToken };
+    },
+    postTradeConsistencyRuntime: deps.postTradeConsistencyRuntime,
+    quoteSubscriptionRuntime,
+  };
+  const startup = () => loadStartupSnapshot({
+    now, lifecycleState: deps.lifecycleState, termination: deps.termination,
+    snapshot: deps.snapshot, loadTradingDayRuntimeSnapshot: load,
+    applyStartupSnapshotFailureState, logger: deps.logger, formatError: String,
+  });
+  const dispose = async () => {
+    await deps.postTradeConsistencyRuntime.stopAndDrain();
+    await quoteSubscriptionRuntime.stopAndDrain();
+  };
+  return { now, market, deps, load, openParams, startup, dispose, positions, orders, publications, warnings, rebuiltOrders };
+}
+
+describe('真实 loader 的历史席位交易状态准入', () => {
+  it.each(['STARTUP', 'OPEN_REBUILD'] as const)('%s owner 真实接线拒绝终止交易，保留订单/持仓与残仓订阅', async (source) => {
+    const harness = await createTradingStatusRecoveryHarness('SUSPEND');
+    try {
+      const result = source === 'STARTUP'
+        ? await harness.startup()
+        : await executeTradingDayOpenRebuild(harness.openParams);
+      expect(source === 'STARTUP' ? 'kind' in result && result.kind : 'status' in result && result.status)
+        .toBe(source === 'STARTUP' ? 'READY' : 'COMMITTED');
+      expect(harness.market.controller.readSymbolCalls('quote')[0]).toEqual(['BULL.HK', 'BEAR.HK']);
+      expect(harness.deps.symbolRegistry.getSeatState('LONG')).toMatchObject({ symbol: null, status: 'EMPTY', searchFailCountToday: 0 });
+      expect(harness.deps.symbolRegistry.getSeatState('SHORT')).toMatchObject({ symbol: 'BEAR.HK', status: 'ACTIVATING' });
+      expect(harness.market.controller.readSymbolCalls('warrantList')).toEqual([]);
+      expect(harness.deps.snapshot.getView().positions).toEqual(harness.positions);
+      if ('allOrders' in result) expect(result.allOrders).toEqual(harness.orders);
+      else expect(harness.rebuiltOrders[0]).toEqual(harness.orders);
+
+      expect(harness.market.controller.readSymbolCalls('subscribe').flat()).toContain('BULL.HK');
+      expect(harness.warnings[0]?.[0]).toContain('SUSPEND');
+    } finally { await harness.dispose(); }
+  });
+
+  it.each(['NORMAL', 'SUSPEND', null] as const)('新 await 期间 receipt 被成对刷新替代，状态 %p 不获得新 token 授权', async (status) => {
+    const harness = await createTradingStatusRecoveryHarness(status);
+    const gate = harness.market.controller.pauseFirstSecurityTradingStatusRead();
+    try {
+      const running = harness.load(createLoadParams({ now: harness.now }));
+      await gate.entered;
+      expect(harness.publications).toEqual([]);
+      const captured = harness.deps.snapshot.getView().token;
+      const refresh = await harness.deps.snapshot.requestRefresh({
+        source: 'TEST_REFRESH', dayEpoch: captured.dayEpoch, refreshAccount: true, refreshPositions: true,
+      }).result;
+      expect(refresh.status).toBe('COMMITTED');
+      expect(harness.deps.snapshot.isCurrent(captured, { account: true, positions: true, paired: true })).toBe(false);
+      gate.release();
+      if (status === null) await rejects(running, TypeError);
+      else expect(await running).toEqual({ status: 'SUPERSEDED' });
+
+      expect(harness.publications).toEqual([]);
+      expect(harness.market.controller.readSymbolCalls('warrantList')).toEqual([]);
+      expect(harness.warnings).toEqual([]);
+      expect(harness.market.controller.readSymbolCalls('subscribe')).toEqual([]);
+    } finally { gate.release(); await harness.dispose(); }
+  });
+
+  it('状态等待期间 epoch 失效保持 ABORTED，不发布旧候选', async () => {
+    const harness = await createTradingStatusRecoveryHarness('NORMAL');
+    const gate = harness.market.controller.pauseFirstSecurityTradingStatusRead();
+    try {
+      const running = harness.load(createLoadParams({ now: harness.now }));
+      await gate.entered;
+      await harness.deps.snapshot.requestClear({ reason: 'DAY_CUT', dayEpoch: 1 });
+      gate.release();
+      expect(await running).toEqual({ status: 'ABORTED' });
+      expect(harness.publications).toEqual([]);
+    } finally { gate.release(); await harness.dispose(); }
+  });
+
+  it('STARTUP 状态请求外部失败关门待重建；成功响应损坏仍为 fatal 而非 API pending', async () => {
+    const externalHarness = await createTradingStatusRecoveryHarness('NORMAL');
+    const external = await createExternalApiRequestError({
+      operation: 'QuoteContext.quote', attempts: 1, cause: new Error('network unavailable'),
+    });
+    spyOn(externalHarness.deps.marketDataClient, 'getSecurityTradingStatuses').mockRejectedValue(external);
+    try {
+      expect(await externalHarness.startup()).toEqual({ kind: 'API_RETRY_PENDING' });
+      expect(externalHarness.deps.lifecycleState).toMatchObject({
+        isTradingEnabled: false, pendingOpenRebuild: true, lifecycleState: 'OPEN_REBUILD_FAILED',
+      });
+      expect(externalHarness.publications).toEqual([]);
+    } finally { await externalHarness.dispose(); }
+
+    const broken = await createTradingStatusRecoveryHarness(null);
+    try {
+      await rejects(broken.startup(), TypeError);
+      expect(broken.deps.lifecycleState.pendingOpenRebuild).toBe(false);
+      expect(broken.publications).toEqual([]);
+    } finally { await broken.dispose(); }
+  });
+
+  it.each(['外部请求', '内部契约'] as const)('OPEN_REBUILD 真实 loader 的%s失败由原生命周期分类，内部错误不降级', async (failure) => {
+    const harness = await createTradingStatusRecoveryHarness(failure === '内部契约' ? null : 'NORMAL');
+    let statusRequests = 0;
+    if (failure === '外部请求') {
+      const external = await createExternalApiRequestError({
+        operation: 'QuoteContext.quote', attempts: 1, cause: new Error('network unavailable'),
+      });
+      spyOn(harness.deps.marketDataClient, 'getSecurityTradingStatuses').mockImplementation(async () => {
+        statusRequests += 1;
+        throw external;
+      });
+    }
+
+    const state = harness.deps.lifecycleState;
+    state.currentDayKey = '2026-02-16';
+    state.pendingOpenRebuild = true;
+    state.lifecycleState = 'MIDNIGHT_CLEANED';
+    state.isTradingEnabled = false;
+    const manager = createDayLifecycleManager({
+      diagnostics: createDiagnosticObserverDouble(), termination: harness.deps.termination,
+      mutableState: state, snapshot: harness.deps.snapshot, logger: harness.deps.logger,
+      rebuildRetryDelayMs: 1000,
+      cacheDomains: [{ midnightClear: () => {}, openRebuild: ({ now }) => executeTradingDayOpenRebuild({ ...harness.openParams, now }) }],
+    });
+    const runtime = { dayKey: '2026-02-16', canTradeNow: true, isTradingDay: true };
+    try {
+      if (failure === '外部请求') {
+        const first = await manager.tick(harness.now, runtime);
+        expect(state).toMatchObject({ lifecycleState: 'OPEN_REBUILD_FAILED', isTradingEnabled: false, pendingOpenRebuild: true });
+        expect(first.nextRetryAtMs).toBe(harness.now.getTime() + 1000);
+        await manager.tick(new Date(harness.now.getTime() + 2000), runtime);
+        expect(statusRequests).toBe(2);
+      } else {
+        await rejects(manager.tick(harness.now, runtime), TypeError);
+        expect(state.lifecycleState).not.toBe('OPEN_REBUILD_FAILED');
+        expect(state.isTradingEnabled).toBe(false);
+      }
+
+      expect(harness.publications).toEqual([]);
+    } finally { await harness.dispose(); }
+  });
+});
 
 describe('createLoadTradingDayRuntimeSnapshot', () => {
   for (const missing of ['EXECUTED_PRICE', 'REVISION'] as const) {

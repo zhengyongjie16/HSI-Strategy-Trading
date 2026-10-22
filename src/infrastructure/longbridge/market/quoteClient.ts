@@ -32,6 +32,7 @@ import {
   mapMarketToSdk,
   mapTradeSessionToSdk,
   mapSdkPeriod,
+  mapSdkSecurityTradingStatus,
 } from './marketEnumMapper.js';
 import { mapCandlestickSeries } from './candlestickMapper.js';
 import { isRecord } from '../../../utils/helpers/index.js';
@@ -52,6 +53,7 @@ import type {
   TradingDaysResult,
   CandlestickUpdatedEvent,
   QuoteUpdatedEvent,
+  SecurityTradingStatus,
 } from '../../../types/marketPorts.js';
 import type { TradingDayInfo } from '../../../types/tradingCalendar.js';
 import type {
@@ -533,6 +535,45 @@ export async function createMarketDataClient(
   }
 
   /**
+   * 从完整行情读取本轮证券交易状态，不依赖订阅或行情缓存。
+   * 只将真实 I/O 交给既有请求包装；成功响应的契约错误必须直接暴露，不能进入外部重试。
+   */
+  async function getSecurityTradingStatuses(
+    symbols: ReadonlyArray<string>,
+  ): Promise<ReadonlyMap<string, SecurityTradingStatus>> {
+    const uniqueSymbols = [...new Set(symbols)];
+    if (uniqueSymbols.length === 0) return new Map();
+
+    const response = await withRetry('QuoteContext.quote', () => ctx.quote(uniqueSymbols));
+    if (!Array.isArray(response)) {
+      throw new TypeError('[证券交易状态响应] 必须是数组');
+    }
+
+    const statuses = new Map<string, SecurityTradingStatus>();
+    for (const row of response) {
+      if (!isRecord(row) || Array.isArray(row)) {
+        throw new TypeError('[证券交易状态响应] 行必须是对象');
+      }
+
+      const symbol = row['symbol'];
+      if (typeof symbol !== 'string' || symbol.length === 0) {
+        throw new TypeError('[证券交易状态响应] symbol 必须是非空字符串');
+      }
+
+      // 先完成每行契约校验，再检查请求覆盖率；不能将未知状态解释为没有候选。
+      statuses.set(symbol, mapSdkSecurityTradingStatus(row['tradeStatus']));
+    }
+
+    for (const symbol of uniqueSymbols) {
+      if (!statuses.has(symbol)) {
+        throw new TypeError(`[证券交易状态响应] 缺少请求标的: ${symbol}`);
+      }
+    }
+
+    return statuses;
+  }
+
+  /**
    * 动态订阅新增标的。先补齐 metadata，再对未接入标的建立订阅，并统一恢复已订阅标的的 metadata 完整性。
    *
    * @param symbols 待订阅的标的代码列表
@@ -947,6 +988,7 @@ export async function createMarketDataClient(
   return {
     getQuoteContext,
     getQuotes,
+    getSecurityTradingStatuses,
     subscribeSymbols,
     unsubscribeSymbols,
     onQuoteUpdated,

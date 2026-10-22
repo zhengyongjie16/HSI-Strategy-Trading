@@ -1,12 +1,13 @@
 /** SDK 枚举 seam 检查：双向周期、订阅时段及港股日历映射不把 SDK 数字传播到中性事实。 */
 import { describe, expect, test } from 'bun:test';
-import { Market, Period, TradeSessions } from 'longbridge';
+import { Market, Period, TradeSessions, TradeStatus } from 'longbridge';
 import type { CandlestickPeriod } from '../../../../src/types/marketPorts.js';
 import {
   mapCandlestickPeriodToSdk,
   mapMarketToSdk,
   mapSdkPeriod,
   mapTradeSessionToSdk,
+  mapSdkSecurityTradingStatus,
 } from '../../../../src/infrastructure/longbridge/market/marketEnumMapper.js';
 
 const periods: ReadonlyArray<readonly [CandlestickPeriod, Period]> = [
@@ -41,6 +42,31 @@ describe('market enum mapper', () => {
     expect(mapTradeSessionToSdk('ALL')).toBe(TradeSessions.All);
     expect(mapMarketToSdk('HK')).toBe(Market.HK);
   });
+
+  test('完整映射 11 个证券状态，终止交易与停牌保持不同事实', () => {
+    for (const [sdkStatus, neutralStatus] of [
+      [TradeStatus.Normal, 'NORMAL'],
+      [TradeStatus.Halted, 'HALTED'],
+      [TradeStatus.Delisted, 'DELISTED'],
+      [TradeStatus.Fuse, 'FUSE'],
+      [TradeStatus.PrepareList, 'PREPARE_LIST'],
+      [TradeStatus.CodeMoved, 'CODE_MOVED'],
+      [TradeStatus.ToBeOpened, 'TO_BE_OPENED'],
+      [TradeStatus.SplitStockHalts, 'SPLIT_STOCK_HALTS'],
+      [TradeStatus.Expired, 'EXPIRED'],
+      [TradeStatus.WarrantPrepareList, 'WARRANT_PREPARE_LIST'],
+      [TradeStatus.Suspend, 'SUSPEND'],
+    ] as const) {
+      expect(mapSdkSecurityTradingStatus(sdkStatus)).toBe(neutralStatus);
+    }
+  });
+
+  test.each([undefined, null, 99999, 'Normal', String(TradeStatus.Normal), false, {}])(
+    '未知、缺失或非法类型 %p 直接拒绝',
+    (status) => {
+      expect(() => mapSdkSecurityTradingStatus(status)).toThrow(TypeError);
+    },
+  );
 
   test('旧 SDK 周期与 Unknown 不作为中性输入的兼容回退', () => {
     expect(() => mapCandlestickPeriodToSdk(Period.Min_1 as unknown as CandlestickPeriod)).toThrow();

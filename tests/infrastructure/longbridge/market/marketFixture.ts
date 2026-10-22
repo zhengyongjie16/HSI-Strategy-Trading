@@ -2,6 +2,7 @@
 import {
   Decimal,
   TradeSession,
+  TradeStatus,
   WarrantStatus,
   WarrantType,
   type Candlestick,
@@ -67,9 +68,24 @@ export async function createMarketFixture(): Promise<MarketFixture> {
     readonly entered: () => void;
     readonly released: Promise<void>;
   } | null = null;
-  // 场景需要见证“底层结果已取得、退订尚未完成”的竞态；仅首次武装的读取在结果返回后暂停。
+  let armedSecurityStatusGate: {
+    readonly entered: () => void;
+    readonly released: Promise<void>;
+  } | null = null;
+  // 只暂停首次武装的读取，底层结果取得后不改写其原始事实。
   const quoteContext = {
     ...context,
+    quote: async (symbols: ReadonlyArray<string>) => {
+      const quotes = await context.quote(symbols);
+      const gate = armedSecurityStatusGate;
+      if (gate !== null) {
+        armedSecurityStatusGate = null;
+        gate.entered();
+        await gate.released;
+      }
+
+      return quotes;
+    },
     realtimeQuote: async (symbols: ReadonlyArray<string>) => {
       const quotes = await context.realtimeQuote(symbols);
       const gate = armedRealtimeQuoteGate;
@@ -94,6 +110,7 @@ export async function createMarketFixture(): Promise<MarketFixture> {
     client: {
       getQuoteContext: client.getQuoteContext,
       getQuotes: (symbols) => client.getQuotes(symbols),
+      getSecurityTradingStatuses: client.getSecurityTradingStatuses,
       subscribeSymbols: client.subscribeSymbols,
       unsubscribeSymbols: client.unsubscribeSymbols,
       onQuoteUpdated: client.onQuoteUpdated,
@@ -127,15 +144,19 @@ export async function createMarketFixture(): Promise<MarketFixture> {
         );
 
         context.seedQuotes(
-          quotes.map((quote) => ({
-            symbol: quote.symbol,
-            quote: {
+          quotes.map((quote) => {
+            const tradeStatus = quote.tradingStatus === 'SUSPEND' ? TradeStatus.Suspend : TradeStatus.Normal;
+            return {
               symbol: quote.symbol,
-              lastDone: new Decimal(quote.price),
-              prevClose: new Decimal(quote.previousClose),
-              timestamp: new Date(quote.timestampMs),
-            },
-          })),
+              quote: {
+                symbol: quote.symbol,
+                lastDone: new Decimal(quote.price),
+                prevClose: new Decimal(quote.previousClose),
+                timestamp: new Date(quote.timestampMs),
+                tradeStatus: quote.tradingStatus === null ? null : tradeStatus,
+              },
+            };
+          }),
         );
       },
       seedWarrants: (monitorSymbol, warrants) => {
@@ -170,6 +191,21 @@ export async function createMarketFixture(): Promise<MarketFixture> {
           release: () => {
             released.resolve();
           },
+        };
+      },
+      pauseFirstSecurityTradingStatusRead: () => {
+        if (armedSecurityStatusGate !== null)
+          throw new Error('market fixture security trading status gate already armed');
+
+        const entered = Promise.withResolvers<undefined>();
+        const released = Promise.withResolvers<undefined>();
+        armedSecurityStatusGate = {
+          entered: () => { entered.resolve(); },
+          released: released.promise,
+        };
+        return {
+          entered: entered.promise,
+          release: () => { released.resolve(); },
         };
       },
       readSymbolCalls: (method) =>

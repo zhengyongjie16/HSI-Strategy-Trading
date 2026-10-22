@@ -1,6 +1,6 @@
-/** Longbridge 市场枚举边界：中性周期、交易时段与市场在 SDK 调用和 push 接收时显式映射。 */
-import { Market, Period, TradeSessions } from 'longbridge';
-import type { CandlestickPeriod } from '../../../types/marketPorts.js';
+/** Longbridge 市场枚举边界：中性周期、交易时段、证券交易状态与市场在 SDK 边界显式映射。 */
+import { Market, Period, TradeSessions, TradeStatus } from 'longbridge';
+import type { CandlestickPeriod, SecurityTradingStatus } from '../../../types/marketPorts.js';
 
 /** 映射中性 K 线周期；未知运行时输入属于内部契约错误，不交给 SDK 猜测。 */
 export function mapCandlestickPeriodToSdk(period: CandlestickPeriod): Period {
@@ -175,6 +175,59 @@ export function mapTradeSessionToSdk(session: unknown): TradeSessions {
   if (session === 'ALL') return TradeSessions.All;
 
   throw new TypeError(`Unknown market trade session: ${String(session)}`);
+}
+
+/** 严格解释 SDK 证券交易状态；缺失、未知及非法类型不得伪装成已确认非正常或 Normal。 */
+export function mapSdkSecurityTradingStatus(status: unknown): SecurityTradingStatus {
+  switch (status) {
+    case TradeStatus.Normal: {
+      return 'NORMAL';
+    }
+
+    case TradeStatus.Halted: {
+      return 'HALTED';
+    }
+
+    case TradeStatus.Delisted: {
+      return 'DELISTED';
+    }
+
+    case TradeStatus.Fuse: {
+      return 'FUSE';
+    }
+
+    case TradeStatus.PrepareList: {
+      return 'PREPARE_LIST';
+    }
+
+    case TradeStatus.CodeMoved: {
+      return 'CODE_MOVED';
+    }
+
+    case TradeStatus.ToBeOpened: {
+      return 'TO_BE_OPENED';
+    }
+
+    case TradeStatus.SplitStockHalts: {
+      return 'SPLIT_STOCK_HALTS';
+    }
+
+    case TradeStatus.Expired: {
+      return 'EXPIRED';
+    }
+
+    case TradeStatus.WarrantPrepareList: {
+      return 'WARRANT_PREPARE_LIST';
+    }
+
+    case TradeStatus.Suspend: {
+      return 'SUSPEND';
+    }
+
+    default: {
+      throw new TypeError(`Unknown SDK security trading status: ${String(status)}`);
+    }
+  }
 }
 
 /** 映射交易日历市场参数，缺省港股由调用边界显式传入。 */

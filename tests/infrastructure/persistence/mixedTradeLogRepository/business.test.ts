@@ -367,7 +367,7 @@ describe('mixedTradeLogRepository', () => {
     expect(fs.readFileSync(logFile, 'utf8')).toBe(`${JSON.stringify(createRecord())}\n`);
   });
 
-  it('rejects incomplete, malformed, CRLF, and invalid UTF-8 daily logs during preflight', () => {
+  it('rejects incomplete, malformed, CRLF, and BOM-prefixed daily logs during preflight', () => {
     const cases: ReadonlyArray<{ readonly content: Buffer | string; readonly error: RegExp }> = [
       { content: '{"broken":true}', error: /incomplete JSONL final line/ },
       { content: '{broken}\n', error: /invalid JSONL line/ },
@@ -375,7 +375,6 @@ describe('mixedTradeLogRepository', () => {
         content: `${JSON.stringify(createTradeRecordForDay('2026-07-11'))}\r\n`,
         error: /invalid JSONL line/,
       },
-      { content: Buffer.from([0xff, 0x0a]), error: /encoded data|UTF-8|encoding/i },
       {
         content: Buffer.concat([
           Buffer.from([0xef, 0xbb, 0xbf]),
@@ -392,6 +391,25 @@ describe('mixedTradeLogRepository', () => {
       fs.writeFileSync(logFile, testCase.content);
       expect(() => createStore(rootDir)).toThrow(testCase.error);
     }
+  });
+
+  it('rejects invalid UTF-8 inside a JSON string during preflight without altering the file', () => {
+    const rootDir = createRootDir();
+    const logFile = writeJsonl(rootDir, '2026-07-11', [
+      { ...createTradeRecordForDay('2026-07-11'), symbolName: 'INVALID_UTF8' },
+    ]);
+    const content = fs.readFileSync(logFile);
+    content[content.indexOf('INVALID_UTF8')] = 0xff;
+
+    // 容错解码的替换字符本可通过记录校验，原始坏字节必须由严格 UTF-8 解码拒绝。
+    const replacementContent = content.toString('utf8');
+    expect(replacementContent).toContain('\uFFFD');
+    fs.writeFileSync(logFile, replacementContent);
+    expect(() => createStore(rootDir)).not.toThrow();
+
+    fs.writeFileSync(logFile, content);
+    expect(() => createStore(rootDir)).toThrow(TypeError);
+    expect(fs.readFileSync(logFile)).toEqual(content);
   });
 
   it('rejects incomplete tagged records and legacy completion payloads during preflight', () => {

@@ -5,7 +5,7 @@ import {
   hasSeatSymbol,
   isSeatActive,
   resolveBoundSeatSymbol,
-  resolveSeatOnStartup,
+  resolveStartupSeatCandidate,
   validateSignalSeat,
 } from '../../../src/domain/seat/seatPolicy.js';
 import { createSignalDouble, createSymbolRegistryDouble } from '../../helpers/testDoubles.js';
@@ -194,7 +194,7 @@ describe('startup seat market scope', () => {
 
   it('only restores a candidate symbol that is Hong Kong, using its real position', () => {
     expect(
-      resolveSeatOnStartup({
+      resolveStartupSeatCandidate({
         autoSearchEnabled: true,
         candidateSymbol: 'BULL.HK',
         configuredSymbol: 'BEAR.HK',
@@ -203,9 +203,22 @@ describe('startup seat market scope', () => {
     ).toBe('BULL.HK');
   });
 
+  it('uses positive total quantity even when available quantity is zero; non-positive total is not a candidate', () => {
+    for (const quantity of [100, 0, -1]) {
+      expect(
+        resolveStartupSeatCandidate({
+          autoSearchEnabled: true,
+          candidateSymbol: hkPosition.symbol,
+          configuredSymbol: 'BEAR.HK',
+          positions: [{ ...hkPosition, quantity, availableQuantity: 0 }],
+        }),
+      ).toBe(quantity > 0 ? hkPosition.symbol : null);
+    }
+  });
+
   it('does not seat a US candidate or US configured symbol', () => {
     expect(
-      resolveSeatOnStartup({
+      resolveStartupSeatCandidate({
         autoSearchEnabled: true,
         candidateSymbol: 'AAPL.US',
         configuredSymbol: 'BEAR.HK',
@@ -214,7 +227,7 @@ describe('startup seat market scope', () => {
     ).toBeNull();
 
     expect(
-      resolveSeatOnStartup({
+      resolveStartupSeatCandidate({
         autoSearchEnabled: false,
         candidateSymbol: null,
         configuredSymbol: 'AAPL.US',

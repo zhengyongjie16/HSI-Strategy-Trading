@@ -905,6 +905,8 @@ export function createMarketDataClientDouble(
   const base: MarketDataClient = {
     getQuoteContext: async () => quoteContext,
     getQuotes: async () => new Map(),
+    getSecurityTradingStatuses: async (symbols) =>
+      new Map(symbols.map((symbol) => [symbol, 'NORMAL'] as const)),
     subscribeSymbols: async () => {},
     unsubscribeSymbols: async () => {},
     onQuoteUpdated: baseOnQuoteUpdated,
@@ -923,6 +925,8 @@ export function createMarketDataClientDouble(
   return {
     getQuoteContext: overrides.getQuoteContext ?? base.getQuoteContext,
     getQuotes: overrides.getQuotes ?? base.getQuotes,
+    getSecurityTradingStatuses:
+      overrides.getSecurityTradingStatuses ?? base.getSecurityTradingStatuses,
     subscribeSymbols: overrides.subscribeSymbols ?? base.subscribeSymbols,
     unsubscribeSymbols: overrides.unsubscribeSymbols ?? base.unsubscribeSymbols,
     onQuoteUpdated: overrides.onQuoteUpdated ?? baseOnQuoteUpdated,

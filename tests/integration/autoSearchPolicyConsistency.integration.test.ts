@@ -104,6 +104,8 @@ async function runStartup(
 ): Promise<void> {
   await prepareSeatsForRuntime({
     tradingConfig: createTradingConfig({ monitor: config }),
+    marketDataClient: createMarketDataClientDouble(),
+    logger: createLoggerStub(),
     symbolRegistry: registry,
     positions: [],
     orders: [],
@@ -341,6 +343,8 @@ describe('entry-specific search failure owners', () => {
     const skipped = createSymbolRegistry(config);
     await prepareSeatsForRuntime({
       tradingConfig: createTradingConfig({ monitor: config }),
+      marketDataClient: createMarketDataClientDouble(),
+      logger: createLoggerStub(),
       symbolRegistry: skipped,
       positions: [],
       orders: [],

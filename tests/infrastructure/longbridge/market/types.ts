@@ -20,6 +20,9 @@ export type MarketQuoteSeed = {
   readonly previousClose: string;
   readonly timestampMs: number;
   readonly lotSize?: number;
+
+  /** 缺省正常；null 显式制造应用边界可见的损坏状态响应。 */
+  readonly tradingStatus?: 'NORMAL' | 'SUSPEND' | null;
 };
 
 /** 场景所需的中性轮证行：金融字段保持文本，仅表达牛/熊方向；状态由 fixture 播种为正常。 */
@@ -33,14 +36,14 @@ export type MarketWarrantSeed = {
   readonly direction: 'BULL' | 'BEAR';
 };
 
-/** 首次 realtime 报价读取的暂停闸门：底层结果已取得后进入，调用方释放后原请求继续。 */
-export type MarketRealtimeQuoteGate = {
+/** 首次完整或 realtime 报价读取的暂停闸门：底层结果取得后进入，释放后原请求继续。 */
+export type MarketQuoteReadGate = {
   readonly entered: Promise<void>;
   readonly release: () => void;
 };
 
 /** fixture 允许观察的 SDK 调用；只发布请求标的，不发布 SDK 参数或 context。 */
-export type MarketFixtureCallMethod = 'subscribe' | 'unsubscribe' | 'realtimeQuote' | 'warrantList';
+export type MarketFixtureCallMethod = 'quote' | 'subscribe' | 'unsubscribe' | 'realtimeQuote' | 'warrantList';
 
 /** 真实行情 adapter 的离线控制能力；只接收中性输入，不暴露 SDK context 或原生 push。 */
 export interface MarketFixtureController {
@@ -71,7 +74,10 @@ export interface MarketFixtureController {
   ) => void;
 
   /** 武装下一次 realtime 读取的暂停闸门；只暂停一次，未武装时读取不受影响。 */
-  readonly pauseFirstRealtimeQuote: () => MarketRealtimeQuoteGate;
+  readonly pauseFirstRealtimeQuote: () => MarketQuoteReadGate;
+
+  /** 暂停首个完整 quote 响应，用于恢复准入等待期间的原 receipt 失效场景。 */
+  readonly pauseFirstSecurityTradingStatusRead: () => MarketQuoteReadGate;
 
   /** 读取指定调用的首个参数标的列表；字符串参数归一为单元素数组，
    * 非字符串且非全字符串数组抛 TypeError，不静默丢弃。 */

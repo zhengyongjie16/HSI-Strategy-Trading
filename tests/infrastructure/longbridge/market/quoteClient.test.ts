@@ -76,6 +76,7 @@ import {
   Market as RealMarket,
   Period as RealPeriod,
   SortOrderType,
+  TradeStatus,
   TradeSessions as RealTradeSessions,
   WarrantSortBy,
   WarrantStatus,
@@ -137,6 +138,98 @@ function makeCandlestick(close: number, timestampIso: string) {
 
 beforeEach(() => {
   quoteMock = createQuoteContextMock();
+});
+
+describe('security trading status reads', () => {
+  it('空集合不请求；未订阅也批量去重读取，按 symbol 匹配乱序结果且每轮重新读取', async () => {
+    const client = await createMarketDataClient({
+      config: createSdkConfigDouble(),
+      quoteContextFactory: () => ({
+        ...quoteMock,
+        quote: async (symbols) => {
+          const quotes = await quoteMock.quote(symbols);
+          const reversed: unknown[] = [];
+          for (const row of quotes) reversed.unshift(row);
+
+          return reversed;
+        },
+      }),
+    });
+    expect(await client.getSecurityTradingStatuses([])).toEqual(new Map());
+    expect(quoteMock.getCalls('quote')).toHaveLength(0);
+    quoteMock.seedQuotes([
+      { symbol: 'LONG.HK', quote: { symbol: 'LONG.HK', tradeStatus: TradeStatus.Normal } },
+      { symbol: 'SHORT.HK', quote: { symbol: 'SHORT.HK', tradeStatus: TradeStatus.Suspend } },
+    ]);
+    const statuses = await client.getSecurityTradingStatuses(['LONG.HK', 'SHORT.HK', 'LONG.HK']);
+    expect(statuses.get('LONG.HK')).toBe('NORMAL');
+    expect(statuses.get('SHORT.HK')).toBe('SUSPEND');
+    expect(quoteMock.getCalls('quote')[0]?.args[0]).toEqual(['LONG.HK', 'SHORT.HK']);
+    quoteMock.seedQuotes([
+      { symbol: 'LONG.HK', quote: { symbol: 'LONG.HK', tradeStatus: TradeStatus.Halted } },
+    ]);
+    const nextStatuses = await client.getSecurityTradingStatuses(['LONG.HK']);
+    expect(nextStatuses.get('LONG.HK')).toBe('HALTED');
+    expect(quoteMock.getCalls('quote')).toHaveLength(2);
+    for (const method of ['subscribe', 'staticInfo', 'realtimeQuote'] as const) {
+      expect(quoteMock.getCalls(method)).toHaveLength(0);
+    }
+  });
+
+  it.each([
+    ['缺少请求行', []],
+    ['缺少请求行但数量相同', [{ symbol: 'OTHER.HK', tradeStatus: TradeStatus.Normal }]],
+    ['缺少状态', [{ symbol: 'LONG.HK' }]],
+    ['null 状态', [{ symbol: 'LONG.HK', tradeStatus: null }]],
+    ['未知状态', [{ symbol: 'LONG.HK', tradeStatus: 99999 }]],
+    ['非法状态类型', [{ symbol: 'LONG.HK', tradeStatus: String(TradeStatus.Normal) }]],
+    ['损坏状态对象', [{ symbol: 'LONG.HK', tradeStatus: {} }]],
+    ['缺少 symbol', [{ tradeStatus: TradeStatus.Normal }]],
+    ['非法 symbol 类型', [{ symbol: 1, tradeStatus: TradeStatus.Normal }]],
+    ['空 symbol', [{ symbol: '', tradeStatus: TradeStatus.Normal }]],
+    ['null 行', [null]],
+    ['损坏行', [false]],
+    ['数组行', [[]]],
+    ['非数组响应', {}],
+    ['null 响应', null],
+  ] as const)('%s 是内部契约错误，不重试或外部化', async (_name, response) => {
+    let requests = 0;
+    const client = await createMarketDataClient({
+      config: createSdkConfigDouble(),
+      quoteContextFactory: () => ({
+        ...quoteMock,
+        quote: async () => {
+          requests += 1;
+          return response as unknown as ReadonlyArray<unknown>;
+        },
+      }),
+    });
+    const error: unknown = await client.getSecurityTradingStatuses(['LONG.HK']).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(TypeError);
+    expect(isExternalApiRequestError(error)).toBeFalse();
+    expect(requests).toBe(1);
+  });
+
+  it('真实 quote 请求失败保留现有外部分类与重试，不变为空状态集合', async () => {
+    quoteMock.setFailureRule('quote', {
+      failAtCalls: [1, 2, 3],
+      maxFailures: 3,
+      errorMessage: 'service unavailable',
+    });
+    const client = await createMarketDataClient({
+      config: createSdkConfigDouble(),
+      quoteContextFactory: () => quoteMock,
+    });
+    const error: unknown = await client.getSecurityTradingStatuses(['LONG.HK']).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(isExternalApiRequestError(error)).toBeTrue();
+    expect(quoteMock.getCalls('quote')).toHaveLength(3);
+  });
 });
 
 describe('quoteClient business flow', () => {

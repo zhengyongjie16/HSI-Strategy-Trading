@@ -281,14 +281,15 @@ export function describeSignalSeatValidationFailure(
 }
 
 /**
- * 启动时优先使用已有持仓的标的，避免自动寻标覆盖现有仓位。
+ * 解析启动恢复候选：静态模式使用配置，自动模式仅检查港股历史候选及正总持仓。
+ * 候选不代表已通过交易状态准入，application 必须在绑定前完成当次状态查询。
  * @param params.autoSearchEnabled 是否启用自动寻标
  * @param params.candidateSymbol 候选标的代码
  * @param params.configuredSymbol 配置文件中指定的标的代码
  * @param params.positions 当前持仓列表
- * @returns 启动时应使用的标的代码，无合适标的时返回 null
+ * @returns 尚待状态准入的候选代码，无合适候选时返回 null
  */
-export function resolveSeatOnStartup({
+export function resolveStartupSeatCandidate({
   autoSearchEnabled,
   candidateSymbol,
   configuredSymbol,
