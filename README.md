@@ -131,16 +131,18 @@ bun start
 
 ### 5. 常用命令
 
-| 命令             | 说明                               |
-| ---------------- | ---------------------------------- |
-| `bun start`      | 启动正式运行                       |
-| `bun dev`        | 开发模式启动（默认仍执行门禁检查） |
-| `bun run build`  | clean + tsc，输出静态 JSON 依赖    |
-| `bun test`       | 运行测试                           |
-| `bun type-check` | 执行类型检查                       |
-| `bun lint`       | 执行 ESLint 检查                   |
-| `bun format`     | 执行 Prettier + ESLint 自动修复    |
-| `bun clean`      | 清理构建产物                       |
+| 命令                   | 说明                                       |
+| ---------------------- | ------------------------------------------ |
+| `bun start`            | 启动正式运行                               |
+| `bun dev`              | 开发模式启动（默认仍执行门禁检查）         |
+| `bun run build`        | clean + tsc，输出静态 JSON 依赖            |
+| `bun test`             | 运行测试                                   |
+| `bun type-check`       | 执行类型检查                               |
+| `bun lint`             | 执行 ESLint 检查                           |
+| `bun run lint:fix`     | 执行 ESLint 自动修复（不等于完整格式化）   |
+| `bun run format`       | 使用 Bun 原生格式化写入文件，不运行 ESLint |
+| `bun run format:check` | 只读格式检查，不执行类型检查或测试         |
+| `bun clean`            | 清理构建产物                               |
 
 ## 配置说明
 

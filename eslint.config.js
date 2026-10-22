@@ -886,7 +886,7 @@ export default defineConfig(
   },
   eslintConfigPrettier,
   {
-    // 以下规则须在 Prettier 之后以覆盖其对该规则的关闭
+    // 以下规则须在 eslint-config-prettier 配置之后，以覆盖其关闭设置
     rules: {
       '@stylistic/lines-around-comment': [
         'error',

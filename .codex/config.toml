@@ -7,13 +7,13 @@ hide_rate_limit_model_nudge = false
 
 [tui]
 status_line = [
-    "model-with-reasoning",
-    "context-remaining",
-    "five-hour-limit",
-    "weekly-limit",
-    "used-tokens",
-    "total-input-tokens",
-    "total-output-tokens",
+  "model-with-reasoning",
+  "context-remaining",
+  "five-hour-limit",
+  "weekly-limit",
+  "used-tokens",
+  "total-input-tokens",
+  "total-output-tokens",
 ]
 
 [sandbox_workspace_write]
