@@ -54,7 +54,11 @@ describe('Longbridge quoteFinancialMapper boundary', () => {
       'NORMAL',
     );
 
-    for (const status of [WarrantStatus.Unknown, WarrantStatus.Suspend, WarrantStatus.PrepareList]) {
+    for (const status of [
+      WarrantStatus.Unknown,
+      WarrantStatus.Suspend,
+      WarrantStatus.PrepareList,
+    ]) {
       expect(mapWarrantListItem({ symbol: 'BULL.HK', status }).status).toBe('NON_NORMAL');
     }
   });
