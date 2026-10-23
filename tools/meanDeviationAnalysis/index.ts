@@ -3,7 +3,6 @@
  * 职责：读取标的与交易日数量，抓取最近 N 个交易日的分钟 K 线，计算每分钟相对当时累计 VWAP 的偏离幅度并输出每日统计表格。
  * 流程：解析参数 -> 初始化 Longbridge SDK -> 拉取最近 N 个交易日 -> 逐日抓取分钟 K 线 -> 计算偏离指标 -> 输出表格。
  */
-import dotenv from 'dotenv';
 import { AdjustType, Period, QuoteContext, TradeSessions } from 'longbridge';
 
 import { createSdkConfigFromAuth } from '../../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js';
@@ -16,8 +15,6 @@ import {
   renderMetricsTable,
   toNaiveDate,
 } from './utils.js';
-
-dotenv.config({ path: '.env.local' });
 
 /**
  * 拉取最近 N 个交易日并计算每个交易日的均值偏离统计。

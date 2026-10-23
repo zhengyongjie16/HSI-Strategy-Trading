@@ -6,7 +6,6 @@
       "name": "longbridge-option-quant",
       "dependencies": {
         "bignumber.js": "9.3.1",
-        "dotenv": "^17.4.2",
         "longbridge": "5.2.2",
         "pino": "^10.3.1"
       },
@@ -525,12 +524,6 @@
       "",
       {},
       "sha512-oIPzksmTg4/MriiaYGO+okXDT7ztn/w3Eptv/+gSIdMdKsJo0u4CfYNFJPy+4SKMuCqGw2wxnA+URMg3t8a/bQ=="
-    ],
-    "dotenv": [
-      "dotenv@17.4.2",
-      "",
-      {},
-      "sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw=="
     ],
     "electron-to-chromium": [
       "electron-to-chromium@1.5.302",

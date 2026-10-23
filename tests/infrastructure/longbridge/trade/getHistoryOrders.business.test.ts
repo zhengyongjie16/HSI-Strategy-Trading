@@ -1,15 +1,15 @@
 /**
- * getHistoryOrders 手工脚本过滤测试
+ * getHistoryOrders 手工脚本入口与过滤测试。
  *
  * 覆盖：
- * - 导入过滤 helper 不应读取 .env.local 或污染测试进程环境。
- * - CLI 直接执行时仍应加载 .env.local。
+ * - 导入过滤 helper 不调用认证、context 或查询，也不改变预置环境哨兵。
+ * - 禁用文件加载的 CLI 消费预置环境；真实 Bun CLI 消费原生加载的临时环境文件。
  * - 当前持仓识别必须与生产订单记录一致，按低价优先整笔扣减。
  * - 卖出成交价不参与买入订单保留判断。
  */
 import { describe, expect, it } from 'bun:test';
 import { OrderSide } from 'longbridge';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,44 +42,60 @@ type HistoryOrdersModule = Readonly<{
   }>;
 }>;
 
-type ImportSideEffectProbeResult = Readonly<{
-  calls: number;
-  helperType: string;
-  probe: string | null;
-}>;
+const historyOrdersUrl = new URL('../../../../utils/getHistoryOrders.js', import.meta.url);
+const offlineGuardPath = fileURLToPath(new URL('offlineSdkGuard.ts', import.meta.url));
+const envSentinelKey = 'GET_HISTORY_ORDERS_ENV_SENTINEL';
 
-type CliExecutionProbeResult = Readonly<{
-  authCalls: ReadonlyArray<boolean>;
-  dotenvCalls: ReadonlyArray<Readonly<{ path: string }>>;
-  errorCalls: ReadonlyArray<ReadonlyArray<unknown>>;
-  exitCalls: ReadonlyArray<number | string | null>;
-  historyCalls: ReadonlyArray<ReadonlyArray<unknown>>;
-  probe: string | null;
-  todayCalls: ReadonlyArray<ReadonlyArray<unknown>>;
-  tradeContextCalls: ReadonlyArray<unknown>;
-}>;
+// 仅替换认证与 SDK 边界；各场景在离线 guard 之后、真实脚本之前注册。
+const historyBoundaryMocks = `
+  import { mock } from 'bun:test';
+
+  const calls = { auth: [], tradeContext: [], history: [], today: [] };
+  mock.module(${JSON.stringify(new URL('../../../../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js', import.meta.url).href)}, () => ({
+    createSdkConfigFromAuth: ({ env }) => {
+      calls.auth.push({
+        sameEnv: env === process.env,
+        envSentinel: env[${JSON.stringify(envSentinelKey)}] ?? null,
+      });
+      return { kind: 'sdk-config' };
+    },
+  }));
+  mock.module(${JSON.stringify(import.meta.resolve('longbridge'))}, () => ({
+    OrderSide: { Buy: 'Buy', Sell: 'Sell' },
+    OrderStatus: { Filled: 'Filled' },
+    TradeContext: {
+      new: (config) => {
+        calls.tradeContext.push(config);
+        return {
+          historyOrders: (...args) => {
+            calls.history.push(args);
+            return [];
+          },
+          todayOrders: (...args) => {
+            calls.today.push(args);
+            return [];
+          },
+        };
+      },
+    },
+  }));
+`;
 
 async function importHistoryOrdersModule(): Promise<HistoryOrdersModule> {
   // @ts-expect-error 手工 JS 脚本没有声明文件；静态路径保留架构扫描与运行时导入校验。
   return (await import('../../../../utils/getHistoryOrders.js')) as HistoryOrdersModule;
 }
 
-function runIsolatedBunEval(script: string): unknown {
+function runIsolatedBunEval(script: string, env: Readonly<NodeJS.ProcessEnv> = {}): unknown {
   const isolationRoot = mkdtempSync(path.join(tmpdir(), 'history-orders-test-'));
   try {
     const result = Bun.spawnSync({
-      cmd: [
-        process.execPath,
-        '--no-env-file',
-        '--preload',
-        fileURLToPath(new URL('../../../setup/testRuntime.ts', import.meta.url)),
-        '--eval',
-        script,
-      ],
+      cmd: [process.execPath, '--no-env-file', '--preload', offlineGuardPath, '--eval', script],
       cwd: fileURLToPath(new URL('../../../../', import.meta.url)),
-      env: createChildEnv(isolationRoot),
+      env: { ...createChildEnv(isolationRoot), ...env },
       stderr: 'pipe',
       stdout: 'pipe',
+      timeout: 15_000,
     });
 
     const stdout = result.stdout.toString().trim();
@@ -87,6 +103,52 @@ function runIsolatedBunEval(script: string): unknown {
 
     expect(result.exitCode, stderr).toBe(0);
     expect(stdout.length, 'isolated script must print JSON result').toBeGreaterThan(0);
+
+    return JSON.parse(stdout) as unknown;
+  } finally {
+    rmSync(isolationRoot, { recursive: true, force: true });
+  }
+}
+
+/** 真实执行 CLI，只在临时 cwd 启用 Bun 原生环境加载，并在退出时回传边界调用。 */
+function runNativeHistoryCli(): unknown {
+  const isolationRoot = mkdtempSync(path.join(tmpdir(), 'history-orders-native-'));
+  try {
+    writeFileSync(path.join(isolationRoot, '.env'), `${envSentinelKey}=base-file\n`);
+    writeFileSync(path.join(isolationRoot, '.env.local'), `${envSentinelKey}=native-local-file\n`);
+    const preloadPath = path.join(isolationRoot, 'history-preload.ts');
+    writeFileSync(
+      preloadPath,
+      `${historyBoundaryMocks}
+        const originalLog = console.log;
+        const errorCalls = [];
+        console.log = () => {};
+        console.error = (...args) => errorCalls.push(args);
+        process.on('exit', (code) => {
+          originalLog(JSON.stringify({ ...calls, errorCalls, exitCalls: [code] }));
+        });
+      `,
+    );
+    const result = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        '--preload',
+        offlineGuardPath,
+        '--preload',
+        preloadPath,
+        fileURLToPath(historyOrdersUrl),
+      ],
+      cwd: isolationRoot,
+      env: { ...createChildEnv(isolationRoot), NODE_ENV: 'development' },
+      stderr: 'pipe',
+      stdout: 'pipe',
+      timeout: 15_000,
+    });
+    const stdout = result.stdout.toString().trim();
+    const stderr = result.stderr.toString().trim();
+
+    expect(result.exitCode, stderr || stdout).toBe(0);
+    expect(stdout.length, 'native CLI must print boundary calls').toBeGreaterThan(0);
 
     return JSON.parse(stdout) as unknown;
   } finally {
@@ -108,118 +170,68 @@ function createOrder(params: TestOrderParams): TestOrder {
 }
 
 describe('getHistoryOrders symbol-grouped filtering', () => {
-  it('importing filtering helper does not load .env.local or mutate process env', () => {
-    const result = runIsolatedBunEval(`
-      import { mock } from 'bun:test';
+  it('importing the helper leaves auth, context, queries and the environment sentinel untouched', () => {
+    const result = runIsolatedBunEval(
+      `
+        ${historyBoundaryMocks}
+        const module = await import(${JSON.stringify(historyOrdersUrl.href)} + '?import-side-effect');
+        console.log(JSON.stringify({
+          ...calls,
+          helperType: typeof module.applySymbolGroupedFiltering,
+          envSentinel: process.env[${JSON.stringify(envSentinelKey)}] ?? null,
+        }));
+      `,
+      { [envSentinelKey]: 'unchanged-import-sentinel' },
+    );
 
-      const calls = [];
-      const envProbeKey = 'GET_HISTORY_ORDERS_IMPORT_SIDE_EFFECT_PROBE';
-      mock.module('dotenv', () => ({
-        default: {
-          config: (options) => {
-            calls.push(options);
-            process.env[envProbeKey] = 'mutated-by-dotenv-config';
-          },
-        },
-      }));
+    expect(result).toEqual({
+      auth: [],
+      tradeContext: [],
+      history: [],
+      today: [],
+      helperType: 'function',
+      envSentinel: 'unchanged-import-sentinel',
+    });
+  }, 20_000);
 
-      const module = await import('./utils/getHistoryOrders.js?import-side-effect=' + Date.now());
-      console.log(JSON.stringify({
-        calls: calls.length,
-        helperType: typeof module.applySymbolGroupedFiltering,
-        probe: process.env[envProbeKey] ?? null,
-      }));
-    `) as ImportSideEffectProbeResult;
+  it('CLI execution with --no-env-file passes preset environment to auth and queries filled orders', () => {
+    const result = runIsolatedBunEval(
+      `
+        ${historyBoundaryMocks}
+        const originalLog = console.log;
+        const errorCalls = [];
+        const exitCalls = [];
+        console.log = () => {};
+        console.error = (...args) => errorCalls.push(args);
+        process.exit = (code) => exitCalls.push(code);
+        process.argv = ['bun', ${JSON.stringify(fileURLToPath(historyOrdersUrl))}];
 
-    expect(result.helperType).toBe('function');
-    expect(result.calls).toBe(0);
-    expect(result.probe).toBeNull();
-  });
+        await import(${JSON.stringify(historyOrdersUrl.href)} + '?cli-preset-env');
+        originalLog(JSON.stringify({ ...calls, errorCalls, exitCalls }));
+      `,
+      { [envSentinelKey]: 'preset-environment' },
+    );
 
-  it('direct CLI execution still loads .env.local before creating the trade context', () => {
-    const result = runIsolatedBunEval(`
-      import { mock } from 'bun:test';
-      import path from 'node:path';
-      import { pathToFileURL } from 'node:url';
+    expect(result).toEqual({
+      auth: [{ sameEnv: true, envSentinel: 'preset-environment' }],
+      tradeContext: [{ kind: 'sdk-config' }],
+      history: [[{ status: ['Filled'] }]],
+      today: [[{ status: ['Filled'] }]],
+      errorCalls: [],
+      exitCalls: [0],
+    });
+  }, 20_000);
 
-      const originalLog = console.log;
-      const authCalls = [];
-      const dotenvCalls = [];
-      const errorCalls = [];
-      const exitCalls = [];
-      const historyCalls = [];
-      const todayCalls = [];
-      const tradeContextCalls = [];
-      const envProbeKey = 'GET_HISTORY_ORDERS_IMPORT_SIDE_EFFECT_PROBE';
-
-      mock.module('dotenv', () => ({
-        default: {
-          config: (options) => {
-            dotenvCalls.push(options);
-            process.env[envProbeKey] = 'mutated-by-dotenv-config';
-          },
-        },
-      }));
-
-      mock.module(pathToFileURL(path.resolve('src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js')).href, () => ({
-        createSdkConfigFromAuth: (params) => {
-          authCalls.push(params.env === process.env);
-          return { kind: 'sdk-config' };
-        },
-      }));
-
-      mock.module('longbridge', () => ({
-        OrderSide: { Buy: 'Buy', Sell: 'Sell' },
-        OrderStatus: { Filled: 'Filled' },
-        TradeContext: {
-          new: (config) => {
-            tradeContextCalls.push(config);
-            return {
-              historyOrders: (...args) => {
-                historyCalls.push(args);
-                return [];
-              },
-              todayOrders: (...args) => {
-                todayCalls.push(args);
-                return [];
-              },
-            };
-          },
-        },
-      }));
-
-      console.log = () => {};
-      console.error = (...args) => {
-        errorCalls.push(args);
-      };
-      process.exit = (code) => {
-        exitCalls.push(code);
-      };
-      process.argv = ['bun', path.resolve('utils/getHistoryOrders.js')];
-
-      await import('./utils/getHistoryOrders.js?cli-entry=' + Date.now());
-      originalLog(JSON.stringify({
-        authCalls,
-        dotenvCalls,
-        errorCalls,
-        exitCalls,
-        historyCalls,
-        probe: process.env[envProbeKey] ?? null,
-        todayCalls,
-        tradeContextCalls,
-      }));
-    `) as CliExecutionProbeResult;
-
-    expect(result.dotenvCalls).toHaveLength(1);
-    expect(result.dotenvCalls[0]?.path.endsWith('.env.local')).toBeTrue();
-    expect(result.probe).toBe('mutated-by-dotenv-config');
-    expect(result.authCalls).toEqual([true]);
-    expect(result.tradeContextCalls).toEqual([{ kind: 'sdk-config' }]);
-    expect(result.historyCalls).toEqual([[{ status: ['Filled'] }]]);
-    expect(result.todayCalls).toEqual([[{ status: ['Filled'] }]]);
-    expect(result.errorCalls).toHaveLength(0);
-    expect(result.exitCalls).toEqual([0]);
-  });
+  it('real Bun CLI passes native-loaded environment to auth before querying orders', () => {
+    expect(runNativeHistoryCli()).toEqual({
+      auth: [{ sameEnv: true, envSentinel: 'native-local-file' }],
+      tradeContext: [{ kind: 'sdk-config' }],
+      history: [[{ status: ['Filled'] }]],
+      today: [[{ status: ['Filled'] }]],
+      errorCalls: [],
+      exitCalls: [0],
+    });
+  }, 20_000);
 
   it('deducts sold quantity by low-price whole-order policy without using sell price', async () => {
     const { applySymbolGroupedFiltering } = await importHistoryOrdersModule();

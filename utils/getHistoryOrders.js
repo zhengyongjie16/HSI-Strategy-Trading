@@ -7,20 +7,14 @@
  * - 本脚本合并两个 API 的结果以获取完整的订单记录
  * - 使用订单过滤算法识别当前仍持有的买入订单（按交易标的分组）
  *
- * 使用: node utils/getHistoryOrders.js
+ * 使用（项目根目录）: bun utils/getHistoryOrders.js
  */
-import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TradeContext, OrderStatus, OrderSide } from 'longbridge';
 import { createSdkConfigFromAuth } from '../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-function loadLocalEnv() {
-  dotenv.config({ path: path.join(__dirname, '..', '.env.local') });
-}
 
 // ==================== 工具函数 ====================
 
@@ -468,8 +462,6 @@ function printFilteredOrderList(orders, title) {
 // ==================== 主程序 ====================
 
 async function main() {
-  loadLocalEnv();
-
   console.log('\n====== 获取所有已成交订单（上限1000条） ======\n');
 
   // 初始化交易上下文

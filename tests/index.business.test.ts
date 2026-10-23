@@ -2,12 +2,11 @@
  * src/index 入口业务测试
  *
  * 覆盖：
- * - 校验薄入口加载 dotenv 并把当前 env 传给 app 组装层
- * - 校验配置校验失败与未知异常的顶层退出语义
+ * - 校验薄入口把 Bun 已准备的当前 env 传给 app 组装层
+ * - 校验配置校验失败、启动中止与未知异常的顶层退出语义
  */
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
-const dotenvConfigCalls: unknown[] = [];
 const runAppCalls: Array<{ readonly env: NodeJS.ProcessEnv }> = [];
 const errorCalls: Array<ReadonlyArray<unknown>> = [];
 
@@ -30,16 +29,6 @@ function createNamedError(name: string, message: string): Error {
   return error;
 }
 
-function registerDotenvMock(): void {
-  void mock.module('dotenv', () => ({
-    default: {
-      config: (options: unknown) => {
-        dotenvConfigCalls.push(options);
-      },
-    },
-  }));
-}
-
 function registerRunAppMock(
   implementation: (params: { readonly env: NodeJS.ProcessEnv }) => Promise<void>,
 ): void {
@@ -56,7 +45,6 @@ async function importEntryModule(label: string): Promise<void> {
 }
 
 beforeEach(() => {
-  dotenvConfigCalls.length = 0;
   runAppCalls.length = 0;
   errorCalls.length = 0;
   console.error = ((...args: ReadonlyArray<unknown>) => {
@@ -77,20 +65,17 @@ afterEach(() => {
 });
 
 describe('src/index entry flow', () => {
-  it('loads dotenv and forwards the current process env to runApp', async () => {
-    registerDotenvMock();
+  it('forwards the current process env to runApp without replacing the object', async () => {
     registerRunAppMock(async () => {});
 
     await importEntryModule('success');
 
-    expect(dotenvConfigCalls).toEqual([{ path: '.env.local' }]);
     expect(runAppCalls).toHaveLength(1);
     expect(runAppCalls[0]?.env).toBe(process.env);
     expect(errorCalls).toHaveLength(0);
   });
 
   it('logs a focused startup message and exits when config validation fails', async () => {
-    registerDotenvMock();
     registerRunAppMock(async () => {
       throw createNamedError('ConfigValidationError', 'missing env');
     });
@@ -102,17 +87,33 @@ describe('src/index entry flow', () => {
       caught = error;
     }
 
-    expect(dotenvConfigCalls).toEqual([{ path: '.env.local' }]);
     expect(runAppCalls).toHaveLength(1);
     expect(caught).toBeInstanceOf(ExitSignal);
     expect((caught as ExitSignal).code).toBe(1);
     expect(errorCalls).toEqual([['程序启动失败：配置验证未通过']]);
   });
 
+  it('exits without logging an unknown failure when startup is deliberately aborted', async () => {
+    registerRunAppMock(async () => {
+      throw createNamedError('AppStartupAbortError', 'startup aborted');
+    });
+
+    let caught: unknown = null;
+    try {
+      await importEntryModule('startup-abort-error');
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(runAppCalls).toHaveLength(1);
+    expect(caught).toBeInstanceOf(ExitSignal);
+    expect((caught as ExitSignal).code).toBe(1);
+    expect(errorCalls).toHaveLength(0);
+  });
+
   it('logs unknown startup failures with the original error and exits', async () => {
     const startupError = new Error('boom');
 
-    registerDotenvMock();
     registerRunAppMock(async () => {
       throw startupError;
     });
@@ -124,7 +125,6 @@ describe('src/index entry flow', () => {
       caught = error;
     }
 
-    expect(dotenvConfigCalls).toEqual([{ path: '.env.local' }]);
     expect(runAppCalls).toHaveLength(1);
     expect(caught).toBeInstanceOf(ExitSignal);
     expect((caught as ExitSignal).code).toBe(1);

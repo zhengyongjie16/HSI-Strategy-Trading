@@ -2,14 +2,11 @@
  * LongBridge 港股自动化量化交易系统 - 薄入口模块
  *
  * 职责：
- * - 初始化 dotenv 环境变量
+ * - 消费由 Bun 启动时准备的环境变量
  * - 调用 app 顶层组装入口
  * - 在最外层统一处理启动异常输出
  */
-import dotenv from 'dotenv';
 import { runApp } from './app/runApp.js';
-
-dotenv.config({ path: '.env.local' });
 
 try {
   await runApp({ env: process.env });

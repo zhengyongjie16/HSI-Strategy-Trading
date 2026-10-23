@@ -4,19 +4,23 @@
  * 覆盖：
  * - 校验入口读取命令行参数、完成 OAuth 提示并抓取最近 N 个交易日
  * - 校验入口层输出终端表格而不是提前终止
+ * - 在临时 cwd 验证 Bun 原生环境先交给认证，再以所得 config 发起行情查询
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createChildEnv } from '../../setup/childEnv.js';
 import { createSdkModuleMock } from '../../infrastructure/longbridge/trade/sdkModuleMock.js';
 
 /** 在本文件首次 hook 前复制稳定 export 值；Bun module namespace 是 live binding，不作为还原来源。 */
-const originalDotenvExports = Object.freeze({ ...(await import('dotenv')) });
 const sdkModuleMock = createSdkModuleMock();
 const originalAuthExports = Object.freeze({
   ...(await import('../../../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js')),
 });
 
 function reinstallOriginalModules(): void {
-  void mock.module('dotenv', () => ({ ...originalDotenvExports }));
   sdkModuleMock.restore();
   void mock.module(
     '../../../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js',
@@ -24,7 +28,6 @@ function reinstallOriginalModules(): void {
   );
 }
 
-const dotenvConfigCalls: unknown[] = [];
 const authCalls: Array<{
   readonly env: NodeJS.ProcessEnv;
   readonly onOpenUrl?: (url: string) => void;
@@ -40,16 +43,6 @@ const originalConsoleLog = console.log;
 const originalConsoleError = console.error;
 const originalProcessExit = process.exit;
 const originalArgv = [...process.argv];
-
-function registerDotenvMock(): void {
-  void mock.module('dotenv', () => ({
-    default: {
-      config: (options: unknown) => {
-        dotenvConfigCalls.push(options);
-      },
-    },
-  }));
-}
 
 async function registerLongbridgeMock(params?: {
   readonly dailyCandles?: ReadonlyArray<{ readonly timestamp: Date }>;
@@ -140,7 +133,6 @@ async function importToolModule(label: string): Promise<void> {
 }
 
 beforeEach(() => {
-  dotenvConfigCalls.length = 0;
   authCalls.length = 0;
   quoteContextNewCalls.length = 0;
   candlestickCalls.length = 0;
@@ -171,36 +163,30 @@ afterEach(() => {
   reinstallOriginalModules();
 });
 
-/** SDK identity 在基础设施 helper 内检查；整个恢复过程不调用 factory、auth 或 dotenv。 */
+/** SDK identity 在基础设施 helper 内检查；整个恢复过程不调用 factory 或 auth。 */
 afterAll(async () => {
   const beforeCalls = {
     auth: authCalls.length,
     quote: quoteContextNewCalls.length,
-    dotenv: dotenvConfigCalls.length,
   };
   reinstallOriginalModules();
   await sdkModuleMock.assertRestored();
-  const restoredDotenv = await import('dotenv');
   const restoredAuth =
     await import('../../../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js');
-  expect(restoredDotenv.default.config).toBe(originalDotenvExports.default.config);
   expect(restoredAuth.createSdkConfigFromAuth).toBe(originalAuthExports.createSdkConfigFromAuth);
   expect({
     auth: authCalls.length,
     quote: quoteContextNewCalls.length,
-    dotenv: dotenvConfigCalls.length,
   }).toEqual(beforeCalls);
 });
 
 describe('meanDeviationAnalysis index entry flow', () => {
   it('uses argv options, loads recent trading days, and prints the metrics table', async () => {
-    registerDotenvMock();
     await registerLongbridgeMock();
     registerAuthMock();
 
     await importToolModule('success');
 
-    expect(dotenvConfigCalls).toEqual([{ path: '.env.local' }]);
     expect(authCalls).toHaveLength(1);
     expect(authCalls[0]?.env).toBe(process.env);
     expect(quoteContextNewCalls).toEqual([{ kind: 'sdk-config' }]);
@@ -254,8 +240,106 @@ describe('meanDeviationAnalysis index entry flow', () => {
     expect(processExitCalls).toHaveLength(0);
   });
 
+  it('loads native Bun env before passing it to auth and querying daily and minute candles', () => {
+    const isolationRoot = mkdtempSync(path.join(tmpdir(), 'mean-deviation-native-env-'));
+    try {
+      writeFileSync(
+        path.join(isolationRoot, '.env.local'),
+        'MEAN_DEVIATION_NATIVE_ENV_PROBE=mean-from-env-local\n',
+      );
+      const preloadPath = path.join(isolationRoot, 'mock-boundaries.ts');
+      writeFileSync(
+        preloadPath,
+        `
+          import { mock } from 'bun:test';
+          import { createSdkModuleMock } from ${JSON.stringify(
+            fileURLToPath(
+              new URL('../../infrastructure/longbridge/trade/sdkModuleMock.ts', import.meta.url),
+            ),
+          )};
+
+          const config = { kind: 'native-env-config' };
+          let authenticated = false;
+          mock.module(${JSON.stringify(
+            fileURLToPath(
+              new URL(
+                '../../../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.ts',
+                import.meta.url,
+              ),
+            ),
+          )}, () => ({
+            createSdkConfigFromAuth: async ({ env }) => {
+              if (env !== process.env || env['MEAN_DEVIATION_NATIVE_ENV_PROBE'] !== 'mean-from-env-local') {
+                throw new Error('native env must reach auth unchanged');
+              }
+              authenticated = true;
+              console.log('MEAN_AUTH_NATIVE_ENV_OK');
+              return config;
+            },
+          }));
+          createSdkModuleMock().install({
+            QuoteContext: {
+              new: (receivedConfig) => {
+                if (!authenticated || receivedConfig !== config) {
+                  throw new Error('auth config must reach QuoteContext unchanged');
+                }
+                return {
+                  candlesticks: async (symbol, period, days) => {
+                    if (symbol !== '981.HK' || days !== 1) throw new Error('unexpected daily query');
+                    console.log('MEAN_NATIVE_DAILY_QUERY_OK');
+                    return [{ timestamp: new Date('2026-06-21T16:00:00.000Z') }];
+                  },
+                  historyCandlesticksByDate: async () => {
+                    console.log('MEAN_NATIVE_MINUTE_QUERY_OK');
+                    return [{
+                      close: { toString: () => '10' },
+                      volume: 100,
+                      timestamp: new Date('2026-06-22T01:30:00.000Z'),
+                    }];
+                  },
+                };
+              },
+            },
+          });
+        `,
+      );
+
+      // guard 必须先于边界 mock 安装；真实入口仍由 Bun 直接执行。
+      const result = Bun.spawnSync({
+        cmd: [
+          process.execPath,
+          '--preload',
+          fileURLToPath(
+            new URL('../../infrastructure/longbridge/trade/offlineSdkGuard.ts', import.meta.url),
+          ),
+          '--preload',
+          preloadPath,
+          fileURLToPath(new URL('../../../tools/meanDeviationAnalysis/index.ts', import.meta.url)),
+          '--symbol',
+          '981.HK',
+          '--days',
+          '1',
+        ],
+        cwd: isolationRoot,
+        env: { ...createChildEnv(isolationRoot), NODE_ENV: 'development' },
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 30_000,
+      });
+      const stdout = result.stdout.toString();
+      const stderr = result.stderr.toString();
+      expect(result.exitCode, stderr).toBe(0);
+      expect(stderr).toBe('');
+      expect(stdout).toContain('MEAN_AUTH_NATIVE_ENV_OK');
+      expect(stdout).toContain('MEAN_NATIVE_DAILY_QUERY_OK');
+      expect(stdout).toContain('MEAN_NATIVE_MINUTE_QUERY_OK');
+      expect(stdout).toContain('2026-06-22');
+    } finally {
+      rmSync(isolationRoot, { recursive: true, force: true });
+    }
+  }, 35_000);
+
   it('fails fast when no recent trading days are returned', async () => {
-    registerDotenvMock();
     await registerLongbridgeMock({ dailyCandles: [] });
     registerAuthMock();
 

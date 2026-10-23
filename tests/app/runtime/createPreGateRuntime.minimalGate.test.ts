@@ -18,6 +18,7 @@ import { createBrokerClientFactoryDouble } from '../../helpers/brokerClientFacto
 
 let isTradingDayCalls = 0;
 let tradingDayResolveError: Error | null = null;
+let clientFactoryCalls = 0;
 let marketCreateCalls = 0;
 let marketResetCalls = 0;
 let onAuthCompleted = (): void => {};
@@ -27,6 +28,7 @@ let onMarketCreated = (): void => {};
 mock.module('../../../src/app/runtime/createPreGateRuntimeDeps.js', () => ({
   DEFAULT_CREATE_PRE_GATE_RUNTIME_DEPS: {
     createLongbridgeClientFactory: async () => {
+      clientFactoryCalls += 1;
       onAuthCompleted();
       return createBrokerClientFactoryDouble({
         createMarketDataClient: async () => {
@@ -81,11 +83,31 @@ describe('app createPreGateRuntime minimal startup gate', () => {
   beforeEach(() => {
     isTradingDayCalls = 0;
     tradingDayResolveError = null;
+    clientFactoryCalls = 0;
     marketCreateCalls = 0;
     marketResetCalls = 0;
     onAuthCompleted = () => {};
 
     onMarketCreated = () => {};
+  });
+
+  it.each([
+    { label: 'missing authentication key', env: { LONGBRIDGE_APP_KEY: undefined } },
+    { label: 'invalid trading amount', env: { TARGET_NOTIONAL: '0' } },
+  ])('rejects $label before creating SDK resources', async ({ env }) => {
+    const params = createRuntimeParams();
+    try {
+      const result: unknown = await createPreGateRuntime({
+        ...params,
+        env: { ...params.env, ...env },
+      }).catch((error: unknown) => error);
+      expect(result).toMatchObject({ name: 'ConfigValidationError' });
+      expect(clientFactoryCalls).toBe(0);
+      expect(marketCreateCalls).toBe(0);
+      expect(isTradingDayCalls).toBe(0);
+    } finally {
+      await params.cleanup.execute();
+    }
   });
 
   it('returns pre-gate runtime even when current day is not a trading day', async () => {

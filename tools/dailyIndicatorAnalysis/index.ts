@@ -3,7 +3,6 @@
  * 职责：拉取当日分钟 K 线，计算 EMA/ER/RSI/KDJ/MFI/ADX 与 VP，并输出终端表格。
  * 流程：读取参数 -> 获取分钟 K 线 -> 计算高/低双行指标 -> 按条件着色输出。
  */
-import dotenv from 'dotenv';
 import { AdjustType, Period, QuoteContext, TradeSessions } from 'longbridge';
 import { createSdkConfigFromAuth } from '../../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js';
 import type {
@@ -19,8 +18,6 @@ import {
   padToDisplayWidth,
   rowMatchesAnyCondition,
 } from './utils.js';
-
-dotenv.config({ path: '.env.local' });
 
 /** 默认查询标的代码 */
 const DEFAULT_SYMBOL = 'HSI.HK';

@@ -8,16 +8,14 @@
     "build": "bun run clean && tsc -p tsconfig.build.json",
     "start": "bun src/index.ts",
     "type-check": "bun check -p tsconfig.json",
-    "test": "bun test",
+    "test": "bun --no-env-file test",
     "clean": "rimraf dist",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "format": "bun fmt",
-    "format:check": "bun fmt --check"
+    "format": "bun fmt"
   },
   "dependencies": {
     "bignumber.js": "9.3.1",
-    "dotenv": "^17.4.2",
     "longbridge": "5.2.2",
     "pino": "^10.3.1"
   },

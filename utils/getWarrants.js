@@ -37,9 +37,6 @@
  * balance_point      string   - 打和点/盈亏平衡点（正股需到该价位才回本）
  * status             int32    - 状态：2=停牌 3=待上市 4=正常
  */
-import dotenv from 'dotenv';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { QuoteContext } from 'longbridge';
 import { createSdkConfigFromAuth } from '../src/infrastructure/longbridge/trade/clientFactory/sdkConfigFactory.js';
 
@@ -72,10 +69,6 @@ const AFTERNOON_OPEN = 780; // 13:00
 const AFTERNOON_CLOSE = 960; // 16:00
 const MORNING_MINUTES = 150;
 const TOTAL_MINUTES = 330;
-
-// 加载环境变量
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.join(__dirname, '..', '.env.local') });
 
 // ==================== 工具函数 ====================
 
