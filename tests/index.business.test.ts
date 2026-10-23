@@ -1,133 +1,188 @@
 /**
  * src/index 入口业务测试
  *
- * 覆盖：
- * - 校验薄入口把 Bun 已准备的当前 env 传给 app 组装层
- * - 校验配置校验失败、启动中止与未知异常的顶层退出语义
+ * 每个场景在独立子进程内 mock runApp/logger，避免关闭共享 logger 或污染其他测试。
+ * 覆盖原始环境对象、错误分类、真实待定关闭与退出码矩阵；不执行交易组装。
  */
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createChildEnv } from './setup/childEnv.js';
 
-const runAppCalls: Array<{ readonly env: NodeJS.ProcessEnv }> = [];
-const errorCalls: Array<ReadonlyArray<unknown>> = [];
+/** 保留真实 process.exit 和待关闭 Promise，用事件顺序证明入口未提前结束。 */
+function probeEntry(scenario: {
+  readonly appResult: 'success' | 'config' | 'abort' | 'error' | 'null' | 'undefined';
+  readonly shutdownResult: boolean | 'reject';
+  readonly exitCode?: number;
+}) {
+  const isolationRoot = mkdtempSync(path.join(tmpdir(), 'index-business-'));
+  try {
+    const tracePath = path.join(isolationRoot, 'trace.json');
+    const script = `
+      import { mock } from 'bun:test';
+      import { writeFileSync } from 'node:fs';
 
-class ExitSignal extends Error {
-  public readonly code: number | undefined;
+      const scenario = ${JSON.stringify(scenario)};
+      const trace = [];
+      const shutdownError = new Error('shutdown contract failure');
+      let businessError;
+      switch (scenario.appResult) {
+        case 'config':
+          businessError = new Error('missing env');
+          businessError.name = 'ConfigValidationError';
+          break;
+        case 'abort':
+          businessError = new Error('startup aborted');
+          businessError.name = 'AppStartupAbortError';
+          break;
+        case 'error':
+          businessError = new Error('boom');
+          break;
+        case 'null':
+          businessError = null;
+          break;
+      }
 
-  public constructor(code: number | undefined) {
-    super(`exit:${String(code)}`);
-    this.name = 'ExitSignal';
-    this.code = code;
+      if (scenario.exitCode !== undefined) process.exitCode = scenario.exitCode;
+      const originalExit = process.exit.bind(process);
+      process.exit = (...args) => {
+        trace.push(args.length === 0 ? 'exit:default' : 'exit:' + String(args[0]));
+        return originalExit(...args);
+      };
+      process.on('exit', (code) => {
+        trace.push('process:exit:' + code);
+        writeFileSync(${JSON.stringify(tracePath)}, JSON.stringify(trace));
+      });
+
+      const originalConsoleError = console.error.bind(console);
+      console.error = (...args) => {
+        trace.push('stderr:' + String(args[0]));
+        if (args.length === 2) {
+          trace.push(args[1] === businessError
+            ? 'error:original-business'
+            : args[1] === shutdownError ? 'error:shutdown' : 'error:unexpected');
+        } else if (args.length !== 1) {
+          trace.push('error:unexpected-args');
+        }
+        originalConsoleError(...args);
+      };
+
+      mock.module(${JSON.stringify(new URL('../src/app/runApp.ts', import.meta.url).href)}, () => ({
+        runApp: async ({ env }) => {
+          trace.push(env === process.env ? 'runApp:current-env' : 'runApp:replaced-env');
+          if (scenario.appResult !== 'success') throw businessError;
+        },
+      }));
+      mock.module(${JSON.stringify(new URL('../src/infrastructure/logger/index.ts', import.meta.url).href)}, () => ({
+        logger: { debug() {}, info() {}, warn() {}, error() {} },
+        shutdownLogger: () => {
+          trace.push('shutdown:start');
+          // false/reject 后保留真实活跃句柄；必须由入口结束，不能冒充自然返回。
+          if (scenario.shutdownResult !== true) setInterval(() => {}, 1000);
+          return new Promise((resolve, reject) => {
+            setImmediate(() => {
+              trace.push('shutdown:pending');
+              setImmediate(() => {
+                trace.push('shutdown:' + String(scenario.shutdownResult));
+                if (scenario.shutdownResult === 'reject') reject(shutdownError);
+                else resolve(scenario.shutdownResult);
+              });
+            });
+          });
+        },
+      }));
+
+      await import(${JSON.stringify(new URL('../src/index.ts', import.meta.url).href)});
+      trace.push('entry:returned');
+    `;
+    const result = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        '--no-env-file',
+        '--preload',
+        fileURLToPath(
+          new URL('infrastructure/longbridge/trade/offlineSdkGuard.ts', import.meta.url),
+        ),
+        '--eval',
+        script,
+      ],
+      cwd: isolationRoot,
+      env: createChildEnv(isolationRoot),
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 15_000,
+    });
+    const stderr = result.stderr.toString();
+    expect(result.signalCode, stderr).toBeFalsy();
+    expect(result.stdout.toString()).toBe('');
+    const trace: unknown = JSON.parse(readFileSync(tracePath, 'utf8'));
+    return { exitCode: result.exitCode, stderr, trace };
+  } finally {
+    rmSync(isolationRoot, { recursive: true, force: true });
   }
 }
 
-const originalConsoleError = console.error;
-const originalProcessExit = process.exit;
+const appOutcomes = [
+  { result: 'success', reports: [] },
+  { result: 'config', reports: ['stderr:程序启动失败：配置验证未通过'] },
+  { result: 'abort', reports: [] },
+  { result: 'error', reports: ['stderr:程序异常退出', 'error:original-business'] },
+  { result: 'null', reports: ['stderr:程序异常退出', 'error:original-business'] },
+  { result: 'undefined', reports: ['stderr:程序异常退出', 'error:original-business'] },
+] as const;
 
-function createNamedError(name: string, message: string): Error {
-  const error = new Error(message);
-  error.name = name;
-  return error;
-}
-
-function registerRunAppMock(
-  implementation: (params: { readonly env: NodeJS.ProcessEnv }) => Promise<void>,
-): void {
-  void mock.module('../src/app/runApp.js', () => ({
-    runApp: async (params: { readonly env: NodeJS.ProcessEnv }) => {
-      runAppCalls.push(params);
-      await implementation(params);
-    },
-  }));
-}
-
-async function importEntryModule(label: string): Promise<void> {
-  await import(`../src/index.js?index-business-test-${label}-${Date.now()}`);
-}
-
-beforeEach(() => {
-  runAppCalls.length = 0;
-  errorCalls.length = 0;
-  console.error = ((...args: ReadonlyArray<unknown>) => {
-    errorCalls.push(args);
-  }) as typeof console.error;
-
-  process.exit = (code?: number) => {
-    throw new ExitSignal(code);
-  };
-});
-
-afterEach(() => {
-  console.error = originalConsoleError;
-  process.exit = originalProcessExit;
-  if (typeof mock.restore === 'function') {
-    mock.restore();
-  }
-});
+const shutdownErrorReports = ['stderr:日志关闭异常', 'error:shutdown'];
 
 describe('src/index entry flow', () => {
-  it('forwards the current process env to runApp without replacing the object', async () => {
-    registerRunAppMock(async () => {});
+  for (const app of appOutcomes) {
+    for (const shutdownResult of [true, false, 'reject'] as const) {
+      it(`${app.result} waits for shutdown ${shutdownResult} before returning or exiting`, () => {
+        const result = probeEntry({
+          appResult: app.result,
+          shutdownResult,
+          ...(app.result === 'success' ? {} : { exitCode: 23 }),
+        });
+        const hasFailed = app.result !== 'success' || shutdownResult === 'reject';
+        const expectedExitCode = hasFailed ? 1 : 0;
+        expect(result.exitCode, result.stderr).toBe(expectedExitCode);
+        expect(result.trace).toEqual([
+          'runApp:current-env',
+          ...app.reports,
+          'shutdown:start',
+          'shutdown:pending',
+          `shutdown:${shutdownResult}`,
+          ...(shutdownResult === 'reject' ? shutdownErrorReports : []),
+          ...(hasFailed ? ['exit:1'] : [shutdownResult ? 'entry:returned' : 'exit:default']),
+          `process:exit:${expectedExitCode}`,
+        ]);
 
-    await importEntryModule('success');
+        if (shutdownResult === 'reject') {
+          expect(result.stderr).toContain('日志关闭异常');
+          expect(result.stderr).toContain('shutdown contract failure');
+        }
 
-    expect(runAppCalls).toHaveLength(1);
-    expect(runAppCalls[0]?.env).toBe(process.env);
-    expect(errorCalls).toHaveLength(0);
-  });
-
-  it('logs a focused startup message and exits when config validation fails', async () => {
-    registerRunAppMock(async () => {
-      throw createNamedError('ConfigValidationError', 'missing env');
-    });
-
-    let caught: unknown = null;
-    try {
-      await importEntryModule('config-validation-error');
-    } catch (error) {
-      caught = error;
+        if (app.reports.length === 0 && shutdownResult !== 'reject') {
+          expect(result.stderr).toBe('');
+        }
+      }, 20_000);
     }
+  }
 
-    expect(runAppCalls).toHaveLength(1);
-    expect(caught).toBeInstanceOf(ExitSignal);
-    expect((caught as ExitSignal).code).toBe(1);
-    expect(errorCalls).toEqual([['程序启动失败：配置验证未通过']]);
-  });
-
-  it('exits without logging an unknown failure when startup is deliberately aborted', async () => {
-    registerRunAppMock(async () => {
-      throw createNamedError('AppStartupAbortError', 'startup aborted');
-    });
-
-    let caught: unknown = null;
-    try {
-      await importEntryModule('startup-abort-error');
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(runAppCalls).toHaveLength(1);
-    expect(caught).toBeInstanceOf(ExitSignal);
-    expect((caught as ExitSignal).code).toBe(1);
-    expect(errorCalls).toHaveLength(0);
-  });
-
-  it('logs unknown startup failures with the original error and exits', async () => {
-    const startupError = new Error('boom');
-
-    registerRunAppMock(async () => {
-      throw startupError;
-    });
-
-    let caught: unknown = null;
-    try {
-      await importEntryModule('unknown-error');
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(runAppCalls).toHaveLength(1);
-    expect(caught).toBeInstanceOf(ExitSignal);
-    expect((caught as ExitSignal).code).toBe(1);
-    expect(errorCalls).toEqual([['程序异常退出', startupError]]);
-  });
+  for (const shutdownResult of [true, false]) {
+    it(`successful app preserves an existing exitCode after shutdown ${shutdownResult}`, () => {
+      const result = probeEntry({ appResult: 'success', shutdownResult, exitCode: 23 });
+      expect(result.exitCode, result.stderr).toBe(23);
+      expect(result.stderr).toBe('');
+      expect(result.trace).toEqual([
+        'runApp:current-env',
+        'shutdown:start',
+        'shutdown:pending',
+        `shutdown:${shutdownResult}`,
+        shutdownResult ? 'entry:returned' : 'exit:default',
+        'process:exit:23',
+      ]);
+    }, 20_000);
+  }
 });

@@ -1,10 +1,14 @@
 /**
- * 日志基础设施适配
+ * 文本日志基础设施
  *
- * 职责：保留 pino 多流、按日轮转、drain 超时保护与进程退出清理的实际 IO 实现。
+ * 调用时固定时间与 extra 文本，按 file → console 投递到两个 Writable 队列；
+ * 保留共同文件回调屏障、按消费日轮转及有界的资源关闭。
  */
-import pino from 'pino';
-import { isRecord } from '../../utils/helpers/index.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { Writable } from 'node:stream';
+import { finished } from 'node:stream/promises';
+import { inspect } from 'node:util';
 import {
   IS_DEBUG,
   LOG_ANSI_CODE_REGEX,
@@ -13,741 +17,955 @@ import {
   LOG_COLORS,
 } from '../../constants/index.js';
 import { resolveLogRootDir, shouldInstallGlobalProcessHooks } from '../../config/runtime/index.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import { Writable } from 'node:stream';
-import { inspect } from 'node:util';
-import type { LogObject } from './types.js';
-import type { Logger } from '../../types/logger.js';
 import { toHongKongTimeLog } from '../../utils/time/index.js';
+import type { Logger } from '../../types/logger.js';
+import type { PreparedLogRecord, StandardStreamObserver } from './types.js';
+
+const levelConfig = {
+  [LOG_LEVELS.DEBUG]: { name: 'DEBUG', color: LOG_COLORS.gray },
+  [LOG_LEVELS.INFO]: { name: 'INFO', color: '' },
+  [LOG_LEVELS.WARN]: { name: 'WARN', color: LOG_COLORS.yellow },
+  [LOG_LEVELS.ERROR]: { name: 'ERROR', color: LOG_COLORS.red },
+} as const;
+
+let closing = false;
+let shutdownPromise: Promise<boolean> | null = null;
+let shutdownIoFailed = false;
+let rejectActiveShutdown: ((error: Error) => void) | null = null;
+
+/** 只记录关闭期间的 IO 失败；关闭结果不追溯历史每条日志的成功与否。 */
+function markIoFailure(): void {
+  if (closing) {
+    shutdownIoFailed = true;
+  }
+}
+
+/** 将内部异步失败交给 Writable/关闭协议，不把编程错误降级为外部 IO 失败。 */
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error('日志内部错误', { cause: error });
+}
+
+/** 同步 IO 调用仅接收系统错误；参数、状态或其他编程错误继续传播。 */
+function isSystemIoError(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    /^E[A-Z\d]+$/.test(error.code)
+  );
+}
+
+/** 不再有未完成写入或待发 error 时，释放本模块的标准流观察器。 */
+function releaseStandardObserver(observer: StandardStreamObserver): void {
+  if (
+    observer.listening &&
+    observer.releaseRequested &&
+    observer.pendingWrites === 0 &&
+    !observer.awaitingError
+  ) {
+    observer.stream.removeListener('error', observer.onError);
+    observer.stream.removeListener('close', observer.onClose);
+    observer.listening = false;
+  }
+}
+
+/** 标准流属于进程；只观察自身写入，绝不 end/destroy。 */
+function createStandardObserver(
+  stream: NodeJS.WriteStream,
+  name: 'stdout' | 'stderr',
+): StandardStreamObserver {
+  const observer: StandardStreamObserver = {
+    stream,
+    name,
+    pendingWrites: 0,
+    errorEvents: 0,
+    awaitingError: false,
+    listening: false,
+    releaseRequested: false,
+    reportedFailure: false,
+    onError(error: Error): void {
+      observer.errorEvents += 1;
+      observer.awaitingError = false;
+      markIoFailure();
+      if (!observer.reportedFailure) {
+        observer.reportedFailure = true;
+        if (name === 'stdout') {
+          reportDiagnostic('[Logger] stdout 写入失败:', error);
+        }
+      }
+
+      releaseStandardObserver(observer);
+    },
+    onClose(): void {
+      observer.awaitingError = false;
+      releaseStandardObserver(observer);
+    },
+  };
+  return observer;
+}
+
+const stdoutObserver = createStandardObserver(process.stdout, 'stdout');
+const stderrObserver = createStandardObserver(process.stderr, 'stderr');
+
+/** 在 write 之前安装错误观察，覆盖 write 返回 true 后才到达的 IO 错误。 */
+function observeStandardStream(observer: StandardStreamObserver): void {
+  if (!observer.listening) {
+    observer.listening = true;
+    observer.stream.on('error', observer.onError);
+    observer.stream.on('close', observer.onClose);
+  }
+}
 
 /**
- * 保留目录下仅扩展名匹配且为文件的最新若干条，删除更早的。
- * 在写入当日文件前调用：若即将写入的文件已存在（覆盖/追加），保留数 = maxFiles；
- * 若即将新建文件，保留数 = max(0, maxFiles - 1)，写入后总数 ≤ maxFiles。
- * 仅依赖 fs/path，不依赖 logger，避免循环依赖。
- *
- * @param logDir 日志目录
- * @param maxFiles 最多保留文件数（含即将写入的当日文件）
- * @param extension 扩展名（不含点），如 'log'、'json'
- * @param currentFileName 即将写入的文件名（如 '2026-02-13.log'）。若传入且在目录中已存在，则按"覆盖"语义保留 maxFiles 个；否则按"新建"语义保留 maxFiles - 1 个
- * @returns 无返回值
+ * 保留标准流的原生背压返回值，同时消费写回调与其后可能到达的 error。
+ * 错误回调不等于 error 事件已发出，不能在该回调内删掉唯一的错误监听。
+ */
+function writeStandardStream(
+  observer: StandardStreamObserver,
+  data: string,
+  onComplete?: (error?: Error | null) => void,
+): boolean {
+  observeStandardStream(observer);
+  observer.pendingWrites += 1;
+  const previousErrorEvents = observer.errorEvents;
+  const state = { completed: false };
+
+  const complete = (error?: Error | null): void => {
+    if (state.completed) {
+      return;
+    }
+
+    state.completed = true;
+    observer.pendingWrites -= 1;
+    if (error) {
+      markIoFailure();
+      if (observer.errorEvents === previousErrorEvents && !observer.stream.closed) {
+        observer.awaitingError = true;
+      }
+    }
+
+    onComplete?.(error);
+    releaseStandardObserver(observer);
+  };
+
+  try {
+    return observer.stream.write(data, complete);
+  } catch (error) {
+    if (!state.completed) {
+      state.completed = true;
+      observer.pendingWrites -= 1;
+    }
+
+    if (!isSystemIoError(error)) {
+      throw error;
+    }
+
+    markIoFailure();
+    if (observer.name === 'stdout' && !observer.reportedFailure) {
+      observer.reportedFailure = true;
+      reportDiagnostic('[Logger] stdout 写入失败:', error);
+    }
+
+    onComplete?.(error);
+    releaseStandardObserver(observer);
+    return true;
+  }
+}
+
+/** 独立旁路诊断，不递归调用 logger，也不让诊断失败替换原错误。 */
+function reportDiagnostic(message: string, error?: unknown): void {
+  try {
+    const detail =
+      error === undefined
+        ? ''
+        : ` ${inspect(error, { depth: 5, maxArrayLength: 100, customInspect: false })}`;
+    writeStandardStream(stderrObserver, `${message}${detail}\n`);
+  } catch {
+    // stderr 也可能已经不可写；旁路报告仅尽力而为。
+  }
+}
+
+/** 外部文件/标准流失败保持旁路政策，不向交易调用方抛出。 */
+function reportIoFailure(message: string, error?: unknown): void {
+  markIoFailure();
+  reportDiagnostic(message, error);
+}
+
+/**
+ * 保留最新文件，沿用当日文件已存在/即将新建时不同的计数规则。
+ * 只处理日志目录，不接触交易恢复 JSONL。
  */
 function retainLatestLogFiles(
   logDir: string,
   maxFiles: number,
   extension: string,
-  currentFileName?: string,
+  currentFileName: string,
 ): void {
-  if (maxFiles < 1) {
+  if (maxFiles < 1 || !fs.existsSync(logDir)) {
     return;
   }
 
-  if (!fs.existsSync(logDir)) {
-    return;
-  }
-
-  const extSuffix = '.' + extension;
-  const names = fs.readdirSync(logDir);
   const files: string[] = [];
-
-  for (const name of names) {
-    if (!name.endsWith(extSuffix)) {
+  for (const name of fs.readdirSync(logDir)) {
+    if (!name.endsWith('.' + extension)) {
       continue;
     }
 
-    const fullPath = path.join(logDir, name);
     try {
-      if (fs.statSync(fullPath).isFile()) {
+      if (fs.statSync(path.join(logDir, name)).isFile()) {
         files.push(name);
       }
-    } catch {
-      // 无法 stat 的项跳过
+    } catch (error) {
+      if (!isSystemIoError(error)) {
+        throw error;
+      }
+      // 无法 stat 的项与原实现一样跳过。
     }
   }
 
   files.sort((a, b) => a.localeCompare(b, 'en'));
-  const n = files.length;
-  const isOverwriting = typeof currentFileName === 'string' && files.includes(currentFileName);
-  const toRetain = isOverwriting ? maxFiles : Math.max(0, maxFiles - 1);
-  const toDelete = Math.max(0, n - toRetain);
-
-  for (let i = 0; i < toDelete; i++) {
-    const file = files[i];
-    if (file === undefined) {
-      continue;
-    }
-
-    const fullPath = path.join(logDir, file);
+  const toRetain = files.includes(currentFileName) ? maxFiles : Math.max(0, maxFiles - 1);
+  const toDelete = Math.max(0, files.length - toRetain);
+  for (const name of files.slice(0, toDelete)) {
+    const fullPath = path.join(logDir, name);
     try {
       fs.unlinkSync(fullPath);
-    } catch (err) {
-      console.error(`[logRetention] 删除旧日志失败: ${fullPath}`, err);
+    } catch (error) {
+      if (!isSystemIoError(error)) {
+        throw error;
+      }
+
+      reportIoFailure(`[logRetention] 删除旧日志失败: ${fullPath}`, error);
     }
   }
 }
 
+/** 只格式化已确认的原始值，绝不 inspect 不可信对象或调用其 customInspect。 */
+function formatScalarExtra(extra: unknown): string {
+  if (typeof extra === 'string' || typeof extra === 'boolean') {
+    return inspect(extra, { depth: 5, maxArrayLength: 100 });
+  }
+
+  if (typeof extra === 'number' && Number.isFinite(extra)) {
+    return inspect(Object.is(extra, -0) ? 0 : extra, { depth: 5, maxArrayLength: 100 });
+  }
+
+  if (typeof extra === 'bigint') {
+    return inspect(String(extra), { depth: 5, maxArrayLength: 100 });
+  }
+
+  return '';
+}
+
 /**
- * 格式化额外数据为字符串
- * @param extra 待格式化的数据
- * @returns 格式化后的字符串表示
+ * 在调用内安全固定 extra；只执行一轮原生 stringify，由原生处理 toJSON/枚举规则。
+ * 祖先路径区分循环与共享引用，BigInt 保真为字符串；失败不覆盖业务原错。
  */
 function formatExtra(extra: unknown): string {
-  return inspect(extra, { depth: 5, maxArrayLength: 100 });
+  if (extra === null || typeof extra !== 'object') {
+    return formatScalarExtra(extra);
+  }
+
+  try {
+    const ancestors: unknown[] = [];
+    const serialized: unknown = JSON.stringify(extra, function (this: unknown, _key, value: unknown): unknown {
+      if (typeof value === 'bigint') {
+        return String(value);
+      }
+
+      if (value !== null && typeof value === 'object') {
+        while (ancestors.length > 0 && ancestors.at(-1) !== this) {
+          ancestors.pop();
+        }
+
+        if (ancestors.includes(value)) {
+          return '[Circular]';
+        }
+
+        ancestors.push(value);
+      }
+
+      return value;
+    });
+    if (typeof serialized !== 'string' || serialized === 'null') {
+      return '';
+    }
+
+    if (serialized.startsWith('{') || serialized.startsWith('[')) {
+      return serialized;
+    }
+
+    // Date、boxed primitive 或 toJSON 的标量结果；不解析对象或完整日志记录。
+    const scalar: unknown = JSON.parse(serialized);
+    return formatScalarExtra(scalar);
+  } catch {
+    return "'[Unserializable]'";
+  }
 }
 
-/**
- * 获取当前香港时间日期字符串 (YYYY-MM-DD)
- * @returns 香港日期字符串，无法解析时返回空字符串
- */
+/** 当前实际消费时的香港日期，不能换成日志记录的调用时间。 */
 function getCurrentDate(): string {
-  const timestamp = toHongKongTimeLog(new Date());
-
-  // 从 "YYYY-MM-DD HH:mm:ss.sss" 提取日期部分
-  const datePart = timestamp.split(' ').at(0);
-  return datePart ?? '';
+  return toHongKongTimeLog(new Date()).split(' ').at(0) ?? '';
 }
 
 /**
- * 按日期分割的文件流（用于 pino 传输）
- * 例外：继承 Node.js Writable，与 Stream API 集成，无法改为工厂函数。
+ * 单次 drain 等待：drain/error/close/超时/取消共用结算与清理。
+ * 返回的取消函数释放监听、timer 和当前 Writable 回调，不销毁传入的全局标准流。
  */
+function waitForDrain(
+  stream: fs.WriteStream | NodeJS.WriteStream,
+  timeout: number,
+  callback: () => void,
+  onTimeout?: () => void,
+): () => void {
+  let settled = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  function complete(): void {
+    if (settled) {
+      return;
+    }
+
+    settled = true;
+    if (timer !== null) {
+      clearTimeout(timer);
+    }
+
+    stream.removeListener('drain', complete);
+    stream.removeListener('error', onFailure);
+    stream.removeListener('close', onFailure);
+    callback();
+  }
+
+  function onFailure(): void {
+    markIoFailure();
+    complete();
+  }
+
+  stream.once('drain', complete);
+  stream.once('error', onFailure);
+  stream.once('close', onFailure);
+  if (stream.destroyed || stream.closed || stream.errored) {
+    onFailure();
+  } else {
+    timer = setTimeout(() => {
+      markIoFailure();
+      onTimeout?.();
+      complete();
+    }, timeout);
+  }
+
+  return complete;
+}
+
+/** 按日期分割的文件流；继承 Writable 以保留既有串行消费与背压语义。 */
 class DateRotatingStream extends Writable {
   private readonly _logSubDir: string;
   private readonly _logDir: string;
   private _currentDate: string | null = null;
   private _fileStream: fs.WriteStream | null = null;
-  private _rotatePromise: Promise<void> | null = null; // Promise队列，确保串行执行
+  private _rotatePromise: Promise<void> | null = null;
+  private _cancelWait: (() => void) | null = null;
+  private _cancelWrite: (() => void) | null = null;
 
-  public constructor(logRootDir: string, logSubDir: string = 'system') {
+  public constructor(logRootDir: string, logSubDir: string) {
     super();
     this._logSubDir = logSubDir;
     this._logDir = path.join(logRootDir, logSubDir);
-
-    // 确保日志目录存在
     if (!fs.existsSync(this._logDir)) {
       fs.mkdirSync(this._logDir, { recursive: true });
     }
   }
 
-  /**
-   * 实现 Writable._write 方法
-   */
+  /** await 后重新检查销毁状态，防止超时取消后续开文件或迟到写入。 */
   public override _write(
     chunk: Buffer,
     encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
-    // 使用立即执行函数处理异步操作
-    void (async () => {
-      try {
-        await this._checkRotate();
+    let settled = false;
+    const complete = (error?: Error | null): void => {
+      if (settled) {
+        return;
+      }
 
-        if (this._fileStream?.writable) {
-          // 保存当前流的引用，防止在等待 drain 时流被替换
-          const currentStream = this._fileStream;
+      settled = true;
+      this._cancelWrite = null;
+      callback(error);
+    };
+    this._cancelWrite = complete;
+    void this._checkRotate().then(() => {
+      if (this.destroyed) {
+        complete();
+        return;
+      }
 
-          // 文件流的 write 方法可能是同步或异步的
-          // 如果返回 false，表示需要等待 drain 事件
-          const canContinue = currentStream.write(chunk, encoding);
-          if (canContinue) {
-            callback();
-          } else {
-            // 添加超时保护，防止 drain 事件永远不触发导致阻塞
-            const { onDrain } = createDrainHandler(
-              currentStream,
-              LOGGING.DRAIN_TIMEOUT_MS,
-              callback,
-              () => {
-                if (IS_DEBUG) {
-                  console.error(`[DateRotatingStream] drain 超时 (${this._logSubDir})`);
-                }
-              },
-            );
-
-            currentStream.once('drain', onDrain);
-          }
-        } else {
-          // 如果文件流不可用，记录错误但不阻塞
-          if (IS_DEBUG) {
-            console.error(`[DateRotatingStream] 文件流不可用 (${this._logSubDir})`);
-          }
-
-          callback();
+      const currentStream = this._fileStream;
+      if (!currentStream?.writable) {
+        markIoFailure();
+        if (IS_DEBUG) {
+          reportDiagnostic(`[DateRotatingStream] 文件流不可用 (${this._logSubDir})`);
         }
-      } catch (err) {
-        // 记录错误但不阻塞日志系统
-        console.error(`[DateRotatingStream] 写入失败 (${this._logSubDir}):`, err);
-        callback();
-      }
-    })();
-  }
 
-  /**
-   * 同步关闭文件流
-   */
-  public closeSync(): void {
-    if (this._fileStream) {
+        complete();
+        return;
+      }
+
+      let canContinue: boolean;
       try {
-        // 同步结束流（不等待）
-        this._fileStream.end();
-        this._fileStream = null;
-      } catch {
-        // 忽略错误
+        canContinue = currentStream.write(chunk, encoding);
+      } catch (error) {
+        if (!isSystemIoError(error)) {
+          throw error;
+        }
+
+        reportIoFailure(`[DateRotatingStream] 写入失败 (${this._logSubDir}):`, error);
+        complete();
+        return;
       }
-    }
+
+      if (canContinue) {
+        complete();
+      } else {
+        this._cancelWait = waitForDrain(
+          currentStream,
+          LOGGING.DRAIN_TIMEOUT_MS,
+          () => {
+            this._cancelWait = null;
+            complete();
+          },
+          () => {
+            if (IS_DEBUG) {
+              reportDiagnostic(`[DateRotatingStream] drain 超时 (${this._logSubDir})`);
+            }
+          },
+        );
+      }
+    }).catch((error: unknown) => {
+      complete(asError(error));
+    });
   }
 
-  /**
-   * 检查并切换日志文件（如果日期变化）
-   * 使用 Promise 队列确保串行执行，避免并发问题
-   * @returns Promise，确保旧流关闭完成后再继续
-   */
-  private async _checkRotate(): Promise<void> {
-    const today = getCurrentDate();
+  /** 队列排空后结束并观察底层文件 finish/close；未写入过时不新建文件。 */
+  public override _final(callback: (error?: Error | null) => void): void {
+    const stream = this._fileStream;
+    if (!stream || this.destroyed) {
+      callback();
+      return;
+    }
 
-    // 如果日期没有变化，直接返回
+    void this._closeFileStream(stream).then(
+      () => {
+        callback();
+      },
+      (error: unknown) => {
+        callback(asError(error));
+      },
+    );
+  }
+
+  /** 同时覆盖当前文件与轮转中仍在关闭的旧文件；不等待不可控的系统销毁完成。 */
+  public override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
+    this._cancelWait?.();
+    this._cancelWait = null;
+    this._cancelWrite?.();
+    this._cancelWrite = null;
+    this._fileStream?.destroy();
+    callback(error);
+  }
+
+  /** 每次调用都读取 Writable 状态，包含 await 期间发生的销毁。 */
+  private _isCancelled(): boolean {
+    return this.destroyed;
+  }
+
+  private async _checkRotate(): Promise<void> {
+    if (this._isCancelled()) {
+      return;
+    }
+
+    const today = getCurrentDate();
     if (this._currentDate === today) {
       return;
     }
 
-    // 如果已有 rotate 正在进行，加入队列等待
     if (this._rotatePromise) {
       await this._rotatePromise;
-
-      // 等待完成后重新检查日期（可能已被其他调用处理）
-      if (this._currentDate === today) {
+      if (this._isCancelled() || this._currentDate === today) {
         return;
       }
     }
 
-    // 创建新的 rotate Promise 并加入队列
     this._rotatePromise = this._doRotate(today);
-
     try {
       await this._rotatePromise;
     } finally {
-      // 清空队列标志
       this._rotatePromise = null;
     }
   }
 
-  /**
-   * 执行实际的日志轮转操作
-   * @param newDate 新日期字符串
-   */
+  /** 旧流在整个关闭等待内保持可取消引用；每个 await 后阻止取消后的续开。 */
   private async _doRotate(newDate: string): Promise<void> {
-    try {
-      // 关闭旧文件流
-      if (this._fileStream) {
-        const oldStream = this._fileStream;
-        this._fileStream = null;
+    if (this._isCancelled()) {
+      return;
+    }
 
-        await new Promise<void>((resolve) => {
-          oldStream.once('finish', () => {
-            resolve();
-          });
-
-          oldStream.once('error', (err) => {
-            console.error('[DateRotatingStream] 关闭旧流错误:', err);
-            resolve(); // 即使出错也继续
-          });
-          oldStream.end();
-        });
+    if (this._fileStream) {
+      await this._closeFileStream(this._fileStream);
+      if (this._isCancelled()) {
+        return;
       }
 
-      // 更新日期并打开新文件流
-      this._currentDate = newDate;
-      const currentLogFileName = `${this._currentDate}.log`;
-      retainLatestLogFiles(this._logDir, LOGGING.MAX_RETAINED_LOG_FILES, 'log', currentLogFileName);
-      const logFile = path.join(this._logDir, currentLogFileName);
-      this._fileStream = fs.createWriteStream(logFile, {
+      this._fileStream = null;
+    }
+
+    this._currentDate = newDate;
+    const currentFileName = `${newDate}.log`;
+    try {
+      retainLatestLogFiles(this._logDir, LOGGING.MAX_RETAINED_LOG_FILES, 'log', currentFileName);
+      if (this._isCancelled()) {
+        return;
+      }
+
+      this._fileStream = fs.createWriteStream(path.join(this._logDir, currentFileName), {
         flags: 'a',
         encoding: 'utf8',
       });
-
-      this._fileStream.on('error', (err) => {
-        console.error(`[DateRotatingStream] 文件流错误 (${this._logSubDir}):`, err);
-      });
-    } catch (err) {
-      console.error(`[DateRotatingStream] 日志轮转失败 (${this._logSubDir}):`, err);
-    }
-  }
-}
-
-/**
- * 移除字符串中的 ANSI 颜色/转义代码，用于文件日志输出时得到纯文本。
- *
- * @param str 可能包含 ANSI 代码的字符串
- * @returns 移除转义序列后的字符串
- */
-function stripAnsiCodes(str: string): string {
-  if (typeof str !== 'string') return str;
-
-  return str.replaceAll(LOG_ANSI_CODE_REGEX, '');
-}
-
-/**
- * 判断未知值是否满足文件日志格式对象结构。
- *
- * @param value 待判断的未知值
- * @returns 当值包含 level/time/msg 必要字段且类型正确时返回 true
- */
-function isLogObject(value: unknown): value is LogObject {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    typeof value['level'] === 'number' &&
-    typeof value['time'] === 'number' &&
-    typeof value['msg'] === 'string'
-  );
-}
-
-/**
- * 自定义格式化函数，将日志对象转换为文件输出格式
- * 移除 ANSI 颜色代码，输出纯文本格式
- * @param obj 日志对象
- * @returns 格式化后的日志行字符串
- */
-function formatForFile(obj: LogObject): string {
-  const level = obj.level;
-  const timestamp = toHongKongTimeLog(new Date(obj.time));
-
-  // 将数字 level 转换为文本
-  const levelMap: Record<number, string> = {
-    20: 'DEBUG',
-    30: 'INFO',
-    40: 'WARN',
-    50: 'ERROR',
-  };
-  const levelStr = `[${levelMap[level] ?? 'INFO'}]`;
-
-  let line = `${levelStr} ${timestamp} ${stripAnsiCodes(obj.msg)}`;
-
-  // 处理额外数据
-  if (obj.extra !== undefined && obj.extra !== null) {
-    if (typeof obj.extra === 'object') {
-      try {
-        line += ` ${JSON.stringify(obj.extra)}`;
-      } catch {
-        line += ` ${stripAnsiCodes(formatExtra(obj.extra))}`;
+    } catch (error) {
+      if (!isSystemIoError(error)) {
+        throw error;
       }
-    } else {
-      line += ` ${stripAnsiCodes(formatExtra(obj.extra))}`;
+
+      reportIoFailure(`[DateRotatingStream] 日志轮转失败 (${this._logSubDir}):`, error);
+      return;
+    }
+
+    this._fileStream.on('error', (error: Error) => {
+      reportIoFailure(`[DateRotatingStream] 文件流错误 (${this._logSubDir}):`, error);
+    });
+
+    if (this._isCancelled()) {
+      this._fileStream.destroy();
     }
   }
 
-  return line + '\n';
-}
-
-/**
- * 自定义格式化函数，将日志对象转换为控制台输出格式
- * 带颜色高亮，根据日志级别选择不同颜色
- * @param obj 日志对象
- * @returns 格式化后的日志行字符串
- */
-function formatForConsole(obj: LogObject): string {
-  const level = obj.level;
-  const timestamp = toHongKongTimeLog(new Date(obj.time));
-
-  // 将数字 level 转换为文本和颜色
-  const levelConfig: Record<number, { name: string; color: string }> = {
-    20: { name: 'DEBUG', color: LOG_COLORS.gray },
-    30: { name: 'INFO', color: '' },
-    40: { name: 'WARN', color: LOG_COLORS.yellow },
-    50: { name: 'ERROR', color: LOG_COLORS.red },
-  };
-
-  const config = levelConfig[level] ?? { name: 'INFO', color: '' };
-  const levelStr = `[${config.name}]`;
-  const color = config.color;
-  const reset = color ? LOG_COLORS.reset : '';
-
-  let line = `${color}${levelStr} ${timestamp} ${obj.msg}${reset}`;
-
-  // 处理额外数据
-  if (obj.extra !== undefined && obj.extra !== null) {
-    if (typeof obj.extra === 'object') {
+  /** finished 等待自有文件资源关闭，AbortController 只取消观察，销毁由 _destroy 负责。 */
+  private async _closeFileStream(stream: fs.WriteStream): Promise<void> {
+    const controller = new AbortController();
+    const cancel = (): void => {
+      controller.abort();
+    };
+    this._cancelWait = cancel;
+    // 错误由文件流监听旁路报告；这里仍等 close，不能在 error 时提前丢掉旧流引用。
+    const completion = finished(stream, { cleanup: true, error: false, signal: controller.signal });
+    try {
       try {
-        line += ` ${JSON.stringify(obj.extra)}`;
-      } catch {
-        line += ` ${formatExtra(obj.extra)}`;
+        stream.end();
+      } catch (error) {
+        if (!isSystemIoError(error)) {
+          controller.abort();
+          throw error;
+        }
+
+        reportIoFailure(`[DateRotatingStream] 结束文件失败 (${this._logSubDir}):`, error);
+        stream.destroy();
       }
-    } else {
-      line += ` ${formatExtra(obj.extra)}`;
+
+      try {
+        await completion;
+      } catch (error) {
+        if (!this.destroyed && !controller.signal.aborted) {
+          reportIoFailure(`[DateRotatingStream] 关闭文件失败 (${this._logSubDir}):`, error);
+        }
+      }
+    } finally {
+      // end 同步抛错时也消费取消观察产生的 rejection。
+      void completion.catch(() => null);
+      if (this._cancelWait === cancel) {
+        this._cancelWait = null;
+      }
     }
   }
-
-  return line + '\n';
 }
 
 const logRootDir = resolveLogRootDir(process.env);
-const shouldInstallProcessHooks = shouldInstallGlobalProcessHooks(process.env);
-
-// 创建文件流实例
 const systemFileStream = new DateRotatingStream(logRootDir, 'system');
 const debugFileStream = IS_DEBUG ? new DateRotatingStream(logRootDir, 'debug') : null;
+let cancelConsoleWrite: (() => void) | null = null;
+let cancelFileWrite: (() => void) | null = null;
 
-/**
- * 创建带超时保护的 drain 事件处理器
- * 防止 drain 事件永远不触发导致日志系统阻塞，超时后仍调用 callback 继续处理
- * @param stream 文件流或进程流
- * @param timeout 超时时间（毫秒）
- * @param callback 完成回调函数
- * @param onTimeout 超时时的回调函数
- * @returns drain 事件处理器
- */
-function createDrainHandler(
-  stream: NodeJS.WriteStream | fs.WriteStream,
-  timeout: number,
-  callback: () => void,
-  onTimeout?: () => void,
-): { onDrain: () => void } {
-  let resolved = false;
-  const timeoutId = setTimeout(() => {
-    if (resolved) return;
-
-    resolved = true;
-    stream.removeListener('drain', onDrain);
-    onTimeout?.();
-    callback(); // 超时后仍调用 callback 避免阻塞
-  }, timeout);
-
-  /**
-   * drain 事件处理器。
-   * @returns 无返回值
-   */
-  function onDrain(): void {
-    if (resolved) return;
-
-    resolved = true;
-    clearTimeout(timeoutId);
-    callback();
-  }
-
-  return { onDrain };
-}
-
-/**
- * 带超时保护的写入辅助函数
- * 防止 drain 事件永久不触发导致日志系统阻塞
- * @param stream 进程流（stdout/stderr）
- * @param data 待写入数据
- * @param timeout 超时时间（毫秒）
- * @param callback 完成回调函数
- * @returns 无返回值
- */
-function writeWithDrainTimeout(
-  stream: NodeJS.WriteStream,
-  data: string,
-  timeout: number,
-  callback: () => void,
-): void {
-  const canContinue = stream.write(data);
-  if (canContinue) {
-    callback();
-  } else {
-    const { onDrain } = createDrainHandler(stream, timeout, callback);
-    stream.once('drain', onDrain);
-  }
-}
-
-// 创建控制台流（使用自定义格式）
+/** 控制台队列只按级别路由已准备文本，不重新访问 extra 或解析记录。 */
 const consoleStream = new Writable({
-  write(chunk: Buffer, _encoding: BufferEncoding, callback: () => void): void {
+  objectMode: true,
+  write(record: PreparedLogRecord, _encoding, callback): void {
+    let settled = false;
+    const complete = (error?: Error | null): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cancelConsoleWrite = null;
+      callback(error);
+    };
+    cancelConsoleWrite = complete;
     try {
-      const parsed: unknown = JSON.parse(chunk.toString());
-      if (!isLogObject(parsed)) {
-        callback();
-        return;
-      }
-
-      const obj = parsed;
-      const formatted = formatForConsole(obj);
-
-      // 根据日志级别选择输出流
-      // ERROR (>=50) 和 WARN (>=40) 输出到 stderr，其他输出到 stdout
-      if (obj.level >= LOG_LEVELS.WARN) {
-        writeWithDrainTimeout(
-          process.stderr,
-          formatted,
-          LOGGING.CONSOLE_DRAIN_TIMEOUT_MS,
-          callback,
-        );
+      const observer = record.level >= LOG_LEVELS.WARN ? stderrObserver : stdoutObserver;
+      if (writeStandardStream(observer, record.consoleLine)) {
+        complete();
       } else {
-        writeWithDrainTimeout(
-          process.stdout,
-          formatted,
+        cancelConsoleWrite = waitForDrain(
+          observer.stream,
           LOGGING.CONSOLE_DRAIN_TIMEOUT_MS,
-          callback,
+          complete,
         );
       }
-    } catch (err) {
-      // 解析或格式化失败时，至少输出原始内容
-      try {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[Logger Error] ${errorMessage}\n`);
-      } catch {
-        // 如果连 stderr 都失败，只能忽略
-      }
-
-      callback();
+    } catch (error) {
+      complete(asError(error));
     }
+  },
+  destroy(error, callback): void {
+    cancelConsoleWrite?.();
+    cancelConsoleWrite = null;
+    callback(error);
   },
 });
 
-// 创建文件流（使用自定义格式）
+/** system/debug 的本条回调全部落定才消费下一条，不能改成直接扇出。 */
 const fileStream = new Writable({
-  write(chunk: Buffer, _encoding: BufferEncoding, callback: () => void): void {
-    // 使用立即执行函数处理异步操作
-    (async () => {
-      let obj: LogObject;
-      try {
-        const parsed: unknown = JSON.parse(chunk.toString());
-        if (!isLogObject(parsed)) {
-          callback();
-          return;
-        }
-
-        obj = parsed;
-      } catch (err) {
-        try {
-          console.error('[FileStream] JSON解析失败:', err);
-        } catch {
-          // 忽略
-        }
-
-        callback();
+  objectMode: true,
+  write(record: PreparedLogRecord, _encoding, callback): void {
+    const needsDebug = record.level === LOG_LEVELS.DEBUG && debugFileStream !== null;
+    let pending = needsDebug ? 2 : 1;
+    let settled = false;
+    const complete = (error?: Error | null): void => {
+      if (settled) {
         return;
       }
 
-      try {
-        const formatted = formatForFile(obj);
-        const systemWritePromise = new Promise<void>((resolve) => {
-          systemFileStream.write(formatted, (err) => {
-            // 始终记录错误，不仅在 DEBUG 模式
-            if (err) {
-              console.error('[FileStream] 系统日志写入失败:', err);
-            }
+      settled = true;
+      cancelFileWrite = null;
+      callback(error);
+    };
 
-            resolve();
-          });
-        });
-        const debugWritePromises =
-          obj.level === LOG_LEVELS.DEBUG && debugFileStream
-            ? [
-                new Promise<void>((resolve) => {
-                  debugFileStream.write(formatted, (err) => {
-                    // 始终记录错误，不仅在 DEBUG 模式
-                    if (err) {
-                      console.error('[FileStream] Debug日志写入失败:', err);
-                    }
-
-                    resolve();
-                  });
-                }),
-              ]
-            : [];
-        const writePromises = [systemWritePromise, ...debugWritePromises];
-
-        // 等待所有写入完成
-        await Promise.all(writePromises);
-        callback();
-      } catch (err) {
-        // 格式化或写入失败时记录错误
-        try {
-          console.error('[FileStream] 处理日志失败:', err);
-        } catch {
-          // 忽略
-        }
-
-        callback();
-      }
-    })().catch((err: unknown) => {
-      // 捕获 IIFE 中未处理的异常
-      try {
-        console.error('[FileStream] 未捕获的异常:', err);
-      } catch {
-        // 忽略
+    const onWrite = (error?: Error | null): void => {
+      if (error && !fileStream.destroyed) {
+        complete(error);
+        return;
       }
 
-      callback();
-    });
+      pending -= 1;
+      if (pending === 0) {
+        complete();
+      }
+    };
+    cancelFileWrite = complete;
+    try {
+      systemFileStream.write(record.fileLine, onWrite);
+      if (needsDebug) {
+        debugFileStream.write(record.fileLine, onWrite);
+      }
+    } catch (error) {
+      complete(asError(error));
+    }
+  },
+  destroy(error, callback): void {
+    cancelFileWrite?.();
+    cancelFileWrite = null;
+    callback(error);
   },
 });
 
-// 创建 pino 多流实例
-const streams = [
-  {
-    level: IS_DEBUG ? 'debug' : 'info',
-    stream: consoleStream,
-  },
-  {
-    level: IS_DEBUG ? 'debug' : 'info',
-    stream: fileStream,
-  },
-];
+/** 自有队列的错误表示内部契约/编程错误，运行期 fail-fast，关闭期 reject。 */
+function onOwnedStreamError(error: Error): void {
+  if (!closing) {
+    throw error;
+  }
 
-const pinoLogger = pino(
-  {
-    level: IS_DEBUG ? 'debug' : 'info',
-    customLevels: {
-      debug: LOG_LEVELS.DEBUG,
-      info: LOG_LEVELS.INFO,
-      warn: LOG_LEVELS.WARN,
-      error: LOG_LEVELS.ERROR,
-    },
-    useOnlyCustomLevels: true,
-  },
-  pino.multistream(streams),
-);
+  rejectActiveShutdown?.(error);
+}
 
-/**
- * 导出的 logger 对象。
- * 输出同时写入控制台与按日期轮转的日志文件；DEBUG 级别仅在 DEBUG=true 时输出。
- */
-export const logger: Logger = {
-  /**
-   * 输出调试级别日志，仅当 DEBUG=true 时生效。
-   * 默认行为：环境变量 DEBUG 不为 true 时不输出；有 extra 时以 { extra } 形式写入 pino。
-   *
-   * @param msg - 日志消息
-   * @param extra - 可选附加数据（对象或原始值）
-   * @returns 无返回值
-   */
-  debug(msg: string, extra?: unknown): void {
-    if (IS_DEBUG) {
-      if (extra === null || extra === undefined) {
-        pinoLogger.debug(msg);
-      } else {
-        pinoLogger.debug({ extra }, msg);
-      }
-    }
-  },
+for (const stream of [consoleStream, fileStream, systemFileStream, debugFileStream]) {
+  stream?.on('error', onOwnedStreamError);
+}
 
-  /**
-   * 输出信息级别日志。
-   * 默认行为：写入 stdout 及日志文件；有 extra 时以 { extra } 形式写入 pino。
-   *
-   * @param msg - 日志消息
-   * @param extra - 可选附加数据（对象或原始值）
-   * @returns 无返回值
-   */
-  info(msg: string, extra?: unknown): void {
-    if (extra === null || extra === undefined) {
-      pinoLogger.info(msg);
-    } else {
-      pinoLogger.info({ extra }, msg);
-    }
-  },
-
-  /**
-   * 输出警告级别日志（同时输出到 stderr）。
-   * 默认行为：pino 的 warn 级别会写 stderr 及日志文件；有 extra 时以 { extra } 形式写入。
-   *
-   * @param msg - 日志消息
-   * @param extra - 可选附加数据（对象或原始值）
-   * @returns 无返回值
-   */
-  warn(msg: string, extra?: unknown): void {
-    if (extra === null || extra === undefined) {
-      pinoLogger.warn(msg);
-    } else {
-      pinoLogger.warn({ extra }, msg);
-    }
-  },
-
-  /**
-   * 输出错误级别日志（同时输出到 stderr）。
-   * 默认行为：pino 的 error 级别会写 stderr 及日志文件；有 extra 时以 { extra } 形式写入。
-   *
-   * @param msg - 日志消息
-   * @param extra - 可选附加数据（对象或原始值）
-   * @returns 无返回值
-   */
-  error(msg: string, extra?: unknown): void {
-    if (extra === null || extra === undefined) {
-      pinoLogger.error(msg);
-    } else {
-      pinoLogger.error({ extra }, msg);
-    }
-  },
-};
-
-// 同步清理的状态标志
-let isSyncCleaningUp = false;
-
-/**
- * 同步清理函数：进程退出时刷新日志缓冲并关闭文件流，防止日志丢失；在 beforeExit/exit/uncaughtException/unhandledRejection 中调用。使用状态标志避免重复执行。
- *
- * @returns 无返回值
- */
-function cleanupSync(): void {
-  if (isSyncCleaningUp) {
+/** 同步准备两端文本并按真实的 file → console 次序投递，方法不依赖 this。 */
+function writeLog(level: PreparedLogRecord['level'], msg: string, extra: unknown): void {
+  if (level === LOG_LEVELS.DEBUG && !IS_DEBUG) {
     return;
   }
 
-  isSyncCleaningUp = true;
+  if (closing) {
+    throw new Error('日志已开始关闭，不能继续写入');
+  }
 
+  const timestamp = toHongKongTimeLog(new Date());
+  const formattedExtra = formatExtra(extra);
+  const suffix = formattedExtra === '' ? '' : ` ${formattedExtra}`;
+  const config = levelConfig[level];
+  const reset = config.color === '' ? '' : LOG_COLORS.reset;
+  const prefix = `[${config.name}] ${timestamp} `;
+  const record: PreparedLogRecord = {
+    level,
+    consoleLine: `${config.color}${prefix}${msg}${reset}${suffix}\n`,
+    fileLine: `${prefix}${msg.replaceAll(LOG_ANSI_CODE_REGEX, '')}${suffix.replaceAll(LOG_ANSI_CODE_REGEX, '')}\n`,
+  };
+  fileStream.write(record);
+  consoleStream.write(record);
+}
+
+/** 同步四方法单例；只接受消息与可选 extra，不向业务暴露关闭或流操作。 */
+export const logger: Logger = {
+  debug(msg: string, extra?: unknown): void {
+    writeLog(LOG_LEVELS.DEBUG, msg, extra);
+  },
+  info(msg: string, extra?: unknown): void {
+    writeLog(LOG_LEVELS.INFO, msg, extra);
+  },
+  warn(msg: string, extra?: unknown): void {
+    writeLog(LOG_LEVELS.WARN, msg, extra);
+  },
+  error(msg: string, extra?: unknown): void {
+    writeLog(LOG_LEVELS.ERROR, msg, extra);
+  },
+};
+
+/** 先安装 finished 再 end；同步 end 失败也不遗留未消费的完成观察。 */
+async function endOwnedStream(stream: Writable, signal: AbortSignal): Promise<void> {
+  const completion = finished(stream, { cleanup: true, signal });
   try {
-    // pino 的 flush() 是同步的
-    pinoLogger.flush();
-
-    // 同步关闭所有文件流
-    systemFileStream.closeSync();
-    if (debugFileStream) {
-      debugFileStream.closeSync();
-    }
-  } catch (err) {
-    // 清理过程中的错误不应该阻止退出
-    try {
-      console.error('[Logger] 同步清理过程出错:', err);
-    } catch {
-      // 忽略
-    }
+    stream.end();
+    await completion;
+  } catch (error) {
+    void completion.catch(() => null);
+    throw error;
   }
 }
 
-if (shouldInstallProcessHooks) {
-  // beforeExit 事件处理（使用同步清理）
-  process.on('beforeExit', () => {
-    cleanupSync();
-  });
+/** 外层排空之后才结束下游，console 的慢端不会延迟文件自身的关闭。 */
+async function closeFileStreams(signal: AbortSignal): Promise<void> {
+  await endOwnedStream(fileStream, signal);
+  if (signal.aborted) {
+    return;
+  }
 
-  // exit 事件处理（覆盖 process.exit() 场景）
-  // 注意：process.exit() 不会触发 beforeExit，但会触发 exit
-  process.on('exit', () => {
-    cleanupSync();
-  });
+  await Promise.all([
+    endOwnedStream(systemFileStream, signal),
+    ...(debugFileStream ? [endOwnedStream(debugFileStream, signal)] : []),
+  ]);
+}
 
-  // 未捕获的异常处理
-  process.on('uncaughtException', (err: Error) => {
+/** 每次读取 signal，避免把 await 前的状态当作异步等待后的状态。 */
+function isAborted(signal: AbortSignal): boolean {
+  return signal.aborted;
+}
+
+/** 标准流仅提交回调屏障；错误、关闭、取消与写回调只结算一次。 */
+function standardStreamBarrier(
+  observer: StandardStreamObserver,
+  signal: AbortSignal,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    function complete(error?: Error | null, internal = false): void {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      observer.stream.removeListener('error', onError);
+      observer.stream.removeListener('close', onClose);
+      signal.removeEventListener('abort', onAbort);
+      if (internal && error) {
+        reject(error);
+        return;
+      }
+
+      if (error) {
+        markIoFailure();
+      }
+
+      resolve();
+    }
+
+    function onError(error: Error): void {
+      complete(error);
+    }
+
+    function onClose(): void {
+      markIoFailure();
+      complete();
+    }
+
+    function onAbort(): void {
+      complete();
+    }
+
+    if (signal.aborted) {
+      complete();
+      return;
+    }
+
+    observeStandardStream(observer);
+    observer.stream.once('error', onError);
+    observer.stream.once('close', onClose);
+    signal.addEventListener('abort', onAbort, { once: true });
     try {
-      logger.error('未捕获的异常', err);
-    } catch {
-      try {
-        console.error('未捕获的异常:', err);
-      } catch {
-        // 忽略
+      writeStandardStream(observer, '', complete);
+    } catch (error) {
+      complete(asError(error), true);
+    }
+  });
+}
+
+/** 先停止外层队列，再取消内层等待；所有持有旧流的实例仍能被 destroy 触达。 */
+function cancelOwnedWork(): Error | null {
+  let failure: Error | null = null;
+  for (const stream of [consoleStream, fileStream, systemFileStream, debugFileStream]) {
+    try {
+      stream?.destroy();
+    } catch (error) {
+      failure ??= asError(error);
+    }
+  }
+
+  return failure;
+}
+
+/** 完成/取消后撤销标准流观察；未决写入只保留消费迟到错误所需的监听。 */
+function releaseStandardObservers(): void {
+  stdoutObserver.releaseRequested = true;
+  stderrObserver.releaseRequested = true;
+  releaseStandardObserver(stdoutObserver);
+  releaseStandardObserver(stderrObserver);
+}
+
+/**
+ * 单次有界关闭。true 仅表示本次队列、文件关闭与标准流屏障完成，不是 fsync 或历史成功保证。
+ * 外部 IO/总超时返回 false；内部错误在取消自有工作后 reject。同步发布同一个 Promise。
+ */
+export function shutdownLogger(): Promise<boolean> {
+  if (shutdownPromise) {
+    return shutdownPromise;
+  }
+
+  closing = true;
+  shutdownPromise = new Promise<boolean>((resolve, reject) => {
+    const controller = new AbortController();
+    let settled = false;
+    let reportedFailure = false;
+    const reportFailure = (message: string): void => {
+      if (!reportedFailure) {
+        reportedFailure = true;
+        reportDiagnostic(message);
+      }
+    };
+
+    const timer = setTimeout(() => {
+      reportFailure(`[Logger] 日志关闭超时 (${LOGGING.SHUTDOWN_TIMEOUT_MS}ms)`);
+      complete(false);
+    }, LOGGING.SHUTDOWN_TIMEOUT_MS);
+
+    function complete(success: boolean, error?: Error): void {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      rejectActiveShutdown = null;
+      let internalError = error;
+      if (!success) {
+        controller.abort();
+        const cancelError = cancelOwnedWork();
+        internalError ??= cancelError ?? undefined;
+      }
+
+      releaseStandardObservers();
+      if (internalError) {
+        reject(internalError);
+      } else {
+        resolve(success);
       }
     }
 
-    cleanupSync();
+    rejectActiveShutdown = (error: Error): void => {
+      complete(false, error);
+    };
+
+    // Promise 先发布，再触发任何 end/回调；重入 shutdown 也只能取得这个 Promise。
+    queueMicrotask(() => {
+      void (async () => {
+        await Promise.all([
+          closeFileStreams(controller.signal),
+          endOwnedStream(consoleStream, controller.signal),
+        ]);
+
+        if (isAborted(controller.signal)) {
+          return;
+        }
+
+        // 文件关闭及其旁路诊断全部先于标准流屏障，包含入口直接写入 stderr 的错误。
+        if (shutdownIoFailed) {
+          reportFailure('[Logger] 日志关闭期间发生 IO 失败');
+        }
+
+        await Promise.all([
+          standardStreamBarrier(stdoutObserver, controller.signal),
+          standardStreamBarrier(stderrObserver, controller.signal),
+        ]);
+
+        if (!isAborted(controller.signal)) {
+          if (shutdownIoFailed) {
+            reportFailure('[Logger] 日志关闭期间发生 IO 失败');
+          }
+
+          complete(!shutdownIoFailed);
+        }
+      })().catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          complete(false, asError(error));
+        }
+      });
+    });
+  });
+  return shutdownPromise;
+}
+
+/** 进程异常仍按原策略报告；关闭状态下不递归触碰已结束的日志队列。 */
+function reportProcessError(message: string, error: unknown): void {
+  if (closing) {
+    reportDiagnostic(`${message}:`, error);
+    return;
+  }
+
+  try {
+    logger.error(message, error);
+  } catch {
+    reportDiagnostic(`${message}:`, error);
+  }
+}
+
+if (shouldInstallGlobalProcessHooks(process.env)) {
+  process.once('beforeExit', () => {
+    void shutdownLogger().then(
+      (success) => {
+        if (!success) {
+          process.exit();
+        }
+      },
+      (error: unknown) => {
+        reportDiagnostic('[Logger] 日志关闭内部错误:', error);
+        process.exit(1);
+      },
+    );
+  });
+
+  process.on('uncaughtException', (error: Error) => {
+    reportProcessError('未捕获的异常', error);
     process.exit(1);
   });
 
-  // 未处理的 Promise 拒绝
   process.on('unhandledRejection', (reason: unknown) => {
-    try {
-      logger.error('未处理的 Promise 拒绝', reason);
-    } catch {
-      try {
-        console.error('未处理的 Promise 拒绝:', reason);
-      } catch {
-        // 忽略
-      }
-    }
+    reportProcessError('未处理的 Promise 拒绝', reason);
   });
 }

@@ -119,19 +119,22 @@ export const TRADE_PERSISTENCE = {
   MAX_RETAINED_DAILY_FILES: 7,
 } as const;
 
-/** 日志相关常量，用于 pino 日志系统 */
+/** 文本日志流与关闭协议常量 */
 export const LOGGING = {
-  /** 文件流 drain 超时时间（毫秒），程序退出时等待日志写入 */
+  /** 运行期文件流 drain 超时时间（毫秒） */
   DRAIN_TIMEOUT_MS: 5000,
 
-  /** 控制台流 drain 超时时间（毫秒） */
+  /** 运行期控制台流 drain 超时时间（毫秒） */
   CONSOLE_DRAIN_TIMEOUT_MS: 3000,
+
+  /** 从首次 shutdown 开始计算的单个关闭总超时（毫秒） */
+  SHUTDOWN_TIMEOUT_MS: 5000,
 
   /** 按日期分文件的日志最多保留文件数（system 与 debug 子目录各自限制） */
   MAX_RETAINED_LOG_FILES: 7,
 } as const;
 
-/** 日志级别常量（pino 自定义级别：DEBUG=20, INFO=30, WARN=40, ERROR=50） */
+/** 日志级别数值，供文本路由与内部记录使用。 */
 export const LOG_LEVELS = {
   DEBUG: 20,
   INFO: 30,

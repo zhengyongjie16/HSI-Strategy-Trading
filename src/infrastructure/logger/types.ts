@@ -1,14 +1,22 @@
 import type { LOG_LEVELS } from '../../constants/index.js';
 
-/**
- * 日志对象接口。
- * 类型用途：描述单条结构化日志记录的数据结构，供日志格式化器序列化输出。
- * 数据来源：由 logger 模块各级别方法（debug/info/warn/error）构造生成。
- * 使用范围：仅 logger 模块内部使用。
- */
-export type LogObject = {
+/** 调用时准备的文本快照；仅在 logger 的两个 objectMode 队列之间传递，不持有原始 extra。 */
+export type PreparedLogRecord = {
   readonly level: (typeof LOG_LEVELS)[keyof typeof LOG_LEVELS];
-  readonly time: number;
-  readonly msg: string;
-  readonly extra?: unknown;
+  readonly consoleLine: string;
+  readonly fileLine: string;
+};
+
+/** 标准流写回调的观察状态；待完成回调及其迟到 error 事件落定前保留唯一错误监听。 */
+export type StandardStreamObserver = {
+  readonly stream: NodeJS.WriteStream;
+  readonly name: 'stdout' | 'stderr';
+  readonly onError: (error: Error) => void;
+  readonly onClose: () => void;
+  pendingWrites: number;
+  errorEvents: number;
+  awaitingError: boolean;
+  listening: boolean;
+  releaseRequested: boolean;
+  reportedFailure: boolean;
 };

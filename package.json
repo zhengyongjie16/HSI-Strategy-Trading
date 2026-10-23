@@ -16,8 +16,7 @@
   },
   "dependencies": {
     "bignumber.js": "9.3.1",
-    "longbridge": "5.2.2",
-    "pino": "^10.3.1"
+    "longbridge": "5.2.2"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

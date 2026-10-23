@@ -1,6 +1,8 @@
 # 全仓性能分析与优化计划
 
-> 状态：只读审计结论与待实施计划，尚未实施优化。审计方式：6 个分区审查代理与 2 个独立复核代理协作；主代理负责调度、证据归并和结论汇总。证据边界：未运行性能基准、CPU/GC profile 或实盘测试。收益排序依据静态调用链、复杂度、触发频率和工程风险，不代表实测加速比例。行号为审计时位置，实施前应重新核对对应函数和真实调用链。
+> 审计阶段状态（历史）：只读审计结论与待实施计划，当时尚未实施优化。审计方式：6 个分区审查代理与 2 个独立复核代理协作；主代理负责调度、证据归并和结论汇总。证据边界：未运行性能基准、CPU/GC profile 或实盘测试。收益排序依据静态调用链、复杂度、触发频率和工程风险，不代表实测加速比例。行号为审计时位置，实施前应重新核对对应函数和真实调用链。
+>
+> **PERF-03 当前进展：**Pino 移除、文本日志及有界关闭已实施并完成独立验收；实际验证与限制见 PERF-03 及 [Pino 移除方案 §14](./pino-removal-refactoring-plan.md#14-当前实施与集成记录)。这不改变其他审计项的历史记录，也不代表已量化性能收益。
 >
 > **策略路径迁移注：**本文 `src/core/strategy/intradayRegression/**` 路径是审计基线的历史证据，不作为当前落点。策略功能内聚后按以下对应关系定位：指标编排/数学 → `src/strategies/intradayRegression/indicators/`，验证与样本 → `verification/`，条件求值与延迟模式 → `signalRules.ts`/`profile/`，实例、pending 与展示 → `index.ts`、`verification/pendingVerification.ts`、`display.ts`，配置 → 同目录 `config.json`。审计时行号与文件名不迁移、不重算；实施优化前以实际函数与调用链重新核对。
 
@@ -61,7 +63,7 @@
 | --: | --- | --- | --- | --- | --- |
 | 1 | PERF-01 | 成交日志由全量读改写走向增量耐久化 | 全局尾延迟、磁盘写放大、CPU | 成交密集、部分成交多、单日日志大 | 高 / 高 |
 | 2 | PERF-02 | K 线标准化对象结构共享，避免逐事件全量投影冻结 | 分配率、GC、策略入口吞吐 | 活动柱更新频繁 | 中 / 中 |
-| 3 | PERF-03 | 高频日志一次解析、多端输出，减少重复格式化 | CPU、GC、事件循环负载 | 行情显示日志密集 | 中 / 低至中 |
+| 3 | PERF-03 | 文本日志一次准备、多端输出，移除 Pino/整条 JSON 中转 | CPU、GC、事件循环负载 | 行情显示日志密集 | 中 / 低至中 |
 | 4 | PERF-04 | 延迟验证样本改为 head-index 队列，优化最近点查询 | CPU、数组搬移、验证尾延迟 | 样本率和候选数较高 | 中 / 中 |
 | 5 | PERF-05 | 移除 warrantQuote/warrantList 嵌套重试 | 故障期延迟、请求放大 | 持续可重试失败 | 低至中 / 中 |
 | 6 | PERF-06 | 订单缓存版本化失效及同代请求去重 | 外部调用数、等待时间、正确性 | 并发读、频繁缓存失效 | 中 / 高 |
@@ -206,47 +208,49 @@ cache 主要复制引用数组，并非每次深拷贝全部旧 candle；strateg
 - 检查对象 identity、冻结状态及生命周期隔离。
 - 比较每事件分配字节数、GC 次数和策略入口耗时。
 
-### PERF-03：Logger 双流重复解析和格式化
+### PERF-03：文本日志一次准备与有界关闭
 
-**实施状态：**已完成局部等价优化；保留 Pino 10.3.1 序列化和四方法 Logger 接口。普通 Writable 入口现在只做一次 Buffer 解码、JSON.parse、结构校验、时间/extra 准备和双端格式化，再按 file→console 顺序投递到两个独立 objectMode sink。内部契约错误通过统一一次诊断进入非零 fatal 链路，外部文件/console 失败策略保持原样。本次不实现优雅停机的完整 sink 排空。
+**历史基线：**原审计确认 console/file 对同一条 Pino JSON 记录重复解析和格式化；此前“保留 Pino、入口 parse 一次、cleanupSync 不等待排空”的描述不再代表当前实现。旧行为探针仅作历史证据，不作为本次实现验收。
 
-**判定：**重复成本已确认；实现消除了两端重复 parse、时间格式化和 extra inspect/stringify。实际吞吐、分配和尾延迟收益仍需目标环境 profiling，不宣称固定加速比例。
+**当前实施与验收状态：**在 `beta-V2` / `2a367c2fa7384427261d5039c80b5e741ca431ba`、Windows / Bun 1.4.4 的实施工作区，logger 已改为同步准备文本后按 file → console 投递两个 objectMode 队列，四方法 Logger 及业务调用方式不变；Pino 及无外部消费者的 13 包依赖闭包已由包管理器移除，lock 包数 167 → 154，保留包条目无其他语义变更。`shutdownLogger(): Promise<boolean>` 接入薄入口 finally，替代无效的同步关闭承诺。独立复核、定向回归、集中检查及 clean build/残留检查均已通过；实际批次和证据边界见 [Pino 移除方案 §14](./pino-removal-refactoring-plan.md#14-当前实施与集成记录)。
 
-#### 证据
+**判定：**当前实现不再对完整日志做 JSON 编解码，时间与 extra 只准备一次；实际吞吐、分配和尾延迟收益仍需目标环境 profiling，不宣称固定加速比例。
 
-`src/utils/logger/index.ts`：
+#### 当前实现证据
 
-- `:452-493`：console stream 解析 JSON 并格式化。
-- `:496-573`：file stream 再次解析相同记录并格式化。
-- `:580-598`：两者接入 `pino.multistream`。
-- `:308-347`：重复香港时间格式化。
+- `src/infrastructure/logger/index.ts` 的 `writeLog`：DEBUG 禁用提前返回；调用时固定时间与 extra，生成 readonly `PreparedLogRecord`，按 file → console 写入。
+- 同文件 `formatExtra`：对象采用一轮原生 JSON 序列化，处理循环、BigInt 与固定失败提示；仅 Date/toJSON 等标量结果局部 parse，不恢复整条日志 JSON 信封。已接受的显示差异见方案 §6.3，不宣称所有 unknown 值逐字节等价。
+- 同文件 `fileStream` / `consoleStream`：只路由最终文本，各自 FIFO；file 保留本条 system/debug 共同回调屏障，不是无等待的直接扇出。
+- 同文件 `DateRotatingStream` / `shutdownLogger`：补齐自有文件 final/destroy、总超时取消及尾部标准流屏障。外部 IO 失败返回 false，内部契约/编程错误 reject；不销毁全局 stdout/stderr，不承诺 fsync 或强退完整落盘。
+- `src/index.ts`：继续消费 Bun 启动时已准备的环境变量，不恢复 dotenv；业务清理后等待 logger，再按原始失败与关闭结果决定退出。
+- `src/infrastructure/display/marketMonitor/index.ts` 的 `renderTradingQuote` / `renderMonitorIndicators`：仍输出行情和指标；重复调用保留重复日志，不新增去重。
 
-`src/services/marketMonitor/index.ts:62-82,91-112`：行情与指标展示输出。当前无内容去重是明确设计，相关测试要求重复调用保留重复日志。
+#### 开销边界
 
-#### 开销
+历史基线每条完整记录的 JSON 编码、双端 parse、重复时间/extra 格式化已从当前链路删除。对象 extra 为保持紧凑 JSON 文本仍需一次安全序列化，最终文本分配与实际文件/终端 IO 仍存在。
 
-每条日志包含两次 JSON parse、两套格式化、重复时间转换，以及临时对象、字符串和输出管理开销。
+显示 runtime 的 latest-only 只会合并积压，不等同于日志采样或相同内容去重。同步四方法接口也不等于端到端 await IO 或新增队列内存上限。
 
-显示 runtime 的 latest-only 只会合并积压，不等同于日志采样或相同内容去重。
+#### 当前实现范围
 
-#### 最小等价优化
-
-1. 输入记录解析一次，再 fan-out 到 console/file。
-2. 共享可共享的时间格式化结果。
-3. 将固定 level lookup 提升为模块级数据。
-4. 日期轮转使用轻量日期 token。
-5. 保留 sink 顺序、错误处理、flush 和背压语义。
+1. 直接准备两端文本，不保留 Pino 兼容链路或完整记录解析入口。
+2. 保留 level lookup、香港时间、ANSI、文件/控制台路由及调用时 extra 快照。
+3. 保留既有两个队列、file → console 投递、文件共同回调屏障和运行期背压政策。
+4. 保留按实际消费日轮转、追加与 system/debug 各 7 个日文件的规则。
+5. 增加业务清理后的单次有界关闭；总超时取消自有工作，不把外部日志失败升级为交易 fatal。
 
 #### 非等价可选项
 
-降低行情展示频率、仅变化时输出、生产关闭部分展示日志，都改变当前可观测行为，需要单独决策，不能混入等价优化。
+降低行情展示频率、仅变化时输出、生产关闭部分展示日志，都改变当前可观测行为，需要单独决策，不能混入本次重构。
 
-#### 验证
+#### 验证与限制
 
-- `tests/utils/logger/index.test.ts` 用真实 Pino 字节验证一次 parse/extra 准备、两端输出格式、级别、ANSI、primitive/object extra、重复日志和 file→console 路由。
-- 同一测试用慢端、per-sink FIFO、外部文件 callback 失败隔离、内部失败子进程非零退出/单次诊断/非递归，以及真实临时文件午夜、回拨和 retention 验证行为。
-- 可复现性能对比方法：在目标 Bun 版本分别运行 `bun test tests/utils/logger/index.test.ts`，再用临时（不入库）脚本对固定数量的相同 Pino 记录测量入口 CPU/墙钟、分配/GC 与 event-loop delay；基线是旧版 console/file 各自 parse+format，新版是一次入口准备后双 sink 分发。测试证明工作次数与输出等价，不替代目标环境实测，也不推导未经测量的收益。
-- 已知限制：`cleanupSync` 仍沿用既有同步关闭策略，不等待两个 sink 完整优雅排空；本次不宣称强退排空，也不扩展停机重构。
+- 当前测试路径为 `tests/infrastructure/logger/logger.business.test.ts`、`rotation.business.test.ts`、`shutdown.business.test.ts` 及 `tests/index.business.test.ts`，不再依赖真实 Pino 字节；分别覆盖文本/extra/进程钩子、轮转/保留、顺序/慢端/关闭及入口退出矩阵。
+- 最终测试与环境复验使用 `tests/setup/childEnv.ts` 的 `createChildEnv` 白名单，随后显式添加 `BUN_OPTIONS=--no-env-file`，同时保留 CLI `--no-env-file` 和临时输出根；logger/入口 mock 位于隔离子进程，未读取业务 `.env` 或连接 SDK。顶层 flag 未传入嵌套 Bun 的合成探针失败已由 6 组正/负对照复现并解决，不是产品缺陷，也未修改生产脚本；详情及保留的历史证据见方案 §14.3。
+- 最终验证代理本人执行 logger/入口/diagnostics/两项架构测试，共 105 pass / 0 fail / 321 expect；独立边界 reviewer 另执行生命周期、清理、runApp、终止矩阵及交易日志持久化回归，共 64 pass / 0 fail / 392 expect。两批合计 169 pass / 0 fail，不把子进程 `node:assert` 计作 Bun expect。独立核心/边界复核及真实 logger + 薄入口的 4 项跨边界探针均通过，未发现阻断项；具体结果见方案 §14.4–14.5。
+- 若量化性能，使用不入库的离线临时脚本，在相同 Bun/输出条件下对固定数量的相同四方法调用比较历史基线与当前实现，并等待关闭完成；分别测量 CPU/墙钟、分配/GC 与 event-loop delay，不只测方法返回，也不外推整套交易系统收益。
+- 集成与新环境复验均按 lint:fix → type-check 顺序通过（788 个文件）；clean build 通过，源码及 clean dist 的旧接线残留为 0。extra 标量局部 parse、冻结架构基线中的历史符号和交易 `fs.closeSync` 不属于待清理残留。
+- `shutdownLogger` 的成功只代表当前关闭协议完成，不证明历史每条日志成功或物理持久化；直接 process.exit、uncaughtException、静态 import 失败、SIGKILL 和掉电不保证完整日志。本次未运行实盘/SDK，未验证其他操作系统或 fsync 耐久性；未运行全仓全量测试，也没有量化性能加速。仅需量化收益时才做上述同条件离线复测，不要求无条件重测。
 
 ### PERF-04：延迟验证样本队列线性操作
 
@@ -656,7 +660,7 @@ getQuotes 调用 SDK realtimeQuote，不能把每次调用直接算作 HTTP 请�
 | 指标每次更新重算全部 200 根 K 线 | 排除；正常路径采用增量指标状态 |
 | snapshot WeakMap 一定显著降低投影成本 | 排除；正常新快照只投影一次，命中率预计很低 |
 | 每个 timer 都可以按动作直接合并 | 排除；不同候选的目标时刻和初始值不同 |
-| dotenv 晚于静态 import 必然使当前启动配置失效 | 排除；实际 Bun 启动默认预加载环境文件，不能报告为当前确认缺陷 |
+| dotenv 晚于静态 import 必然使当前启动配置失效 | 排除该历史假设；Bun 启动默认加载环境文件，当前薄入口直接消费 process.env，不依赖 dotenv 初始化，本次不得恢复该依赖 |
 
 ### 8.2 安全前置项
 
