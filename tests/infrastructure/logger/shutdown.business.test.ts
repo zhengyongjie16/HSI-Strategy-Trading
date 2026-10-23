@@ -6,12 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import {
-  clockSource,
-  fixtureImport,
-  loggerImport,
-  withLoggerProcess,
-} from './processFixture.js';
+import { clockSource, fixtureImport, loggerImport, withLoggerProcess } from './processFixture.js';
 
 describe('logger shutdown public protocol', () => {
   it('drains an immediate shutdown fully, shares one Promise and fails fast after closing starts', async () => {
@@ -41,7 +36,9 @@ describe('logger shutdown public protocol', () => {
         ).join('');
         expect(stdout).toBe(expected);
         expect(stderr).toBe('');
-        expect(readFileSync(path.join(logRootDir, 'system', '2026-02-13.log'), 'utf8')).toBe(expected);
+        expect(readFileSync(path.join(logRootDir, 'system', '2026-02-13.log'), 'utf8')).toBe(
+          expected,
+        );
       },
       { debug: 'true' },
     );

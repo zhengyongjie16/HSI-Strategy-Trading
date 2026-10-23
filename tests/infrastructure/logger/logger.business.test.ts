@@ -6,12 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import {
-  clockSource,
-  fixtureImport,
-  loggerImport,
-  withLoggerProcess,
-} from './processFixture.js';
+import { clockSource, fixtureImport, loggerImport, withLoggerProcess } from './processFixture.js';
 
 const timestamp = '2026-02-13 23:59:59.123';
 
@@ -39,7 +34,9 @@ describe('logger public text behavior', () => {
           const debugFile = `[DEBUG] ${timestamp} debug-line 'trace'\n`;
           const info = `[INFO] ${timestamp} info-line {"value":7}\n`;
           const duplicate = `[INFO] ${timestamp} duplicate\n`;
-          expect(stdout).toBe((debug === 'true' ? debugConsole : '') + info + duplicate + duplicate);
+          expect(stdout).toBe(
+            (debug === 'true' ? debugConsole : '') + info + duplicate + duplicate,
+          );
           expect(stderr).toBe(
             `\u001B[33m[WARN] ${timestamp} warn-line\u001B[0m ''\n` +
               `\u001B[31m[ERROR] ${timestamp} \u001B[35merror-line\u001B[0m\u001B[0m 'failed'\n`,
@@ -324,7 +321,9 @@ describe('logger process hook semantics', () => {
         expect(stdout).toBe(expected);
         expect(stderr).toBe('');
         expect(readdirSync(path.join(logRootDir, 'system'))).toEqual(['2026-02-13.log']);
-        expect(readFileSync(path.join(logRootDir, 'system', '2026-02-13.log'), 'utf8')).toBe(expected);
+        expect(readFileSync(path.join(logRootDir, 'system', '2026-02-13.log'), 'utf8')).toBe(
+          expected,
+        );
       },
       { enableProcessHooks: true },
     );

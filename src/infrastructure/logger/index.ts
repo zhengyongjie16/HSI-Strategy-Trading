@@ -268,25 +268,28 @@ function formatExtra(extra: unknown): string {
 
   try {
     const ancestors: unknown[] = [];
-    const serialized: unknown = JSON.stringify(extra, function (this: unknown, _key, value: unknown): unknown {
-      if (typeof value === 'bigint') {
-        return String(value);
-      }
-
-      if (value !== null && typeof value === 'object') {
-        while (ancestors.length > 0 && ancestors.at(-1) !== this) {
-          ancestors.pop();
+    const serialized: unknown = JSON.stringify(
+      extra,
+      function (this: unknown, _key, value: unknown): unknown {
+        if (typeof value === 'bigint') {
+          return String(value);
         }
 
-        if (ancestors.includes(value)) {
-          return '[Circular]';
+        if (value !== null && typeof value === 'object') {
+          while (ancestors.length > 0 && ancestors.at(-1) !== this) {
+            ancestors.pop();
+          }
+
+          if (ancestors.includes(value)) {
+            return '[Circular]';
+          }
+
+          ancestors.push(value);
         }
 
-        ancestors.push(value);
-      }
-
-      return value;
-    });
+        return value;
+      },
+    );
     if (typeof serialized !== 'string' || serialized === 'null') {
       return '';
     }
@@ -393,56 +396,58 @@ class DateRotatingStream extends Writable {
       callback(error);
     };
     this._cancelWrite = complete;
-    void this._checkRotate().then(() => {
-      if (this.destroyed) {
-        complete();
-        return;
-      }
-
-      const currentStream = this._fileStream;
-      if (!currentStream?.writable) {
-        markIoFailure();
-        if (IS_DEBUG) {
-          reportDiagnostic(`[DateRotatingStream] 文件流不可用 (${this._logSubDir})`);
+    void this._checkRotate()
+      .then(() => {
+        if (this.destroyed) {
+          complete();
+          return;
         }
 
-        complete();
-        return;
-      }
+        const currentStream = this._fileStream;
+        if (!currentStream?.writable) {
+          markIoFailure();
+          if (IS_DEBUG) {
+            reportDiagnostic(`[DateRotatingStream] 文件流不可用 (${this._logSubDir})`);
+          }
 
-      let canContinue: boolean;
-      try {
-        canContinue = currentStream.write(chunk, encoding);
-      } catch (error) {
-        if (!isSystemIoError(error)) {
-          throw error;
+          complete();
+          return;
         }
 
-        reportIoFailure(`[DateRotatingStream] 写入失败 (${this._logSubDir}):`, error);
-        complete();
-        return;
-      }
+        let canContinue: boolean;
+        try {
+          canContinue = currentStream.write(chunk, encoding);
+        } catch (error) {
+          if (!isSystemIoError(error)) {
+            throw error;
+          }
 
-      if (canContinue) {
-        complete();
-      } else {
-        this._cancelWait = waitForDrain(
-          currentStream,
-          LOGGING.DRAIN_TIMEOUT_MS,
-          () => {
-            this._cancelWait = null;
-            complete();
-          },
-          () => {
-            if (IS_DEBUG) {
-              reportDiagnostic(`[DateRotatingStream] drain 超时 (${this._logSubDir})`);
-            }
-          },
-        );
-      }
-    }).catch((error: unknown) => {
-      complete(asError(error));
-    });
+          reportIoFailure(`[DateRotatingStream] 写入失败 (${this._logSubDir}):`, error);
+          complete();
+          return;
+        }
+
+        if (canContinue) {
+          complete();
+        } else {
+          this._cancelWait = waitForDrain(
+            currentStream,
+            LOGGING.DRAIN_TIMEOUT_MS,
+            () => {
+              this._cancelWait = null;
+              complete();
+            },
+            () => {
+              if (IS_DEBUG) {
+                reportDiagnostic(`[DateRotatingStream] drain 超时 (${this._logSubDir})`);
+              }
+            },
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        complete(asError(error));
+      });
   }
 
   /** 队列排空后结束并观察底层文件 finish/close；未写入过时不新建文件。 */

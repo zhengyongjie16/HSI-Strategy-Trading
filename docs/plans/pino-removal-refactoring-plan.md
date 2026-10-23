@@ -479,14 +479,14 @@ git diff --check
 
 最终验证代理本人执行的正式测试批次 A：
 
-| 范围 | pass | fail | expect |
-| --- | ---: | ---: | ---: |
-| logger 目录 | 27 | 0 | 47 |
-| `tests/index.business.test.ts` | 20 | 0 | 98 |
-| diagnostics | 2 | 0 | 5 |
-| importBoundary | 41 | 0 | 88 |
-| typeOrganization | 15 | 0 | 83 |
-| **批次 A 合计** | **105** | **0** | **321** |
+| 范围                           |    pass |  fail |  expect |
+| ------------------------------ | ------: | ----: | ------: |
+| logger 目录                    |      27 |     0 |      47 |
+| `tests/index.business.test.ts` |      20 |     0 |      98 |
+| diagnostics                    |       2 |     0 |       5 |
+| importBoundary                 |      41 |     0 |      88 |
+| typeOrganization               |      15 |     0 |      83 |
+| **批次 A 合计**                | **105** | **0** | **321** |
 
 - 独立边界 reviewer 另执行批次 B：terminationRuntime 4、createCleanup 16、runApp 24、runAppTerminationMatrix 9、createPostGateRuntime.tradeLogPersistence 11，共 **64 pass / 0 fail / 392 expect**。两批正式测试合计 **169 pass / 0 fail**；子进程 `node:assert`、合成探针及下述跨边界探针不虚算为 Bun expect 或追加到该测试总数。
 - 独立核心 reviewer 的 4 项真实文件/TypeError/EPIPE 探针通过，未发现阻断项。独立边界 reviewer 精确检查 44 个基础设施路径，新增仅 `logger/index.js` 可从入口导入，规则未放宽。

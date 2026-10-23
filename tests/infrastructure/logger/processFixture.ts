@@ -145,7 +145,7 @@ export function installControlledFiles(options: FileBoundaryOptions = {}): Contr
   const heldDestroys = new Set(options.heldDestroys);
   const originalCreateWriteStream = fs.createWriteStream;
 
-  fs.createWriteStream = ((filePath: fs.PathLike, writeOptions?: unknown) => {
+  fs.createWriteStream = (filePath: fs.PathLike, writeOptions?: unknown) => {
     const name = String(filePath);
     const subDir = path.basename(path.dirname(name));
     const writes: string[] = [];
@@ -188,7 +188,7 @@ export function installControlledFiles(options: FileBoundaryOptions = {}): Contr
       writeOptions,
     });
     return stream as fs.WriteStream;
-  });
+  };
 
   return {
     files,
@@ -220,7 +220,7 @@ export function installStandardBoundary(): StandardBoundary {
     ['stderr', process.stderr],
   ] as const) {
     const originalWrite = stream.write.bind(stream);
-    stream.write = ((
+    stream.write = (
       chunk: string | Uint8Array,
       encoding?: BufferEncoding | WriteCallback,
       callback?: WriteCallback,
@@ -244,7 +244,7 @@ export function installStandardBoundary(): StandardBoundary {
       }
 
       return blockedWrites.has(name) ? false : accepted;
-    });
+    };
   }
 
   return {

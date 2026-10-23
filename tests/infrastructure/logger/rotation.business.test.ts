@@ -4,12 +4,7 @@
  * 覆盖香港午夜、实际消费日轮转、追加写入，以及 system / debug 各自的七文件保留规则。
  */
 import { describe, it } from 'bun:test';
-import {
-  clockSource,
-  fixtureImport,
-  loggerImport,
-  withLoggerProcess,
-} from './processFixture.js';
+import { clockSource, fixtureImport, loggerImport, withLoggerProcess } from './processFixture.js';
 
 describe('logger daily files', () => {
   it('appends existing files and keeps seven daily files independently across Hong Kong midnight', async () => {
