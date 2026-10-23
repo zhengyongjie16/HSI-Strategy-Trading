@@ -14,7 +14,7 @@ import { mapStockPositions } from './accountMapper.js';
  * 为实际数量owner装配直接权威读，不提交canonical事实或登记Sstale。
  * 账户读取允许小数，但卖出目标必须是原始文本可证明的非负安全整数：
  * number 投影会把 99.99999999999999999 变成 100，不能在卖出边界沿用该近似。
- * 非目标市场（如美股小数持仓）不参与本次严格校验，避免阻断港股卖出。
+ * 非目标持仓及名称为空的结算残留不参与本次严格校验，避免阻断港股卖出。
  * @param context 同一真实交易context的stockPositions能力
  * @returns 只返回中性持仓事实的单次读取能力
  */
@@ -35,7 +35,7 @@ export function createSellPositionReadAdapter(
 
     for (const channel of response.channels) {
       for (const position of channel.positions) {
-        if (position.symbol !== symbol) continue;
+        if (position.symbol !== symbol || position.symbolName === '') continue;
 
         safeQuantityNumber(position.quantity.toString());
         safeQuantityNumber(position.availableQuantity.toString());

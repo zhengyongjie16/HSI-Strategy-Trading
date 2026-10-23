@@ -26,6 +26,7 @@ function decimal(text: string): { toString: () => string } {
 function createPositionsResponse(
   positions: ReadonlyArray<{
     symbol: string;
+    symbolName: string;
     quantity: string;
     availableQuantity: string;
     currency: string;
@@ -38,7 +39,7 @@ function createPositionsResponse(
         accountChannel: 'lb',
         positions: positions.map((holding) => ({
           symbol: holding.symbol,
-          symbolName: holding.symbol,
+          symbolName: holding.symbolName,
           quantity: decimal(holding.quantity),
           availableQuantity: decimal(holding.availableQuantity),
           currency: holding.currency,
@@ -100,6 +101,7 @@ describe('mixed account market scope', () => {
       createPositionsResponse([
         {
           symbol: '700.HK',
+          symbolName: 'Tencent',
           quantity: '100',
           availableQuantity: '80',
           currency: 'HKD',
@@ -107,6 +109,7 @@ describe('mixed account market scope', () => {
         },
         {
           symbol: 'AAPL.US',
+          symbolName: 'Apple',
           quantity: '1.125',
           availableQuantity: '0.5',
           currency: 'USD',
@@ -121,6 +124,65 @@ describe('mixed account market scope', () => {
     expect(view.positions.find((item) => item.symbol === 'AAPL.US')?.availableQuantity).toBe(0.5);
     expect(owner.getAvailablePosition('700.HK')?.availableQuantity).toBe(80);
     expect(owner.getAvailablePosition('AAPL.US')).toBeNull();
+  });
+
+  it('excludes empty-symbol or empty-name positions and clears the previous sell lookup on refresh', async () => {
+    const settlementPosition = {
+      symbol: '',
+      symbolName: '',
+      quantity: '270000',
+      availableQuantity: '270000',
+      currency: 'HKD',
+      costPrice: '0.071',
+    };
+    let response = createPositionsResponse([
+      { ...settlementPosition, symbol: '700.HK', symbolName: 'Tencent' },
+      settlementPosition,
+      { ...settlementPosition, symbol: '9988.HK' },
+    ]);
+    const fatalErrors: unknown[] = [];
+    const owner = createAccountPositionSnapshot({
+      dayEpoch: 1,
+      scheduler: { schedule: queueMicrotask },
+      clock: { now: () => new Date(0) },
+      diagnostics: { record: () => {} },
+      reportFatalError: (error) => {
+        fatalErrors.push(error);
+      },
+      readPort: {
+        getAccountSnapshot: async () => account,
+        getStockPositions: async () => mapStockPositions(response),
+      },
+    });
+    const request = {
+      source: 'STARTUP',
+      dayEpoch: 1,
+      refreshAccount: true,
+      refreshPositions: true,
+    };
+    const initialReceipt = await owner.requestRefresh(request).result;
+
+    expect(initialReceipt.status).toBe('COMMITTED');
+    expect(owner.getView().positions.map((holding) => holding.symbol)).toEqual(['700.HK']);
+    expect(owner.getAvailablePosition('700.HK')?.availableQuantity).toBe(270000);
+    expect(owner.getAvailablePosition('')).toBeNull();
+    expect(owner.getView().account).toEqual(account);
+
+    response = createPositionsResponse([
+      settlementPosition,
+      { ...settlementPosition, symbol: '700.HK' },
+    ]);
+    const refreshedReceipt = await owner.requestRefresh({ ...request, source: 'POST_TRADE' })
+      .result;
+
+    expect(refreshedReceipt.status).toBe('COMMITTED');
+    expect(owner.getView().positions).toEqual([]);
+    expect(owner.getView().positionsValid).toBe(true);
+    expect(owner.getView().account).toEqual(account);
+    expect(owner.getAvailablePosition('700.HK')).toBeNull();
+    expect(owner.getAvailablePosition('')).toBeNull();
+    expect(fatalErrors).toEqual([]);
+    await owner.requestClear({ reason: 'STOP', dayEpoch: 1 });
   });
 
   it('HK sell quantity ignores unrelated fractional US positions but rejects fractional HK quantity', async () => {
@@ -143,6 +205,7 @@ describe('mixed account market scope', () => {
           createPositionsResponse([
             {
               symbol: '700.HK',
+              symbolName: 'Tencent',
               quantity: '100.5',
               availableQuantity: '100.5',
               currency: 'HKD',

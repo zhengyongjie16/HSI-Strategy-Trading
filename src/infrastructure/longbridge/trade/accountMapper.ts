@@ -36,17 +36,22 @@ export function mapAccountBalance(account: AccountBalance): {
   };
 }
 
-/** 不聚合渠道或重算成本，保留 API 返回的全部持仓明细。 */
+/**
+ * 排除代码或名称为空的持仓，避免终止交易后的结算残留进入业务。
+ * 其余明细原样映射，不聚合渠道或重算成本。
+ */
 export function mapStockPositions(response: StockPositionsResponse): ReadonlyArray<Position> {
   return response.channels.flatMap((channel) =>
-    channel.positions.map((position) => ({
-      accountChannel: channel.accountChannel,
-      symbol: position.symbol,
-      symbolName: position.symbolName,
-      quantity: finitePositionQuantity(position.quantity.toString()),
-      availableQuantity: finitePositionQuantity(position.availableQuantity.toString()),
-      currency: position.currency,
-      costPrice: canonicalDecimal(position.costPrice.toString()),
-    })),
+    channel.positions
+      .filter((position) => position.symbol !== '' && position.symbolName !== '')
+      .map((position) => ({
+        accountChannel: channel.accountChannel,
+        symbol: position.symbol,
+        symbolName: position.symbolName,
+        quantity: finitePositionQuantity(position.quantity.toString()),
+        availableQuantity: finitePositionQuantity(position.availableQuantity.toString()),
+        currency: position.currency,
+        costPrice: canonicalDecimal(position.costPrice.toString()),
+      })),
   );
 }

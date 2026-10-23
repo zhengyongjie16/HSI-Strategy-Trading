@@ -11,6 +11,7 @@ import { createLoggerDouble, createRateLimiterDouble } from '../../../helpers/te
 
 type WirePosition = Readonly<{
   symbol: string;
+  symbolName: string;
   quantity: string;
   availableQuantity: string;
 }>;
@@ -27,7 +28,7 @@ function createResponse(positions: ReadonlyArray<WirePosition>): StockPositionsR
         accountChannel: 'lb',
         positions: positions.map((position) => ({
           symbol: position.symbol,
-          symbolName: position.symbol,
+          symbolName: position.symbolName,
           quantity: decimal(position.quantity),
           availableQuantity: decimal(position.availableQuantity),
           currency: position.symbol.endsWith('.HK') ? 'HKD' : 'USD',
@@ -60,8 +61,8 @@ describe('sellPositionReadAdapter target quantity proof', () => {
   it('passes a normal HK integer and keeps an unrelated fractional US holding non-blocking', async () => {
     const { readSellPositions, resolver } = createResolver(
       createResponse([
-        { symbol: '700.HK', quantity: '100', availableQuantity: '80' },
-        { symbol: 'AAPL.US', quantity: '1.125', availableQuantity: '0.5' },
+        { symbol: '700.HK', symbolName: 'Tencent', quantity: '100', availableQuantity: '80' },
+        { symbol: 'AAPL.US', symbolName: 'Apple', quantity: '1.125', availableQuantity: '0.5' },
       ]),
     );
 
@@ -70,13 +71,39 @@ describe('sellPositionReadAdapter target quantity proof', () => {
     expect(await resolver.readFreshAvailableSellQuantity('700.HK', () => true)).toBe(80);
   });
 
+  it('ignores empty-name target positions before proving raw quantities', async () => {
+    const settlementPosition: WirePosition = {
+      symbol: '700.HK',
+      symbolName: '',
+      quantity: '99.99999999999999999',
+      availableQuantity: '99.99999999999999999',
+    };
+    const { readSellPositions, resolver } = createResolver(
+      createResponse([
+        settlementPosition,
+        { symbol: '700.HK', symbolName: 'Tencent', quantity: '100', availableQuantity: '80' },
+      ]),
+    );
+
+    expect(await readSellPositions('700.HK')).toMatchObject([
+      { symbol: '700.HK', symbolName: 'Tencent', quantity: 100, availableQuantity: 80 },
+    ]);
+    expect(await resolver.readFreshAvailableSellQuantity('700.HK', () => true)).toBe(80);
+
+    const onlySettlement = createResolver(createResponse([settlementPosition]));
+    expect(await onlySettlement.readSellPositions('700.HK')).toEqual([]);
+    expect(await onlySettlement.resolver.readFreshAvailableSellQuantity('700.HK', () => true)).toBe(
+      0,
+    );
+  });
+
   it.each(['99.99999999999999999', '100.00000000000000001', '100.5'])(
     'rejects HK quantity text %s that number mapping could round into an integer',
     async (quantity) => {
       const { resolver } = createResolver(
         createResponse([
-          { symbol: '700.HK', quantity, availableQuantity: quantity },
-          { symbol: 'AAPL.US', quantity: '1.125', availableQuantity: '0.5' },
+          { symbol: '700.HK', symbolName: 'Tencent', quantity, availableQuantity: quantity },
+          { symbol: 'AAPL.US', symbolName: 'Apple', quantity: '1.125', availableQuantity: '0.5' },
         ]),
       );
 
@@ -89,7 +116,9 @@ describe('sellPositionReadAdapter target quantity proof', () => {
 
   it('does not strict-check US rows when the HK target has no position', async () => {
     const { resolver } = createResolver(
-      createResponse([{ symbol: 'AAPL.US', quantity: '1.125', availableQuantity: '0.5' }]),
+      createResponse([
+        { symbol: 'AAPL.US', symbolName: 'Apple', quantity: '1.125', availableQuantity: '0.5' },
+      ]),
     );
 
     expect(await resolver.readFreshAvailableSellQuantity('700.HK', () => true)).toBe(0);

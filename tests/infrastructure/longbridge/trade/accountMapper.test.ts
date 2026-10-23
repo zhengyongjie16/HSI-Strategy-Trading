@@ -78,6 +78,52 @@ describe('mapStockPositions', () => {
     });
   });
 
+  it('filters nonzero positions with an empty symbol or name across channels', () => {
+    const settlementPosition: WirePosition = {
+      symbol: '',
+      symbolName: '',
+      quantity: '270000',
+      availableQuantity: '270000',
+      currency: 'HKD',
+      costPrice: '0.071',
+    };
+    const positions = mapStockPositions(
+      createResponse([
+        [
+          settlementPosition,
+          { ...settlementPosition, symbol: '700.HK', symbolName: 'Tencent' },
+          { ...settlementPosition, symbol: '9988.HK' },
+        ],
+        [
+          {
+            ...settlementPosition,
+            symbol: 'AAPL.US',
+            symbolName: 'Apple',
+            quantity: '1.125',
+            availableQuantity: '0.5',
+            currency: 'USD',
+          },
+          { ...settlementPosition, symbolName: 'Pending settlement' },
+        ],
+      ]),
+    );
+
+    expect(positions.map(({ accountChannel, symbol }) => ({ accountChannel, symbol }))).toEqual([
+      { accountChannel: 'channel-0', symbol: '700.HK' },
+      { accountChannel: 'channel-1', symbol: 'AAPL.US' },
+    ]);
+
+    expect(
+      mapStockPositions(
+        createResponse([
+          [settlementPosition, { ...settlementPosition, symbol: '9988.HK' }],
+          [],
+          [{ ...settlementPosition, symbolName: 'Pending settlement' }],
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
   it('rejects negative, non-finite and malformed account quantities', () => {
     const responseFor = (quantity: string): StockPositionsResponse =>
       createResponse([
