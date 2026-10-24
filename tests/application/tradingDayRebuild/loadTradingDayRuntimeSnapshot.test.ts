@@ -233,7 +233,6 @@ function createLoadParams(
   return {
     requireTradingDay: false,
     resetRuntimeSubscriptions: false,
-    hydrateCooldownFromTradeLog: false,
     source: 'STARTUP',
     ...overrides,
     now: overrides.now ?? new Date(),
@@ -436,10 +435,6 @@ function createBoundaryCaptureDailyLossTracker(
 
       return prepared;
     },
-    restoreProtectionBoundary: (prepared) => {
-      tracker.restoreProtectionBoundary(prepared);
-      onCapture(new Map([[prepared.direction, prepared.boundaryExecutedTimeMs]]));
-    },
     commitProtectionBoundary: (prepared) => {
       tracker.commitProtectionBoundary(prepared);
       onCapture(new Map([[prepared.direction, prepared.boundaryExecutedTimeMs]]));
@@ -544,8 +539,6 @@ function createRecoverySideEffectRecorder(): {
   readonly effects: {
     restoreCompletedBoundary: number;
     restoreInProgressEpisode: number;
-    restoreExecutionSnapshot: number;
-    restoreProtectionBoundary: number;
     prepareProtectionBoundary: number;
     commitProtectionBoundary: number;
     commitCompletion: number;
@@ -556,8 +549,6 @@ function createRecoverySideEffectRecorder(): {
   const effects = {
     restoreCompletedBoundary: 0,
     restoreInProgressEpisode: 0,
-    restoreExecutionSnapshot: 0,
-    restoreProtectionBoundary: 0,
     prepareProtectionBoundary: 0,
     commitProtectionBoundary: 0,
     commitCompletion: 0,
@@ -582,12 +573,6 @@ function createRecoverySideEffectRecorder(): {
   return {
     tracker,
     dailyLossTracker: createDailyLossTrackerDouble({
-      restoreExecutionSnapshot: () => {
-        effects.restoreExecutionSnapshot += 1;
-      },
-      restoreProtectionBoundary: () => {
-        effects.restoreProtectionBoundary += 1;
-      },
       prepareProtectionBoundary: (params) => {
         effects.prepareProtectionBoundary += 1;
         return { ...params, orderBaselines: [] };
@@ -973,7 +958,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       const hydrate = spyOn(deps.tradeLogHydrator, 'hydrate');
       const publish = spyOn(deps.dailyLossTracker, 'publishRecalculation');
       const result = await createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+        createLoadParams({ now }),
       );
       expect(result.status).toBe('COMMITTED');
       if (result.status !== 'COMMITTED') throw new Error('启动订单快照未完成');
@@ -1028,7 +1013,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       const dispatch = spyOn(deps.seatActivationDispatcher, 'dispatchCurrentActivatingSeats');
       const hydrate = spyOn(deps.tradeLogHydrator, 'hydrate');
       const failure: unknown = await createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+        createLoadParams({ now }),
       ).then(
         () => null,
         (error: unknown) => error,
@@ -1547,14 +1532,13 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
           },
         ] as never;
       },
-      getCandlestickSnapshot: (symbol, period) => {
+      getCandlestickSnapshot: (symbol) => {
         if (!seededBySymbol.has(symbol)) {
           return null;
         }
 
         return {
           symbol,
-          period,
           version: 1,
           candles: [
             {
@@ -1591,7 +1575,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     ).toBe(true);
   });
 
-  it('hydrateCooldownFromTradeLog=true 时先重建并补齐 completion 再 hydrate cooldown', async () => {
+  it('固定恢复链先读取 completion/progress，再重建并完成 protection recovery，最后 hydrate cooldown', async () => {
     const now = new Date('2026-02-25T03:00:00.000Z');
     const callOrder: string[] = [];
     const allOrders: ReadonlyArray<OrderFact> = [];
@@ -1627,7 +1611,21 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
             recovery,
           );
         },
+        publishRecalculation: (prepared) => {
+          callOrder.push('publish');
+          dailyOwner.publishRecalculation(prepared);
+        },
       },
+      mixedTradeLogRepository: createMixedTradeLogRepositoryDouble({
+        loadCompletionRecords: () => {
+          callOrder.push('loadCompletion');
+          return [];
+        },
+        loadExecutionProgressRecords: () => {
+          callOrder.push('loadExecutionProgress');
+          return [];
+        },
+      }),
       tradeLogHydrator: {
         hydrate: () => {
           callOrder.push('hydrate');
@@ -1635,15 +1633,26 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       },
     });
 
-    const load = createLoadTradingDayRuntimeSnapshot(deps);
-    await load(
-      createLoadParams({
-        now,
-        hydrateCooldownFromTradeLog: true,
-      }),
-    );
+    const load = createLoadTradingDayRuntimeSnapshot({
+      ...deps,
+      protectionRecovery: {
+        completeProtectionRecovery: (request) => {
+          callOrder.push('completeProtectionRecovery');
+          return deps.protectionRecovery.completeProtectionRecovery(request);
+        },
+      },
+    });
+    const result = await load(createLoadParams({ now }));
 
-    expect(callOrder).toEqual(['recalculate', 'hydrate']);
+    expect(result.status).toBe('COMMITTED');
+    expect(callOrder).toEqual([
+      'loadCompletion',
+      'loadExecutionProgress',
+      'recalculate',
+      'publish',
+      'completeProtectionRecovery',
+      'hydrate',
+    ]);
   });
 
   it('fails a normal attributable execution without updatedAt before restoring a persisted completion or later stages', async () => {
@@ -1682,22 +1691,20 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
       executedAmount: '45',
     });
-    const actualDailyLossTracker = createDailyLossTracker({
+    const dailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
       ...orderAnalysis,
       resolveOrderOwnership: (order) =>
         order.symbol === 'BULL.HK' ? { monitorSymbol: 'HSI.HK', direction: 'LONG' } : null,
       toHongKongTimeIso,
     });
-    actualDailyLossTracker.commitProtectionBoundary(
-      actualDailyLossTracker.prepareProtectionBoundary({
+    dailyLossTracker.commitProtectionBoundary(
+      dailyLossTracker.prepareProtectionBoundary({
         direction: 'LONG',
         boundaryExecutedTimeMs: existingBoundaryMs,
       }),
     );
     const laterEffects = {
-      restoreExecutionSnapshot: 0,
-      restoreProtectionBoundary: 0,
       hydrate: 0,
       appendCompletion: 0,
       resetSubscriptions: 0,
@@ -1705,17 +1712,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       subscribeCandlesticks: 0,
       getQuotes: 0,
     };
-    const dailyLossTracker = {
-      ...actualDailyLossTracker,
-      restoreExecutionSnapshot: (params) => {
-        laterEffects.restoreExecutionSnapshot += 1;
-        actualDailyLossTracker.restoreExecutionSnapshot(params);
-      },
-      restoreProtectionBoundary: (params) => {
-        laterEffects.restoreProtectionBoundary += 1;
-        actualDailyLossTracker.restoreProtectionBoundary(params);
-      },
-    } satisfies LoadTradingDayRuntimeSnapshotDeps['dailyLossTracker'];
     const actualEpisodeTracker = createProtectiveLiquidationEpisodeTracker();
     actualEpisodeTracker.restoreCompletedBoundary({
       direction: 'LONG',
@@ -1789,7 +1785,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       createLoadTradingDayRuntimeSnapshot(deps)(
         createLoadParams({
           now,
-          hydrateCooldownFromTradeLog: true,
           resetRuntimeSubscriptions: true,
         }),
       ),
@@ -1797,8 +1792,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     );
 
     expect(laterEffects).toEqual({
-      restoreExecutionSnapshot: 0,
-      restoreProtectionBoundary: 0,
       hydrate: 0,
       appendCompletion: 0,
       resetSubscriptions: 0,
@@ -1809,14 +1802,14 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(resetAllCalls).toBe(0);
     expect(tracker.getInProgressEpisodes()).toEqual([]);
     expect(() =>
-      actualDailyLossTracker.prepareProtectionBoundary({
+      dailyLossTracker.prepareProtectionBoundary({
         direction: 'LONG',
         boundaryExecutedTimeMs: existingBoundaryMs,
       }),
     ).toThrow(/protection boundary .*推进/);
   });
 
-  it('does not infer a completed boundary from a canceled protective order without a completion record', async () => {
+  it('rejects canceled protective positive execution without durable evidence before inferring a completion boundary', async () => {
     const now = new Date('2026-03-13T03:00:00.000Z');
     const executedAtMs = Date.parse('2026-03-13T02:30:00.000Z');
     const monitor = createProtectiveMonitor();
@@ -1858,9 +1851,15 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       },
     });
 
+    const publish = spyOn(deps.dailyLossTracker, 'publishRecalculation');
+    const hydrate = spyOn(deps.tradeLogHydrator, 'hydrate');
     const load = createLoadTradingDayRuntimeSnapshot(deps);
-    const snapshot = await load(createLoadParams({ now }));
-    expect(snapshot.status).toBe('COMMITTED');
+    await expectPromiseToRejectWithMessage(
+      load(createLoadParams({ now })),
+      /保护性清仓订单缺少精确成交时间.*protective-canceled-1/,
+    );
+    expect(publish).not.toHaveBeenCalled();
+    expect(hydrate).not.toHaveBeenCalled();
     expect(restoreCompletedCalls).toHaveLength(0);
     expect(restoreInProgressCalls).toHaveLength(0);
     expect(receivedBoundaryMap?.get('LONG')).toBeUndefined();
@@ -1921,12 +1920,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
-    await load(
-      createLoadParams({
-        now,
-        hydrateCooldownFromTradeLog: true,
-      }),
-    );
+    await load(createLoadParams({ now }));
 
     expect(restoreCompletedCalls).toHaveLength(0);
     expect(restoreInProgressCalls).toEqual([
@@ -2022,7 +2016,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       });
 
       const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+        createLoadParams({ now }),
       );
       expect(snapshot.status).toBe('COMMITTED');
       expect(dailyLossTracker.getLossOffset('LONG')).toBe('-10');
@@ -2098,7 +2092,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
         await expectPromiseToRejectWithMessage(
           createLoadTradingDayRuntimeSnapshot(deps)(
-            createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+            createLoadParams({ now }),
           ),
           /same revision\/quantity execution time conflict/,
         );
@@ -2108,8 +2102,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         expect(sideEffects.effects).toEqual({
           restoreCompletedBoundary: 0,
           restoreInProgressEpisode: 0,
-          restoreExecutionSnapshot: 0,
-          restoreProtectionBoundary: 0,
           prepareProtectionBoundary: 0,
           commitProtectionBoundary: 0,
           commitCompletion: 0,
@@ -2197,7 +2189,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
       await expectPromiseToRejectWithMessage(
         createLoadTradingDayRuntimeSnapshot(deps)(
-          createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+          createLoadParams({ now }),
         ),
         /same revision\/quantity execution time conflict/,
       );
@@ -2207,8 +2199,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       expect(sideEffects.effects).toEqual({
         restoreCompletedBoundary: 0,
         restoreInProgressEpisode: 0,
-        restoreExecutionSnapshot: 0,
-        restoreProtectionBoundary: 0,
         prepareProtectionBoundary: 0,
         commitProtectionBoundary: 0,
         commitCompletion: 0,
@@ -2338,7 +2328,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       });
 
       const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+        createLoadParams({ now }),
       );
       expect(snapshot.status).toBe('COMMITTED');
       expect(dailyLossTracker.getLossOffset('LONG')).toBe('0');
@@ -2387,7 +2377,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     await expectPromiseToRejectWithMessage(
       createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+        createLoadParams({ now }),
       ),
       /正成交缺少本次原始金额/,
     );
@@ -2443,7 +2433,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(
-      createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+      createLoadParams({ now }),
     );
     expect(snapshot.status).toBe('COMMITTED');
     if (snapshot.status !== 'COMMITTED') throw new Error('Expected committed load receipt');
@@ -2518,7 +2508,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(
-      createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+      createLoadParams({ now }),
     );
     expect(snapshot.status).toBe('COMMITTED');
     if (snapshot.status !== 'COMMITTED') throw new Error('Expected committed load receipt');
@@ -2613,12 +2603,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
     await expectPromiseToRejectWithMessage(
-      load(
-        createLoadParams({
-          now,
-          hydrateCooldownFromTradeLog: true,
-        }),
-      ),
+      load(createLoadParams({ now })),
       /cannot reconstruct protection boundary baseline: orderId=protective-pending-1/,
     );
 
@@ -2701,7 +2686,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     await expectPromiseToRejectWithMessage(
       createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+        createLoadParams({ now }),
       ),
       /cannot reconstruct.*ordinary-buy-crossing-persisted-boundary/i,
     );
@@ -2790,7 +2775,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(
-      createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+      createLoadParams({ now }),
     );
 
     expect(snapshot.status).toBe('COMMITTED');
@@ -2831,12 +2816,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
-    await load(
-      createLoadParams({
-        now,
-        hydrateCooldownFromTradeLog: true,
-      }),
-    );
+    await load(createLoadParams({ now }));
 
     expect(restoreCompletedCalls).toEqual([
       {
@@ -2921,7 +2901,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     await expectPromiseToRejectWithMessage(
       createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+        createLoadParams({ now }),
       ),
       /completion.*monitorSymbol/i,
     );
@@ -2929,8 +2909,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(effects).toEqual({
       restoreCompletedBoundary: 0,
       restoreInProgressEpisode: 0,
-      restoreExecutionSnapshot: 0,
-      restoreProtectionBoundary: 0,
       prepareProtectionBoundary: 0,
       commitProtectionBoundary: 0,
       commitCompletion: 0,
@@ -2998,7 +2976,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     await expectPromiseToRejectWithMessage(
       createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+        createLoadParams({ now }),
       ),
       /progress.*保护性清仓/i,
     );
@@ -3006,8 +2984,6 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     expect(effects).toEqual({
       restoreCompletedBoundary: 0,
       restoreInProgressEpisode: 0,
-      restoreExecutionSnapshot: 0,
-      restoreProtectionBoundary: 0,
       prepareProtectionBoundary: 0,
       commitProtectionBoundary: 0,
       commitCompletion: 0,
@@ -3190,12 +3166,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
     await expectPromiseToRejectWithMessage(
-      load(
-        createLoadParams({
-          now,
-          hydrateCooldownFromTradeLog: true,
-        }),
-      ),
+      load(createLoadParams({ now })),
       /cannot reconstruct protection boundary baseline: orderId=protective-completed-newer-1/,
     );
 
@@ -3265,12 +3236,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     const load = createLoadTradingDayRuntimeSnapshot(deps);
-    await load(
-      createLoadParams({
-        now,
-        hydrateCooldownFromTradeLog: true,
-      }),
-    );
+    await load(createLoadParams({ now }));
 
     expect(tracker.getInProgressEpisodes()).toEqual([
       {
@@ -3351,7 +3317,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     await createLoadTradingDayRuntimeSnapshot(deps)(
-      createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+      createLoadParams({ now }),
     );
 
     expect(appendedRecords).toHaveLength(1);
@@ -3431,7 +3397,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       });
 
       await createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+        createLoadParams({ now }),
       );
 
       const logFile = buildTradeLogPath(path.join(tempRoot, 'trades'), now);
@@ -3461,7 +3427,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
           protectiveLiquidationEpisodeTracker: restartedEpisodeTracker.tracker,
           mixedTradeLogRepository: restartedRepository,
         }),
-      )(createLoadParams({ now, hydrateCooldownFromTradeLog: true }));
+      )(createLoadParams({ now }));
 
       expect(restartedRepository.loadCompletionRecords('2026-03-13')).toHaveLength(1);
       expect(restartedRepository.loadExecutionProgressRecords('2026-03-13')).toHaveLength(1);
@@ -3542,7 +3508,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     await createLoadTradingDayRuntimeSnapshot(deps)(
-      createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+      createLoadParams({ now }),
     );
 
     expect(appendedRecords).toHaveLength(1);
@@ -3617,7 +3583,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     await createLoadTradingDayRuntimeSnapshot(restartedDeps)(
-      createLoadParams({ now, hydrateCooldownFromTradeLog: true }),
+      createLoadParams({ now }),
     );
 
     expect(secondRestartAppends).toEqual([]);

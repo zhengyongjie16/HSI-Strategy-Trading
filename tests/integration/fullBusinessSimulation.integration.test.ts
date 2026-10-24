@@ -156,7 +156,6 @@ function createCandlestickSnapshot(
       : null;
   return {
     symbol,
-    period: 'MIN_1',
     version,
     candles,
     lastBarTimestamp,

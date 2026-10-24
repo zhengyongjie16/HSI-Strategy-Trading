@@ -7,13 +7,11 @@ import { createAccountSnapshotDouble } from '../../../helpers/testDoubles.js';
 import type { AccountPositionSnapshot } from '../../../../src/types/accountPosition.js';
 import type { RuntimeTermination } from '../../../../src/types/runtime.js';
 import type { OpenRebuildContext } from '../../../../src/runtime/lifecycle/types.js';
-import type { LifecycleRuntimeFlags } from '../../../../src/types/timeControlPlane.js';
 
 /** 在单域 open 工作前取得真实 paired H evidence，不重绑原 owner。 */
 export async function createOpenRebuildContextFixture(
   params: Readonly<{
     now: Date;
-    runtime: LifecycleRuntimeFlags;
     termination: Pick<RuntimeTermination, 'isTerminated'>;
     snapshot?: AccountPositionSnapshot;
   }>,
@@ -37,7 +35,6 @@ export async function createOpenRebuildContextFixture(
   const capturedToken = receipt.snapshotToken;
   return {
     now: params.now,
-    runtime: params.runtime,
     dayEpoch,
     snapshotToken: capturedToken,
     isCurrent: () =>

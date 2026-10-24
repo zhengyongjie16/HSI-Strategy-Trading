@@ -558,19 +558,24 @@ describe('DailyLoss protective amount revision integration', () => {
       createTradingConfig().monitor,
       new Date(secondRevisionMs),
       new Map(),
+      undefined,
+      {
+        executionSnapshots: [
+          {
+            factStage: 'OPEN',
+            direction: 'LONG',
+            symbol: 'BULL.HK',
+            side: 'SELL',
+            orderId: trackedOrder.orderId,
+            cumulativeQuantity: '5',
+            cumulativeAmount: '47',
+            lastExecutionTimeMs: firstRevisionMs,
+            orderRevisionMs: secondRevisionMs,
+          },
+        ],
+        boundaries: [],
+      },
     );
-
-    restartedTracker.restoreExecutionSnapshot({
-      factStage: 'OPEN',
-      direction: 'LONG',
-      symbol: 'BULL.HK',
-      side: 'SELL',
-      orderId: trackedOrder.orderId,
-      cumulativeQuantity: '5',
-      cumulativeAmount: '47',
-      lastExecutionTimeMs: firstRevisionMs,
-      orderRevisionMs: secondRevisionMs,
-    });
 
     expect(
       restartedTracker.prepareProtectionBoundary({

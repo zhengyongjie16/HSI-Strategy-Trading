@@ -67,12 +67,7 @@ export function createTimeWakeupRuntime<TTimerHandle>(
     }
 
     if (atMs <= nowMs) {
-      if (inFlight) {
-        dirty = true;
-        return;
-      }
-
-      requestEvaluate();
+      dirty = true;
       return;
     }
 
@@ -148,7 +143,7 @@ export function createTimeWakeupRuntime<TTimerHandle>(
   async function start(): Promise<void> {
     if (deps.termination.isTerminated()) return;
 
-    if (!running || deps.termination.isTerminated()) {
+    if (!running) {
       running = true;
       requestEvaluate();
     }

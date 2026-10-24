@@ -31,7 +31,7 @@ import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
 import { createTradingRiskEventRuntime } from '../../src/runtime/tradingRiskEventRuntime/tradingRiskEventRuntime.js';
 import type { QuoteUpdatedEvent } from '../../src/types/marketPorts.js';
 import type { Quote } from '../../src/types/quote.js';
-import { getRequiredHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
+import { getHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
 import {
   createLoggerStub,
   createWarrantCandidate,
@@ -238,7 +238,7 @@ async function createFixture() {
     scheduleTimer: setTimeout,
     clearTimer: clearTimeout,
     readCurrentTradingDayInfo: () => ({
-      dateKey: getRequiredHKDateKey(new Date(NOW_MS)),
+      dateKey: getHKDateKey(new Date(NOW_MS)),
       info: { isTradingDay: true, isHalfDay: false },
     }),
     unrealizedLossBuyGate: risk,

@@ -406,18 +406,38 @@ describe('DailyLoss rebuild preparation', () => {
       undefined,
       relatedTradingSymbols,
     );
-    owner.restoreExecutionSnapshot({
-      orderId: 'LONG-BUY',
-      symbol: 'BULL.HK',
-      direction: 'LONG',
-      side: 'BUY',
-      factStage: 'OPEN',
-      cumulativeQuantity: '50',
-      cumulativeAmount: '62.5',
-      lastExecutionTimeMs: executionTimeMs - 1,
-      orderRevisionMs: executionTimeMs,
-    });
+    const beforeHistory = inspect(owner);
+    const recovered = owner.prepareRecalculationFromAllOrders(
+      seedOrders,
+      monitor,
+      now,
+      undefined,
+      relatedTradingSymbols,
+      {
+        executionSnapshots: [
+          {
+            orderId: 'LONG-BUY',
+            symbol: 'BULL.HK',
+            direction: 'LONG',
+            side: 'BUY',
+            factStage: 'OPEN',
+            cumulativeQuantity: '50',
+            cumulativeAmount: '62.5',
+            lastExecutionTimeMs: executionTimeMs - 1,
+            orderRevisionMs: executionTimeMs,
+          },
+        ],
+        boundaries: [],
+      },
+    );
+    expect(inspect(owner)).toEqual(beforeHistory);
+    expect(prepared.isCurrent()).toBe(true);
+    owner.publishRecalculation(recovered);
     const withHistory = inspect(owner);
+    expect(withHistory.longOffset).toBe(beforeHistory.longOffset);
+    expect(withHistory.shortOffset).toBe(beforeHistory.shortOffset);
+    expect(withHistory.longBaseline).toEqual(beforeHistory.longBaseline);
+    expect(withHistory.shortBaseline).toEqual(beforeHistory.shortBaseline);
     expect(prepared.isCurrent()).toBe(false);
     expect(() => {
       owner.publishRecalculation(prepared);

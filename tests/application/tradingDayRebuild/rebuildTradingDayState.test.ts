@@ -33,11 +33,7 @@ import type { SeatState, SymbolRegistry } from '../../../src/types/seat.js';
 import type { OrderRecord } from '../../../src/types/orderRecorder.js';
 import type { MonitorContextAssembly } from '../../../src/app/context/types.js';
 import type { OrderFact } from '../../../src/types/trade.js';
-import {
-  getHKDateKey,
-  getRequiredHKDateKey,
-  listHKDateKeysBetween,
-} from '../../../src/utils/time/index.js';
+import { getHKDateKey, listHKDateKeysBetween } from '../../../src/utils/time/index.js';
 
 import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
@@ -484,12 +480,9 @@ describe('createRebuildTradingDayState', () => {
     );
     expect(earliestRequestedMs).toBeLessThanOrEqual(oldOpenOrderTime);
     const oldOrderDateKey = getHKDateKey(new Date(oldOpenOrderTime));
-    expect(oldOrderDateKey).not.toBeNull();
-    if (oldOrderDateKey) {
-      expect(stateFixtures.tradingCalendarState.tradingCalendarSnapshot.has(oldOrderDateKey)).toBe(
-        true,
-      );
-    }
+    expect(stateFixtures.tradingCalendarState.tradingCalendarSnapshot.has(oldOrderDateKey)).toBe(
+      true,
+    );
   });
 
   it('交易日历查询会按自然月分块，不跨月请求', async () => {
@@ -511,8 +504,8 @@ describe('createRebuildTradingDayState', () => {
     await rebuild({ snapshotToken, allOrders: emptyOrders, quotesMap: emptyQuotesMap, now });
     expect(tradingDayCalls.length).toBeGreaterThan(1);
     for (const call of tradingDayCalls) {
-      const startMonthKey = getRequiredHKDateKey(call.startDate).slice(0, 7);
-      const endMonthKey = getRequiredHKDateKey(call.endDate).slice(0, 7);
+      const startMonthKey = getHKDateKey(call.startDate).slice(0, 7);
+      const endMonthKey = getHKDateKey(call.endDate).slice(0, 7);
       expect(startMonthKey).toBe(endMonthKey);
     }
   });

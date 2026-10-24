@@ -40,7 +40,6 @@ export async function loadStartupSnapshot(
         now,
         requireTradingDay: false,
         resetRuntimeSubscriptions: false,
-        hydrateCooldownFromTradeLog: true,
         source: 'STARTUP',
       });
       if (!isOriginLive()) return { kind: 'ABORTED' };

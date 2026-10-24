@@ -47,7 +47,6 @@ describe('createGlobalStateDomain', () => {
     });
     const result = await domain.openRebuild({
       now: new Date('2025-02-15T09:30:00Z'),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
       dayEpoch: token.dayEpoch,
       snapshotToken: token,
       isCurrent: () => snapshot.isCurrent(token, { account: true, positions: true, paired: true }),
@@ -79,7 +78,6 @@ describe('createGlobalStateDomain', () => {
 
     await domain.midnightClear({
       now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
     });
 
     expect(stateFixtures.tradingTimeState.canTrade).toBe(false);
@@ -143,7 +141,6 @@ describe('createGlobalStateDomain', () => {
     const clear = Promise.resolve(
       domain.midnightClear({
         now: new Date(),
-        runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
       }),
     ).then(() => {
       cleared = true;
@@ -199,7 +196,6 @@ describe('createGlobalStateDomain', () => {
     const now = new Date('2025-02-15T09:30:00Z');
     const result = await domain.openRebuild({
       now,
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
       dayEpoch: capturedToken.dayEpoch,
       snapshotToken: capturedToken,
       isCurrent: () =>

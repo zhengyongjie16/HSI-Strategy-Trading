@@ -160,10 +160,6 @@ export function applyFilteringAlgorithm(
     (left, right) => left.executedTime - right.executedTime,
   );
 
-  if (sortedSellOrders.length === 0) {
-    return allBuyOrders;
-  }
-
   const state = initializeFilteringState(allBuyOrders, sortedSellOrders);
 
   if (!state) {

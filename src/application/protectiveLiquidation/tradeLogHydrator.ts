@@ -22,10 +22,6 @@ export function createTradeLogHydrator(deps: TradeLogHydratorDeps): TradeLogHydr
     currentTimeMs: number,
   ): ReadonlyArray<ProtectiveLiquidationCompletionRecordV1> {
     const tradingDayKey = getHKDateKey(new Date(currentTimeMs));
-    if (tradingDayKey === null) {
-      throw new Error('[清仓冷却] 当前交易日键无法解析');
-    }
-
     return mixedTradeLogRepository.loadCompletionRecords(tradingDayKey);
   }
 

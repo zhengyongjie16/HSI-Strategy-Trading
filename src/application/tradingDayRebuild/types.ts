@@ -32,11 +32,10 @@ import type { PostTradeSettlementWorkflow } from '../postTradeSettlement/types.j
 import type { KnownExecutionBaseline } from '../../domain/order/types.js';
 import type { ExecutionHistorySnapshot } from '../../domain/risk/types.js';
 
-/** 恢复期单订单的完整历史、方向与校验后的 known 累计状态。 */
+/** 恢复期单订单的完整历史与校验后的 known 累计状态。 */
 export type RecoveryExecutionHistory = Readonly<{
   known: KnownExecutionBaseline;
   snapshots: ReadonlyArray<ExecutionHistorySnapshot>;
-  direction: 'LONG' | 'SHORT';
 }>;
 
 /** 归一后的 API 观察具有完整经济金额；其余字段沿用 broker 观察。 */
@@ -116,7 +115,7 @@ export type RebuildTradingDayStateResult =
 
 /**
  * loadTradingDayRuntimeSnapshot 的调用参数。
- * 类型用途：控制加载行为：是否要求交易日、是否重置订阅、是否从成交记录恢复冷却等。
+ * 类型用途：指定加载来源、执行时间、是否要求交易日及是否重置订阅；始终从持久化事实恢复保护状态与冷却。
  * 数据来源：由启动流程或开盘重建逻辑根据场景组装传入。
  * 使用范围：仅交易日重建用例及其装配方使用。
  */
@@ -124,7 +123,6 @@ export type LoadTradingDayRuntimeSnapshotParams = Readonly<{
   now: Date;
   requireTradingDay: boolean;
   resetRuntimeSubscriptions: boolean;
-  hydrateCooldownFromTradeLog: boolean;
   source: 'STARTUP' | 'OPEN_REBUILD';
 }>;
 

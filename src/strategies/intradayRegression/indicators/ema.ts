@@ -5,18 +5,8 @@
  * - 赋予近期数据更高权重，对价格变化更敏感
  * - 周期范围：1-250
  */
-import { initEmaStreamState, feedEmaStreamState, roundToFixed3 } from './indicatorMath.js';
+import { roundToFixed3 } from './indicatorMath.js';
 import type { EmaStreamState } from './types.js';
-
-/**
- * 创建 EMA 流式状态。
- *
- * @param period EMA 周期
- * @returns 初始化后的 EMA 状态
- */
-export function createEmaState(period: number): EmaStreamState {
-  return initEmaStreamState(period);
-}
 
 /**
  * 克隆 EMA 流式状态。
@@ -32,17 +22,6 @@ export function cloneEmaState(state: EmaStreamState): EmaStreamState {
     seedSum: state.seedSum,
     emaValue: state.emaValue,
   };
-}
-
-/**
- * 推进 EMA 状态（提交一根有效 close）。
- *
- * @param state EMA 状态
- * @param close 收盘价
- * @returns void
- */
-export function commitEmaClose(state: EmaStreamState, close: number): void {
-  feedEmaStreamState(state, close);
 }
 
 /**

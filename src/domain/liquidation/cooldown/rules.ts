@@ -91,10 +91,6 @@ export function resolveCooldownEndMs(
   }
 
   const hkTime = getHKTime(new Date(executedTimeMs));
-  if (!hkTime) {
-    return null;
-  }
-
   if (hkTime.hkHour < 12) {
     return resolveHongKongTimeMs({
       baseTimestampMs: executedTimeMs,

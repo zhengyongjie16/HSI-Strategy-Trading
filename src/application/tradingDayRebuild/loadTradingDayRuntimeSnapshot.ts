@@ -245,7 +245,7 @@ function buildRecoveryExecutionHistories(
   }
 
   const histories = new Map<string, RecoveryExecutionHistory>();
-  for (const [orderId, { snapshots, direction }] of groupsByOrderId) {
+  for (const [orderId, { snapshots }] of groupsByOrderId) {
     const latest = assertExecutionHistory({ snapshots });
     if (latest === undefined) throw new Error('[DailyLossTracker] execution history is empty');
 
@@ -261,7 +261,6 @@ function buildRecoveryExecutionHistories(
         phase: latest.factStage,
       },
       snapshots,
-      direction,
     });
   }
 
@@ -367,15 +366,15 @@ export function createLoadTradingDayRuntimeSnapshot(
   } = deps;
 
   /**
-   * 加载交易日完整运行时快照：验证交易日 → 刷新账户持仓 → 获取全量订单
-   * → 解析席位 → 收集相关标的并全量重算日内亏损 → 水合冷却状态并恢复保护性清仓边界
+   * 加载交易日完整运行时快照：验证交易日 → 刷新账户持仓 → 获取全量订单与 durable 记录
+   * → 预检归属和金额、归一订单并准备日内亏损 → 解析席位并发布日内亏损
+   * → 恢复边界与 episode → 完成保护性清仓恢复 → 水合冷却状态
    * → 重置行情订阅 → 订阅标的行情和 K 线 → 返回快照。
    */
   return async function loadTradingDayRuntimeSnapshot(
     params: LoadTradingDayRuntimeSnapshotParams,
   ): Promise<LoadTradingDayRuntimeSnapshotResult> {
-    const { now, requireTradingDay, resetRuntimeSubscriptions, hydrateCooldownFromTradeLog } =
-      params;
+    const { now, requireTradingDay, resetRuntimeSubscriptions } = params;
     const originToken = { ...snapshot.getView().token };
     const resolveOriginInvalidation = (): TradingDayRuntimeInvalidationResult | null => {
       if (
@@ -403,7 +402,7 @@ export function createLoadTradingDayRuntimeSnapshot(
       if (invalidation !== null) return invalidation;
 
       tradingCalendarState.cachedTradingDayInfo = {
-        dateKey: getHKDateKey(now) ?? '',
+        dateKey: getHKDateKey(now),
         info: tradingDayInfo,
       };
       tradingTimeState.isHalfDay = tradingDayInfo.isHalfDay;
@@ -440,17 +439,11 @@ export function createLoadTradingDayRuntimeSnapshot(
     logger.debug('账户和持仓信息获取成功，开始解析席位');
     const rawOrders = await orderRecorder.fetchAllOrdersFromAPI();
     const currentDayKey = getHKDateKey(now);
-    if (hydrateCooldownFromTradeLog && currentDayKey === null)
-      throw new Error('[loadTradingDayRuntimeSnapshot] 当前交易日键无法解析');
 
-    const completionRecords =
-      hydrateCooldownFromTradeLog && currentDayKey !== null
-        ? [...mixedTradeLogRepository.loadCompletionRecords(currentDayKey)]
-        : [];
-    const executionProgressRecords =
-      hydrateCooldownFromTradeLog && currentDayKey !== null
-        ? [...mixedTradeLogRepository.loadExecutionProgressRecords(currentDayKey)]
-        : [];
+    const completionRecords = [...mixedTradeLogRepository.loadCompletionRecords(currentDayKey)];
+    const executionProgressRecords = [
+      ...mixedTradeLogRepository.loadExecutionProgressRecords(currentDayKey),
+    ];
     // durable 来源/唯一归属先预检；API 观察必须先用 known 累计状态归一，再进入 daily 全量重算。
     assertCompletionRecordsMatchExpectedMonitor(completionRecords, expectedMonitorSymbol);
     const rawProtectiveSellOrdersById = collectRawProtectiveSellOrdersById(rawOrders);
@@ -623,83 +616,77 @@ export function createLoadTradingDayRuntimeSnapshot(
       ProtectiveLiquidationDirection,
       (typeof executionProgressRecords)[number]
     >();
-    if (hydrateCooldownFromTradeLog) {
-      if (currentDayKey === null) {
-        throw new Error('[loadTradingDayRuntimeSnapshot] 当前交易日键无法解析');
+    const latestCompletionByDirection = new Map<
+      ProtectiveLiquidationDirection,
+      (typeof completionRecords)[number]
+    >();
+    for (const record of completionRecords) {
+      const previous = latestCompletionByDirection.get(record.direction);
+      if (
+        previous === undefined ||
+        record.boundaryExecutedTimeMs > previous.boundaryExecutedTimeMs
+      ) {
+        latestCompletionByDirection.set(record.direction, record);
+      }
+    }
+
+    for (const progress of executionProgressRecords) {
+      const completedBoundary = latestCompletionByDirection.get(
+        progress.direction,
+      )?.boundaryExecutedTimeMs;
+      if (completedBoundary !== undefined && progress.lastExecutionTimeMs <= completedBoundary) {
+        continue;
       }
 
-      const latestCompletionByDirection = new Map<
-        ProtectiveLiquidationDirection,
-        (typeof completionRecords)[number]
-      >();
-      for (const record of completionRecords) {
-        const previous = latestCompletionByDirection.get(record.direction);
-        if (
-          previous === undefined ||
-          record.boundaryExecutedTimeMs > previous.boundaryExecutedTimeMs
-        ) {
-          latestCompletionByDirection.set(record.direction, record);
-        }
-      }
-
-      for (const progress of executionProgressRecords) {
-        const completedBoundary = latestCompletionByDirection.get(
-          progress.direction,
-        )?.boundaryExecutedTimeMs;
-        if (completedBoundary !== undefined && progress.lastExecutionTimeMs <= completedBoundary) {
-          continue;
-        }
-
-        const previous = latestProgressByDirection.get(progress.direction);
-        if (previous !== undefined && previous.symbol !== progress.symbol) {
-          throw new Error(
-            `[loadTradingDayRuntimeSnapshot] 同方向存在不同 symbol 的未完成 protection progress: ` +
-              `${previous.symbol} !== ${progress.symbol}`,
-          );
-        }
-
-        if (previous === undefined || compareExecutionProgressRecency(previous, progress) < 0) {
-          latestProgressByDirection.set(progress.direction, progress);
-        }
-      }
-
-      for (const execution of protectiveExecutedOrders) {
-        const latestCompletion = latestCompletionByDirection.get(execution.direction);
-        const persistedBaseline = latestCompletion?.orderBaselines.find(
-          (baseline) => baseline.orderId === execution.orderId,
-        );
-        if (
-          persistedBaseline !== undefined &&
-          !decimalGt(execution.executedQuantity, persistedBaseline.cumulativeQuantity)
-        ) {
-          continue;
-        }
-
-        let persistedProgress: (typeof executionProgressRecords)[number] | undefined;
-        for (const progress of executionProgressRecords) {
-          if (progress.orderId !== execution.orderId) {
-            continue;
-          }
-
-          if (
-            persistedProgress === undefined ||
-            compareExecutionProgressFacts(persistedProgress, progress) < 0
-          ) {
-            persistedProgress = progress;
-          }
-        }
-
-        if (
-          persistedProgress !== undefined &&
-          !decimalGt(execution.executedQuantity, persistedProgress.cumulativeQuantity)
-        ) {
-          continue;
-        }
-
+      const previous = latestProgressByDirection.get(progress.direction);
+      if (previous !== undefined && previous.symbol !== progress.symbol) {
         throw new Error(
-          `[loadTradingDayRuntimeSnapshot] 保护性清仓订单缺少精确成交时间，无法恢复或补写 completion: ${execution.orderId}`,
+          `[loadTradingDayRuntimeSnapshot] 同方向存在不同 symbol 的未完成 protection progress: ` +
+            `${previous.symbol} !== ${progress.symbol}`,
         );
       }
+
+      if (previous === undefined || compareExecutionProgressRecency(previous, progress) < 0) {
+        latestProgressByDirection.set(progress.direction, progress);
+      }
+    }
+
+    for (const execution of protectiveExecutedOrders) {
+      const latestCompletion = latestCompletionByDirection.get(execution.direction);
+      const persistedBaseline = latestCompletion?.orderBaselines.find(
+        (baseline) => baseline.orderId === execution.orderId,
+      );
+      if (
+        persistedBaseline !== undefined &&
+        !decimalGt(execution.executedQuantity, persistedBaseline.cumulativeQuantity)
+      ) {
+        continue;
+      }
+
+      let persistedProgress: (typeof executionProgressRecords)[number] | undefined;
+      for (const progress of executionProgressRecords) {
+        if (progress.orderId !== execution.orderId) {
+          continue;
+        }
+
+        if (
+          persistedProgress === undefined ||
+          compareExecutionProgressFacts(persistedProgress, progress) < 0
+        ) {
+          persistedProgress = progress;
+        }
+      }
+
+      if (
+        persistedProgress !== undefined &&
+        !decimalGt(execution.executedQuantity, persistedProgress.cumulativeQuantity)
+      ) {
+        continue;
+      }
+
+      throw new Error(
+        `[loadTradingDayRuntimeSnapshot] 保护性清仓订单缺少精确成交时间，无法恢复或补写 completion: ${execution.orderId}`,
+      );
     }
 
     dailyLossTracker.publishRecalculation(preparedDailyLoss);
@@ -713,30 +700,26 @@ export function createLoadTradingDayRuntimeSnapshot(
       });
     }
 
-    if (hydrateCooldownFromTradeLog) {
-      for (const progress of latestProgressByDirection.values()) {
-        protectiveLiquidationEpisodeTracker.restoreInProgressEpisode({
-          direction: progress.direction,
-          symbol: progress.symbol,
-          latestExecutedTimeMs: progress.lastExecutionTimeMs,
-        });
-      }
-
-      // 全部历史事实与 episode 恢复后，由唯一 settlement owner 同步收口 crash-gap。
-      // 恢复能力不直接触发冷却，随后 hydrate 根据 durable completion 只回放一次。
-      if (
-        !protectionRecovery.completeProtectionRecovery({
-          snapshotToken: capturedSnapshotToken,
-          pendingProtectiveDirections,
-        })
-      ) {
-        return resolveReceiptInvalidation() ?? { status: 'ABORTED' };
-      }
+    for (const progress of latestProgressByDirection.values()) {
+      protectiveLiquidationEpisodeTracker.restoreInProgressEpisode({
+        direction: progress.direction,
+        symbol: progress.symbol,
+        latestExecutedTimeMs: progress.lastExecutionTimeMs,
+      });
     }
 
-    if (hydrateCooldownFromTradeLog) {
-      tradeLogHydrator.hydrate();
+    // 全部历史事实与 episode 恢复后，由唯一 settlement owner 同步收口 crash-gap。
+    // 恢复能力不直接触发冷却，随后 hydrate 根据 durable completion 只回放一次。
+    if (
+      !protectionRecovery.completeProtectionRecovery({
+        snapshotToken: capturedSnapshotToken,
+        pendingProtectiveDirections,
+      })
+    ) {
+      return resolveReceiptInvalidation() ?? { status: 'ABORTED' };
     }
+
+    tradeLogHydrator.hydrate();
 
     invalidation = resolveReceiptInvalidation();
     if (invalidation !== null) return invalidation;

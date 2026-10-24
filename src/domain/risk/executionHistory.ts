@@ -15,7 +15,7 @@ function phaseRank(stage: ExecutionHistorySnapshot['factStage']): number {
 }
 
 /** 历史快照排序：revision、累计数量、阶段、执行时间；与文件/记录到达顺序无关。 */
-export function compareExecutionHistorySnapshots(
+function compareExecutionHistorySnapshots(
   left: ExecutionHistorySnapshot,
   right: ExecutionHistorySnapshot,
 ): number {

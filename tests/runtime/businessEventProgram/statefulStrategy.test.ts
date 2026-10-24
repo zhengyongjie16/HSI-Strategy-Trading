@@ -195,7 +195,6 @@ describe('stateful replacement strategy public contract', () => {
 
     await domain.midnightClear({
       now: new Date('2026-07-16T00:00:00.000Z'),
-      runtime: { dayKey: '2026-07-16', canTradeNow: false, isTradingDay: true },
     });
     expect(fixture.lifecycle.resetCount).toBe(1);
     expect(firstTimers.every((timer) => timer.cleared)).toBeTrue();
@@ -208,7 +207,6 @@ describe('stateful replacement strategy public contract', () => {
     h.mutable.nowMs = Date.parse('2026-07-16T02:00:00.000Z');
     const ctx = await createOpenRebuildContextFixture({
       now: new Date(h.mutable.nowMs),
-      runtime: { dayKey: '2026-07-16', canTradeNow: true, isTradingDay: true },
       termination: h.termination,
     });
     const result = await domain.openRebuild(ctx);

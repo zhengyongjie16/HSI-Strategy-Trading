@@ -246,7 +246,6 @@ describe('PostTrade drain and Quote lifetime integration', () => {
         cleanupPromise = Promise.resolve(
           domain.midnightClear({
             now: new Date('2026-02-17T00:00:00+08:00'),
-            runtime: { dayKey: '2026-02-17', canTradeNow: false, isTradingDay: true },
           }),
         );
       } else {

@@ -186,11 +186,6 @@ function createOrderRecorderFromParts(deps: OrderRecorderDeps): OrderRecorder {
     }));
     if (!isCurrent()) return { status: 'ABORTED' };
 
-    // 逐标的调用 projectionChanged 做同一金额/数量精确比较；返回值不参与输出，
-    // 保留调用是为维持与旧实现相同的比较顺序。
-    for (const { target, next } of lists)
-      projectionChanged(storage.getBuyOrdersList(target.symbol, target.isLongSymbol), next);
-
     projectionSequence = sequence;
     executionFacts.clear();
     for (const [id, entry] of staged) executionFacts.set(id, entry);

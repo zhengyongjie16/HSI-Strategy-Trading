@@ -61,7 +61,6 @@ describe('createRiskDomain', () => {
         orderBaselines: [],
       }),
       commitProtectionBoundary: () => {},
-      restoreProtectionBoundary: () => {},
     } as unknown as DailyLossTracker;
     const liquidationCooldownTracker: LiquidationCooldownTracker = {
       recordLiquidationTrigger: () => {},
@@ -87,7 +86,6 @@ describe('createRiskDomain', () => {
     const now = new Date('2025-02-15T00:00:00Z');
     await domain.midnightClear({
       now,
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
     });
 
     expect(resetRiskCheckCooldownCalled).toBe(true);
@@ -139,7 +137,6 @@ describe('createRiskDomain', () => {
           orderBaselines: [],
         }),
         commitProtectionBoundary: () => {},
-        restoreProtectionBoundary: () => {},
       } as unknown as DailyLossTracker,
       protectiveLiquidationEpisodeTracker: createProtectiveLiquidationEpisodeTrackerDouble(),
       monitorContext,
@@ -147,7 +144,6 @@ describe('createRiskDomain', () => {
     });
     await domain.midnightClear({
       now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
     });
 
     expect(

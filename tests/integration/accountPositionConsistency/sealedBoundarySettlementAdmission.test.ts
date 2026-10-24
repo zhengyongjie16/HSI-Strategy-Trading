@@ -231,7 +231,6 @@ it('admits original 9.2/T/revision+1 authority through shared O/Daily/S without 
       executedQuantity: corrected.executedQuantity,
       executedTimeMs: corrected.executedTimeMs,
       orderUpdatedAtMs: corrected.orderUpdatedAtMs,
-      preparedProtectiveTerminalExecution: preparedTerminal,
     };
     expect(flow.settleOrder(close)).toEqual({ handled: true, relatedBuyOrderIds: null });
     expect(flow.settleOrder(close)).toEqual({ handled: false, relatedBuyOrderIds: null });

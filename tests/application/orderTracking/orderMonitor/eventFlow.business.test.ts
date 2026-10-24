@@ -616,7 +616,7 @@ describe('orderMonitor eventFlow', () => {
     expect(routeWakeups).toEqual([]);
   });
 
-  it('保护性 SELL timeout 终态将已准备的 durable progress 写入 route settlement snapshot', async () => {
+  it('保护性 SELL timeout 终态先完成 durable progress 准入，再缓存权威终态事实', async () => {
     const runtime = createRuntimeStore();
     const trackedOrder = await createTrackedOrder({
       orderId: 'ORDER-PROTECTIVE-TIMEOUT-PREPARED-PROGRESS',
@@ -699,10 +699,14 @@ describe('orderMonitor eventFlow', () => {
       },
     ]);
 
-    expect(trackedOrder.timeoutMarketConversionTerminalState).toMatchObject({
+    expect(trackedOrder.timeoutMarketConversionTerminalState).toEqual({
       closedReason: 'CANCELED',
       source: 'WS',
-      preparedProtectiveTerminalExecution: preparedExecution,
+      executedPrice: '1.02',
+      executedAmount: exactMultiply('1.02', '40'),
+      executedQuantity: 40,
+      executedTimeMs: 200,
+      orderUpdatedAtMs: 200,
     });
     expect(settlementCalls).toBe(0);
     expect(routeWakeups).toEqual([{ symbol: 'BULL.HK', kind: 'ORDER_EVENT' }]);

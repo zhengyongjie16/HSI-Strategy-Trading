@@ -341,10 +341,6 @@ function buildCompletionRecord(
   input: ProtectiveLiquidationCompletionInput,
 ): ProtectiveLiquidationCompletionRecordV1 {
   const tradingDayKey = getHKDateKey(new Date(input.boundaryExecutedTimeMs));
-  if (tradingDayKey === null) {
-    throw new TypeError('[MixedTradeLogRepository] completion trading day cannot be resolved');
-  }
-
   return parseCompletionRecord({
     monitorSymbol: input.monitorSymbol,
     direction: input.direction,
@@ -364,12 +360,6 @@ function buildExecutionProgressRecord(
   input: ProtectiveLiquidationExecutionProgressInput,
 ): ProtectiveLiquidationExecutionProgressRecordV1 {
   const tradingDayKey = getHKDateKey(new Date(input.lastExecutionTimeMs));
-  if (tradingDayKey === null) {
-    throw new TypeError(
-      '[MixedTradeLogRepository] execution progress trading day cannot be resolved',
-    );
-  }
-
   return parseExecutionProgressRecord({
     monitorSymbol: input.monitorSymbol,
     direction: input.direction,
@@ -507,7 +497,7 @@ function assertRecordMatchesDay(record: MixedTradeLogRecord, tradingDayKey: stri
     }
 
     throw new Error(
-      `[MixedTradeLogRepository] ${recordName} trading day mismatch: file=${tradingDayKey} record=${String(recordDayKey)}`,
+      `[MixedTradeLogRepository] ${recordName} trading day mismatch: file=${tradingDayKey} record=${recordDayKey}`,
     );
   }
 }
@@ -938,10 +928,6 @@ export function createMixedTradeLogRepository(
     assertUsable();
     const normalizedRecord = parseTradeRecord(record);
     const tradingDayKey = getHKDateKey(new Date(normalizedRecord.executedAtMs));
-    if (tradingDayKey === null) {
-      throw new TypeError('[MixedTradeLogRepository] trade record trading day cannot be resolved');
-    }
-
     appendRecord(normalizedRecord, tradingDayKey);
   }
 

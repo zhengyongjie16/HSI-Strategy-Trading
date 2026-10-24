@@ -4,12 +4,7 @@
  * 职责：保持正常日/半日市的拒买与清仓接管边界，裁剪窗口内允许的下一次重评估；不读取行情或持有 timer。
  */
 import { DOOMSDAY, TIME } from '../../../constants/index.js';
-import {
-  getHKDateKey,
-  getRequiredHKDateKey,
-  getHKTime,
-  resolveHKDayStartUtcMs,
-} from '../../../utils/time/index.js';
+import { getHKDateKey, getHKTime, resolveHKDayStartUtcMs } from '../../../utils/time/index.js';
 
 /**
  * 计算末日业务允许的下一次重评估时刻，所有等待都必须严格早于当日收盘。
@@ -34,10 +29,6 @@ export function resolveDoomsdayRetryAtMs(
   }
 
   const dayKey = getHKDateKey(currentTime);
-  if (dayKey === null) {
-    return null;
-  }
-
   const dayStartMs = resolveHKDayStartUtcMs(dayKey);
   if (dayStartMs === null) {
     return null;
@@ -58,7 +49,7 @@ export function resolveDoomsdayWindowEntryMs(
   date: Date,
   isHalfDay: boolean,
 ): ReadonlyArray<number> {
-  const dayStartMs = resolveHKDayStartUtcMs(getRequiredHKDateKey(date));
+  const dayStartMs = resolveHKDayStartUtcMs(getHKDateKey(date));
   if (dayStartMs === null) {
     return [];
   }
@@ -104,10 +95,6 @@ export function hasReachedDoomsdayBuyCutoff(
   }
 
   const hkTime = getHKTime(date);
-  if (!hkTime) {
-    return false;
-  }
-
   const closeHour = isHalfDay ? 12 : 16;
   const cutoffMinutes = closeHour * 60 - DOOMSDAY.BUY_CUTOFF_MINUTES_BEFORE_CLOSE;
   const currentMinutes = hkTime.hkHour * 60 + hkTime.hkMinute;
@@ -166,10 +153,6 @@ function isBeforeCloseMinutes(
   }
 
   const hkTime = getHKTime(date);
-  if (!hkTime) {
-    return false;
-  }
-
   const closeHour = isHalfDay ? 12 : 16;
   const closeMinutes = closeHour * 60;
   const currentMinutes = hkTime.hkHour * 60 + hkTime.hkMinute;

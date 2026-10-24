@@ -14,7 +14,7 @@ import {
 
 /** API 覆盖不替代保护性 durable/episode/S：真实 mapper、O/Daily、repository 与 completion/cooldown 连接回归。 */
 
-import { expect, test } from 'bun:test';
+import { expect, spyOn, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -338,20 +338,19 @@ for (const mode of ['direct', 'timeout'] as const)
         expect(f.termination.getFatalState()).toEqual({ hasFatalError: false });
         expect(monitor.getPendingSellOrders(sell.symbol)).toEqual([]);
       } else {
-        const tracked = track(h, true);
+        track(h, true);
+        const prepare = spyOn(f.flow, 'prepareProtectiveTerminalExecution');
         eventFlow(f).handleOrderChanged(sell);
         expect(f.episode.getInProgressEpisodes()).toEqual([]);
         expect(f.sink.getStatus().staleVersion).toBe(0);
         expect(f.recorder.getPendingSellSnapshot()).toHaveLength(1);
-        const prepared =
-          tracked.timeoutMarketConversionTerminalState?.preparedProtectiveTerminalExecution;
-        if (prepared === undefined) throw new Error('timeout durable preparation missing');
+        expect(prepare).toHaveBeenCalledTimes(1);
+        const preparedResult = prepare.mock.results[0];
+        if (preparedResult?.type !== 'return' || preparedResult.value === null)
+          throw new Error('timeout durable preparation missing');
 
-        expect(prepared.executionAdvanced).toBe(false);
-        expect(
-          f.flow.settleOrder({ ...terminal(sell), preparedProtectiveTerminalExecution: prepared })
-            .handled,
-        ).toBe(true);
+        expect(preparedResult.value.executionAdvanced).toBe(false);
+        expect(f.flow.settleOrder(terminal(sell)).handled).toBe(true);
         expect(f.runtime.trackedOrders.has(sell.orderId)).toBe(false);
         expect(f.runtime.trackedOrderIdsBySymbol.has(sell.symbol)).toBe(false);
       }

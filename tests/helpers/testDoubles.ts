@@ -89,14 +89,12 @@ type TestSeatTruthChangedEvent = Parameters<Parameters<SymbolRegistry['onSeatTru
  * processMonitor / quoteClient 类测试沿用真实语义；没有缓存时返回 null。
  *
  * @param symbol 标的代码
- * @param period K 线周期
  * @param candles 本地缓存的 K 线序列
  * @param version 当前缓存版本
  * @returns 本地 K 线缓存快照；无有效缓存时返回 null
  */
 function createCandlestickCacheSnapshot(
   symbol: string,
-  period: CandlestickPeriod,
   candles: ReadonlyArray<NormalizedCandle>,
   version: number,
 ): CandlestickCacheSnapshot | null {
@@ -112,7 +110,6 @@ function createCandlestickCacheSnapshot(
 
   return {
     symbol,
-    period,
     version,
     candles,
     lastBarTimestamp,
@@ -131,10 +128,6 @@ function createCandlestickCacheSnapshot(
 function listHKDateKeysInRange(startDate: Date, endDate: Date): ReadonlyArray<string> {
   const startDateKey = getHKDateKey(startDate);
   const endDateKey = getHKDateKey(endDate);
-  if (!startDateKey || !endDateKey) {
-    return [];
-  }
-
   const startDayStartMs = resolveHKDayStartUtcMs(startDateKey);
   const endDayStartMs = resolveHKDayStartUtcMs(endDateKey);
   if (startDayStartMs === null || endDayStartMs === null || endDayStartMs < startDayStartMs) {
@@ -148,9 +141,7 @@ function listHKDateKeysInRange(startDate: Date, endDate: Date): ReadonlyArray<st
     dayStartMs += TIME.MILLISECONDS_PER_DAY
   ) {
     const dateKey = getHKDateKey(new Date(dayStartMs));
-    if (dateKey) {
-      dateKeys.push(dateKey);
-    }
+    dateKeys.push(dateKey);
   }
 
   return dateKeys;
@@ -879,12 +870,7 @@ export function createMarketDataClientDouble(
       return null;
     }
 
-    return createCandlestickCacheSnapshot(
-      symbol,
-      period,
-      candles,
-      candlestickVersions.get(key) ?? 1,
-    );
+    return createCandlestickCacheSnapshot(symbol, candles, candlestickVersions.get(key) ?? 1);
   }
 
   async function seedCandlestickCacheFromOverride(

@@ -2,7 +2,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
   getHKDateKey,
-  getRequiredHKDateKey,
   listHKDateKeysBetween,
   toHongKongTimeIso,
   toHongKongTimeLog,
@@ -14,8 +13,6 @@ describe('Hong Kong calendar utilities', () => {
     expect(toHongKongTimeIso(date)).toBe('2026/04/30/00:00:00');
     expect(toHongKongTimeLog(date)).toBe('2026-04-30 00:00:00.123');
     expect(getHKDateKey(date)).toBe('2026-04-30');
-    expect(getRequiredHKDateKey(date)).toBe('2026-04-30');
-    expect(getHKDateKey(null)).toBeNull();
   });
 
   it('日期枚举包含香港首尾日期，不按周末或半日市裁剪', () => {

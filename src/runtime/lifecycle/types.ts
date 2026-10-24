@@ -2,18 +2,16 @@ import type { RuntimeTermination } from '../../types/runtime.js';
 import type { AccountPositionSnapshot, SnapshotToken } from '../../types/accountPosition.js';
 import type { Logger } from '../../types/logger.js';
 import type { LifecycleMutableState } from '../../types/lifecycle.js';
-import type { LifecycleRuntimeFlags } from '../../types/timeControlPlane.js';
 import type { DiagnosticObserver } from '../../types/diagnostics.js';
 
 /**
  * 传递给各 CacheDomain 回调的上下文（midnightClear / openRebuild 的入参）。
- * 类型用途：供各缓存域在午夜清理与开盘重建时使用，包含当前时间与运行时标志。
+ * 类型用途：供各缓存域在午夜清理与开盘重建时使用，包含当前时间与席位承接失效标记。
  * 数据来源：由 DayLifecycleManager 在调用 cacheDomain.midnightClear/openRebuild 时组装传入。
  * 使用范围：仅 lifecycle 与各 cacheDomains 使用，内部使用。
  */
 export type LifecycleContext = Readonly<{
   now: Date;
-  runtime: LifecycleRuntimeFlags;
   invalidateSeatActivationCarryover?: boolean;
 }>;
 

@@ -13,7 +13,7 @@ import { createWarrantListCache } from '../../infrastructure/longbridge/market/w
 import { createSymbolRegistry } from '../../domain/seat/symbolRegistry.js';
 import { createSeatDiagnosticRuntime } from '../../runtime/seatDiagnosticRuntime/index.js';
 import { logger } from '../../infrastructure/logger/index.js';
-import { getRequiredHKDateKey } from '../../utils/time/index.js';
+import { getHKDateKey } from '../../utils/time/index.js';
 import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { createTradingDayInfoResolver } from '../startup/tradingDayInfoResolver.js';
@@ -86,7 +86,7 @@ function createPreGateRuntimeFactory(
       },
     });
     const startupTime = new Date();
-    const startupDateKey = getRequiredHKDateKey(startupTime);
+    const startupDateKey = getHKDateKey(startupTime);
     let startupTradingDayInfo: PreGateRuntime['startupTradingDayInfo'];
     try {
       startupTradingDayInfo = {

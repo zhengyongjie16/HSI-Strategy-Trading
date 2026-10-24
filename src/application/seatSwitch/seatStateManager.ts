@@ -50,7 +50,7 @@ export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateMan
     }
 
     const currentKey = getHKDateKey(now());
-    if (!currentKey || record.dateKey !== currentKey || record.symbol !== seatSymbol) {
+    if (record.dateKey !== currentKey || record.symbol !== seatSymbol) {
       switchSuppressions.delete(direction);
       return null;
     }
@@ -71,10 +71,6 @@ export function createSeatStateManager(deps: SeatStateManagerDeps): SeatStateMan
     triggerKind: SuppressibleSwitchTriggerKind,
   ): void {
     const dateKey = getHKDateKey(now());
-    if (!dateKey) {
-      return;
-    }
-
     const currentRecord = switchSuppressions.get(direction);
     if (currentRecord?.symbol === seatSymbol && currentRecord.dateKey === dateKey) {
       switchSuppressions.set(direction, {

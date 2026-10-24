@@ -1,4 +1,3 @@
-import { recalculateDailyLoss } from '../../../helpers/dailyLossRecalculation.js';
 import {
   createLoggerDouble,
   createOrderRecorderDouble,
@@ -27,19 +26,16 @@ import {
   ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
   ORDER_QUOTE_RETRY,
 } from '../../../../src/constants/index.js';
-import { orderAnalysis } from '../../../../src/domain/order/orderAnalysis.js';
 import type {
   OrderMonitorConfig,
   OrderMonitorTrackedOrder,
   TerminalStateSnapshot,
   TrackOrderParams,
 } from '../../../../src/domain/order/types.js';
-import { createDailyLossTracker } from '../../../../src/domain/risk/dailyLossTracker.js';
 import type { OrderReadStatus } from '../../../../src/types/orderReadMetadata.js';
 import type { OrderRecorder } from '../../../../src/types/orderRecorder.js';
 import type { TradeMutationPermit } from '../../../../src/types/rateLimit.js';
 import { exactMultiply } from '../../../../src/utils/numeric/exact.js';
-import { toHongKongTimeIso } from '../../../../src/utils/time/index.js';
 
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExecutionFixture } from '../recorder/executionFixture.js';
@@ -214,23 +210,6 @@ function createDeferredValue<T>(): {
     resolve: resolvePromise,
     reject: rejectPromise,
   };
-}
-
-function createActualDailyTracker(now = new Date('2026-04-08T09:00:00.000Z')) {
-  const daily = createDailyLossTracker({
-    onOwnershipWarning: () => {},
-    ...orderAnalysis,
-    toHongKongTimeIso,
-  });
-  recalculateDailyLoss(
-    daily,
-    [],
-    { monitorSymbol: 'HSI.HK', orderOwnershipMapping: ['HSI'] },
-    now,
-    new Map(),
-    new Set(['BULL.HK']),
-  );
-  return daily;
 }
 
 async function createTimeoutSellHandoffHarness(orderId: string): Promise<{
@@ -470,25 +449,12 @@ function expectTimeoutSellOccupancyReleased(storage: OrderRecorder): void {
 }
 
 describe('orderMonitor routeProcessor', () => {
-  it('将 timeout snapshot 已准备的保护性 progress 原样传入终态结算', async () => {
+  it('将 timeout snapshot 的权威终态经济事实原样传入结算', async () => {
     const runtime = createRuntimeStore();
-    const preparedTime = Date.parse('2026-07-13T05:00:00.000Z');
-    const preparedExecution = createActualDailyTracker(
-      new Date(preparedTime),
-    ).recordCumulativeExecution({
-      factStage: 'TERMINAL',
-      direction: 'LONG',
-      symbol: 'BULL.HK',
-      side: 'SELL',
-      executedPrice: '1.02',
-      executedQuantity: 40,
-      executedTimeMs: preparedTime,
-      orderUpdatedAtMs: preparedTime + 100,
-      orderId: 'SELL-TIMEOUT-PREPARED-PROGRESS',
-    });
+    const terminalTime = Date.parse('2026-07-13T05:00:00.000Z');
     attachTrackedOrders(runtime, 'BULL.HK', [
       await createTrackedOrder({
-        orderId: 'SELL-TIMEOUT-PREPARED-PROGRESS',
+        orderId: 'SELL-TIMEOUT-TERMINAL-FACTS',
         symbol: 'BULL.HK',
         side: 'SELL',
         status: 'FILLED',
@@ -504,9 +470,8 @@ describe('orderMonitor routeProcessor', () => {
           executedPrice: '1.02',
           executedAmount: exactMultiply('1.02', String(40)),
           executedQuantity: 40,
-          executedTimeMs: Date.parse('2026-07-13T05:00:00.000Z'),
-          orderUpdatedAtMs: Date.parse('2026-07-13T05:00:00.000Z'),
-          preparedProtectiveTerminalExecution: preparedExecution,
+          executedTimeMs: terminalTime,
+          orderUpdatedAtMs: terminalTime,
         },
       }),
     ]);
@@ -532,7 +497,16 @@ describe('orderMonitor routeProcessor', () => {
       throw new Error('missing timeout settlement input');
     }
 
-    expect(settlementInput.preparedProtectiveTerminalExecution).toBe(preparedExecution);
+    expect(settlementInput).toEqual({
+      orderId: 'SELL-TIMEOUT-TERMINAL-FACTS',
+      closedReason: 'FILLED',
+      source: 'WS',
+      executedPrice: '1.02',
+      executedAmount: exactMultiply('1.02', '40'),
+      executedQuantity: 40,
+      executedTimeMs: terminalTime,
+      orderUpdatedAtMs: terminalTime,
+    });
   });
 
   it('submits timeout market conversion through a callback permit instead of read throttle', async () => {

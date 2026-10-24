@@ -886,7 +886,6 @@ it('真实旧 boundary 同量45→46保留权威/durable与刷新，冻结日损
     executedAmount: '46',
     executedTimeMs: now.getTime(),
     orderUpdatedAtMs: now.getTime() + 30000,
-    preparedProtectiveTerminalExecution: initialDaily,
   });
   expect(result.handled).toBe(true);
   expect(recorder.getExecutionFact(initial.orderId)).toMatchObject({

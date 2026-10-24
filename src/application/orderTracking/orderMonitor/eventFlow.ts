@@ -22,7 +22,6 @@ import { isTerminalOrderReadStatus } from '../../../domain/order/orderReadLifecy
 import { hasProtectiveLiquidationRemark } from '../../../domain/order/orderRemark.js';
 import { resolveOrderClosedReasonFromStatus } from '../../../domain/order/orderTrackingPolicy.js';
 import type { OrderReadStatus } from '../../../types/orderReadMetadata.js';
-import type { DailyLossCumulativeExecutionResult } from '../../../types/risk.js';
 import type { OrderFact } from '../../../types/trade.js';
 import { exactCompare } from '../../../utils/numeric/exact.js';
 import {
@@ -294,7 +293,6 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
       return;
     }
 
-    let preparedProtectiveTerminalExecution: DailyLossCumulativeExecutionResult | undefined;
     if (
       closedReason !== null &&
       trackedOrder.side === 'SELL' &&
@@ -315,8 +313,6 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
       if (preparedExecution === null) {
         throw new Error(`[订单监控] 保护性超时终态未生成 durable progress: ${orderId}`);
       }
-
-      preparedProtectiveTerminalExecution = preparedExecution;
     }
 
     const openCumulativeExecutionParams: OrderCumulativeExecutionParams | null =
@@ -394,9 +390,6 @@ export function createEventFlow(deps: EventFlowDeps): EventFlow {
         executedQuantity: mergedFact.executedQuantity,
         executedTimeMs: trackedOrder.lastExecutedTimeMs,
         orderUpdatedAtMs: mergedFact.updatedAtMs,
-        ...(preparedProtectiveTerminalExecution === undefined
-          ? {}
-          : { preparedProtectiveTerminalExecution }),
       };
 
       triggerRoute(trackedOrder.symbol, 'ORDER_EVENT');

@@ -16,7 +16,7 @@ import { getHKDateKey } from '../../../utils/time/index.js';
  */
 export function buildTradeLogPath(tradesDir: string, date: Date): string {
   const dayKey = getHKDateKey(date);
-  if (dayKey === null || !Number.isFinite(date.getTime())) {
+  if (!Number.isFinite(date.getTime())) {
     throw new TypeError('[tradeLogPath] 日志日期无效');
   }
 

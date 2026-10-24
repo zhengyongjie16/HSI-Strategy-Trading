@@ -236,9 +236,7 @@ export function createTradingQuoteDisplayRuntime(
       }
     });
 
-    unsubscribeQuoteUpdated = deps.marketDataClient.onQuoteUpdated((event) => {
-      handleQuoteUpdated(event);
-    });
+    unsubscribeQuoteUpdated = deps.marketDataClient.onQuoteUpdated(handleQuoteUpdated);
   }
 
   function stop(): void {

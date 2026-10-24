@@ -142,12 +142,12 @@ export function createOrderHoldRegistry(): OrderHoldRegistry {
    * 清空内部所有索引（测试或跨日重置时使用）。
    */
   function clear(): void {
-    const removedSymbols = [...holdSymbols];
+    const removedSymbolCount = holdSymbols.size;
     orderIdToSymbol.clear();
     orderIdsBySymbol.clear();
     holdSymbols.clear();
-    // 清空后仍按被移除标的逐个发无参通知，保持与原来相同的通知次数与时序。
-    for (const _removedSymbol of removedSymbols) {
+    // 捕获清空前数量，listener 重入不影响本轮逐标的同步通知次数。
+    for (let index = 0; index < removedSymbolCount; index += 1) {
       emitOrderHoldSymbolsChanged();
     }
   }

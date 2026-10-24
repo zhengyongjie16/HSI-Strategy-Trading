@@ -14,7 +14,6 @@
  * - AUTO_SYMBOL_TICK（调用方通常按 task type + direction 生成 dedupeKey）
  * - SEAT_REFRESH（调用方按 task type + direction 生成 dedupeKey，并用新 seatVersion 覆盖旧任务）
  */
-import { randomUUID } from 'node:crypto';
 import { DIAGNOSTIC_OPERATIONS } from '../../../constants/diagnostics.js';
 import type { Logger } from '../../../types/logger.js';
 
@@ -74,7 +73,6 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
   let headIndex = 0;
   let closed = false;
   const taskByDedupeKey = new Map<string, QueuedMonitorTask<TDataMap>>();
-  const cancelledTaskIds = new Set<string>();
   const callbacks: TaskAddedCallback[] = [];
 
   /** 时间仅服务诊断；失败时保留未知，不增加另一个时钟或业务失败分支。 */
@@ -138,14 +136,13 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
    * @returns 任务仍有效时返回 true
    */
   function isEffectiveTask(task: MonitorTask<TDataMap>): boolean {
-    return !cancelledTaskIds.has(task.id) && taskByDedupeKey.get(task.dedupeKey)?.task === task;
+    return taskByDedupeKey.get(task.dedupeKey)?.task === task;
   }
 
   /**
    * 主动移除任务后重建待消费切片，只保留仍有效的任务。
    *
-   * removeTasks 已经扫描当前待消费范围；重建后不再保留已取消占位任务，
-   * cancelledTaskIds 也可以同步清空。
+   * removeTasks 已经扫描当前待消费范围；重建后不再保留已取消占位任务。
    */
   function rebuildEffectiveQueue(): void {
     const effectiveTasks: Array<MonitorTask<TDataMap>> = [];
@@ -159,7 +156,6 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
 
     items = effectiveTasks;
     headIndex = 0;
-    cancelledTaskIds.clear();
   }
 
   function scheduleLatest<TType extends keyof TDataMap>(
@@ -172,14 +168,12 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
     const previousTask = taskByDedupeKey.get(task.dedupeKey);
     const removedCount = previousTask === undefined ? 0 : 1;
     if (previousTask !== undefined) {
-      cancelledTaskIds.add(previousTask.task.id);
       taskByDedupeKey.delete(task.dedupeKey);
     }
 
     logSeatRefreshReplaced(logger, task, removedCount);
 
     const fullTask = {
-      id: randomUUID(),
       type: task.type,
       dedupeKey: task.dedupeKey,
       data: task.data,
@@ -201,10 +195,6 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
       headIndex += 1;
 
       if (task === undefined || !isEffectiveTask(task)) {
-        if (task !== undefined) {
-          cancelledTaskIds.delete(task.id);
-        }
-
         continue;
       }
 
@@ -216,7 +206,6 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
 
     items = [];
     headIndex = 0;
-    cancelledTaskIds.clear();
     recordState('pop', 0);
     return null;
   }
@@ -235,7 +224,6 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
       }
 
       removedTasks.push(task);
-      cancelledTaskIds.add(task.id);
       taskByDedupeKey.delete(task.dedupeKey);
     }
 
@@ -261,7 +249,6 @@ export function createMonitorTaskQueue<TDataMap extends Readonly<Record<string, 
     items = [];
     headIndex = 0;
     taskByDedupeKey.clear();
-    cancelledTaskIds.clear();
     recordState('clear', activeTasks.length);
     return activeTasks.length;
   }

@@ -33,7 +33,7 @@ import type { MarketDataClient } from '../../src/types/marketPorts.js';
 import type { TimeWakeupEvaluationContext } from '../../src/runtime/timeWakeupEvaluationProgram/types.js';
 import { createBrokerIngressFixture } from './architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 import { createExternalApiRequestError } from '../helpers/createExternalApiRequestError.js';
-import { getRequiredHKDateKey } from '../../src/utils/time/index.js';
+import { getHKDateKey } from '../../src/utils/time/index.js';
 
 import type { MonitorContextAssembly } from '../../src/app/context/types.js';
 
@@ -195,7 +195,7 @@ async function createRealDoomsdayTrader(params: {
     readCurrentTradingDayInfo: () => {
       const currentTime = params.now();
       return {
-        dateKey: getRequiredHKDateKey(currentTime),
+        dateKey: getHKDateKey(currentTime),
         info: { isTradingDay: true, isHalfDay: false },
       };
     },
@@ -519,7 +519,7 @@ describe('doomsday integration', () => {
         isContinuousTradingAllowed: () => true,
         now: () => currentTime,
         readCurrentTradingDayInfo: () => ({
-          dateKey: getRequiredHKDateKey(currentTime),
+          dateKey: getHKDateKey(currentTime),
           info: { isTradingDay: true, isHalfDay: false },
         }),
       });
@@ -591,7 +591,7 @@ describe('doomsday integration', () => {
       isContinuousTradingAllowed: () => true,
       now: () => currentTime,
       readCurrentTradingDayInfo: () => ({
-        dateKey: getRequiredHKDateKey(currentTime),
+        dateKey: getHKDateKey(currentTime),
         info: { isTradingDay: true, isHalfDay: false },
       }),
     });

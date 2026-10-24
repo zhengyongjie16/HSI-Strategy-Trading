@@ -68,7 +68,7 @@ import {
   calculateTradingDurationDueAtMs,
   getTradingMinutesSinceOpen,
 } from '../../domain/tradingSession/index.js';
-import { getRequiredHKDateKey, toHongKongTimeIso } from '../../utils/time/index.js';
+import { getHKDateKey, toHongKongTimeIso } from '../../utils/time/index.js';
 import type { CreatePostGateRuntimeParams, PostGateRuntime } from '../types.js';
 import { DEFAULT_CREATE_POST_GATE_RUNTIME_DEPS } from './createPostGateRuntimeDeps.js';
 import { createPostTradeConsistencyRuntime } from './createPostTradeConsistencyRuntime.js';
@@ -177,7 +177,7 @@ function createPostGateRuntimeFactory(
     const mixedTradeLogRepository = buildMixedTradeLogRepository({
       tradesDir: path.join(process.cwd(), TRADE_PERSISTENCE.RELATIVE_DIR),
     });
-    const initialDayKey = getRequiredHKDateKey(now);
+    const initialDayKey = getHKDateKey(now);
     const initialTradingDayInfo =
       startupTradingDayInfo !== null && startupTradingDayInfo.dateKey === initialDayKey
         ? startupTradingDayInfo.info

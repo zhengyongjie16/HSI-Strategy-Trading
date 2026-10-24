@@ -372,9 +372,7 @@ export function createRouteRuntime(deps: RouteRuntimeDeps): RouteRuntime {
 
     routeDrain = Promise.resolve();
     runtime.running = true;
-    runtime.unsubscribeQuoteUpdated = marketDataClient.onQuoteUpdated((event) => {
-      handleQuoteUpdated(event);
-    });
+    runtime.unsubscribeQuoteUpdated = marketDataClient.onQuoteUpdated(handleQuoteUpdated);
     bootstrapActiveRoutes();
   }
 

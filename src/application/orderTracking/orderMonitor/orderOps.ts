@@ -322,11 +322,6 @@ async function executeMutationRequest<TResult extends OrderMutationRequestResult
   }
 }
 
-/** 清理单个订单的改单阻塞与查询缓存，进入“可重试”稳态。 */
-function clearReplaceState(trackedOrder: OrderMonitorTrackedOrder): void {
-  resetTrackedOrderReplaceState(trackedOrder);
-}
-
 /**
  * 确认 state-check 等待期间未被 WS 进展解除并重分配当前 602013 阻塞 owner。
  *
@@ -639,7 +634,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
 
     if (queryResult.kind === 'TERMINAL') {
       attachedTrackedOrder.lastPriceUpdateAt = now;
-      clearReplaceState(attachedTrackedOrder);
+      resetTrackedOrderReplaceState(attachedTrackedOrder);
       runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
       setReplaceTerminal(deps, orderId, queryResult);
       logger.warn(`[订单修改] 订单 ${orderId} 连续 602013 后确认已终态，停止改单`);
@@ -793,7 +788,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
 
       latestAttachedTrackedOrder.lastPriceUpdateAt = now;
       if (queryResult.kind === 'TERMINAL') {
-        clearReplaceState(latestAttachedTrackedOrder);
+        resetTrackedOrderReplaceState(latestAttachedTrackedOrder);
         runtime.queriedTerminalStateByOrderId.set(orderId, queryResult);
         setReplaceTerminal(deps, orderId, queryResult);
         logger.warn(`[订单修改] 订单 ${orderId} 业务失败后确认已终态，停止改单流程`);
@@ -881,7 +876,7 @@ export function createOrderOps(deps: OrderOpsDeps): OrderOps {
       attachedTrackedOrder.submittedQuantity =
         attachedTrackedOrder.executedQuantity + targetQuantity;
       attachedTrackedOrder.lastPriceUpdateAt = now;
-      clearReplaceState(attachedTrackedOrder);
+      resetTrackedOrderReplaceState(attachedTrackedOrder);
       logger.debug(`[订单修改成功] 订单ID=${orderId} 新价格=${normalizedNewPriceText}`);
       return { kind: 'BROKER_CONFIRMED' };
     } catch (error) {

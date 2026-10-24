@@ -12,11 +12,7 @@ import type {
   OrderOwnership,
   OrderRecord,
 } from '../../types/orderRecorder.js';
-import type {
-  DailyLossCumulativeExecutionResult,
-  DailyLossMonitorScope,
-  DailyLossOrderSnapshot,
-} from '../../types/risk.js';
+import type { DailyLossMonitorScope, DailyLossOrderSnapshot } from '../../types/risk.js';
 
 import type { OrderTypeConfig } from '../../types/signal.js';
 
@@ -376,7 +372,6 @@ export type TerminalSettlementInput = {
     readonly executedAmount: string;
     readonly executedTimeMs: number | null;
     readonly orderUpdatedAtMs: number | null;
-    readonly preparedProtectiveTerminalExecution?: DailyLossCumulativeExecutionResult;
   };
   readonly queriedExecutedQuantity: number | null;
 };
@@ -419,7 +414,6 @@ export type TimeoutMarketConversionTerminalState = Readonly<{
   readonly executedAmount: string;
   readonly executedTimeMs: number | null;
   readonly orderUpdatedAtMs: number | null;
-  readonly preparedProtectiveTerminalExecution?: DailyLossCumulativeExecutionResult;
 }>;
 
 /**

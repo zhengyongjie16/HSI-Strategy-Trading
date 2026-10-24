@@ -37,6 +37,7 @@ describe('logger public text behavior', () => {
           expect(stdout).toBe(
             (debug === 'true' ? debugConsole : '') + info + duplicate + duplicate,
           );
+
           expect(stderr).toBe(
             `\u001B[33m[WARN] ${timestamp} warn-line\u001B[0m ''\n` +
               `\u001B[31m[ERROR] ${timestamp} \u001B[35merror-line\u001B[0m\u001B[0m 'failed'\n`,

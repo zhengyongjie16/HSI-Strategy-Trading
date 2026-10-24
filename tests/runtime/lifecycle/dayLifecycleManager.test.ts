@@ -164,8 +164,8 @@ describe('createDayLifecycleManager', () => {
       const order: string[] = [];
       const domains: ReadonlyArray<CacheDomain> = [
         {
-          midnightClear: (ctx: LifecycleContext) => {
-            order.push(`1-${ctx.runtime.dayKey}`);
+          midnightClear: () => {
+            order.push('1-midnight');
           },
           openRebuild: async (ctx) => {
             order.push('1-open');
@@ -174,8 +174,8 @@ describe('createDayLifecycleManager', () => {
           },
         },
         {
-          midnightClear: (ctx: LifecycleContext) => {
-            order.push(`2-${ctx.runtime.dayKey}`);
+          midnightClear: () => {
+            order.push('2-midnight');
           },
           openRebuild: async (ctx) => {
             order.push('2-open');
@@ -201,7 +201,7 @@ describe('createDayLifecycleManager', () => {
       expect(mutableState.pendingOpenRebuild).toBe(true);
       expect(mutableState.currentDayKey).toBe('2025-02-15');
       expect(mutableState.isTradingEnabled).toBe(false);
-      expect(order).toEqual(['1-2025-02-15', '2-2025-02-15']);
+      expect(order).toEqual(['1-midnight', '2-midnight']);
     });
 
     it('runtime.dayKey 为 null 时不触发午夜清理', async () => {

@@ -156,10 +156,6 @@ function parseConditionGroup(groupStr: string): ParsedConditionGroup | null {
     conditions.push(condition);
   }
 
-  if (conditions.length === 0) {
-    return null;
-  }
-
   minSatisfied ??= conditions.length;
   if (minSatisfied < 1 || minSatisfied > conditions.length) {
     return null;

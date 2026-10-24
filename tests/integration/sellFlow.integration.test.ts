@@ -48,7 +48,7 @@ import type {
   ExecutableSellSignal,
   ProtectiveLiquidationSellSignal,
 } from '../../src/types/signal.js';
-import { getRequiredHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
+import { getHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
 
 import type { BrokerIngressInput } from '../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import { waitUntil } from '../helpers/asyncProgram.js';
@@ -97,7 +97,7 @@ async function createOrderExecutor(deps: OrderExecutorTestDeps) {
     isContinuousTradingAllowed = () => true,
     now = defaultNow,
     readCurrentTradingDayInfo = () => ({
-      dateKey: getRequiredHKDateKey(now()),
+      dateKey: getHKDateKey(now()),
       info: { isTradingDay: true, isHalfDay: false },
     }),
     unrealizedLossBuyGate = createRiskCheckerDouble(),

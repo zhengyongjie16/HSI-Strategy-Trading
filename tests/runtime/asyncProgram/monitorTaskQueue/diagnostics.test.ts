@@ -41,7 +41,6 @@ describe('monitor task queue diagnostics', () => {
     expect(Object.keys(task ?? {}).sort((a, b) => a.localeCompare(b))).toEqual([
       'data',
       'dedupeKey',
-      'id',
       'type',
     ]);
     expect(events.at(-1)).toMatchObject({ mutation: 'pop', depth: 0, oldestTaskAgeMs: 0 });

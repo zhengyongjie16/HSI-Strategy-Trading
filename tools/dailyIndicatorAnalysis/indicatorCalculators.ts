@@ -5,11 +5,7 @@
 import { IS_DEBUG } from '../../src/constants/index.js';
 import { isValidPositiveNumber } from '../../src/utils/helpers/index.js';
 import { logger } from '../../src/infrastructure/logger/index.js';
-import {
-  createEmaState,
-  commitEmaClose,
-  readEmaValue,
-} from '../../src/strategies/intradayRegression/indicators/ema.js';
+import { readEmaValue } from '../../src/strategies/intradayRegression/indicators/ema.js';
 import {
   createKdjState,
   commitKdjCandle,
@@ -26,6 +22,8 @@ import {
   readRsiValue,
 } from '../../src/strategies/intradayRegression/indicators/rsi.js';
 import {
+  feedEmaStreamState,
+  initEmaStreamState,
   toNumber,
   validatePercentage,
 } from '../../src/strategies/intradayRegression/indicators/indicatorMath.js';
@@ -60,14 +58,14 @@ export function calculateEMA(candles: ReadonlyArray<CandleData>, period: number)
   }
 
   try {
-    const state = createEmaState(period);
+    const state = initEmaStreamState(period);
     for (const candle of candles) {
       const close = toNumber(candle.close);
       if (!isValidPositiveNumber(close)) {
         continue;
       }
 
-      commitEmaClose(state, close);
+      feedEmaStreamState(state, close);
     }
 
     return readEmaValue(state);

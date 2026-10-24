@@ -3,7 +3,7 @@ import { NaiveDate } from 'longbridge';
 import type { CandlestickPeriod } from '../../../types/marketPorts.js';
 import { isRecord, isValidPositiveNumber } from '../../../utils/helpers/index.js';
 import type { StaticInfo } from './types.js';
-import { getRequiredHKDateKey } from '../../../utils/time/index.js';
+import { getHKDateKey } from '../../../utils/time/index.js';
 
 /** 转换中性周期日志标签，分钟/日周月季年均由明确语义表达。 */
 export function formatPeriodForLog(period: CandlestickPeriod): string {
@@ -127,7 +127,7 @@ export function extractName(staticInfo: unknown): string | null {
  * @returns NaiveDate 实例
  */
 export function resolveHKNaiveDate(date: Date): NaiveDate {
-  const dateKey = getRequiredHKDateKey(date);
+  const dateKey = getHKDateKey(date);
   const parts = dateKey.split('-');
   const year = Number(parts[0]);
   const month = Number(parts[1]);

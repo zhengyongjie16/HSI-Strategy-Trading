@@ -144,7 +144,7 @@ type TradingCalendarSnapshotProvider = () => TradingCalendarSnapshot;
  * 类型用途：用于跨日冻结判断。
  * 使用范围：仅 seatSwitch 模块内部使用。
  */
-type HKDateKeyResolver = (date: Date | null | undefined) => string | null;
+type HKDateKeyResolver = (date: Date) => string;
 
 /**
  * 构建订单信号的入参，包含动作、标的、行情、原因与席位版本。
@@ -421,7 +421,7 @@ interface SeatSwitchCandidateSearch {
   ) => Promise<Readonly<{ symbol: string; callPrice: string }> | null>;
 }
 
-/** 应用层消费的周期任务业务信封；id/队列形态由 worker 保留，不参与换标决策。 */
+/** 应用层消费的周期任务业务信封；队列形态由 worker 保留，不参与换标决策。 */
 export type PeriodicSwitchTask = Readonly<{
   type: 'AUTO_SYMBOL_TICK';
   dedupeKey: string;

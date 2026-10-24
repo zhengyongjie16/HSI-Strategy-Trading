@@ -730,10 +730,6 @@ export function createOrderMonitor(deps: OrderMonitorDeps): OrderMonitor {
         continue;
       }
 
-      if (order.status === 'PARTIALLY_CANCELED') {
-        continue;
-      }
-
       const remaining = order.submittedQuantity - order.executedQuantity;
       if (!Number.isFinite(remaining) || remaining <= 0) {
         continue;

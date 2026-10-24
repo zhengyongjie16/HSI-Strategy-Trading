@@ -54,16 +54,11 @@ export function toHongKongTimeLog(date: Date): string {
 
 /**
  * 将 UTC 时间转换为香港时区（UTC+8）的小时与分钟。
- * 默认行为：date 为 null/undefined 时返回 null。
  *
- * @param date 时间对象（UTC）
- * @returns 香港时区的小时与分钟（hkHour、hkMinute），无效时返回 null
+ * @param date 调用方明确提供的时间对象（UTC）
+ * @returns 香港时区的小时与分钟（hkHour、hkMinute）
  */
-export function getHKTime(date: Date | null | undefined): HKTime | null {
-  if (!date) {
-    return null;
-  }
-
+export function getHKTime(date: Date): HKTime {
   const { hours, minutes } = getHongKongDateTimeParts(date);
   return {
     hkHour: Number(hours),
@@ -77,24 +72,9 @@ export function getHKTime(date: Date | null | undefined): HKTime | null {
  * @param date 已确认非空的时间对象
  * @returns YYYY-MM-DD 格式日期键
  */
-export function getRequiredHKDateKey(date: Date): string {
+export function getHKDateKey(date: Date): string {
   const { year, month, day } = getHongKongDateTimeParts(date);
   return `${year}-${month}-${day}`;
-}
-
-/**
- * 获取港股日期键（UTC+8，YYYY-MM-DD）。
- * 默认行为：date 为 null/undefined 时返回 null。
- *
- * @param date 时间对象
- * @returns YYYY-MM-DD 格式日期键，无效时返回 null
- */
-export function getHKDateKey(date: Date | null | undefined): string | null {
-  if (!date) {
-    return null;
-  }
-
-  return getRequiredHKDateKey(date);
 }
 
 /**
@@ -113,15 +93,7 @@ export function resolveHKDayStartUtcMs(dayKey: string): number | null {
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
-    return null;
-  }
-
   const utcMs = Date.UTC(year, month - 1, day) - TIME.HONG_KONG_TIMEZONE_OFFSET_MS;
-  if (!Number.isFinite(utcMs)) {
-    return null;
-  }
-
   return utcMs;
 }
 
@@ -139,10 +111,6 @@ export function listHKDateKeysBetween(startMs: number, endMs: number): ReadonlyA
 
   const startKey = getHKDateKey(new Date(startMs));
   const endKey = getHKDateKey(new Date(endMs));
-  if (!startKey || !endKey) {
-    return [];
-  }
-
   const startDayStartUtcMs = resolveHKDayStartUtcMs(startKey);
   const endDayStartUtcMs = resolveHKDayStartUtcMs(endKey);
   if (startDayStartUtcMs === null || endDayStartUtcMs === null) {
@@ -156,9 +124,7 @@ export function listHKDateKeysBetween(startMs: number, endMs: number): ReadonlyA
     cursorDayStartUtcMs += TIME.MILLISECONDS_PER_DAY
   ) {
     const key = getHKDateKey(new Date(cursorDayStartUtcMs));
-    if (key) {
-      keys.push(key);
-    }
+    keys.push(key);
   }
 
   return keys;

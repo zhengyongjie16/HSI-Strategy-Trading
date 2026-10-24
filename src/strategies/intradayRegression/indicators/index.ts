@@ -16,13 +16,13 @@ import {
   validateRsiPeriod,
 } from '../indicatorHelpers/utils.js';
 import { cloneAdxState, commitAdxCandle, createAdxState, readAdxValue } from './adx.js';
-import { cloneEmaState, commitEmaClose, createEmaState, readEmaValue } from './ema.js';
+import { cloneEmaState, readEmaValue } from './ema.js';
 import { cloneKdjState, commitKdjCandle, createKdjState, readKdjValue } from './kdj.js';
 import { cloneMacdState, commitMacdClose, createMacdState, readMacdValue } from './macd.js';
 import { cloneMfiState, commitMfiCandle, createMfiState, readMfiValue } from './mfi.js';
 import { clonePsyState, commitPsyClose, createPsyState, readPsyValue } from './psy.js';
 import { cloneRsiState, commitRsiClose, createRsiState, readRsiValue } from './rsi.js';
-import { toNumber } from './indicatorMath.js';
+import { feedEmaStreamState, initEmaStreamState, toNumber } from './indicatorMath.js';
 import type { IndicatorCommittedState, IndicatorRuntimeState } from './types.js';
 
 function createRecordFromPeriods<T>(params: {
@@ -71,17 +71,17 @@ function buildCommittedState(profile: IndicatorUsageProfile): IndicatorCommitted
     emaStates: createRecordFromPeriods({
       periods: profile.requiredPeriods.ema,
       isValidPeriod: validateEmaPeriod,
-      createState: (period) => createEmaState(period),
+      createState: initEmaStreamState,
     }),
     rsiStates: createRecordFromPeriods({
       periods: profile.requiredPeriods.rsi,
       isValidPeriod: validateRsiPeriod,
-      createState: (period) => createRsiState(period),
+      createState: createRsiState,
     }),
     psyStates: createRecordFromPeriods({
       periods: profile.requiredPeriods.psy,
       isValidPeriod: validatePsyPeriod,
-      createState: (period) => createPsyState(period),
+      createState: createPsyState,
     }),
     mfiState: profile.requiredFamilies.mfi ? createMfiState(14) : null,
     kdjState: profile.requiredFamilies.kdj ? createKdjState(9, 3) : null,
@@ -119,7 +119,7 @@ function commitCandleToCommittedState(state: IndicatorCommittedState, candle: Ca
     state.lastValidClose = close;
 
     for (const emaState of Object.values(state.emaStates)) {
-      commitEmaClose(emaState, close);
+      feedEmaStreamState(emaState, close);
     }
 
     for (const rsiState of Object.values(state.rsiStates)) {
@@ -202,19 +202,19 @@ function buildSnapshotFromCommitted(params: {
     periods: profile.requiredPeriods.ema,
     isValidPeriod: validateEmaPeriod,
     states: committed.emaStates,
-    readValue: (state) => readEmaValue(state),
+    readValue: readEmaValue,
   });
   const rsi = buildPeriodSnapshotRecord({
     periods: profile.requiredPeriods.rsi,
     isValidPeriod: validateRsiPeriod,
     states: committed.rsiStates,
-    readValue: (state) => readRsiValue(state),
+    readValue: readRsiValue,
   });
   const psy = buildPeriodSnapshotRecord({
     periods: profile.requiredPeriods.psy,
     isValidPeriod: validatePsyPeriod,
     states: committed.psyStates,
-    readValue: (state) => readPsyValue(state),
+    readValue: readPsyValue,
   });
   const mfi =
     profile.requiredFamilies.mfi && committed.mfiState !== null

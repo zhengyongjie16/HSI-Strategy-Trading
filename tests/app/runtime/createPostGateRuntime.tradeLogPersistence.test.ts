@@ -593,7 +593,6 @@ describe('createPostGateRuntime trade log persistence', () => {
         now: new Date('2026-03-13T09:30:00+08:00'),
         requireTradingDay: false,
         resetRuntimeSubscriptions: false,
-        hydrateCooldownFromTradeLog: false,
         source: 'STARTUP',
       });
     } catch (error) {

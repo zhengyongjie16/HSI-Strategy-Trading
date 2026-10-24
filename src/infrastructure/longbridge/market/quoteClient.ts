@@ -63,7 +63,7 @@ import type {
   PushQuoteEventLike,
 } from './types.js';
 import { formatSymbolDisplay } from '../../../utils/display/index.js';
-import { getRequiredHKDateKey, resolveHKDayStartUtcMs } from '../../../utils/time/index.js';
+import { getHKDateKey, resolveHKDayStartUtcMs } from '../../../utils/time/index.js';
 import {
   extractLotSize,
   extractName,
@@ -139,7 +139,7 @@ function validateTradingDayDateKeys({
     const dayStartUtcMs = resolveHKDayStartUtcMs(dateKey);
     if (
       dayStartUtcMs === null ||
-      getRequiredHKDateKey(new Date(dayStartUtcMs)) !== dateKey ||
+      getHKDateKey(new Date(dayStartUtcMs)) !== dateKey ||
       dateKey < startDateKey ||
       dateKey > endDateKey
     ) {
@@ -171,8 +171,8 @@ function validateTradingDaysResponse({
     throw new TypeError('[交易日历接口响应] 必须是对象');
   }
 
-  const startDateKey = getRequiredHKDateKey(startDate);
-  const endDateKey = getRequiredHKDateKey(endDate);
+  const startDateKey = getHKDateKey(startDate);
+  const endDateKey = getHKDateKey(endDate);
   return {
     tradingDays: validateTradingDayDateKeys({
       values: response['tradingDays'],
@@ -200,8 +200,8 @@ function isCandlestickLike(value: unknown): boolean {
  */
 function createTradingDayCache(): {
   get: (dateStr: string) => TradingDayInfo | null;
-  set: (dateStr: string, isTradingDay: boolean, isHalfDay?: boolean) => void;
-  setBatch: (tradingDays: ReadonlyArray<string>, halfTradingDays?: ReadonlyArray<string>) => void;
+  set: (dateStr: string, isTradingDay: boolean, isHalfDay: boolean) => void;
+  setBatch: (tradingDays: ReadonlyArray<string>, halfTradingDays: ReadonlyArray<string>) => void;
   clear: () => void;
 } {
   const cache = new Map<string, { isTradingDay: boolean; isHalfDay: boolean; timestamp: number }>();
@@ -231,10 +231,10 @@ function createTradingDayCache(): {
    * 设置指定日期的交易日信息并写入时间戳用于 TTL 判断。
    * @param dateStr 日期键（YYYY-MM-DD）
    * @param isTradingDay 是否为交易日
-   * @param isHalfDay 是否为半日市，默认 false
+   * @param isHalfDay 是否为半日市
    * @returns void
    */
-  function set(dateStr: string, isTradingDay: boolean, isHalfDay: boolean = false): void {
+  function set(dateStr: string, isTradingDay: boolean, isHalfDay: boolean): void {
     cache.set(dateStr, {
       isTradingDay,
       isHalfDay,
@@ -245,12 +245,12 @@ function createTradingDayCache(): {
   /**
    * 批量设置交易日信息，将全日与半日列表合并后逐条写入缓存。
    * @param tradingDays 全日交易日日期键数组
-   * @param halfTradingDays 半日交易日日期键数组，默认空数组
+   * @param halfTradingDays 半日交易日日期键数组
    * @returns void
    */
   function setBatch(
     tradingDays: ReadonlyArray<string>,
-    halfTradingDays: ReadonlyArray<string> = [],
+    halfTradingDays: ReadonlyArray<string>,
   ): void {
     const halfDaySet = new Set(halfTradingDays);
     const allTradingDays = new Set([...tradingDays, ...halfTradingDays]);
@@ -960,7 +960,7 @@ export async function createMarketDataClient(
   async function isTradingDay(date: Date, market: 'HK' = 'HK'): Promise<TradingDayInfo> {
     mapMarketToSdk(market);
     // 格式化为港股日期键 YYYY-MM-DD
-    const dateStr = getRequiredHKDateKey(date);
+    const dateStr = getHKDateKey(date);
 
     // 先检查缓存
     const cached = tradingDayCache.get(dateStr);

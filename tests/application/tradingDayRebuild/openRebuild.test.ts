@@ -138,7 +138,6 @@ describe('trading day open rebuild', () => {
         now,
         requireTradingDay: true,
         resetRuntimeSubscriptions: true,
-        hydrateCooldownFromTradeLog: true,
         source: 'OPEN_REBUILD',
       },
     ]);

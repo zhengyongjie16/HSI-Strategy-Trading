@@ -452,11 +452,6 @@ describe('app createLifecycleRuntime wiring', () => {
           });
       })(),
       now: new Date('2026-03-09T09:30:00.000Z'),
-      runtime: {
-        dayKey: '2026-03-09',
-        canTradeNow: true,
-        isTradingDay: true,
-      },
     });
 
     expect(factoryCalls).toContain('globalState.openRebuild');

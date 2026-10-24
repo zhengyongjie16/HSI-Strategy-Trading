@@ -1,12 +1,7 @@
 /** 港股交易会话规则：连续交易、开盘保护窗口与严格交易时长；全部使用显式时间和日历事实。 */
 import { TIME } from '../../constants/index.js';
 import type { TradingDayInfo, TradingDurationBetweenParams } from '../../types/tradingCalendar.js';
-import {
-  getHKDateKey,
-  getRequiredHKDateKey,
-  getHKTime,
-  resolveHKDayStartUtcMs,
-} from '../../utils/time/index.js';
+import { getHKDateKey, getHKTime, resolveHKDayStartUtcMs } from '../../utils/time/index.js';
 import type { SessionRange, TradingDurationDueAtParams } from './types.js';
 
 /**
@@ -26,10 +21,6 @@ export function isInContinuousHKSession(
   }
 
   const hkTime = getHKTime(date);
-  if (!hkTime) {
-    return false;
-  }
-
   const { hkHour, hkMinute } = hkTime;
   const inMorning = (hkHour === 9 && hkMinute >= 30) || (hkHour >= 10 && hkHour < 12);
   if (isHalfDay) {
@@ -54,10 +45,6 @@ export function isWithinMorningOpenWindow(date: Date | null | undefined, minutes
   }
 
   const hkTime = getHKTime(date);
-  if (!hkTime) {
-    return false;
-  }
-
   const { hkHour, hkMinute } = hkTime;
   if (hkHour >= 12) {
     return false;
@@ -86,10 +73,6 @@ export function isWithinAfternoonOpenProtection(
   }
 
   const hkTime = getHKTime(date);
-  if (!hkTime) {
-    return false;
-  }
-
   const { hkHour, hkMinute } = hkTime;
   if (hkHour < 13) {
     return false;
@@ -114,10 +97,6 @@ export function getTradingMinutesSinceOpen(date: Date | null | undefined): numbe
   }
 
   const hkTime = getHKTime(date);
-  if (!hkTime) {
-    return 0;
-  }
-
   const { hkHour, hkMinute } = hkTime;
   const currentMinutes = hkHour * 60 + hkMinute;
   const morningOpen = 9 * 60 + 30;
@@ -168,7 +147,7 @@ export function calculateTradingDurationMsBetween(params: TradingDurationBetween
 
   while (cursorMs < endMs) {
     const cursorDate = new Date(cursorMs);
-    const dayKey = getRequiredHKDateKey(cursorDate);
+    const dayKey = getHKDateKey(cursorDate);
     const dayStartUtcMs = resolveHKDayStartUtcMs(dayKey);
     if (dayStartUtcMs === null) {
       break;
@@ -208,10 +187,6 @@ export function calculateTradingDurationDueAtMs(params: TradingDurationDueAtPara
 
   for (;;) {
     const dayKey = getHKDateKey(new Date(cursorMs));
-    if (dayKey === null) {
-      return null;
-    }
-
     const dayStartUtcMs = resolveHKDayStartUtcMs(dayKey);
     const dayInfo = calendarSnapshot.get(dayKey);
     if (dayStartUtcMs === null || dayInfo === undefined) {

@@ -347,12 +347,11 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     const currentDateKey = getHKDateKey(currentTime);
     const currentTradingDayInfo = readCurrentTradingDayInfo();
     if (
-      currentDateKey === null ||
       currentTradingDayInfo?.dateKey !== currentDateKey ||
       !currentTradingDayInfo.info.isTradingDay
     ) {
       logger.warn(
-        `[执行门禁] ${stage} 无法确认当日交易日事实，拒绝订单副作用: symbol=${signal.symbol} action=${signal.action} currentDateKey=${currentDateKey ?? 'null'} calendarDateKey=${currentTradingDayInfo?.dateKey ?? 'null'}`,
+        `[执行门禁] ${stage} 无法确认当日交易日事实，拒绝订单副作用: symbol=${signal.symbol} action=${signal.action} currentDateKey=${currentDateKey} calendarDateKey=${currentTradingDayInfo?.dateKey ?? 'null'}`,
       );
       return false;
     }

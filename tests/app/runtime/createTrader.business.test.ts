@@ -23,7 +23,7 @@ import { createAccountPositionSnapshot } from '../../../src/application/accountP
 import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
 import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';
-import { getRequiredHKDateKey, toHongKongTimeIso } from '../../../src/utils/time/index.js';
+import { getHKDateKey, toHongKongTimeIso } from '../../../src/utils/time/index.js';
 
 import type { BrokerIngressInput } from '../../infrastructure/longbridge/trade/brokerIngressFixture.js';
 import { createBrokerIngressFixture } from '../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
@@ -120,7 +120,7 @@ async function createFacadeFixture() {
         scheduleTimer: setTimeout,
         clearTimer: clearTimeout,
         readCurrentTradingDayInfo: () => ({
-          dateKey: getRequiredHKDateKey(new Date(NOW_MS)),
+          dateKey: getHKDateKey(new Date(NOW_MS)),
           info: { isTradingDay: true, isHalfDay: false },
         }),
         unrealizedLossBuyGate: createRiskCheckerDouble(),

@@ -92,6 +92,22 @@ function commitPreparedBoundary(
   tracker.commitProtectionBoundary(tracker.prepareProtectionBoundary(params));
 }
 
+/** 观察已发布的双方向金额与完整快照，核对失败预检没有污染运行态。 */
+function inspectPublishedState(tracker: DailyLossTracker, observedTimeMs: number) {
+  return {
+    longOffset: tracker.getLossOffset('LONG'),
+    shortOffset: tracker.getLossOffset('SHORT'),
+    longBaseline: tracker.prepareProtectionBoundary({
+      direction: 'LONG',
+      boundaryExecutedTimeMs: observedTimeMs,
+    }),
+    shortBaseline: tracker.prepareProtectionBoundary({
+      direction: 'SHORT',
+      boundaryExecutedTimeMs: observedTimeMs,
+    }),
+  };
+}
+
 describe('dailyLossTracker segment flow', () => {
   it('selects the protection-boundary snapshot by the established lexicographic priority', () => {
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
@@ -214,39 +230,40 @@ describe('dailyLossTracker segment flow', () => {
       },
     ] as const;
 
+    const currentOrders = [
+      createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
+        orderId: 'BOUNDARY-SELECTOR',
+        symbol: 'BULL.HK',
+        executionSide: 'BUY',
+        executedPrice: '10',
+        executedAmount: '1000',
+        executedQuantity: 100,
+        updatedAtMs: currentUpdatedAtMs,
+        executionTimeMs: currentUpdatedAtMs,
+      }),
+    ];
+
     for (const testCase of cases) {
       const tracker = createSegmentTracker();
+      const executionSnapshots = testCase.snapshots.map((snapshot) => ({
+        direction: 'LONG' as const,
+        symbol: 'BULL.HK',
+        side: 'BUY' as const,
+        orderId: 'BOUNDARY-SELECTOR',
+        ...snapshot,
+      }));
       recalculateDailyLoss(
         tracker,
-        [
-          createExecutedOrder({
-            status: 'FILLED',
-            executionStatus: 'FILLED',
-            executionPhase: 'TERMINAL',
-            orderId: 'BOUNDARY-SELECTOR',
-            symbol: 'BULL.HK',
-            executionSide: 'BUY',
-            executedPrice: '10',
-            executedAmount: '1000',
-            executedQuantity: 100,
-            updatedAtMs: currentUpdatedAtMs,
-            executionTimeMs: currentUpdatedAtMs,
-          }),
-        ],
+        currentOrders,
         createMonitor(),
         new Date(currentUpdatedAtMs),
         new Map(),
+        undefined,
+        { executionSnapshots, boundaries: [] },
       );
-
-      for (const snapshot of testCase.snapshots) {
-        tracker.restoreExecutionSnapshot({
-          direction: 'LONG',
-          symbol: 'BULL.HK',
-          side: 'BUY',
-          orderId: 'BOUNDARY-SELECTOR',
-          ...snapshot,
-        });
-      }
 
       const prepared = tracker.prepareProtectionBoundary({
         direction: 'LONG',
@@ -265,16 +282,28 @@ describe('dailyLossTracker segment flow', () => {
         },
       ]);
 
+      const beforeRestore = inspectPublishedState(tracker, currentUpdatedAtMs);
       const restore = () => {
-        tracker.restoreProtectionBoundary(prepared);
+        recalculateDailyLoss(
+          tracker,
+          currentOrders,
+          createMonitor(),
+          new Date(currentUpdatedAtMs),
+          undefined,
+          undefined,
+          { executionSnapshots, boundaries: [prepared] },
+        );
       };
 
       if (
         testCase.name === 'prefers TERMINAL over OPEN when all numeric fields tie' ||
         testCase.name === 'filters snapshots after the boundary first'
-      )
+      ) {
         expect(restore, testCase.name).not.toThrow();
-      else expect(restore, testCase.name).toThrow(/regression|累计数量倒退/);
+      } else {
+        expect(restore, testCase.name).toThrow(/regression|累计数量倒退/);
+        expect(inspectPublishedState(tracker, currentUpdatedAtMs)).toEqual(beforeRestore);
+      }
     }
   });
 
@@ -310,26 +339,22 @@ describe('dailyLossTracker segment flow', () => {
       }),
     ];
 
-    function restoreBoundarySnapshots(tracker: DailyLossTracker): void {
-      for (const [orderId, side, cumulativeAmount] of [
-        ['BUY-SELECTOR-CONSISTENCY', 'BUY', '400'],
-        ['SELL-SELECTOR-CONSISTENCY', 'SELL', '360'],
-      ] as const) {
-        for (const factStage of ['OPEN', 'TERMINAL'] as const) {
-          tracker.restoreExecutionSnapshot({
-            factStage,
-            direction: 'LONG',
-            symbol: 'BULL.HK',
-            side,
-            cumulativeQuantity: '40',
-            cumulativeAmount,
-            lastExecutionTimeMs: boundaryMs - 10,
-            orderRevisionMs: boundaryMs - 5,
-            orderId,
-          });
-        }
-      }
-    }
+    const executionSnapshots = ([
+      ['BUY-SELECTOR-CONSISTENCY', 'BUY', '400'],
+      ['SELL-SELECTOR-CONSISTENCY', 'SELL', '360'],
+    ] as const).flatMap(([orderId, side, cumulativeAmount]) =>
+      (['OPEN', 'TERMINAL'] as const).map((factStage) => ({
+        factStage,
+        direction: 'LONG' as const,
+        symbol: 'BULL.HK',
+        side,
+        cumulativeQuantity: '40',
+        cumulativeAmount,
+        lastExecutionTimeMs: boundaryMs - 10,
+        orderRevisionMs: boundaryMs - 5,
+        orderId,
+      })),
+    );
 
     const live = createSegmentTracker();
     recalculateDailyLoss(
@@ -338,8 +363,9 @@ describe('dailyLossTracker segment flow', () => {
       createMonitor(),
       new Date(currentUpdatedAtMs),
       new Map(),
+      undefined,
+      { executionSnapshots, boundaries: [] },
     );
-    restoreBoundarySnapshots(live);
     const prepared = live.prepareProtectionBoundary({
       direction: 'LONG',
       boundaryExecutedTimeMs: boundaryMs,
@@ -357,9 +383,9 @@ describe('dailyLossTracker segment flow', () => {
       createMonitor(),
       new Date(currentUpdatedAtMs),
       new Map(),
+      undefined,
+      { executionSnapshots, boundaries: [prepared] },
     );
-    restoreBoundarySnapshots(restarted);
-    restarted.restoreProtectionBoundary(prepared);
     expect(restarted.getLossOffset('LONG')).toBe('-60');
   });
 
@@ -690,8 +716,9 @@ describe('dailyLossTracker segment flow', () => {
       createMonitor(),
       new Date(finalMs),
       new Map(),
+      undefined,
+      { executionSnapshots: [], boundaries: [persistedBoundary] },
     );
-    restarted.restoreProtectionBoundary(persistedBoundary);
 
     expect(restarted.getLossOffset('LONG')).toBe(live.getLossOffset('LONG'));
     expect(restarted.getLossOffset('LONG')).toBe('-6');
@@ -700,186 +727,246 @@ describe('dailyLossTracker segment flow', () => {
   it('blocks restart when a persisted baseline identity conflicts with the current order', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
+    const allOrders = [
+      createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
+        orderId: 'BUY-1',
+        symbol: 'BULL.HK',
+        executionSide: 'BUY',
+        executedPrice: '1',
+        executedAmount: '100',
+        executedQuantity: 100,
+        updatedAtMs: boundaryMs,
+        executionTimeMs: boundaryMs,
+      }),
+    ];
     recalculateDailyLoss(
       tracker,
-      [
-        createExecutedOrder({
-          status: 'FILLED',
-          executionStatus: 'FILLED',
-          executionPhase: 'TERMINAL',
-          orderId: 'BUY-1',
-          symbol: 'BULL.HK',
-          executionSide: 'BUY',
-          executedPrice: '1',
-          executedAmount: '100',
-          executedQuantity: 100,
-          updatedAtMs: boundaryMs,
-          executionTimeMs: boundaryMs,
-        }),
-      ],
+      allOrders,
       createMonitor(),
       new Date(boundaryMs),
       new Map(),
     );
 
+    const beforeRestore = inspectPublishedState(tracker, boundaryMs);
     expect(() => {
-      tracker.restoreProtectionBoundary({
-        direction: 'LONG',
-        boundaryExecutedTimeMs: boundaryMs,
-        orderBaselines: [
-          {
-            orderId: 'BUY-1',
-            symbol: 'BEAR.HK',
-            side: 'BUY',
-            cumulativeQuantity: '100',
-            cumulativeAmount: '100',
-            lastExecutionTimeMs: boundaryMs,
-            orderRevisionMs: boundaryMs,
-          },
-        ],
-      });
+      tracker.prepareRecalculationFromAllOrders(
+        allOrders,
+        createMonitor(),
+        new Date(boundaryMs),
+        undefined,
+        undefined,
+        {
+          executionSnapshots: [],
+          boundaries: [
+            {
+              direction: 'LONG',
+              boundaryExecutedTimeMs: boundaryMs,
+              orderBaselines: [
+                {
+                  orderId: 'BUY-1',
+                  symbol: 'BEAR.HK',
+                  side: 'BUY',
+                  cumulativeQuantity: '100',
+                  cumulativeAmount: '100',
+                  lastExecutionTimeMs: boundaryMs,
+                  orderRevisionMs: boundaryMs,
+                },
+              ],
+            },
+          ],
+        },
+      );
     }).toThrow(/identity conflict/);
+    expect(inspectPublishedState(tracker, boundaryMs)).toEqual(beforeRestore);
   });
 
   it('blocks restart when a determinable pre-boundary order baseline is omitted', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
+    const allOrders = [
+      createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
+        orderId: 'BUY-REQUIRED-BASELINE',
+        symbol: 'BULL.HK',
+        executionSide: 'BUY',
+        executedPrice: '1',
+        executedAmount: '100',
+        executedQuantity: 100,
+        updatedAtMs: boundaryMs,
+        executionTimeMs: boundaryMs,
+      }),
+    ];
     recalculateDailyLoss(
       tracker,
-      [
-        createExecutedOrder({
-          status: 'FILLED',
-          executionStatus: 'FILLED',
-          executionPhase: 'TERMINAL',
-          orderId: 'BUY-REQUIRED-BASELINE',
-          symbol: 'BULL.HK',
-          executionSide: 'BUY',
-          executedPrice: '1',
-          executedAmount: '100',
-          executedQuantity: 100,
-          updatedAtMs: boundaryMs,
-          executionTimeMs: boundaryMs,
-        }),
-      ],
+      allOrders,
       createMonitor(),
       new Date(boundaryMs),
       new Map(),
     );
 
+    const beforeRestore = inspectPublishedState(tracker, boundaryMs);
     expect(() => {
-      tracker.restoreProtectionBoundary({
-        direction: 'LONG',
-        boundaryExecutedTimeMs: boundaryMs,
-        orderBaselines: [],
-      });
+      tracker.prepareRecalculationFromAllOrders(
+        allOrders,
+        createMonitor(),
+        new Date(boundaryMs),
+        undefined,
+        undefined,
+        {
+          executionSnapshots: [],
+          boundaries: [
+            {
+              direction: 'LONG',
+              boundaryExecutedTimeMs: boundaryMs,
+              orderBaselines: [],
+            },
+          ],
+        },
+      );
     }).toThrow(/baseline set incomplete.*BUY-REQUIRED-BASELINE/);
+    expect(inspectPublishedState(tracker, boundaryMs)).toEqual(beforeRestore);
   });
 
   it('blocks restart when a persisted baseline is extra for a post-boundary execution', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
     const afterBoundaryMs = boundaryMs + 1;
+    const allOrders = [
+      createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
+        orderId: 'BUY-AFTER-BOUNDARY',
+        symbol: 'BULL.HK',
+        executionSide: 'BUY',
+        executedPrice: '1',
+        executedAmount: '100',
+        executedQuantity: 100,
+        updatedAtMs: afterBoundaryMs,
+        executionTimeMs: afterBoundaryMs,
+      }),
+    ];
     recalculateDailyLoss(
       tracker,
-      [
-        createExecutedOrder({
-          status: 'FILLED',
-          executionStatus: 'FILLED',
-          executionPhase: 'TERMINAL',
-          orderId: 'BUY-AFTER-BOUNDARY',
-          symbol: 'BULL.HK',
-          executionSide: 'BUY',
-          executedPrice: '1',
-          executedAmount: '100',
-          executedQuantity: 100,
-          updatedAtMs: afterBoundaryMs,
-          executionTimeMs: afterBoundaryMs,
-        }),
-      ],
+      allOrders,
       createMonitor(),
       new Date(afterBoundaryMs),
       new Map(),
     );
 
+    const beforeRestore = inspectPublishedState(tracker, afterBoundaryMs);
     expect(() => {
-      tracker.restoreProtectionBoundary({
-        direction: 'LONG',
-        boundaryExecutedTimeMs: boundaryMs,
-        orderBaselines: [
-          {
-            orderId: 'BUY-AFTER-BOUNDARY',
-            symbol: 'BULL.HK',
-            side: 'BUY',
-            cumulativeQuantity: '100',
-            cumulativeAmount: '100',
-            lastExecutionTimeMs: afterBoundaryMs,
-            orderRevisionMs: afterBoundaryMs,
-          },
-        ],
-      });
+      tracker.prepareRecalculationFromAllOrders(
+        allOrders,
+        createMonitor(),
+        new Date(afterBoundaryMs),
+        undefined,
+        undefined,
+        {
+          executionSnapshots: [],
+          boundaries: [
+            {
+              direction: 'LONG',
+              boundaryExecutedTimeMs: boundaryMs,
+              orderBaselines: [
+                {
+                  orderId: 'BUY-AFTER-BOUNDARY',
+                  symbol: 'BULL.HK',
+                  side: 'BUY',
+                  cumulativeQuantity: '100',
+                  cumulativeAmount: '100',
+                  lastExecutionTimeMs: afterBoundaryMs,
+                  orderRevisionMs: afterBoundaryMs,
+                },
+              ],
+            },
+          ],
+        },
+      );
     }).toThrow(/unexpected persisted baseline.*BUY-AFTER-BOUNDARY/);
+    expect(inspectPublishedState(tracker, afterBoundaryMs)).toEqual(beforeRestore);
   });
 
   it('blocks restart when a collapsed cross-boundary ordinary BUY is absent from completion baselines', () => {
     const tracker = createSegmentTracker();
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
     const finalExecutionMs = boundaryMs + 60_000;
-    recalculateDailyLoss(
-      tracker,
-      [
-        // 业务事实为边界前 40@10、边界后累计 100@1600；RawOrder 只能给出折叠后的最终总值。
-        {
-          ...createExecutedOrder({
-            status: 'FILLED',
-            executionStatus: 'FILLED',
-            executionPhase: 'TERMINAL',
-            orderId: 'ORDINARY-BUY-CROSSING-BOUNDARY',
-            symbol: 'BULL.HK',
-            executionSide: 'BUY',
-            executedPrice: '16',
-            executedAmount: '1600',
-            executedQuantity: 100,
-            updatedAtMs: finalExecutionMs,
-            executionTimeMs: finalExecutionMs,
-          }),
-          submittedAt: new Date(boundaryMs - 60_000),
-        },
-        createExecutedOrder({
+    const allOrders = [
+      // 业务事实为边界前 40@10、边界后累计 100@1600；RawOrder 只能给出折叠后的最终总值。
+      {
+        ...createExecutedOrder({
           status: 'FILLED',
           executionStatus: 'FILLED',
           executionPhase: 'TERMINAL',
-          orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+          orderId: 'ORDINARY-BUY-CROSSING-BOUNDARY',
           symbol: 'BULL.HK',
-          executionSide: 'SELL',
-          executedPrice: '9',
-          executedAmount: '360',
-          executedQuantity: 40,
-          updatedAtMs: boundaryMs,
-          executionTimeMs: boundaryMs,
+          executionSide: 'BUY',
+          executedPrice: '16',
+          executedAmount: '1600',
+          executedQuantity: 100,
+          updatedAtMs: finalExecutionMs,
+          executionTimeMs: finalExecutionMs,
         }),
-      ],
+        submittedAt: new Date(boundaryMs - 60_000),
+      },
+      createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
+        orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+        symbol: 'BULL.HK',
+        executionSide: 'SELL',
+        executedPrice: '9',
+        executedAmount: '360',
+        executedQuantity: 40,
+        updatedAtMs: boundaryMs,
+        executionTimeMs: boundaryMs,
+      }),
+    ];
+    recalculateDailyLoss(
+      tracker,
+      allOrders,
       createMonitor(),
       new Date(finalExecutionMs),
       new Map(),
     );
 
+    const beforeRestore = inspectPublishedState(tracker, finalExecutionMs);
     expect(() => {
-      tracker.restoreProtectionBoundary({
-        direction: 'LONG',
-        boundaryExecutedTimeMs: boundaryMs,
-        orderBaselines: [
-          {
-            orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
-            symbol: 'BULL.HK',
-            side: 'SELL',
-            cumulativeQuantity: '40',
-            cumulativeAmount: '360',
-            lastExecutionTimeMs: boundaryMs,
-            orderRevisionMs: boundaryMs,
-          },
-        ],
-      });
+      tracker.prepareRecalculationFromAllOrders(
+        allOrders,
+        createMonitor(),
+        new Date(finalExecutionMs),
+        undefined,
+        undefined,
+        {
+          executionSnapshots: [],
+          boundaries: [
+            {
+              direction: 'LONG',
+              boundaryExecutedTimeMs: boundaryMs,
+              orderBaselines: [
+                {
+                  orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+                  symbol: 'BULL.HK',
+                  side: 'SELL',
+                  cumulativeQuantity: '40',
+                  cumulativeAmount: '360',
+                  lastExecutionTimeMs: boundaryMs,
+                  orderRevisionMs: boundaryMs,
+                },
+              ],
+            },
+          ],
+        },
+      );
     }).toThrow(/cannot reconstruct.*ORDINARY-BUY-CROSSING-BOUNDARY/i);
+    expect(inspectPublishedState(tracker, finalExecutionMs)).toEqual(beforeRestore);
   });
 
   it('restores a collapsed cross-boundary ordinary BUY from its persisted completion baseline', () => {
@@ -887,70 +974,84 @@ describe('dailyLossTracker segment flow', () => {
     const boundaryMs = Date.parse('2026-07-11T02:00:00.000Z');
     const preBoundaryExecutionMs = boundaryMs - 60_000;
     const finalExecutionMs = boundaryMs + 60_000;
-    recalculateDailyLoss(
-      tracker,
-      [
-        // 业务事实为边界前 40@10、边界后累计 100@1600；RawOrder 只保留边界后的最终累计值。
-        {
-          ...createExecutedOrder({
-            status: 'FILLED',
-            executionStatus: 'FILLED',
-            executionPhase: 'TERMINAL',
-            orderId: 'ORDINARY-BUY-CROSSING-PERSISTED-BASELINE',
-            symbol: 'BULL.HK',
-            executionSide: 'BUY',
-            executedPrice: '16',
-            executedAmount: '1600',
-            executedQuantity: 100,
-            updatedAtMs: finalExecutionMs,
-            executionTimeMs: finalExecutionMs,
-          }),
-          submittedAt: new Date(boundaryMs - 120_000),
-        },
-        createExecutedOrder({
+    const allOrders = [
+      // 业务事实为边界前 40@10、边界后累计 100@1600；RawOrder 只保留边界后的最终累计值。
+      {
+        ...createExecutedOrder({
           status: 'FILLED',
           executionStatus: 'FILLED',
           executionPhase: 'TERMINAL',
-          orderId: 'PROTECTIVE-SELL-AT-PERSISTED-BOUNDARY',
+          orderId: 'ORDINARY-BUY-CROSSING-PERSISTED-BASELINE',
           symbol: 'BULL.HK',
-          executionSide: 'SELL',
-          executedPrice: '9',
-          executedAmount: '360',
-          executedQuantity: 40,
-          updatedAtMs: boundaryMs,
-          executionTimeMs: boundaryMs,
+          executionSide: 'BUY',
+          executedPrice: '16',
+          executedAmount: '1600',
+          executedQuantity: 100,
+          updatedAtMs: finalExecutionMs,
+          executionTimeMs: finalExecutionMs,
         }),
-      ],
+        submittedAt: new Date(boundaryMs - 120_000),
+      },
+      createExecutedOrder({
+        status: 'FILLED',
+        executionStatus: 'FILLED',
+        executionPhase: 'TERMINAL',
+        orderId: 'PROTECTIVE-SELL-AT-PERSISTED-BOUNDARY',
+        symbol: 'BULL.HK',
+        executionSide: 'SELL',
+        executedPrice: '9',
+        executedAmount: '360',
+        executedQuantity: 40,
+        updatedAtMs: boundaryMs,
+        executionTimeMs: boundaryMs,
+      }),
+    ];
+    recalculateDailyLoss(
+      tracker,
+      allOrders,
       createMonitor(),
       new Date(finalExecutionMs),
       new Map(),
     );
 
     expect(() => {
-      tracker.restoreProtectionBoundary({
-        direction: 'LONG',
-        boundaryExecutedTimeMs: boundaryMs,
-        orderBaselines: [
-          {
-            orderId: 'ORDINARY-BUY-CROSSING-PERSISTED-BASELINE',
-            symbol: 'BULL.HK',
-            side: 'BUY',
-            cumulativeQuantity: '40',
-            cumulativeAmount: '400',
-            lastExecutionTimeMs: preBoundaryExecutionMs,
-            orderRevisionMs: preBoundaryExecutionMs,
-          },
-          {
-            orderId: 'PROTECTIVE-SELL-AT-PERSISTED-BOUNDARY',
-            symbol: 'BULL.HK',
-            side: 'SELL',
-            cumulativeQuantity: '40',
-            cumulativeAmount: '360',
-            lastExecutionTimeMs: boundaryMs,
-            orderRevisionMs: boundaryMs,
-          },
-        ],
-      });
+      recalculateDailyLoss(
+        tracker,
+        allOrders,
+        createMonitor(),
+        new Date(finalExecutionMs),
+        undefined,
+        undefined,
+        {
+          executionSnapshots: [],
+          boundaries: [
+            {
+              direction: 'LONG',
+              boundaryExecutedTimeMs: boundaryMs,
+              orderBaselines: [
+                {
+                  orderId: 'ORDINARY-BUY-CROSSING-PERSISTED-BASELINE',
+                  symbol: 'BULL.HK',
+                  side: 'BUY',
+                  cumulativeQuantity: '40',
+                  cumulativeAmount: '400',
+                  lastExecutionTimeMs: preBoundaryExecutionMs,
+                  orderRevisionMs: preBoundaryExecutionMs,
+                },
+                {
+                  orderId: 'PROTECTIVE-SELL-AT-PERSISTED-BOUNDARY',
+                  symbol: 'BULL.HK',
+                  side: 'SELL',
+                  cumulativeQuantity: '40',
+                  cumulativeAmount: '360',
+                  lastExecutionTimeMs: boundaryMs,
+                  orderRevisionMs: boundaryMs,
+                },
+              ],
+            },
+          ],
+        },
+      );
     }).not.toThrow();
   });
 
@@ -1008,9 +1109,16 @@ describe('dailyLossTracker segment flow', () => {
     tracker.commitProtectionBoundary(prepared);
 
     const restarted = createSegmentTracker();
-    recalculateDailyLoss(restarted, orders, createMonitor(), new Date(finalExecutionMs));
     expect(() => {
-      restarted.restoreProtectionBoundary(prepared);
+      recalculateDailyLoss(
+        restarted,
+        orders,
+        createMonitor(),
+        new Date(finalExecutionMs),
+        undefined,
+        undefined,
+        { executionSnapshots: [], boundaries: [prepared] },
+      );
     }).not.toThrow();
 
     for (const owner of [tracker, restarted]) {
@@ -1067,24 +1175,25 @@ describe('dailyLossTracker segment flow', () => {
       });
       // 负向场景故意损坏中性事实输入，不放宽领域 Date 契约。
       Reflect.set(unprovenOrder, 'submittedAt', testCase.resolveSubmittedAt(boundaryMs));
+      const allOrders = [
+        unprovenOrder,
+        createExecutedOrder({
+          status: 'FILLED',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
+          orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+          symbol: 'BULL.HK',
+          executionSide: 'SELL',
+          executedPrice: '9',
+          executedAmount: '360',
+          executedQuantity: 40,
+          updatedAtMs: boundaryMs,
+          executionTimeMs: boundaryMs,
+        }),
+      ];
       recalculateDailyLoss(
         tracker,
-        [
-          unprovenOrder,
-          createExecutedOrder({
-            status: 'FILLED',
-            executionStatus: 'FILLED',
-            executionPhase: 'TERMINAL',
-            orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
-            symbol: 'BULL.HK',
-            executionSide: 'SELL',
-            executedPrice: '9',
-            executedAmount: '360',
-            executedQuantity: 40,
-            updatedAtMs: boundaryMs,
-            executionTimeMs: boundaryMs,
-          }),
-        ],
+        allOrders,
         createMonitor(),
         new Date(finalExecutionMs),
         new Map(),
@@ -1097,23 +1206,37 @@ describe('dailyLossTracker segment flow', () => {
         }),
       ).toThrow(/无法精确冻结/);
 
+      const beforeRestore = inspectPublishedState(tracker, finalExecutionMs);
       expect(() => {
-        tracker.restoreProtectionBoundary({
-          direction: 'LONG',
-          boundaryExecutedTimeMs: boundaryMs,
-          orderBaselines: [
-            {
-              orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
-              symbol: 'BULL.HK',
-              side: 'SELL',
-              cumulativeQuantity: '40',
-              cumulativeAmount: '360',
-              lastExecutionTimeMs: boundaryMs,
-              orderRevisionMs: boundaryMs,
-            },
-          ],
-        });
+        tracker.prepareRecalculationFromAllOrders(
+          allOrders,
+          createMonitor(),
+          new Date(finalExecutionMs),
+          undefined,
+          undefined,
+          {
+            executionSnapshots: [],
+            boundaries: [
+              {
+                direction: 'LONG',
+                boundaryExecutedTimeMs: boundaryMs,
+                orderBaselines: [
+                  {
+                    orderId: 'PROTECTIVE-SELL-AT-BOUNDARY',
+                    symbol: 'BULL.HK',
+                    side: 'SELL',
+                    cumulativeQuantity: '40',
+                    cumulativeAmount: '360',
+                    lastExecutionTimeMs: boundaryMs,
+                    orderRevisionMs: boundaryMs,
+                  },
+                ],
+              },
+            ],
+          },
+        );
       }).toThrow(/cannot reconstruct.*ORDINARY-BUY-UNPROVEN-BOUNDARY/i);
+      expect(inspectPublishedState(tracker, finalExecutionMs)).toEqual(beforeRestore);
     });
   }
 
@@ -1217,34 +1340,53 @@ describe('dailyLossTracker segment flow', () => {
           authoritativeFactChanged: false,
           executionAdvanced: false,
         });
+        const finalOrder: OrderFact & DailyLossOrderSnapshot = {
+          ...initialOrder,
+          executionPhase: phase,
+          status: observation === 'phase' ? 'CANCELED' : initialOrder.status,
+          executedPrice: price,
+          executedAmount: expectedAmount,
+          executedQuantity: quantity,
+          quantity,
+          executionTimeMs,
+          updatedAt: new Date(duplicate ? initialMs : revisionMs),
+          updatedAtMs: duplicate ? initialMs : revisionMs,
+        };
         const boundary = { direction: 'LONG' as const, boundaryExecutedTimeMs: boundaryMs };
         if (submittedAfterBoundary) {
           const prepared = tracker.prepareProtectionBoundary(boundary);
           expect(prepared.orderBaselines).toEqual([]);
           tracker.commitProtectionBoundary(prepared);
           const restarted = createSegmentTracker();
-          const finalOrder: OrderFact & DailyLossOrderSnapshot = {
-            ...initialOrder,
-            executionPhase: phase,
-            status: observation === 'phase' ? 'CANCELED' : initialOrder.status,
-            executedPrice: price,
-            executedAmount: expectedAmount,
-            executedQuantity: quantity,
-            quantity,
-            executionTimeMs,
-            updatedAt: new Date(duplicate ? initialMs : revisionMs),
-            updatedAtMs: duplicate ? initialMs : revisionMs,
-          };
-          recalculateDailyLoss(restarted, [finalOrder], createMonitor(), new Date(observedMs));
           expect(() => {
-            restarted.restoreProtectionBoundary(prepared);
+            recalculateDailyLoss(
+              restarted,
+              [finalOrder],
+              createMonitor(),
+              new Date(observedMs),
+              undefined,
+              undefined,
+              { executionSnapshots: [], boundaries: [prepared] },
+            );
           }).not.toThrow();
           expect(restarted.getLossOffset('LONG')).toBe(tracker.getLossOffset('LONG'));
         } else {
           expect(() => tracker.prepareProtectionBoundary(boundary)).toThrow(/无法精确冻结/);
+          const beforeRestore = inspectPublishedState(tracker, observedMs);
           expect(() => {
-            tracker.restoreProtectionBoundary({ ...boundary, orderBaselines: [] });
+            tracker.prepareRecalculationFromAllOrders(
+              [finalOrder],
+              createMonitor(),
+              new Date(observedMs),
+              undefined,
+              undefined,
+              {
+                executionSnapshots: [],
+                boundaries: [{ ...boundary, orderBaselines: [] }],
+              },
+            );
           }).toThrow(/cannot reconstruct.*COLLAPSED-BUY/);
+          expect(inspectPublishedState(tracker, observedMs)).toEqual(beforeRestore);
         }
 
         if (observation === 'growth') {
@@ -1438,19 +1580,20 @@ describe('dailyLossTracker segment flow', () => {
       );
       const tracker = createSegmentTracker();
       recalculateDailyLoss(tracker, [initialOrder], createMonitor(), new Date(finalMs));
+      const currentOrders = [
+        {
+          ...initialOrder,
+          submittedAt: new Date(boundaryMs + scenario.incomingOffset),
+          executedQuantity: scenario.quantity,
+          executedAmount: scenario.quantity === 40 ? '400' : '1000',
+          executionTimeMs: finalMs + 1,
+          updatedAt: new Date(finalMs + scenario.revisionOffset),
+          updatedAtMs: finalMs + scenario.revisionOffset,
+        },
+      ];
       recalculateDailyLoss(
         tracker,
-        [
-          {
-            ...initialOrder,
-            submittedAt: new Date(boundaryMs + scenario.incomingOffset),
-            executedQuantity: scenario.quantity,
-            executedAmount: scenario.quantity === 40 ? '400' : '1000',
-            executionTimeMs: finalMs + 1,
-            updatedAt: new Date(finalMs + scenario.revisionOffset),
-            updatedAtMs: finalMs + scenario.revisionOffset,
-          },
-        ],
+        currentOrders,
         createMonitor(),
         new Date(finalMs + 1),
       );
@@ -1459,9 +1602,23 @@ describe('dailyLossTracker segment flow', () => {
         expect(tracker.prepareProtectionBoundary(boundary).orderBaselines).toEqual([]);
       } else {
         expect(() => tracker.prepareProtectionBoundary(boundary)).toThrow(/无法精确冻结/);
+        const beforeRestore = inspectPublishedState(tracker, finalMs + 1);
         expect(() => {
-          tracker.restoreProtectionBoundary({ ...boundary, orderBaselines: [] });
+          tracker.prepareRecalculationFromAllOrders(
+            currentOrders,
+            createMonitor(),
+            new Date(finalMs + 1),
+            undefined,
+            undefined,
+            {
+              executionSnapshots: [],
+              boundaries: [
+                { ...boundary, orderBaselines: [] },
+              ],
+            },
+          );
         }).toThrow(/cannot reconstruct.*API-BUY/);
+        expect(inspectPublishedState(tracker, finalMs + 1)).toEqual(beforeRestore);
       }
     });
   }
@@ -1484,26 +1641,27 @@ describe('dailyLossTracker segment flow', () => {
       orderUpdatedAtMs: previousMs,
     });
 
+    const allOrders = [
+      {
+        ...createExecutedOrder({
+          orderId: 'CROSS-DAY-BUY',
+          symbol: 'BULL.HK',
+          executionSide: 'BUY',
+          executionStatus: 'FILLED',
+          executionPhase: 'TERMINAL',
+          status: 'FILLED',
+          executedPrice: '10',
+          executedAmount: '1000',
+          executedQuantity: 100,
+          updatedAtMs: finalMs,
+          executionTimeMs: finalMs,
+        }),
+        submittedAt: new Date(previousMs - 1),
+      },
+    ];
     recalculateDailyLoss(
       tracker,
-      [
-        {
-          ...createExecutedOrder({
-            orderId: 'CROSS-DAY-BUY',
-            symbol: 'BULL.HK',
-            executionSide: 'BUY',
-            executionStatus: 'FILLED',
-            executionPhase: 'TERMINAL',
-            status: 'FILLED',
-            executedPrice: '10',
-            executedAmount: '1000',
-            executedQuantity: 100,
-            updatedAtMs: finalMs,
-            executionTimeMs: finalMs,
-          }),
-          submittedAt: new Date(previousMs - 1),
-        },
-      ],
+      allOrders,
       createMonitor(),
       new Date(finalMs),
     );
@@ -1515,13 +1673,27 @@ describe('dailyLossTracker segment flow', () => {
       }),
     ).toThrow(/无法精确冻结/);
 
+    const beforeRestore = inspectPublishedState(tracker, finalMs);
     expect(() => {
-      tracker.restoreProtectionBoundary({
-        direction: 'LONG',
-        boundaryExecutedTimeMs: boundaryMs,
-        orderBaselines: [],
-      });
+      tracker.prepareRecalculationFromAllOrders(
+        allOrders,
+        createMonitor(),
+        new Date(finalMs),
+        undefined,
+        undefined,
+        {
+          executionSnapshots: [],
+          boundaries: [
+            {
+              direction: 'LONG',
+              boundaryExecutedTimeMs: boundaryMs,
+              orderBaselines: [],
+            },
+          ],
+        },
+      );
     }).toThrow(/cannot reconstruct.*CROSS-DAY-BUY/);
+    expect(inspectPublishedState(tracker, finalMs)).toEqual(beforeRestore);
   });
 
   it('keeps a pre-boundary partial watermark when an equal terminal revision arrives later', () => {

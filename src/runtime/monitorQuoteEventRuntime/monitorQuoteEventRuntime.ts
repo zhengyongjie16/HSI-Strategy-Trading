@@ -180,19 +180,12 @@ function createMonitorQuoteEventRuntime(
   const activePromises = new Set<Promise<void>>();
 
   /**
-   * 清空静态清仓 WAIT 持有的显式唤醒 quote symbol。
-   */
-  function clearStaticWakeupIndexes(): void {
-    staticWakeupSymbols.clear();
-  }
-
-  /**
    * 用最新 WAIT 结果覆盖显式唤醒 quote symbol 集合。
    *
    * @param symbols 本轮 WAIT 需要继续监听的 quote symbol
    */
   function registerStaticWakeupIndexes(symbols: ReadonlySet<string>): void {
-    clearStaticWakeupIndexes();
+    staticWakeupSymbols.clear();
     for (const symbol of symbols) {
       staticWakeupSymbols.add(symbol);
     }
@@ -214,7 +207,7 @@ function createMonitorQuoteEventRuntime(
 
         clearDistanceSwitchPrecheckRetryTimer(routeState);
 
-        clearStaticWakeupIndexes();
+        staticWakeupSymbols.clear();
         releaseStaticLiquidationRetain();
         routeState.generation += 1;
         routeState.monitorQuoteGeneration += 1;
@@ -480,7 +473,7 @@ function createMonitorQuoteEventRuntime(
     clearRouteRetryTimer(activeRouteState);
     const nextWakeupSymbols = new Set(executionResult.wakeupSymbols);
     if (!running || deps.termination.isTerminated()) {
-      clearStaticWakeupIndexes();
+      staticWakeupSymbols.clear();
       activeRouteState.wakeupSymbols = new Set();
       releaseStaticLiquidationRetain();
       return;
@@ -579,7 +572,7 @@ function createMonitorQuoteEventRuntime(
         activeRouteState.dirty = false;
         const snapshotEvent = activeRouteState.latestEvent;
         if (!snapshotEvent) {
-          clearStaticWakeupIndexes();
+          staticWakeupSymbols.clear();
           routeState = null;
           return;
         }
@@ -632,10 +625,6 @@ function createMonitorQuoteEventRuntime(
 
         if (activeRouteState.mode === 'DISTANCE_SWITCH') {
           if (!canContinueDistanceExecution()) {
-            continue;
-          }
-
-          if (!startDistanceSwitch) {
             continue;
           }
 
@@ -710,10 +699,6 @@ function createMonitorQuoteEventRuntime(
           continue;
         }
 
-        if (!executeStaticLiquidation) {
-          continue;
-        }
-
         if (!isSnapshotCurrent()) {
           activeRouteState.dirty = true;
           continue;
@@ -721,7 +706,6 @@ function createMonitorQuoteEventRuntime(
 
         const executionResult = await executeStaticLiquidation({
           monitorContext,
-          event: snapshotEvent,
           retryAttempts: activeRouteState.retryAttempts,
           excludedDirections: new Set([
             ...activeRouteState.submittedLiquidationDirections,
@@ -768,7 +752,7 @@ function createMonitorQuoteEventRuntime(
         }
 
         clearRouteRetryTimer(activeRouteState);
-        clearStaticWakeupIndexes();
+        staticWakeupSymbols.clear();
         releaseStaticLiquidationRetain();
         activeRouteState.wakeupSymbols = new Set();
         activeRouteState.retryAttempts = 0;
@@ -863,7 +847,7 @@ function createMonitorQuoteEventRuntime(
     if (routeState !== null) {
       clearRouteRetryTimer(routeState);
       clearDistanceSwitchPrecheckRetryTimer(routeState);
-      clearStaticWakeupIndexes();
+      staticWakeupSymbols.clear();
       releaseStaticLiquidationRetain();
       routeState.wakeupSymbols = new Set();
     }
@@ -890,12 +874,12 @@ function createMonitorQuoteEventRuntime(
     if (routeState !== null) {
       clearRouteRetryTimer(routeState);
       clearDistanceSwitchPrecheckRetryTimer(routeState);
-      clearStaticWakeupIndexes();
+      staticWakeupSymbols.clear();
       releaseStaticLiquidationRetain();
       routeState.wakeupSymbols = new Set();
     }
 
-    clearStaticWakeupIndexes();
+    staticWakeupSymbols.clear();
     routeState = null;
     while (activePromises.size > 0) await Promise.allSettled(activePromises);
 

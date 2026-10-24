@@ -505,8 +505,6 @@ export type FinalizeOrderSettlementParams = {
   readonly isLongSymbol?: boolean;
   readonly isProtectiveLiquidation?: boolean;
 
-  /** 已在 timeout WS 路径完成 durable progress 的保护性终态结果。 */
-  readonly preparedProtectiveTerminalExecution?: DailyLossCumulativeExecutionResult;
   readonly pendingSellDisposition?: PendingSellDisposition;
 };
 

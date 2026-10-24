@@ -19,7 +19,7 @@ function hasSameCapturedToken(left: SnapshotToken, right: SnapshotToken): boolea
 
 /**
  * 原 open owner 整轮 load→prepare/rebuild→订阅对账→S 业务 ready；同日失效只在本地重新加载。
- * 固定使用原 requireTradingDay/resetRuntimeSubscriptions/hydrateCooldown 参数，不消费外部 retry。
+ * 固定要求交易日并重置订阅，由 loader 完成持久化保护状态与冷却恢复；不消费外部 retry。
  * 不开启 H admission 或交易预算；ABORTED 必须由 lifecycle consumer 阻断后续域与 ACTIVE。
  * @param params 同一 H/S、终止授权与本轮真实依赖
  * @returns 最终 captured COMMITTED 或无事实 ABORTED；内部/外部错误保留原异常通道
@@ -55,7 +55,6 @@ export async function executeTradingDayOpenRebuild(
       now,
       requireTradingDay: true,
       resetRuntimeSubscriptions: true,
-      hydrateCooldownFromTradeLog: true,
       source: 'OPEN_REBUILD',
     });
     if (!isOriginLive()) return { status: 'ABORTED' };

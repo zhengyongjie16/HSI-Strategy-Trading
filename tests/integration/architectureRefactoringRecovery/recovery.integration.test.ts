@@ -492,7 +492,6 @@ async function createOfflineRecovery(
         now,
         requireTradingDay: true,
         resetRuntimeSubscriptions: true,
-        hydrateCooldownFromTradeLog: true,
         source: 'STARTUP',
       }),
     recover: async () => {
@@ -500,7 +499,6 @@ async function createOfflineRecovery(
         now,
         requireTradingDay: true,
         resetRuntimeSubscriptions: true,
-        hydrateCooldownFromTradeLog: true,
         source: 'STARTUP',
       });
       if (loaded.status !== 'COMMITTED')

@@ -30,7 +30,6 @@ function createHarness(overrides: Partial<MonitorDisplayRuntimeDeps> = {}) {
   const getQuotes = mock(async () => new Map([['HSI.HK', quote]]));
   const getCandlestickSnapshot = mock(() => ({
     symbol: 'HSI.HK',
-    period: TRADING.CANDLE_PERIOD,
     version: 1,
     candles: [],
     lastBarTimestamp: 1_708_000_000_000,

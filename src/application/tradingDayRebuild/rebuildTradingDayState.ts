@@ -148,9 +148,8 @@ async function refreshSeatWarrantInfo(
   );
   if (result.status === 'INVALIDATED') return false;
 
-  if (result.status === 'error' || result.status === 'skipped') {
-    const reason = result.status === 'error' ? result.reason : '未提供行情客户端';
-    throw new Error(reason);
+  if (result.status === 'error') {
+    throw new Error(result.reason);
   }
 
   return true;

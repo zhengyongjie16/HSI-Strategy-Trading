@@ -25,15 +25,14 @@ export type WarrantDistanceInfo = {
 
 /**
  * 牛熊证信息刷新结果。
- * 类型用途：表示刷新牛熊证信息的结果（ok/notWarrant/error/skipped），作为 setWarrantInfoFromCallPrice、refreshWarrantInfoForSymbol 返回值。
+ * 类型用途：表示刷新牛熊证信息的结果（ok/notWarrant/error），作为 setWarrantInfoFromCallPrice、refreshWarrantInfoForSymbol 返回值。
  * 数据来源：同步 RiskChecker 的已知回收价发布，或 WarrantRiskRefresh 的外部事实查询。
  * 使用范围：同步风险检查、风险刷新用例、调用方与 UI；全项目可引用。
  */
 export type WarrantRefreshResult =
   | { readonly status: 'ok' }
   | { readonly status: 'notWarrant' }
-  | { readonly status: 'error'; readonly reason: string }
-  | { readonly status: 'skipped' };
+  | { readonly status: 'error'; readonly reason: string };
 
 /**
  * 牛熊证距回收价清仓判定结果。

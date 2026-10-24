@@ -33,7 +33,7 @@ import type {
 } from '../../../src/types/signal.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 import { createSignal } from '../../../mock/factories/signalFactory.js';
-import { getRequiredHKDateKey } from '../../../src/utils/time/index.js';
+import { getHKDateKey } from '../../../src/utils/time/index.js';
 
 type OrderExecutorTestDeps = Omit<OrderExecutorDeps, 'unrealizedLossBuyGate'> &
   Partial<Pick<OrderExecutorDeps, 'unrealizedLossBuyGate'>>;
@@ -169,7 +169,7 @@ async function createDoomsdayAuthorizationHarness(params: {
     isContinuousTradingAllowed: () => true,
     now: () => currentTime,
     readCurrentTradingDayInfo: () => ({
-      dateKey: getRequiredHKDateKey(currentTime),
+      dateKey: getHKDateKey(currentTime),
       info: { isTradingDay: true, isHalfDay: false },
     }),
   } satisfies OrderExecutorTestDeps);

@@ -38,7 +38,7 @@ import type {
 } from '../../../src/runtime/monitorQuoteEventRuntime/types.js';
 import type { MonitorContextAssembly } from '../../../src/app/context/types.js';
 import type { StartSwitchOnDistanceResult } from '../../../src/types/seatSwitch.js';
-import type { QuoteUpdatedEvent } from '../../../src/types/marketPorts.js';
+import type { MarketDataClient, QuoteUpdatedEvent } from '../../../src/types/marketPorts.js';
 import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
 
 /**
@@ -52,6 +52,7 @@ type TestMonitorQuoteRuntimeDeps = Omit<
   CreateDefaultMonitorQuoteEventRuntimeDeps,
   | 'logger'
   | 'monitorContext'
+  | 'marketDataClient'
   | 'lifecycleState'
   | 'scheduleTimer'
   | 'clearTimer'
@@ -61,6 +62,7 @@ type TestMonitorQuoteRuntimeDeps = Omit<
   | 'executeStaticLiquidation'
 > & {
   readonly snapshot: AccountPositionSnapshot;
+  readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated' | 'getQuotes'>;
   readonly monitorContext: MonitorContextAssembly;
   readonly lifecycleState: Pick<RuntimeStateFixtures['lifecycleState'], 'isTradingEnabled'>;
   readonly tradeRuntime: TradeRuntime;

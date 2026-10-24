@@ -633,7 +633,8 @@ describe('quoteClient business flow', () => {
       },
     ]);
     expect(Object.isFrozen(initial[0])).toBe(true);
-    expect(client.getCandlestickSnapshot('BULL.HK', 'MIN_5')?.period).toBe('MIN_5');
+    expect(client.getCandlestickSnapshot('BULL.HK', 'MIN_5')?.candles).toEqual(initial);
+    expect(client.getCandlestickSnapshot('BULL.HK', 'MIN_1')).toBeNull();
     await client.resetRuntimeSubscriptionsAndCaches();
     expect(quoteMock.getCalls('unsubscribeCandlesticks')[0]?.args).toEqual([
       'BULL.HK',

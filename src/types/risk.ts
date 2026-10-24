@@ -65,7 +65,7 @@ export type DailyLossAuthoritativeFactSnapshot = Readonly<{
  * 数据来源：PROTECTIVE_LIQUIDATION_EXECUTION_PROGRESS V1。
  * 使用范围：lifecycle 启动恢复。
  */
-type RestoreDailyLossExecutionSnapshotParams = Readonly<{
+export type RestoreDailyLossExecutionSnapshotParams = Readonly<{
   factStage: 'OPEN' | 'TERMINAL';
   direction: 'LONG' | 'SHORT';
   symbol: string;
@@ -185,9 +185,6 @@ export interface DailyLossTracker {
     beforeAuthoritativeFactCommit?: (snapshot: DailyLossAuthoritativeFactSnapshot) => void,
   ) => DailyLossCumulativeExecutionResult;
 
-  /** 启动时把正式 progress record 恢复为精确历史 execution snapshot。 */
-  readonly restoreExecutionSnapshot: (params: RestoreDailyLossExecutionSnapshotParams) => void;
-
   /** 获取指定方向的当日亏损偏移（仅亏损，<=0），未初始化时返回规范文本 0 */
   readonly getLossOffset: (direction: 'LONG' | 'SHORT') => string;
 
@@ -198,9 +195,6 @@ export interface DailyLossTracker {
 
   /** 提交已冻结且已持久化的保护边界。 */
   readonly commitProtectionBoundary: (prepared: PreparedDailyLossProtectionBoundary) => void;
-
-  /** 启动恢复时校验 persisted baseline 与当前订单事实后提交。 */
-  readonly restoreProtectionBoundary: (prepared: PreparedDailyLossProtectionBoundary) => void;
 }
 
 /**

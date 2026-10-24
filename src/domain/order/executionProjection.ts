@@ -93,18 +93,6 @@ export function prepareExecutionCommit(
         clearedAtSequence: null,
       }),
     ];
-  } else if (
-    terminal &&
-    fact.executionTimeMs !== previous?.fact.executionTimeMs &&
-    slices.length > 0
-  ) {
-    const executionTimeMs = fact.executionTimeMs;
-    if (executionTimeMs === null)
-      throw new Error('[订单记录] terminal slice lacks trusted execution time');
-
-    slices = slices.map((slice, index) =>
-      index === slices.length - 1 ? Object.freeze({ ...slice, executionTimeMs }) : slice,
-    );
   }
 
   return Object.freeze({

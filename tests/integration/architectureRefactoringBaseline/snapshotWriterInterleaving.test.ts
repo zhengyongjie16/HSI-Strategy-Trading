@@ -134,7 +134,6 @@ describe('P1 snapshot cross-source targets', () => {
     const midnight = Promise.resolve(
       domain.midnightClear({
         now: new Date('2026-07-11T00:00:00+08:00'),
-        runtime: { dayKey: '2026-07-10', canTradeNow: false, isTradingDay: true },
       }),
     ).then(() => {
       drained = true;

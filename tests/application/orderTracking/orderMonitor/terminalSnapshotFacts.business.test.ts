@@ -7,10 +7,7 @@
 
 import { describe, expect, it } from 'bun:test';
 import { orderAnalysis } from '../../../../src/domain/order/orderAnalysis.js';
-import {
-  assertProtectiveSellRawTerminalStateFactsReady,
-  normalizeTerminalStateSnapshot,
-} from '../../../../src/domain/order/orderFactMerge.js';
+import { normalizeTerminalStateSnapshot } from '../../../../src/domain/order/orderFactMerge.js';
 import type {
   KnownOrderFact,
   OrderMonitorTrackedOrder,
@@ -139,12 +136,8 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
     });
 
     expect(() => {
-      assertProtectiveSellRawTerminalStateFactsReady(knownFact, terminalState);
-    }).toThrow(/保护性 SELL 存在成交事实但本次观察缺少有效成交价/);
-
-    expect(() => {
       normalizeTerminalStateSnapshot(knownFact, terminalState);
-    }).toThrow();
+    }).toThrow(/保护性 SELL 存在成交事实但本次观察缺少有效成交价/);
   });
 
   it('records a protective terminal lifecycle close from complete raw facts without advancing DailyLoss execution', () => {
@@ -156,7 +149,6 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
       executionTimeMs: FIRST_REVISION_MS + 1,
       orderUpdatedAtMs: FIRST_REVISION_MS + 1,
     });
-    assertProtectiveSellRawTerminalStateFactsReady(knownFact, terminalState);
     const normalized = normalizeTerminalStateSnapshot(knownFact, terminalState);
     const dailyLossTracker = createDailyLossTracker({
       onOwnershipWarning: () => {},
@@ -220,7 +212,7 @@ describe('orderMonitor terminal snapshot raw fact boundary', () => {
     });
 
     expect(() => {
-      assertProtectiveSellRawTerminalStateFactsReady(knownFact, terminalState);
+      normalizeTerminalStateSnapshot(knownFact, terminalState);
     }).toThrow(
       /订单观察缺少有效 broker revision|保护性 SELL 存在成交事实但本次观察缺少有效成交价|保护性 SELL 存在成交事实但本次观察缺少有效 broker revision/,
     );

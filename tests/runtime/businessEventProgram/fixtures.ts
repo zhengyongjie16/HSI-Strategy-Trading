@@ -71,7 +71,6 @@ export function createEventHarness(options: EventHarnessOptions = {}): EventHarn
     handler: null,
     snapshot: {
       symbol: 'HSI.HK',
-      period: 'MIN_1',
       version: 1,
       initialized: true,
       lastBarTimestamp: 1000,

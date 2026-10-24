@@ -505,7 +505,6 @@ async function createHarness(
       now: new Date(clock),
       requireTradingDay: true,
       resetRuntimeSubscriptions: true,
-      hydrateCooldownFromTradeLog: true,
       source: 'STARTUP',
     });
     expect(loaded.status).toBe('COMMITTED');

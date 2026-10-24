@@ -93,7 +93,6 @@ describe('createSeatDomain', () => {
 
     await domain.midnightClear({
       now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
     });
 
     expect(resetAllStateCount).toBe(1);
@@ -187,7 +186,6 @@ describe('createSeatDomain', () => {
 
     await domain.midnightClear({
       now: new Date('2026-02-21T00:00:00.000+08:00'),
-      runtime: { dayKey: '2026-02-21', canTradeNow: false, isTradingDay: false },
     });
 
     expect(
@@ -200,7 +198,6 @@ describe('createSeatDomain', () => {
 
     await domain.midnightClear({
       now: new Date('2026-02-22T00:00:00.000+08:00'),
-      runtime: { dayKey: '2026-02-22', canTradeNow: false, isTradingDay: false },
     });
 
     expect(
@@ -254,7 +251,6 @@ describe('createSeatDomain', () => {
 
     await domain.midnightClear({
       now: new Date('2026-02-21T00:00:00.000+08:00'),
-      runtime: { dayKey: '2026-02-21', canTradeNow: false, isTradingDay: false },
     });
 
     expect(
@@ -267,7 +263,6 @@ describe('createSeatDomain', () => {
 
     await domain.midnightClear({
       now: new Date('2026-02-24T00:00:00.000+08:00'),
-      runtime: { dayKey: '2026-02-24', canTradeNow: false, isTradingDay: true },
       invalidateSeatActivationCarryover: true,
     });
 

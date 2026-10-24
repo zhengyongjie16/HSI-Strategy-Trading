@@ -94,11 +94,6 @@ export function resolvePendingTimeoutSettlementInput(
       executedQuantity: terminalState.executedQuantity,
       executedTimeMs: terminalState.executedTimeMs,
       orderUpdatedAtMs: terminalState.orderUpdatedAtMs,
-      ...(terminalState.preparedProtectiveTerminalExecution === undefined
-        ? {}
-        : {
-            preparedProtectiveTerminalExecution: terminalState.preparedProtectiveTerminalExecution,
-          }),
     },
     queriedExecutedQuantity: terminalState.executedQuantity,
   };

@@ -39,7 +39,7 @@ import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminatio
 import { createQuoteSubscriptionRuntime } from '../../src/runtime/quoteSubscriptionRuntime/index.js';
 import { createSeatActivationDispatcher } from '../../src/runtime/seatActivationDispatcher/index.js';
 import { scheduleBoundedOneShotAt } from '../../src/runtime/timer/index.js';
-import { getRequiredHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
+import { getHKDateKey, toHongKongTimeIso } from '../../src/utils/time/index.js';
 import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import {
   createLoggerDouble,
@@ -52,7 +52,7 @@ import { createBrokerIngressFixture } from './architectureRefactoringP1Native/tr
 
 const START = Date.parse('2026-03-13T02:00:00.000Z');
 const BOUNDARY = START + 1_000;
-const DAY = getRequiredHKDateKey(new Date(START));
+const DAY = getHKDateKey(new Date(START));
 
 function buyFrame(
   orderId: string,
@@ -425,7 +425,6 @@ async function createChain(
         now: now(),
         requireTradingDay: true,
         resetRuntimeSubscriptions: true,
-        hydrateCooldownFromTradeLog: true,
         source: 'STARTUP',
       });
       expect(loaded.status).toBe('COMMITTED');

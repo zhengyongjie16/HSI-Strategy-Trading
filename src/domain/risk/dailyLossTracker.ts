@@ -17,6 +17,7 @@ import type {
   StartNewProtectionEpisodeParams,
   PreparedDailyLossProtectionBoundary,
   PreparedDailyLossRecalculation,
+  RestoreDailyLossExecutionSnapshotParams,
 } from '../../types/risk.js';
 
 import {
@@ -165,10 +166,6 @@ function calculateLossOffsetFromRecords(
 
   const totalBuy = sumOrderCost(buyOrders);
   const totalSell = sumOrderCost(sellOrders);
-  if (exactCompare(totalBuy, '0') === 0 && exactCompare(totalSell, '0') === 0) {
-    return '0';
-  }
-
   const openBuyOrders =
     buyOrders.length > 0
       ? filteringEngine.applyFilteringAlgorithm([...buyOrders], [...sellOrders])
@@ -963,18 +960,10 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
     return merge.result;
   }
 
-  /** 将正式 progress record 恢复为历史 execution snapshot，不覆盖 RawOrder 当前权威终态。 */
-  function restoreExecutionSnapshot(
-    params: Parameters<DailyLossTracker['restoreExecutionSnapshot']>[0],
-  ): void {
-    restoreSnapshotIntoFacts(filledOrderFactsById, params);
-    stateIdentity = {};
-  }
-
-  /** 回放到私有候选或已发布事实；不重新生成冻结 baseline。 */
+  /** 回放到私有重算候选；不修改已发布事实或重新生成冻结 baseline。 */
   function restoreSnapshotIntoFacts(
     facts: Map<string, DailyLossOrderFact>,
-    params: Parameters<DailyLossTracker['restoreExecutionSnapshot']>[0],
+    params: RestoreDailyLossExecutionSnapshotParams,
   ): void {
     const fact = facts.get(params.orderId);
     if (fact === undefined) {
@@ -1229,20 +1218,13 @@ export function createDailyLossTracker(deps: DailyLossTrackerDeps): DailyLossTra
     }
   }
 
-  function restoreProtectionBoundary(prepared: PreparedDailyLossProtectionBoundary): void {
-    assertProtectionBoundary(filledOrderFactsById, prepared);
-    commitProtectionBoundary(prepared);
-  }
-
   return {
     resetAll,
     prepareRecalculationFromAllOrders,
     publishRecalculation,
     recordCumulativeExecution,
-    restoreExecutionSnapshot,
     getLossOffset,
     prepareProtectionBoundary,
     commitProtectionBoundary,
-    restoreProtectionBoundary,
   };
 }

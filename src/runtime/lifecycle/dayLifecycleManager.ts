@@ -54,12 +54,10 @@ function shouldRunMidnightClear(
 /** 构造传递给各 CacheDomain 的生命周期上下文 */
 function buildLifecycleContext(
   now: Date,
-  runtime: LifecycleRuntimeFlags,
   invalidateSeatActivationCarryover: boolean = false,
 ): LifecycleContext {
   return {
     now,
-    runtime,
     invalidateSeatActivationCarryover,
   };
 }
@@ -243,7 +241,6 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
       );
       const midnightContext = buildLifecycleContext(
         now,
-        runtime,
         invalidateSeatActivationCarryoverOnMidnightClear,
       );
       try {
@@ -315,7 +312,7 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
       snapshot.beginRebuild();
       logger.info('[Lifecycle] 开始执行开盘重建');
       const rebuildContext: OpenRebuildContext = {
-        ...buildLifecycleContext(now, runtime),
+        ...buildLifecycleContext(now),
         dayEpoch,
         snapshotToken: snapshot.getStatus().token,
         isCurrent: isOpenOwnerCurrent,

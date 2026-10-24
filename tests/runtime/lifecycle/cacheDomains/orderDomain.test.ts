@@ -50,7 +50,6 @@ describe('createOrderDomain', () => {
     });
     await domain.midnightClear({
       now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
     });
 
     expect(calls).toEqual(['recorder', 'cache', 'hold', 'monitor', 'executor']);
@@ -81,7 +80,6 @@ describe('createOrderDomain', () => {
     });
     const ctx = await createOpenRebuildContextFixture({
       now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
       termination,
     });
     const result = await domain.openRebuild(ctx);

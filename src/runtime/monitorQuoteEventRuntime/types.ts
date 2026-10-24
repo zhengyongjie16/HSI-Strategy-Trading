@@ -66,7 +66,6 @@ type MonitorQuoteEventExecutor = (params: {
     readonly orderRecorder: OrderRecorder;
     readonly dailyLossTracker: DailyLossTracker;
   };
-  readonly event: QuoteUpdatedEvent;
   readonly retryAttempts: number;
   readonly excludedDirections: ReadonlySet<'LONG' | 'SHORT'>;
   readonly canContinue: () => boolean;
@@ -90,8 +89,8 @@ export type CreateMonitorQuoteEventRuntimeDeps = Readonly<{
     readonly orderRecorder: OrderRecorder;
     readonly dailyLossTracker: DailyLossTracker;
   };
-  readonly executeStaticLiquidation?: MonitorQuoteEventExecutor;
-  readonly startDistanceSwitch?: StartDistanceSwitchExecutor;
+  readonly executeStaticLiquidation: MonitorQuoteEventExecutor;
+  readonly startDistanceSwitch: StartDistanceSwitchExecutor;
   readonly handoffPendingSwitch?: Pick<
     SwitchWakeupRuntime,
     'handoffPendingSwitch'
@@ -100,7 +99,7 @@ export type CreateMonitorQuoteEventRuntimeDeps = Readonly<{
   readonly lifecycleState: Readonly<Pick<LifecycleMutableState, 'isTradingEnabled'>>;
   readonly snapshot: Pick<AccountPositionSnapshotReader, 'getView' | 'isCurrent'>;
   readonly postTradeConsistencyRuntime: MonitorQuoteFreshnessDeps;
-  readonly doomsdayProtectionEnabled?: boolean;
+  readonly doomsdayProtectionEnabled: boolean;
   readonly now: () => Date;
   readonly scheduleTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   readonly clearTimer: (handle: ReturnType<typeof setTimeout>) => void;
@@ -118,7 +117,7 @@ export type CreateMonitorQuoteEventRuntimeDeps = Readonly<{
  */
 export type CreateDefaultMonitorQuoteEventRuntimeDeps = Readonly<{
   readonly logger: Pick<Logger, 'error'>;
-  readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated' | 'getQuotes'>;
+  readonly marketDataClient: Pick<MarketDataClient, 'onQuoteUpdated'>;
   readonly monitorContext: Pick<MonitorSymbolNames, 'longSymbolName' | 'shortSymbolName'> & {
     readonly config: MonitorConfig;
     readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
@@ -130,10 +129,7 @@ export type CreateDefaultMonitorQuoteEventRuntimeDeps = Readonly<{
   readonly executeStaticLiquidation: MonitorQuoteEventExecutor;
   readonly tradingTimeState: Readonly<Pick<TradingTimeState, 'canTrade' | 'isHalfDay'>>;
   readonly lifecycleState: Readonly<Pick<LifecycleMutableState, 'isTradingEnabled'>>;
-  readonly snapshot: Pick<
-    AccountPositionSnapshotReader,
-    'getView' | 'getAvailablePosition' | 'isCurrent'
-  >;
+  readonly snapshot: Pick<AccountPositionSnapshotReader, 'getView' | 'isCurrent'>;
   readonly postTradeConsistencyRuntime: MonitorQuoteFreshnessDeps;
   readonly doomsdayProtectionEnabled: boolean;
   readonly now: () => Date;

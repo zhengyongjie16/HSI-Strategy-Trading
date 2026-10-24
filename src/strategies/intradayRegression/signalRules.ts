@@ -204,7 +204,7 @@ function formatPeriodIndicatorSegments(
 
   const periods = Object.keys(record)
     .map((key) => Number.parseInt(key, 10))
-    .filter((period) => Number.isFinite(period))
+    .filter(Number.isFinite)
     .sort((a, b) => a - b);
 
   const segments: string[] = [];

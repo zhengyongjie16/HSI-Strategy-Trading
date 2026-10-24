@@ -49,11 +49,10 @@ export type TradingDaysResult = {
 /**
  * 本地 K 线缓存快照。
  * 数据来源：market adapter 对订阅 seed 与推送更新维护的标准化缓存。
- * 使用范围：事件宿主与策略；只包含中性周期、primitive candle 与缓存版本。
+ * 使用范围：事件宿主与策略；只包含标的身份、primitive candle 与缓存元数据。
  */
 export type CandlestickCacheSnapshot = {
   readonly symbol: string;
-  readonly period: CandlestickPeriod;
   readonly version: number;
   readonly candles: ReadonlyArray<NormalizedCandle>;
   readonly lastBarTimestamp: number | null;

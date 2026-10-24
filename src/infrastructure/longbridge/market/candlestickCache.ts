@@ -85,11 +85,9 @@ function areCandlesExactlyEqual(
  */
 function buildSnapshot(params: {
   readonly symbol: string;
-  readonly period: CandlestickPeriod;
   readonly version: number;
   readonly candles: ReadonlyArray<NormalizedCandle>;
   readonly lastBarConfirmed: boolean | null;
-  readonly initialized: boolean;
 }): CandlestickCacheSnapshot {
   const latestCandle = params.candles.at(-1);
   const lastBarTimestamp =
@@ -100,12 +98,11 @@ function buildSnapshot(params: {
       : null;
   return {
     symbol: params.symbol,
-    period: params.period,
     version: params.version,
     candles: params.candles,
     lastBarTimestamp,
     lastBarConfirmed: params.lastBarConfirmed,
-    initialized: params.initialized,
+    initialized: true,
   };
 }
 
@@ -140,11 +137,9 @@ export function seedCandlestickSeries(
   const nextVersion = existing === null ? 1 : existing.version + 1;
   const snapshot = buildSnapshot({
     symbol,
-    period,
     version: nextVersion,
     candles: normalizedCandles,
     lastBarConfirmed: null,
-    initialized: true,
   });
   store.snapshots.set(key, snapshot);
   return snapshot;
@@ -162,7 +157,7 @@ export function applyCandlestickPush(
   const { store, symbol, period, candlestick, isConfirmed } = params;
   const key = createCandlestickKey(symbol, period);
   const currentSnapshot = store.snapshots.get(key) ?? null;
-  if (!currentSnapshot?.initialized) {
+  if (currentSnapshot === null) {
     return null;
   }
 
@@ -200,11 +195,9 @@ export function applyCandlestickPush(
       : [...currentCandles.slice(0, -1), Object.freeze(normalizedCandle)];
     const updatedSnapshot = buildSnapshot({
       symbol,
-      period,
       version: currentSnapshot.version + 1,
       candles: nextCandles,
       lastBarConfirmed: nextLastBarConfirmed,
-      initialized: true,
     });
     store.snapshots.set(key, updatedSnapshot);
     return updatedSnapshot;
@@ -217,11 +210,9 @@ export function applyCandlestickPush(
       : [...currentCandles.slice(currentCandles.length + 1 - store.maxCandles), frozenCandle];
   const updatedSnapshot = buildSnapshot({
     symbol,
-    period,
     version: currentSnapshot.version + 1,
     candles: appendedCandles,
     lastBarConfirmed: isConfirmed,
-    initialized: true,
   });
   store.snapshots.set(key, updatedSnapshot);
   return updatedSnapshot;

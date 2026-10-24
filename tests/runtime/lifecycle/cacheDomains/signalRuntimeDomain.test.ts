@@ -293,7 +293,6 @@ describe('createSignalRuntimeDomain', () => {
     const domain = createSignalRuntimeDomain(deps);
     await domain.midnightClear({
       now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
     });
 
     expect(globalCalls).toEqual([
@@ -486,7 +485,6 @@ describe('createSignalRuntimeDomain', () => {
     const domain = createSignalRuntimeDomain(deps);
     const ctx = await createOpenRebuildContextFixture({
       now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
       termination: deps.termination,
     });
     const result = await domain.openRebuild(ctx);

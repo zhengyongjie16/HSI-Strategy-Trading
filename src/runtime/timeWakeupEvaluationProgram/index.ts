@@ -10,11 +10,7 @@ import {
   resolveDoomsdayWindowEntryMs,
 } from '../../domain/liquidation/doomsday/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
-import {
-  getHKDateKey,
-  getRequiredHKDateKey,
-  resolveHKDayStartUtcMs,
-} from '../../utils/time/index.js';
+import { getHKDateKey, resolveHKDayStartUtcMs } from '../../utils/time/index.js';
 import {
   isInContinuousHKSession,
   isWithinAfternoonOpenProtection,
@@ -106,7 +102,7 @@ function appendApiRetryCandidate(candidates: Array<TimeWakeupCandidate>, current
 }
 
 function resolveDayBoundaryMs(date: Date, minuteOfDay: number): number | null {
-  const dayStartMs = resolveHKDayStartUtcMs(getRequiredHKDateKey(date));
+  const dayStartMs = resolveHKDayStartUtcMs(getHKDateKey(date));
   if (dayStartMs === null) {
     return null;
   }
@@ -115,7 +111,7 @@ function resolveDayBoundaryMs(date: Date, minuteOfDay: number): number | null {
 }
 
 function resolveNextHKDayBoundaryMs(date: Date): number | null {
-  const dayStartMs = resolveHKDayStartUtcMs(getRequiredHKDateKey(date));
+  const dayStartMs = resolveHKDayStartUtcMs(getHKDateKey(date));
   if (dayStartMs === null) {
     return null;
   }
@@ -221,7 +217,7 @@ export async function timeWakeupEvaluationProgram({
   const candidates: Array<TimeWakeupCandidate> = [];
   appendFutureCandidate(candidates, resolveNextHKDayBoundaryMs(currentTime), currentMs);
 
-  const currentDayKey = getHKDateKey(currentTime) ?? '';
+  const currentDayKey = getHKDateKey(currentTime);
   const cachedTradingDayInfo =
     tradingCalendarState.cachedTradingDayInfo?.dateKey === currentDayKey
       ? tradingCalendarState.cachedTradingDayInfo.info

@@ -123,7 +123,6 @@ describe('startup rebuild', () => {
           now: harness.params.now,
           requireTradingDay: false,
           resetRuntimeSubscriptions: false,
-          hydrateCooldownFromTradeLog: true,
           source: 'STARTUP',
         });
         return {

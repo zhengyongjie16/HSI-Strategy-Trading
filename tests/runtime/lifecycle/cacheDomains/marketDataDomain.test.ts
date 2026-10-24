@@ -20,7 +20,6 @@ describe('createMarketDataDomain', () => {
     const domain = createMarketDataDomain({ logger: createLoggerDouble(), marketDataClient });
     await domain.midnightClear({
       now: new Date(),
-      runtime: { dayKey: '2025-02-15', canTradeNow: true, isTradingDay: true },
     });
 
     expect(resetCalled).toBe(true);

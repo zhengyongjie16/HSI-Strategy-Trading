@@ -260,7 +260,7 @@ export function assertProtectiveSellRawObservationFactsReady(
  * state-check TERMINAL 原始事实准入。
  * 与 OPEN 共用同一原始量价/revision 规则，且必须在任何终态收口之前执行。
  */
-export function assertProtectiveSellRawTerminalStateFactsReady(
+function assertProtectiveSellRawTerminalStateFactsReady(
   known: KnownOrderFact & Partial<Pick<TrackedOrder, 'isProtectiveLiquidation'>>,
   terminal: TerminalStateSnapshot,
 ): void {
