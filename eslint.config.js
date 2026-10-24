@@ -66,6 +66,7 @@ const strategyPrivateBoundaryRule = {
   create(context) {
     const filename = getNormalizedFilename(context);
     if (!isSrcFile(filename)) return {};
+
     const strategyRoots = ['/src/strategies/'];
 
     function strategyDirectory(file) {
@@ -73,12 +74,11 @@ const strategyPrivateBoundaryRule = {
         const part = file.split(root)[1];
         if (part?.includes('/')) return part.split('/')[0];
       }
-
-      return undefined;
     }
 
     function isSelectedLoaderImport(node) {
       if (!filename.endsWith('/src/app/runAppDeps.ts')) return false;
+
       const callback = node.parent;
       const property = callback?.parent;
       const object = property?.parent;
@@ -127,20 +127,26 @@ const strategyPrivateBoundaryRule = {
 
     function check(node, source) {
       if (typeof source?.value !== 'string') return;
+
       const specifier = source.value.split(/[?#]/)[0];
-      const target = specifier.startsWith('@/')
-        ? filename.slice(0, filename.indexOf('/src/')) + '/src/' + specifier.slice(2)
-        : specifier.startsWith('.')
-          ? path.posix.normalize(path.posix.join(path.posix.dirname(filename), specifier))
-          : specifier;
+      let target = specifier;
+      if (specifier.startsWith('@/')) {
+        target = filename.slice(0, filename.indexOf('/src/')) + '/src/' + specifier.slice(2);
+      } else if (specifier.startsWith('.')) {
+        target = path.posix.normalize(path.posix.join(path.posix.dirname(filename), specifier));
+      }
+
       if (
         strategyFileRole(filename) === 'pure' &&
         ['definition', 'runtime'].includes(strategyFileRole(target))
       )
         reportNode(context, node, 'pureRole');
+
       const targetDirectory = strategyDirectory(target);
       if (targetDirectory === undefined) return;
+
       if (strategyDirectory(filename) === targetDirectory) return;
+
       reportNode(context, node, 'privateStrategy');
     }
     return {
@@ -170,9 +176,10 @@ const strategyPrivateBoundaryRule = {
       },
       CallExpression(node) {
         if (node.callee.type !== 'Identifier' || node.callee.name !== 'require') return;
-        if (typeof node.arguments[0]?.value !== 'string')
-          reportNode(context, node, 'selectedLoaderOnly');
-        else check(node, node.arguments[0]);
+
+        if (typeof node.arguments[0]?.value === 'string')
+          {check(node, node.arguments[0]);}
+        else {reportNode(context, node, 'selectedLoaderOnly');}
       },
     };
   },
@@ -180,8 +187,10 @@ const strategyPrivateBoundaryRule = {
 
 function strategyFileRole(filename) {
   const role = /\/src\/strategies\/[^/]+\/(.+)$/.exec(filename)?.[1]?.replace(/\.js$/, '.ts');
-  if (role === undefined) return undefined;
+  if (role === undefined) return;
+
   if (role === 'definition.ts') return 'definition';
+
   return role === 'index.ts' || role === 'verification/pendingVerification.ts' ? 'runtime' : 'pure';
 }
 
@@ -210,6 +219,7 @@ const strategyCapabilitiesRule = {
   create(context) {
     const role = strategyFileRole(getNormalizedFilename(context));
     if (role === undefined) return {};
+
     const services = context.sourceCode.parserServices;
     const checker = services.program.getTypeChecker();
     const sourcePath = (node) => node.getSourceFile().fileName.replaceAll('\\', '/');
@@ -233,6 +243,7 @@ const strategyCapabilitiesRule = {
           !['TSAsExpression', 'TSNonNullExpression', 'TSSatisfiesExpression'].includes(parent.type)
         )
           return true;
+
       return false;
     };
     const ambientSource = (declaration) =>
@@ -241,9 +252,9 @@ const strategyCapabilitiesRule = {
     const literalName = (value) => {
       if (value?.type === 'Literal')
         return typeof value.value === 'string' ? value.value : undefined;
+
       if (value?.type === 'TemplateLiteral' && value.expressions.length === 0)
         return value.quasis[0]?.value.cooked ?? undefined;
-      return undefined;
     };
     const memberName = (node) =>
       node.computed
@@ -251,13 +262,16 @@ const strategyCapabilitiesRule = {
         : (node.property.name ?? literalName(node.property));
     const bindingName = (node) =>
       node.computed ? literalName(node.key) : (node.key.name ?? literalName(node.key));
+
     /** 属性符号身份必须同时命中 owner 接口、成员名与标准库/平台声明来源。 */
     function ambientCapabilityMember(type, name) {
       const property = typeof name === 'string' ? checker.getPropertyOfType(type, name) : undefined;
       if (!property) return false;
+
       return (
         property.declarations?.some((declaration) => {
           if (!ambientSource(declaration)) return false;
+
           const owner = declaration.parent;
           const ownerName =
             owner &&
@@ -272,6 +286,8 @@ const strategyCapabilitiesRule = {
         }) ?? false
       );
     }
+
+
     /** 零参数 Date 构造身份来自标准库；别名 `const Clock = Date` 共享同一 DateConstructor 身份。 */
     function ambientDateConstructor(expression) {
       const found = checker.getTypeAtLocation(tsNode(expression)).getSymbol();
@@ -285,18 +301,24 @@ const strategyCapabilitiesRule = {
           false)
       );
     }
+
     function moduleEdge(node, source, typeOnly) {
       if (typeof source?.value !== 'string') return;
+
       const value = source.value;
       if (
+
         /** os 与 fs/net 同属环境/文件系统边界；策略角色不按调用点区分读取用途。 */
-        /^(?:longbridge(?:\/|$)|(?:node:)?(?:fs(?:\/promises)?|https?|http2|net|tls|dgram|dns(?:\/promises)?|os|timers(?:\/promises)?|child_process|worker_threads|cluster|readline(?:\/promises)?|process|console)$)/.test(
+        /^longbridge(?:\/|$)/.test(value) ||
+        /^(?:node:)?(?:fs|dns|timers|readline)(?:\/promises)?$/.test(value) ||
+        /^(?:node:)?(?:https?|http2|net|tls|dgram|os|child_process|worker_threads|cluster|process|console)$/.test(
           value,
         ) ||
         (!typeOnly && /(?:utils|infrastructure)\/logger\//.test(value))
       )
         reportNode(context, node, 'ambient');
     }
+
     function call(node) {
       const original = tsNode(node);
       const declaration = checker.getResolvedSignature(original)?.declaration;
@@ -304,6 +326,7 @@ const strategyCapabilitiesRule = {
         const file = sourcePath(declaration);
         for (let parent = declaration; parent && !ts.isSourceFile(parent); parent = parent.parent) {
           if (!(ts.isInterfaceDeclaration(parent) || ts.isTypeAliasDeclaration(parent))) continue;
+
           const name = parent.name.text;
           if (
             (file.endsWith('/src/types/runtime.ts') &&
@@ -324,9 +347,12 @@ const strategyCapabilitiesRule = {
           }
         }
       }
+
       if (node.arguments.length === 0 && ambientDateConstructor(node.callee))
         reportNode(context, node, 'ambient');
+
       if (role !== 'definition') return;
+
       for (let parent = node.parent; parent; parent = parent.parent)
         if (
           ['ArrowFunctionExpression', 'FunctionExpression', 'FunctionDeclaration'].includes(
@@ -334,6 +360,7 @@ const strategyCapabilitiesRule = {
           )
         )
           return;
+
       if (
         declaration &&
         ts.isInterfaceDeclaration(declaration.parent) &&
@@ -343,6 +370,7 @@ const strategyCapabilitiesRule = {
         node.callee.property.name === 'freeze'
       )
         return;
+
       reportNode(context, node, 'evaluation');
     }
     return {
@@ -374,6 +402,7 @@ const strategyCapabilitiesRule = {
       Identifier(node) {
         if (
           !typePosition(node) &&
+
           /**
            * 名单只收环境/原生调度/平台根对象；命中仍要求标准库声明身份，同名局部声明不受影响。
            * 普通根访问 `globalThis.console`/`globalThis.process`/`globalThis.performance` 的属性名
@@ -388,6 +417,7 @@ const strategyCapabilitiesRule = {
       },
       Property(node) {
         if (node.parent.type !== 'ObjectPattern') return;
+
         const declarator = node.parent.parent;
         let initializer;
         if (declarator.type === 'VariableDeclarator') initializer = declarator.init;
@@ -399,13 +429,16 @@ const strategyCapabilitiesRule = {
           declarator.parent.params.includes(declarator)
         )
           initializer = declarator.right;
-        if (initializer == null) return;
+
+        if (initializer === null || initializer === undefined) return;
+
         const name = bindingName(node);
         if (ambientCapabilityMember(checker.getTypeAtLocation(tsNode(initializer)), name))
           reportNode(context, node, 'ambient');
       },
       MemberExpression(node) {
         if (typePosition(node)) return;
+
         const name = memberName(node);
         if (ambientCapabilityMember(checker.getTypeAtLocation(tsNode(node.object)), name))
           reportNode(context, node, 'ambient');
@@ -413,6 +446,7 @@ const strategyCapabilitiesRule = {
       CallExpression(node) {
         if (node.callee.type === 'Identifier' && node.callee.name === 'require')
           moduleEdge(node, node.arguments[0], false);
+
         call(node);
       },
       NewExpression: call,
@@ -787,7 +821,6 @@ export default defineConfig(
       'unicorn/prevent-abbreviations': 'off',
       'unicorn/filename-case': 'off',
       'unicorn/numeric-separators-style': 'off',
-      'unicorn/catch-error-name': 'off',
       'unicorn/no-null': 'off',
       'unicorn/no-process-exit': 'off',
       'unicorn/prefer-switch': 'off',
@@ -852,7 +885,7 @@ export default defineConfig(
         {
           patterns: [
             {
-              regex: String.raw`^(?:(?:../)+|@/)(?:${targets.join('|')})/.+`,
+              regex: `^(?:(?:../)+|@/)(?:${targets.join('|')})/.+`,
               message: `${layer} 层不得依赖高层或旧 owner，改用最近共同父级窄契约`,
             },
           ],
@@ -961,11 +994,16 @@ export default defineConfig(
       // 脚本目录
       'utils/**',
       '*.config.js',
+      '!eslint.config.js',
       'scripts/**',
 
       // 工作目录
       '.worktrees/**',
       '.claude/**',
     ],
+  },
+  {
+    files: ['eslint.config.js'],
+    extends: [tseslint.configs.disableTypeChecked],
   },
 );

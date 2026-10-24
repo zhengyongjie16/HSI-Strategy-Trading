@@ -358,7 +358,7 @@ describe('历史持仓交易状态准入', () => {
       });
       const caught: unknown = await prepareSeatsForRuntime(harness.deps).then(
         () => null,
-        (e: unknown) => e,
+        (error_: unknown) => error_,
       );
       if (failure === '外部请求失败') expect(caught).toBe(error);
       else expect(caught).toBeInstanceOf(TypeError);
@@ -411,7 +411,7 @@ describe('历史持仓交易状态准入', () => {
     const pending = prepareSeatsForRuntime(harness.deps);
     authorized = false;
     gate.reject(error);
-    expect(await pending.catch((caught: unknown) => caught)).toBe(error);
+    expect(await pending.catch((error_: unknown) => error_)).toBe(error);
     expect(harness.publicationDirections).toEqual([]);
     expect(harness.quoteContext.getCalls('warrantList')).toHaveLength(0);
   });
@@ -727,8 +727,8 @@ describe('recovery seat preparation business flow', () => {
         canContinue: () => true,
         resolveCanAutoSearchNow: () => true,
       });
-    } catch (caught) {
-      error = caught;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(error).toMatchObject({
@@ -797,8 +797,8 @@ describe('recovery seat preparation business flow', () => {
         canContinue: () => true,
         resolveCanAutoSearchNow: () => true,
       });
-    } catch (caught) {
-      error = caught;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(error).toBeInstanceOf(TypeError);

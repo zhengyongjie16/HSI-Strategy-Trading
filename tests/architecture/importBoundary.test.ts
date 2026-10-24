@@ -36,6 +36,26 @@ async function lintText(relativeFilePath: string, code: string) {
 
 describe('architecture import boundaries', () => {
   it.each([
+    ['@/strategies/intradayRegression/types.js', 'privateStrategy'],
+    ['../intradayRegression/types.js?raw', 'privateStrategy'],
+    ['@/strategies/intradayRegression/types.js#types', 'privateStrategy'],
+    ['@/strategies/newAlpha/index.js#entry', 'pureRole'],
+    ['@/strategies/newAlpha/otherMath.js', null],
+    ['./otherMath.js?raw', null],
+    ['node:path', null],
+  ])('preserves strategy import resolution for %s', async (specifier, messageId) => {
+    const messages = await lintText(
+      'src/strategies/newAlpha/newMath.ts',
+      `import '${specifier}';`,
+    );
+    expect(
+      messages
+        .filter((message) => message.ruleId === 'local/strategy-private-boundary')
+        .map((message) => message.messageId),
+    ).toEqual(messageId === null ? [] : [messageId]);
+  });
+
+  it.each([
     "import type { Input } from '../intradayRegression/types.js'; export type Output = { value: Input };",
     "export * from '../intradayRegression/constants.js';",
     "export type { Input } from '../intradayRegression/types.js';",

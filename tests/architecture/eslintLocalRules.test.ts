@@ -41,6 +41,75 @@ function hasRuleMessage(messages: Awaited<ReturnType<typeof lintText>>, ruleId: 
 
 describe('local ESLint rules', () => {
   it.each([
+    'longbridge',
+    'longbridge/quote',
+    ...[
+      'fs',
+      'fs/promises',
+      'dns',
+      'dns/promises',
+      'timers',
+      'timers/promises',
+      'readline',
+      'readline/promises',
+      'http',
+      'https',
+      'http2',
+      'net',
+      'tls',
+      'dgram',
+      'os',
+      'child_process',
+      'worker_threads',
+      'cluster',
+      'process',
+      'console',
+    ].flatMap((specifier) => [specifier, `node:${specifier}`]),
+  ])('preserves ambient module rejection for %s', async (specifier) => {
+    const messages = await lintText(
+      'src/strategies/newAlpha/newMath.ts',
+      `import '${specifier}';`,
+    );
+    expect(
+      messages.some(
+        (message) =>
+          message.ruleId === 'local/strategy-capabilities' && message.messageId === 'ambient',
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    'node:path',
+    'node:util',
+    'longbridge-extra',
+    'node:longbridge',
+    'longbridge-extra/quote',
+    'fs/extra',
+    'node:fs/promises/extra',
+    'httpx',
+    'node:https/extra',
+    'node:worker_threads/extra',
+  ])('preserves non-ambient module allowance for %s', async (specifier) => {
+    const messages = await lintText(
+      'src/strategies/newAlpha/newMath.ts',
+      `import '${specifier}';`,
+    );
+    expect(messages.filter((message) => message.ruleId === 'local/strategy-capabilities')).toEqual(
+      [],
+    );
+  });
+
+  it('allows destructured parameters without defaults', async () => {
+    const messages = await lintText(
+      'src/strategies/newAlpha/newMath.ts',
+      'export const read = ({ now }: { readonly now: () => number }): number => now();',
+    );
+    expect(messages.filter((message) => message.ruleId === 'local/strategy-capabilities')).toEqual(
+      [],
+    );
+  });
+
+  it.each([
     "import 'node:fs';",
     "import type { Stats } from 'node:fs'; export type Input = { stat: Stats };",
     "export { readFile } from 'node:fs/promises';",

@@ -1286,15 +1286,15 @@ describe('doomsday integration', () => {
     let error: unknown = null;
     try {
       await doomsday.cancelPendingBuyOrders(context);
-    } catch (err) {
-      error = err;
+    } catch (error_) {
+      error = error_;
     }
 
     let retryError: unknown = null;
     try {
       await doomsday.cancelPendingBuyOrders(context);
-    } catch (err) {
-      retryError = err;
+    } catch (error_) {
+      retryError = error_;
     }
 
     expect(error).toBeInstanceOf(TypeError);
@@ -1523,8 +1523,8 @@ describe('doomsday integration', () => {
         ...stateFixtures,
         snapshot: snapshotOf(stateFixtures),
       });
-    } catch (caught) {
-      error = caught;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(error).toBeInstanceOf(Error);
@@ -2087,8 +2087,8 @@ describe('doomsday integration', () => {
         ...stateFixtures,
         snapshot: snapshotOf(stateFixtures),
       });
-    } catch (caught) {
-      error = caught;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(error).toMatchObject({ name: 'ExternalApiRequestError' });
@@ -2146,8 +2146,8 @@ describe('doomsday integration', () => {
         ...stateFixtures,
         snapshot: snapshotOf(stateFixtures),
       });
-    } catch (caught) {
-      error = caught;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(error).toMatchObject({ name: 'ExternalApiRequestError' });

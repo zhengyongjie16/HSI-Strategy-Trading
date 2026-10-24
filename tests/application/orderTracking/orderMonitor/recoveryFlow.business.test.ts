@@ -1034,7 +1034,7 @@ describe('recovery termination and unmatched BUY', () => {
 
       const error = await promise.then(
         () => null,
-        (rejection: unknown) => rejection,
+        (error_: unknown) => error_,
       );
       if (mode === 'safe') {
         expect(error).toBeNull();
@@ -1154,7 +1154,7 @@ describe('recovery market scope', () => {
       ])
       .then(
         () => null,
-        (rejection: unknown) => rejection,
+        (error_: unknown) => error_,
       );
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toMatch(/卖单.*与当前席位不匹配/);
@@ -1217,7 +1217,7 @@ describe('recovery zero-close revision boundary', () => {
       ])
       .then(
         () => null,
-        (rejection: unknown) => rejection,
+        (error_: unknown) => error_,
       );
 
     expect(error).toBeInstanceOf(Error);

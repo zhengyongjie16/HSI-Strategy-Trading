@@ -52,8 +52,8 @@ describe('external API request boundary', () => {
           delayMs: 0,
         },
       });
-    } catch (err) {
-      error = err;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(attempts).toBe(2);
@@ -74,8 +74,8 @@ describe('external API request boundary', () => {
         },
         shouldRetry: () => false,
       });
-    } catch (err) {
-      error = err;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(attempts).toBe(1);
@@ -96,8 +96,8 @@ describe('external API request boundary', () => {
           throw new TypeError('contract broken');
         },
       });
-    } catch (err) {
-      error = err;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(attempts).toBe(1);
@@ -164,8 +164,8 @@ describe('external API request boundary', () => {
           delayMs: 0,
         },
       });
-    } catch (err) {
-      error = err;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(error).toMatchObject({
@@ -200,8 +200,8 @@ describe('external API request boundary', () => {
           delayMs: 0,
         },
       });
-    } catch (err) {
-      error = err;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(error).toBe(transientError);
@@ -277,8 +277,8 @@ describe('external API request boundary', () => {
           delayMs: 0,
         },
       });
-    } catch (err) {
-      error = err;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(error).toMatchObject({
@@ -315,8 +315,8 @@ describe('external API request boundary', () => {
             delayMs: 0,
           },
         });
-      } catch (err) {
-        error = err;
+      } catch (error_) {
+        error = error_;
       }
 
       expect(error).toBe(ordinaryError);
@@ -345,8 +345,8 @@ describe('external API request boundary', () => {
             delayMs: 0,
           },
         });
-      } catch (err) {
-        error = err;
+      } catch (error_) {
+        error = error_;
       }
 
       expect(error).toBe(programError);
@@ -376,8 +376,8 @@ describe('external API request boundary', () => {
             delayMs: 0,
           },
         });
-      } catch (err) {
-        error = err;
+      } catch (error_) {
+        error = error_;
       }
 
       expect(error).toMatchObject({
@@ -414,8 +414,8 @@ describe('external API request boundary', () => {
             delayMs: 0,
           },
         });
-      } catch (err) {
-        error = err;
+      } catch (error_) {
+        error = error_;
       }
 
       expect(error).toMatchObject({

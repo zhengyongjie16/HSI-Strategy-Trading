@@ -599,8 +599,8 @@ describe('orderMonitor business flow', () => {
     let error: unknown = null;
     try {
       await monitor.initialize();
-    } catch (err) {
-      error = err;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(native.subscribeReadCount()).toBe(2);

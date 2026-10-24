@@ -522,8 +522,8 @@ export function createSeatActivationWorkflow(
       try {
         await quoteSubscriptionRuntime.releaseRetain(retainOwner);
         released = true;
-      } catch (releaseFailure) {
-        resolveRefreshReleaseFailure({ context, hasBodyFailure, bodyFailure, releaseFailure });
+      } catch (error) {
+        resolveRefreshReleaseFailure({ context, hasBodyFailure, bodyFailure, releaseFailure: error });
       } finally {
         // activation 总周期已由 registry 的 ACTIVE/退出事件结束；release 的成功/失败与耗时独立记录。
         try {

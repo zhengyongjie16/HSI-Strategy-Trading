@@ -53,10 +53,10 @@ export function createCleanup(): CleanupController {
       try {
         await cleanupStep.handler();
         logger.debug(`${marker} done elapsedMs=${Math.round(performance.now() - startedAt)}`);
-      } catch (err) {
-        failures.push({ error: err });
+      } catch (error) {
+        failures.push({ error: error });
         logger.error(
-          `${marker} failed elapsedMs=${Math.round(performance.now() - startedAt)}: ${formatError(err)}`,
+          `${marker} failed elapsedMs=${Math.round(performance.now() - startedAt)}: ${formatError(error)}`,
         );
       }
     }

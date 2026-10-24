@@ -206,7 +206,7 @@ describe('security trading status reads', () => {
     });
     const error: unknown = await client.getSecurityTradingStatuses(['LONG.HK']).then(
       () => null,
-      (caught: unknown) => caught,
+      (error_: unknown) => error_,
     );
     expect(error).toBeInstanceOf(TypeError);
     expect(isExternalApiRequestError(error)).toBeFalse();
@@ -225,7 +225,7 @@ describe('security trading status reads', () => {
     });
     const error: unknown = await client.getSecurityTradingStatuses(['LONG.HK']).then(
       () => null,
-      (caught: unknown) => caught,
+      (error_: unknown) => error_,
     );
     expect(isExternalApiRequestError(error)).toBeTrue();
     expect(quoteMock.getCalls('quote')).toHaveLength(3);
@@ -331,8 +331,8 @@ describe('quoteClient business flow', () => {
     let error: unknown = null;
     try {
       await client.subscribeSymbols(['BULL.HK']);
-    } catch (err) {
-      error = err;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(quoteMock.getCalls('subscribe')).toHaveLength(2);
@@ -370,8 +370,8 @@ describe('quoteClient business flow', () => {
     let error: unknown = null;
     try {
       await client.unsubscribeSymbols(['BULL.HK']);
-    } catch (err) {
-      error = err;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(quoteMock.getCalls('unsubscribe')).toHaveLength(2);
@@ -754,8 +754,8 @@ describe('quoteClient business flow', () => {
     let error: unknown = null;
     try {
       await client.getQuotes(['BULL.HK']);
-    } catch (err) {
-      error = err;
+    } catch (error_) {
+      error = error_;
     }
 
     expect(quoteMock.getCalls('realtimeQuote')).toHaveLength(1);

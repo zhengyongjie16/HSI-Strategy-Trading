@@ -88,7 +88,7 @@ test.each(['history', 'today'] as const)(
     const port = native.ports.createOrderSnapshotReadPort({
       rateLimiter: { throttle: async () => {} },
     });
-    const error: unknown = await port.fetchAllOrders().catch((failure: unknown) => failure);
+    const error: unknown = await port.fetchAllOrders().catch((error_: unknown) => error_);
     expect(error).toBeInstanceOf(TypeError);
     expect(error).toMatchObject({
       message: '[orderMapper] invalid cumulative execution quantity/price',

@@ -84,7 +84,7 @@ describe('Longbridge client factory', () => {
         LONGBRIDGE_CLIENT_ID: 'client-id',
         LONGBRIDGE_CALLBACK_PORT: '70000',
       },
-    }).catch((caught: unknown) => caught);
+    }).catch((error_: unknown) => error_);
     expect(error).toHaveProperty('message', expect.stringContaining('LONGBRIDGE_CALLBACK_PORT'));
     expect(oauthBuildCalls).toHaveLength(0);
     expect(fromOAuthCalls).toHaveLength(0);
@@ -101,7 +101,7 @@ describe('Longbridge client factory', () => {
         LONGBRIDGE_ACCESS_TOKEN: 'access-token',
         LONGBRIDGE_LANGUAGE: 'fr',
       },
-    }).catch((caught: unknown) => caught);
+    }).catch((error_: unknown) => error_);
     expect(error).toHaveProperty('message', expect.stringContaining('LONGBRIDGE_LANGUAGE'));
     expect(fromApikeyCalls).toHaveLength(0);
   });
@@ -188,7 +188,7 @@ describe('Longbridge client factory', () => {
     oauthCallbackError = failure;
     const error = await createLongbridgeClientFactory({
       env: { LONGBRIDGE_AUTH_MODE: 'oauth', LONGBRIDGE_CLIENT_ID: 'client-id' },
-    }).catch((caught: unknown) => caught);
+    }).catch((error_: unknown) => error_);
     expect(error).toBe(failure);
     expect(oauthBuildCalls).toEqual([{ clientId: 'client-id', callbackPort: undefined }]);
     expect(fromOAuthCalls).toHaveLength(0);

@@ -111,12 +111,12 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
         let receipt: SettlementReadinessReceipt;
         try {
           receipt = await settlement.waitForFresh();
-        } catch (err) {
-          if (isSettlementReadinessAbortError(err, 'STOP_AND_DRAIN')) {
+        } catch (error) {
+          if (isSettlementReadinessAbortError(error, 'STOP_AND_DRAIN')) {
             return { status: 'COMPLETED' };
           }
 
-          throw err;
+          throw error;
         }
 
         if (!canContinueOrigin()) return { status: 'COMPLETED' };
@@ -285,12 +285,12 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
       }
 
       return { status: 'COMPLETED' };
-    } catch (err) {
-      if (!isExternalApiRequestError(err)) {
-        throw err;
+    } catch (error) {
+      if (!isExternalApiRequestError(error)) {
+        throw error;
       }
 
-      logger.error(`[OrdinarySell] 处理失败: ${symbolDisplay} ${signal.action}`, formatError(err));
+      logger.error(`[OrdinarySell] 处理失败: ${symbolDisplay} ${signal.action}`, formatError(error));
       return { status: 'COMPLETED' };
     }
   }

@@ -77,10 +77,10 @@ export function createBaseProcessor<TType extends string>(
         immediateHandle = null;
       } else {
         inFlightPromise = processQueue()
-          .catch((err: unknown) => {
+          .catch((error: unknown) => {
             stopScheduling();
-            termination.reportFatalError(err);
-            logger.error(`[${loggerPrefix}] 处理队列时发生错误`, formatError(err));
+            termination.reportFatalError(error);
+            logger.error(`[${loggerPrefix}] 处理队列时发生错误`, formatError(error));
           })
           .finally(() => {
             inFlightPromise = null;

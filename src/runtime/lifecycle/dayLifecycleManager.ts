@@ -257,10 +257,10 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
         rebuildFailureCount = 0;
         nextRetryAtMs = null;
         logger.info('[Lifecycle] 已完成午夜清理，等待开盘重建');
-      } catch (err) {
-        if (!isExternalApiRequestError(err)) {
-          termination.reportFatalError(err);
-          throw err;
+      } catch (error) {
+        if (!isExternalApiRequestError(error)) {
+          termination.reportFatalError(error);
+          throw error;
         }
 
         midnightClearFailureCount += 1;
@@ -268,7 +268,7 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
         nextMidnightRetryAtMs = nowMs + retryDelayMs;
         logger.error(
           `[Lifecycle] 午夜清理失败，第 ${midnightClearFailureCount} 次重试将在 ${Math.round(retryDelayMs / 1000)} 秒后触发`,
-          formatError(err),
+          formatError(error),
         );
       }
 
@@ -359,13 +359,13 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
         pendingOpenRebuild: mutableState.pendingOpenRebuild,
       });
       logger.info('[Lifecycle] 开盘重建完成，交易门禁已恢复');
-    } catch (err) {
-      if (!isExternalApiRequestError(err)) {
-        termination.reportFatalError(err);
-        throw err;
+    } catch (error) {
+      if (!isExternalApiRequestError(error)) {
+        termination.reportFatalError(error);
+        throw error;
       }
 
-      if (!isOpenOwnerCurrent()) throw err;
+      if (!isOpenOwnerCurrent()) throw error;
 
       openOwner = null;
       rebuildFailureCount += 1;
@@ -392,7 +392,7 @@ export function createDayLifecycleManager(deps: DayLifecycleManagerDeps): DayLif
 
       logger.error(
         `[Lifecycle] 开盘重建失败，第 ${rebuildFailureCount} 次重试将在 ${Math.round(retryDelayMs / 1000)} 秒后触发`,
-        formatError(err),
+        formatError(error),
       );
     }
 

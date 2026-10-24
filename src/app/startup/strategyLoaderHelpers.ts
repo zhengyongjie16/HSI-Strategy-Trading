@@ -103,8 +103,8 @@ export async function importStrategyDefinition(
   let module: unknown;
   try {
     module = await fs.importModule(pathToFileURL(location.definitionPath).href);
-  } catch (cause) {
-    throw new Error(`[Strategy:import] 加载入口失败: ${location.definitionPath}`, { cause });
+  } catch (error) {
+    throw new Error(`[Strategy:import] 加载入口失败: ${location.definitionPath}`, { cause: error });
   }
 
   if (
@@ -132,8 +132,8 @@ export function prepareStrategyDefinition(definition: StrategyDefinition): Prepa
   let prepared: unknown;
   try {
     prepared = definition.prepare();
-  } catch (cause) {
-    throw new Error(`[Strategy:prepare] 策略配置准备失败: ${definition.id}`, { cause });
+  } catch (error) {
+    throw new Error(`[Strategy:prepare] 策略配置准备失败: ${definition.id}`, { cause: error });
   }
 
   if (!isPreparedStrategy(prepared)) {

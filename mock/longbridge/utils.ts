@@ -137,8 +137,8 @@ export async function withMockCall<T>(params: {
       error: null,
     });
     return result;
-  } catch (err) {
-    const error = err instanceof Error ? err : new Error(String(err));
+  } catch (error_) {
+    const error = error_ instanceof Error ? error_ : new Error(String(error_));
     recordCall({
       callRecords,
       method,

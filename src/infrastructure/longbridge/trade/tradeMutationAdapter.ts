@@ -181,8 +181,8 @@ export function createTradeMutationAdapter(context: unknown): TradeMutationPort 
         requestAttempted: true,
         orderId,
       });
-    } catch (cause) {
-      return classifySubmitRequestError(cause);
+    } catch (error) {
+      return classifySubmitRequestError(error);
     }
   }
 
@@ -206,8 +206,8 @@ export function createTradeMutationAdapter(context: unknown): TradeMutationPort 
         operation: 'TradeContext.replaceOrder',
         requestAttempted: true,
       });
-    } catch (cause) {
-      return classifyReplaceRequestError(cause);
+    } catch (error) {
+      return classifyReplaceRequestError(error);
     }
   }
 
@@ -223,8 +223,8 @@ export function createTradeMutationAdapter(context: unknown): TradeMutationPort 
         operation: 'TradeContext.cancelOrder',
         requestAttempted: true,
       });
-    } catch (cause) {
-      return classifyCancelRequestError(cause);
+    } catch (error) {
+      return classifyCancelRequestError(error);
     }
   }
 

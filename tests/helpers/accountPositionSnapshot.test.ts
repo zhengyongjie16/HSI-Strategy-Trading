@@ -11,7 +11,7 @@ describe('P1 neutral snapshot fixtures', () => {
   it('cannot report an uninitialized snapshot as ready', async () => {
     const snapshot = createEmptySnapshotFixture();
     const freshness = createSettlementFreshnessFixture(snapshot);
-    const error = await freshness.waitForFresh().catch((caught: unknown) => caught);
+    const error = await freshness.waitForFresh().catch((error_: unknown) => error_);
     expect(error).toBeInstanceOf(Error);
     expect(snapshot.getView().accountInitialized).toBe(false);
     expect(snapshot.getView().positionsInitialized).toBe(false);

@@ -219,8 +219,8 @@ describe('SeatActivationDispatcher', () => {
       };
       Object.defineProperty(invalidActivatingSeat, 'symbol', { get: () => null });
       symbolRegistry.updateSeatStateWithVersionBump('LONG', invalidActivatingSeat);
-    } catch (err) {
-      caught = err;
+    } catch (error) {
+      caught = error;
     } finally {
       dispatcher.stop();
     }

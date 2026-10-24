@@ -188,8 +188,8 @@ describe('cleanup business flow', () => {
     let caught: unknown = null;
     try {
       await cleanup.execute();
-    } catch (err) {
-      caught = err;
+    } catch (error) {
+      caught = error;
     }
 
     expect(caught).toBeInstanceOf(AggregateError);

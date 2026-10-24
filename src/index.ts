@@ -14,12 +14,12 @@ let loggerShutdownCompleted = false;
 
 try {
   await runApp({ env: process.env });
-} catch (err: unknown) {
+} catch (error: unknown) {
   hasFailed = true;
-  if (err instanceof Error && err.name === 'ConfigValidationError') {
+  if (error instanceof Error && error.name === 'ConfigValidationError') {
     console.error('程序启动失败：配置验证未通过');
-  } else if (!(err instanceof Error && err.name === 'AppStartupAbortError')) {
-    console.error('程序异常退出', err);
+  } else if (!(error instanceof Error && error.name === 'AppStartupAbortError')) {
+    console.error('程序异常退出', error);
   }
 } finally {
   try {

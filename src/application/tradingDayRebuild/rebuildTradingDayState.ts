@@ -427,12 +427,12 @@ export function createRebuildTradingDayState(
 
       clearSeatActivationCarryover(symbolRegistry);
       return { status: 'COMMITTED', snapshotToken: params.snapshotToken };
-    } catch (err) {
-      if (!isExternalApiRequestError(err)) {
-        termination.reportFatalError(err);
+    } catch (error) {
+      if (!isExternalApiRequestError(error)) {
+        termination.reportFatalError(error);
       }
 
-      throw err;
+      throw error;
     }
   };
 }

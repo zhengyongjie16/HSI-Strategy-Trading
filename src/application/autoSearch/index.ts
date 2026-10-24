@@ -158,20 +158,20 @@ export function createAutoSearch(deps: AutoSearchDeps): AutoSearchWorkflow {
         currentTime,
         canContinue: () => isSearchOwnerCurrent({ direction, seatVersion, canContinue }),
       });
-    } catch (err) {
-      if (isExternalApiRequestError(err)) {
+    } catch (error) {
+      if (isExternalApiRequestError(error)) {
         if (!recordSearchFailure({ direction, currentTime, seatVersion, canContinue })) {
           return;
         }
 
         logger.warn(
-          `[自动寻标] ${monitorSymbol} ${direction} 外部请求失败，等待 cooldown owner 重试: ${err.message}`,
+          `[自动寻标] ${monitorSymbol} ${direction} 外部请求失败，等待 cooldown owner 重试: ${error.message}`,
         );
         return;
       }
 
       recordSearchFailure({ direction, currentTime, seatVersion, canContinue });
-      throw err;
+      throw error;
     }
 
     if (!isSearchOwnerCurrent({ direction, seatVersion, canContinue })) {

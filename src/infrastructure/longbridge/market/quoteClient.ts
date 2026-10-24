@@ -896,8 +896,8 @@ export async function createMarketDataClient(
           prevCloseCache.delete(symbol);
           staticInfoCache.delete(symbol);
         }
-      } catch (err) {
-        errors.push(err);
+      } catch (error) {
+        errors.push(error);
       }
     }
 
@@ -919,8 +919,8 @@ export async function createMarketDataClient(
           symbol,
           period: periodValue,
         });
-      } catch (err) {
-        errors.push(err);
+      } catch (error) {
+        errors.push(error);
       }
     }
 

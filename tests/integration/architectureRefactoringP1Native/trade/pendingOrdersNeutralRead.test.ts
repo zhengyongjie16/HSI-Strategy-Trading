@@ -128,7 +128,7 @@ test('neutral cache rejects numeric SDK-shaped direction/status/type without acc
       ...deps,
       ctx: { todayOrders: async () => [invalid] },
     });
-    const error = await malformed.getPendingOrders().catch((cause: unknown) => cause);
+    const error = await malformed.getPendingOrders().catch((error_: unknown) => error_);
     expect(error).toBeInstanceOf(TypeError);
     if (!(error instanceof TypeError)) throw new Error('missing strict cache rejection');
 

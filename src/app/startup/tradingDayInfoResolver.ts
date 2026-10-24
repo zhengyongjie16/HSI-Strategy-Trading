@@ -19,9 +19,9 @@ export function createTradingDayInfoResolver(
   return async function resolveTradingDayInfo(currentTime: Date) {
     try {
       return await marketDataClient.isTradingDay(currentTime);
-    } catch (err) {
-      onResolveError(err);
-      throw err;
+    } catch (error) {
+      onResolveError(error);
+      throw error;
     }
   };
 }

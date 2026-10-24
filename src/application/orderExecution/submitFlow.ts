@@ -562,13 +562,13 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         );
         return { kind: 'SUBMITTED', orderId };
       });
-    } catch (err) {
+    } catch (error) {
       // 只接收本轮私有取消身份；任何内部/SDK 错误即使原授权过期仍原样暴露。
-      if (err === finalAuthorizationAborted) return { kind: 'SKIPPED' };
+      if (error === finalAuthorizationAborted) return { kind: 'SKIPPED' };
 
-      if (err === sellAvailabilityChanged) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+      if (error === sellAvailabilityChanged) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
 
-      throw err;
+      throw error;
     }
   }
 

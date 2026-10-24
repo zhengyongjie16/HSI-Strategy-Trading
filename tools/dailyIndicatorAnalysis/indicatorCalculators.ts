@@ -69,8 +69,8 @@ export function calculateEMA(candles: ReadonlyArray<CandleData>, period: number)
     }
 
     return readEmaValue(state);
-  } catch (err) {
-    logDebug(`EMA计算失败 (period=${period})`, err);
+  } catch (error) {
+    logDebug(`EMA计算失败 (period=${period})`, error);
     return null;
   }
 }
@@ -97,8 +97,8 @@ export function calculateKDJ(
     }
 
     return readKdjValue(state);
-  } catch (err) {
-    logDebug('KDJ计算失败', err);
+  } catch (error) {
+    logDebug('KDJ计算失败', error);
     return null;
   }
 }
@@ -125,8 +125,8 @@ export function calculateMFI(
     }
 
     return readMfiValue(state);
-  } catch (err) {
-    logDebug(`MFI计算失败 (period=${period})`, err);
+  } catch (error) {
+    logDebug(`MFI计算失败 (period=${period})`, error);
     return null;
   }
 }
@@ -160,8 +160,8 @@ export function calculateRSI(candles: ReadonlyArray<CandleData>, period: number)
     }
 
     return rsi;
-  } catch (err) {
-    logDebug(`RSI计算失败 (period=${period})`, err);
+  } catch (error) {
+    logDebug(`RSI计算失败 (period=${period})`, error);
     return null;
   }
 }

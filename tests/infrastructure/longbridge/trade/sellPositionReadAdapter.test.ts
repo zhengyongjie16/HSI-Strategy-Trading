@@ -109,7 +109,7 @@ describe('sellPositionReadAdapter target quantity proof', () => {
 
       const error = await resolver
         .readFreshAvailableSellQuantity('700.HK', () => true)
-        .catch((caught: unknown) => caught);
+        .catch((error_: unknown) => error_);
       expect(error).toBeInstanceOf(RangeError);
     },
   );
