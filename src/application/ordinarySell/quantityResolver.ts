@@ -10,7 +10,7 @@
  * - 限价/增强限价卖单的委托价必须以「执行时行情」为准，不能使用信号生成时的快照价。
  * - 本模块只计算卖出数量；orderExecutor 在提交前重新获取执行时行情。
  */
-import { LONG_DIRECTION_NAME, SHORT_DIRECTION_NAME } from '../../constants/index.js';
+import { LONG_DIRECTION_NAME, SHORT_DIRECTION_NAME } from '../../constants/common.js';
 import {
   buildSellReason,
   validateSellContext,

@@ -9,7 +9,7 @@ import {
   ORDER_CLOSED_ERROR_CODE_SET,
   REPLACE_TEMP_BLOCKED_BY_STATUS_ERROR_CODE_SET,
   REPLACE_UNSUPPORTED_BY_TYPE_ERROR_CODE_SET,
-} from '../../../constants/index.js';
+} from '../../../constants/common.js';
 import type {
   TradeCancelResult,
   TradeReplaceResult,

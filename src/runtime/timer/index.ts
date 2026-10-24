@@ -3,7 +3,7 @@
  *
  * 职责：把未来 epoch 毫秒目标转换为平台安全的 one-shot timer 分段，避免超长 delay 被运行时钳制为立即触发。
  */
-import { TIME } from '../../constants/index.js';
+import { TIME } from '../../constants/common.js';
 import type {
   BoundedOneShotTimerController,
   BoundedOneShotTimerParams,

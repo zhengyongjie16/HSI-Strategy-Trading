@@ -57,7 +57,7 @@ export type UserId = string & { readonly brand: unique symbol };
 | --- | --- |
 | 类型 | `types.ts` 只能包含 `type`、`interface`、`import type`、`export type` 等类型相关定义；禁止常量、函数、类、枚举、Schema 等运行时代码。 |
 | 工具 | `utils.ts` 只能包含工具函数及必要实现，禁止 `type`、`interface` 或其他类型声明；依赖类型放相邻 `types.ts` 或公共类型模块，以 `import type` 引入。 |
-| 常量 | 跨模块共享常量统一放在 `src/constants/`，从定义位置引用，禁止分散硬编码或重复定义；`src/constants/index.ts` 只是组织示例，不是唯一允许的文件。唯一例外：具体策略的私有规则常量放该策略目录 `src/strategies/<strategyDirectory>/constants.ts`，只允许本策略导入，宿主和其他策略不得导入，也不因此放宽其他模块的常量放置规则。 |
+| 常量 | 跨模块共享常量统一放在 `src/constants/`，从定义位置引用，禁止分散硬编码或重复定义；`src/constants/common.ts` 只是组织示例，不是唯一允许的文件。唯一例外：具体策略的私有规则常量放该策略目录 `src/strategies/<strategyDirectory>/constants.ts`，只允许本策略导入，宿主和其他策略不得导入，也不因此放宽其他模块的常量放置规则。 |
 | 单元测试 | 统一放项目根目录 `tests/`，目录结构与 `src/` 一一对应；建议命名 `*.test.ts`，不要把不同模块测试堆在一个目录或文件中。 |
 
 - 类型和工具按使用范围放置：仅本模块使用的放本模块 `types.ts` / `utils.ts`；跨模块共享的放使用方的**最近共同父级**对应文件，禁止重复定义。不要将共享内容提升到更高祖先级，也不要将私有内容放进父级公共文件。

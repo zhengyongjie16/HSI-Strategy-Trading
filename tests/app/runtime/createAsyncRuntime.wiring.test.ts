@@ -1,6 +1,6 @@
 import type { RuntimeStateFixtures } from '../../helpers/types.js';
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
-import { TRADING } from '../../../src/constants/index.js';
+import { TRADING } from '../../../src/constants/common.js';
 import { createIssuedPeriodicTasksFixture } from '../../helpers/issuedPeriodicTasks.js';
 import { getDefaultAutoSearchConfig } from '../../helpers/seatTestUtils.js';
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';

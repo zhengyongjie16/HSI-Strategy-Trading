@@ -2,7 +2,7 @@
  * 账户与持仓展示服务：只读取 canonical snapshot，以精确金额/比率一次生成展示文本。
  * 不主动请求、不缓存第二份账户；保留原生显示路径的负零符号政策。
  */
-import { ACCOUNT_CHANNEL_MAP } from '../../../constants/index.js';
+import { ACCOUNT_CHANNEL_MAP } from '../../../constants/common.js';
 import { logger } from '../../logger/index.js';
 import {
   exactCompare,

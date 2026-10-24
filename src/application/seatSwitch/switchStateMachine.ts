@@ -10,7 +10,7 @@ import type {
   PeriodicSwitchInternalPendingState,
   SwitchState,
 } from '../../domain/seat/types.js';
-import { ORDER_QUOTE_RETRY } from '../../constants/index.js';
+import { ORDER_QUOTE_RETRY } from '../../constants/common.js';
 import { isValidPositiveNumber } from '../../utils/helpers/index.js';
 import { exactAdd, exactCompare } from '../../utils/numeric/exact.js';
 import {

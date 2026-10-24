@@ -5,7 +5,7 @@
  * 保留启动前 single-assignment 绑定来解决构造环；不持有业务状态、刷新 pump 或 completion 事务。
  */
 import { createPostTradeSettlementWorkflow } from '../../application/postTradeSettlement/index.js';
-import { API } from '../../constants/index.js';
+import { API } from '../../constants/common.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import type { PostTradeConsistencyRuntime, PostTradeConsistencyRuntimeDeps } from './types.js';
 

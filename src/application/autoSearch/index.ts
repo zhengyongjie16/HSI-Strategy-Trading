@@ -20,7 +20,7 @@ import { isWithinMorningOpenWindow } from '../../domain/tradingSession/index.js'
 import {
   AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY,
   AUTO_SYMBOL_SEARCH_COOLDOWN_MS,
-} from '../../constants/index.js';
+} from '../../constants/common.js';
 
 /**
  * 创建运行期空席位搜索唯一 owner；当前身份的无候选/外部失败记数，内部错误记数后原样暴露。

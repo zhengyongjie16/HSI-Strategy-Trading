@@ -1,5 +1,5 @@
 /** 市场显示工具：金额/价格原文一次 half-even 输出，不把显示舍入回写金融事实。 */
-import { DEFAULT_PERCENT_DECIMALS } from '../../../constants/index.js';
+import { DEFAULT_PERCENT_DECIMALS } from '../../../constants/common.js';
 import {
   exactCompare,
   exactMultiply,

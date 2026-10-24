@@ -17,7 +17,7 @@ import {
  */
 import { describe, expect, it, setSystemTime } from 'bun:test';
 import { createBrokerIngressFixture } from '../../infrastructure/longbridge/trade/brokerIngressFixture.js';
-import { TRADING } from '../../../src/constants/index.js';
+import { TRADING } from '../../../src/constants/common.js';
 import { createOrderExecutor as createOrderExecutorCore } from '../../../src/application/orderExecution/index.js';
 import type { OrderExecutorDeps } from '../../../src/application/orderExecution/types.js';
 import type { TrackOrderParams } from '../../../src/domain/order/types.js';

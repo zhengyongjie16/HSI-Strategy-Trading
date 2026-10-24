@@ -1,6 +1,6 @@
 /** 订单记录纯规则：精确成本依据、生命周期分流、盈利/交易时长选单与 pending 成交状态。 */
 
-import { TIME } from '../../constants/index.js';
+import { TIME } from '../../constants/common.js';
 import type {
   OrderExecutionRecordObservation,
   OrderRecord,

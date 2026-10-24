@@ -4,7 +4,7 @@
  */
 import { expect, test } from 'bun:test';
 import { createTradingConfig } from '../../../../mock/factories/configFactory.js';
-import { API } from '../../../../src/constants/index.js';
+import { API } from '../../../../src/constants/common.js';
 import { createSignal } from '../../../../mock/factories/signalFactory.js';
 import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
 import { createSubmitTargetOrder } from '../../../../src/application/orderExecution/submitFlow.js';

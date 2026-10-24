@@ -6,7 +6,7 @@
  * - 从只读 canonical snapshot 与真实 settlement receipt 捕获执行授权
  * - 远端确认不冒充空仓；仅授权仍有效时沿原清理与风险发布语义推进
  */
-import { WARRANT_LIQUIDATION_ORDER_TYPE } from '../../constants/index.js';
+import { WARRANT_LIQUIDATION_ORDER_TYPE } from '../../constants/common.js';
 import { validateSignalSeat, isSeatActive } from '../../domain/seat/seatPolicy.js';
 import type { SellSignal } from '../../types/signal.js';
 import type { Quote } from '../../types/quote.js';

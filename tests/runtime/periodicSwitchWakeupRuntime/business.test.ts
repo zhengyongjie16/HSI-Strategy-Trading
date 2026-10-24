@@ -11,7 +11,7 @@ import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js'
 import { createSettlementRuntimeFixture } from '../../helpers/settlementRuntime.js';
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { TIME, TRADING } from '../../../src/constants/index.js';
+import { TIME, TRADING } from '../../../src/constants/common.js';
 import { createPeriodicSwitchWakeupRuntime } from '../../../src/runtime/periodicSwitchWakeupRuntime/index.js';
 
 import type { MonitorConfig } from '../../../src/types/config.js';

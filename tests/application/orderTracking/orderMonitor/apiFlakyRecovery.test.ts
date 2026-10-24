@@ -27,7 +27,7 @@ import { createTradingConfig } from '../../../../mock/factories/configFactory.js
 import { createPostTradeConsistencyRuntime } from '../../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createAccountPositionSnapshot } from '../../../../src/application/accountPositionSnapshot/index.js';
 import { createOrderHoldRegistry } from '../../../../src/application/orderTracking/orderHoldRegistry.js';
-import { API } from '../../../../src/constants/index.js';
+import { API } from '../../../../src/constants/common.js';
 
 import { createBrokerIngressFixture } from '../../../integration/architectureRefactoringP1Native/trade/brokerIngressFixture.js';
 

@@ -1,5 +1,5 @@
 /** 订单 remark provenance：新单写入目的，恢复只读取既有后缀，不推断完整历史 purpose。 */
-import { TRADING } from '../../constants/index.js';
+import { TRADING } from '../../constants/common.js';
 
 /** 生成 broker remark；protective 身份只由该订单的原始请求决定。 */
 export function buildOrderRemark(isProtectiveLiquidation: boolean): string {

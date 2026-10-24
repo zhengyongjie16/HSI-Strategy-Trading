@@ -6,7 +6,7 @@
  * - 对唯一 monitor 执行 single-flight + latest-only collapse
  * - 在 runtime gate 打开时异步读取当前 monitor quote 并交给纯渲染器输出
  */
-import { TRADING } from '../../constants/index.js';
+import { TRADING } from '../../constants/common.js';
 import { formatError } from '../../utils/error/index.js';
 import type {
   MonitorDisplayRouteState,

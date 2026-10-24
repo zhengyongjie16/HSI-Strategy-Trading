@@ -2,7 +2,7 @@
  * dailyIndicatorAnalysis 工具指标全量计算模块。
  * 职责：为分钟指标分析工具提供生产链路不再直接导出的全量指标包装计算。
  */
-import { IS_DEBUG } from '../../src/constants/index.js';
+import { IS_DEBUG } from '../../src/constants/common.js';
 import { isValidPositiveNumber } from '../../src/utils/helpers/index.js';
 import { logger } from '../../src/infrastructure/logger/index.js';
 import { readEmaValue } from '../../src/strategies/intradayRegression/indicators/ema.js';

@@ -1,5 +1,5 @@
 /** 港股交易会话规则：连续交易、开盘保护窗口与严格交易时长；全部使用显式时间和日历事实。 */
-import { TIME } from '../../constants/index.js';
+import { TIME } from '../../constants/common.js';
 import type { TradingDayInfo, TradingDurationBetweenParams } from '../../types/tradingCalendar.js';
 import { getHKDateKey, getHKTime, resolveHKDayStartUtcMs } from '../../utils/time/index.js';
 import type { SessionRange, TradingDurationDueAtParams } from './types.js';

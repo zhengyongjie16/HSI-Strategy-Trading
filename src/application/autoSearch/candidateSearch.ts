@@ -6,7 +6,7 @@
  * 执行流程：read port 获取列表 → 纯 selectBestWarrant → 日志 → 返回最佳或 null。
  */
 import type { MarketWarrantListItem } from '../../types/marketPorts.js';
-import { DEFAULT_PERCENT_DECIMALS, DEFAULT_PRICE_DECIMALS } from '../../constants/index.js';
+import { DEFAULT_PERCENT_DECIMALS, DEFAULT_PRICE_DECIMALS } from '../../constants/common.js';
 import {
   buildExpiryDateFilters,
   selectBestWarrant,

@@ -7,7 +7,7 @@ import type { RuntimeStateFixtures } from '../helpers/types.js';
  * 验证双向 broker await 交错不转移工作责任，失败不偷重试，ACK 与迟到持仓事实如实收口。
  */
 import { describe, expect, it } from 'bun:test';
-import { API } from '../../src/constants/index.js';
+import { API } from '../../src/constants/common.js';
 import { createAccountPositionSnapshot } from '../../src/application/accountPositionSnapshot/index.js';
 import { createPostTradeConsistencyRuntime } from '../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 import { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';

@@ -9,7 +9,7 @@ import { canonicalDecimal, formatDecimal } from '../../utils/numeric/exact.js';
 import { isExternalApiRequestError, isProgramError } from '../../utils/apiFailure/index.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { formatError } from '../../utils/error/index.js';
-import { WARRANT_TYPE_NAMES } from '../../constants/index.js';
+import { WARRANT_TYPE_NAMES } from '../../constants/common.js';
 import type { WarrantInfo } from '../../domain/risk/types.js';
 import type {
   WarrantRiskRefresh,

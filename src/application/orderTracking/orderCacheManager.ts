@@ -10,7 +10,7 @@
  * - 订单状态变化后自动失效
  */
 
-import { API } from '../../constants/index.js';
+import { API } from '../../constants/common.js';
 import {
   ORDER_READ_STATUS_VALUES,
   ORDER_READ_TYPE_VALUES,

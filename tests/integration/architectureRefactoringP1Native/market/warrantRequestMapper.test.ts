@@ -1,7 +1,7 @@
 /** 默认 SDK 入口→真实 quoteClient；原生 tuple oracle 与纯 mapper case 位于 tests/infrastructure/longbridge/market。 */
 import { describe, expect, it } from 'bun:test';
 import { createNativeWarrantMarketFixture } from '../../../infrastructure/longbridge/market/warrantMarketFixture.js';
-import { EXPIRY_DATE_FILTERS } from '../../../../src/constants/index.js';
+import { EXPIRY_DATE_FILTERS } from '../../../../src/constants/common.js';
 import type { MarketWarrantListRequest } from '../../../../src/types/marketPorts.js';
 
 describe('warrant request native mapping', () => {

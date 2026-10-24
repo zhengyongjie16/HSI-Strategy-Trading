@@ -8,7 +8,7 @@ import type {
   SettlementProtectionCompletion,
   SettlementProtectionOrderBaseline,
 } from '../../../src/application/postTradeSettlement/types.js';
-import { API } from '../../../src/constants/index.js';
+import { API } from '../../../src/constants/common.js';
 import { DIAGNOSTIC_OPERATIONS } from '../../../src/constants/diagnostics.js';
 import type { DiagnosticFields } from '../../../src/types/diagnostics.js';
 import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';

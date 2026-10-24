@@ -10,7 +10,7 @@ import { createTerminationRuntime } from '../../../src/runtime/lifecycle/termina
 import { createPostTradeSettlementWorkflow } from '../../../src/application/postTradeSettlement/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
-import { API } from '../../../src/constants/index.js';
+import { API } from '../../../src/constants/common.js';
 import type { PostTradeSettlementWorkflow } from '../../../src/application/postTradeSettlement/types.js';
 import type { SnapshotToken, AccountPositionSnapshot } from '../../../src/types/accountPosition.js';
 import type { RuntimeScheduler } from '../../../src/types/runtime.js';

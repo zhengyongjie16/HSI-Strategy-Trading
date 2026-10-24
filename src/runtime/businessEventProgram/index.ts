@@ -2,7 +2,7 @@
  * 普通行情事件宿主：single-flight/latest-only 读取权威缓存，冻结中性输入，调用策略一次。
  * 策略独占指标/采样/pending；宿主独占交易日、席位授权、普通 Signal 与 queue admission。
  */
-import { TRADING } from '../../constants/index.js';
+import { TRADING } from '../../constants/common.js';
 import { ordinarySignalGuard } from '../../domain/strategy/ordinarySignalGuard.js';
 import { createStrategyEmitter } from './emissionAdapter.js';
 import { isValidDayKey, isValidTimeMs, projectCandlesticks } from './utils.js';

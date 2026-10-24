@@ -2,7 +2,7 @@
  * 跨交易用例共享的行情有限重试状态计算。
  * 只返回次数、下次时点和耗尽事实；重试状态及唤醒仍由各用例/runtime 持有。
  */
-import { ORDER_QUOTE_RETRY } from '../constants/index.js';
+import { ORDER_QUOTE_RETRY } from '../constants/common.js';
 import type { ResolveNextQuoteRetryParams, ResolveNextQuoteRetryResult } from './types.js';
 
 /**

@@ -1,6 +1,6 @@
 /** 距离换仓独立卖出集成：真实 executor/monitor/settlement，旧单只参与等待，新操作独占回补预算。 */
 import { describe, expect, it } from 'bun:test';
-import { ORDER_QUOTE_RETRY } from '../../src/constants/index.js';
+import { ORDER_QUOTE_RETRY } from '../../src/constants/common.js';
 import { createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSeatSwitchWorkflow } from '../../src/application/seatSwitch/index.js';
 import { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';

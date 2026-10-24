@@ -8,13 +8,13 @@
  * - 若发现非当前席位仍有正持仓，则直接抛错暴露席位归属不变量破坏
  *
  * 时间规则：
- * - 窗口长度由 `src/constants/index.ts` 中的 `DOOMSDAY` 常量统一定义
+ * - 窗口长度由 `src/constants/common.ts` 中的 `DOOMSDAY` 常量统一定义
  * - 半日市按 12:00 收盘计算，正常交易日按 16:00 收盘计算
  *
  * 控制开关：
  * - DOOMSDAY_PROTECTION 环境变量（默认 true）
  */
-import { ORDER_QUOTE_RETRY, TRADING } from '../../constants/index.js';
+import { ORDER_QUOTE_RETRY, TRADING } from '../../constants/common.js';
 import { resolveNextQuoteRetry } from '../quoteRetry.js';
 import { resolveQuoteReadinessForRequirement } from '../../domain/order/quoteReadiness.js';
 import { isHongKongSymbol } from '../../utils/marketScope.js';

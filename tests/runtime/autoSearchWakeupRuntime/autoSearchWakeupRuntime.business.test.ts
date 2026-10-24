@@ -3,7 +3,7 @@ import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.j
 /** 自动寻标 wakeup 调度测试：窄用例注入、route 去重、冷却移交、fatal 与分段 timer 语义。 */
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../../src/constants/index.js';
+import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../../src/constants/common.js';
 import { createAutoSearchWakeupRuntime } from '../../../src/runtime/autoSearchWakeupRuntime/index.js';
 import { createTradingGateEventRuntime as createProductionTradingGateEventRuntime } from '../../../src/runtime/tradingGateEventRuntime/index.js';
 import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';

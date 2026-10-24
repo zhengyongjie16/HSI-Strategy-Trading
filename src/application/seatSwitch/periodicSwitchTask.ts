@@ -3,7 +3,7 @@
  * 消费原 ACTIVE baseline/epoch/receipt，推进 due 检查并交接真实 SWITCHING WAIT；
  * 只对明确外部失败请求未来重评估，内部错误继续 fail-fast，runtime worker 不拥有失败政策。
  */
-import { TRADING } from '../../constants/index.js';
+import { TRADING } from '../../constants/common.js';
 import { isSeatSnapshotValid } from '../../domain/seat/seatIdentity.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { formatError } from '../../utils/error/index.js';

@@ -7,7 +7,7 @@ import type { RuntimeStateFixtures } from '../../helpers/types.js';
  * 覆盖单次时间唤醒评估的门禁状态、生命周期顺序与系统级唤醒候选输出。
  */
 import { describe, expect, it } from 'bun:test';
-import { TRADING } from '../../../src/constants/index.js';
+import { TRADING } from '../../../src/constants/common.js';
 import { createDoomsdayClearanceWorkflow } from '../../../src/application/doomsdayClearance/index.js';
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import type { AccountPositionSnapshot } from '../../../src/types/accountPosition.js';

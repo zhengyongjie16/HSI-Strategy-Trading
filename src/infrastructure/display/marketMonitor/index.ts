@@ -12,7 +12,7 @@ import {
   formatPositionDisplay,
   formatWarrantDistanceDisplay,
 } from './utils.js';
-import { LOG_COLORS } from '../../../constants/index.js';
+import { LOG_COLORS } from '../../../constants/common.js';
 import {
   exactCompare,
   exactMultiply,

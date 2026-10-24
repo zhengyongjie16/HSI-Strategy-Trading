@@ -7,7 +7,7 @@
  * - 在 stopAndDrain 时取消订阅、清理 timer 并等待在途 route 执行完成
  */
 
-import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../constants/index.js';
+import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../constants/common.js';
 import type {
   OrderMonitorConfig,
   OrderMonitorTrackedOrder,

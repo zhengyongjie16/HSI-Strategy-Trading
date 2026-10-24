@@ -19,7 +19,7 @@ import {
   MIN_MONITOR_PRICE_THRESHOLD,
   DEFAULT_PRICE_DECIMALS,
   DEFAULT_PERCENT_DECIMALS,
-} from '../../constants/index.js';
+} from '../../constants/common.js';
 import type { SignalType } from '../../types/signal.js';
 import type {
   BullBearWarrantType,

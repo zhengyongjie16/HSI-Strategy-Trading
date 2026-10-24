@@ -27,7 +27,7 @@ import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js'
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/createPostTradeConsistencyRuntime.js';
 
-import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
+import { ORDER_QUOTE_RETRY } from '../../../src/constants/common.js';
 import { createStaticLiquidationExecutor } from '../../../src/application/staticLiquidation/index.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import { createMonitorConfig } from '../../../mock/factories/configFactory.js';

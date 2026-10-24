@@ -19,7 +19,7 @@
  * - 程序启动时的首次初始化
  * - 开盘重建流程中由 globalStateDomain 调用
  */
-import { TRADING } from '../../constants/index.js';
+import { TRADING } from '../../constants/common.js';
 import { getHKDateKey } from '../../utils/time/index.js';
 import {
   isInContinuousHKSession,

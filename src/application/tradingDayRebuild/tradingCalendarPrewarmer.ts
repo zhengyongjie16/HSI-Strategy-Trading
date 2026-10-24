@@ -13,7 +13,7 @@ import type { SymbolRegistry } from '../../types/seat.js';
  * - 交易日历接口仅支持最近一年窗口，超出范围直接抛错阻断重建
  * - 任一查询失败即抛错，由生命周期管理器统一重试
  */
-import { LIFECYCLE, TIME } from '../../constants/index.js';
+import { LIFECYCLE, TIME } from '../../constants/common.js';
 import { hasSeatSymbol } from '../../domain/seat/seatPolicy.js';
 
 import type { MarketDataClient } from '../../types/marketPorts.js';

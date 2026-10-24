@@ -15,7 +15,7 @@ import type { Logger } from '../../../types/logger.js';
  * - 避免每次查询都遍历整个数组
  */
 
-import { LONG_DIRECTION_NAME, SHORT_DIRECTION_NAME } from '../../../constants/index.js';
+import { LONG_DIRECTION_NAME, SHORT_DIRECTION_NAME } from '../../../constants/common.js';
 import { calculateTotalQuantity } from '../../../domain/order/orderQuantity.js';
 import {
   calculateOrderStatistics,

@@ -3,7 +3,7 @@
  *
  * 职责：保持正常日/半日市的拒买与清仓接管边界，裁剪窗口内允许的下一次重评估；不读取行情或持有 timer。
  */
-import { DOOMSDAY, TIME } from '../../../constants/index.js';
+import { DOOMSDAY, TIME } from '../../../constants/common.js';
 import { getHKDateKey, getHKTime, resolveHKDayStartUtcMs } from '../../../utils/time/index.js';
 
 /**

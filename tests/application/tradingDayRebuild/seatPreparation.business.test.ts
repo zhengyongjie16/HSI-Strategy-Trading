@@ -20,7 +20,7 @@ import type { OrderFact } from '../../../src/types/trade.js';
 import { prepareSeatsForRuntime } from '../../../src/application/tradingDayRebuild/seatPreparation.js';
 import { createWarrantCandidateSearch } from '../../../src/application/autoSearch/candidateSearch.js';
 import { createStartupSeatSearch } from '../../../src/application/autoSearch/startupSeatSearch.js';
-import { AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY } from '../../../src/constants/index.js';
+import { AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY } from '../../../src/constants/common.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
 
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';

@@ -4,7 +4,7 @@
  * 三条寻标入口共用此规则，SDK 距离小数比值仅在此换算为内部百分比文本。
  */
 import type { MarketWarrantExpiryRange } from '../../../types/marketPorts.js';
-import { EXPIRY_DATE_FILTERS } from '../../../constants/index.js';
+import { EXPIRY_DATE_FILTERS } from '../../../constants/common.js';
 import { isHongKongSymbol } from '../../../utils/marketScope.js';
 import {
   canonicalDecimal,

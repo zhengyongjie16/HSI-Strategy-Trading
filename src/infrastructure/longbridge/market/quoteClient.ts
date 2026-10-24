@@ -44,7 +44,7 @@ import {
   isAllExternalApiRequestErrors,
 } from '../../../utils/apiFailure/index.js';
 import { logger } from '../../logger/index.js';
-import { API, TRADING } from '../../../constants/index.js';
+import { API, TRADING } from '../../../constants/common.js';
 import type { Quote } from '../../../types/quote.js';
 import type {
   CandlestickPeriod,

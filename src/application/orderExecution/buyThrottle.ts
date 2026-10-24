@@ -6,7 +6,7 @@
  * - 提供 canTradeNow / recordBuyAttempt / resetBuyThrottle
  * - 记录“买入尝试”时点，确保频率检查通过后立即占用窗口
  */
-import { TIME } from '../../constants/index.js';
+import { TIME } from '../../constants/common.js';
 import { isBuyAction } from '../../utils/helpers/index.js';
 import type { BuySignalAction, SignalType } from '../../types/signal.js';
 import type { BuyThrottle, BuyThrottleDeps } from './types.js';

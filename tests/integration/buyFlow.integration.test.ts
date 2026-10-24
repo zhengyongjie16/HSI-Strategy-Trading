@@ -29,7 +29,7 @@ import type { OrderMonitor } from '../../src/application/orderTracking/types.js'
 import { createOrdinaryBuyWorkflow } from '../../src/application/ordinaryBuy/index.js';
 import { createBuyRiskChecks } from '../../src/application/ordinaryBuy/riskChecks.js';
 import type { BuyRiskCheckContext } from '../../src/application/ordinaryBuy/types.js';
-import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../src/constants/index.js';
+import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../src/constants/common.js';
 import { createBuyProcessor } from '../../src/runtime/asyncProgram/buyProcessor/index.js';
 import { createBuyTaskQueue } from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import type { ExecutableSignal } from '../../src/types/signal.js';

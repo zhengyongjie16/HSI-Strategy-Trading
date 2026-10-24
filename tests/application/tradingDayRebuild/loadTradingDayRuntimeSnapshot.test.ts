@@ -19,7 +19,7 @@ import { createPostTradeConsistencyRuntime } from '../../../src/app/runtime/crea
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { createWarrantCandidateSearch } from '../../../src/application/autoSearch/candidateSearch.js';
 import { createStartupSeatSearch } from '../../../src/application/autoSearch/startupSeatSearch.js';
-import { TRADING } from '../../../src/constants/index.js';
+import { TRADING } from '../../../src/constants/common.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
 import type { ProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/types.js';
 import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';

@@ -24,7 +24,7 @@ import type {
 } from '../../src/application/postTradeSettlement/types.js';
 import type { WarrantRiskRefresh } from '../../src/application/riskRefresh/types.js';
 import type { SeatActivationWorkflow } from '../../src/application/seatActivation/types.js';
-import { TIME } from '../../src/constants/index.js';
+import { TIME } from '../../src/constants/common.js';
 import type {
   ClearMidnightEligibleParams,
   GetRemainingMsParams,

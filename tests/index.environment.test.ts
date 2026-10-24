@@ -82,7 +82,7 @@ function probeEntry(scenario: IndexEnvironmentScenario = {}): IndexEnvironmentPr
     writeFileSync(
       preloadPath,
       `import { mock } from 'bun:test';
-       import { IS_DEBUG } from ${JSON.stringify(new URL('../src/constants/index.ts', import.meta.url).href)};
+       import { IS_DEBUG } from ${JSON.stringify(new URL('../src/constants/common.ts', import.meta.url).href)};
        const templateExpected = ${JSON.stringify(TEMPLATE_EXPECTED)};
        let calls = 0;
        mock.module(${JSON.stringify(new URL('../src/app/runApp.ts', import.meta.url).href)}, () => ({

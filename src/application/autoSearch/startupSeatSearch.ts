@@ -3,7 +3,7 @@
  * 职责：SEARCHING → ACTIVATING/EMPTY；无候选计数冻结，异常复原但不计数并交恢复链路重试。
  * 历史标的推断、启动准入及恢复重试时机仍由 recovery owner 决定。
  */
-import { AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY } from '../../constants/index.js';
+import { AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY } from '../../constants/common.js';
 import { isSeatFrozenToday, resolveNextSearchFailureState } from '../../domain/seat/seatPolicy.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { getHKDateKey } from '../../utils/time/index.js';

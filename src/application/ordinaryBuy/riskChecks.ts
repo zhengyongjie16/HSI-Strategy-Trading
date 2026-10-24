@@ -9,7 +9,7 @@
 import { exactCompare, formatDecimal, formatRatio } from '../../utils/numeric/exact.js';
 import { readAccountAndPositionsBothSettled } from './accountPositionsRead.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
-import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../constants/index.js';
+import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../constants/common.js';
 import {
   getDoomsdayBuyCutoffWindowRangeLabel,
   isWithinDoomsdayBuyCutoffWindow,

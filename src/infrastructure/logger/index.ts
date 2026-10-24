@@ -15,7 +15,7 @@ import {
   LOGGING,
   LOG_LEVELS,
   LOG_COLORS,
-} from '../../constants/index.js';
+} from '../../constants/common.js';
 import { resolveLogRootDir, shouldInstallGlobalProcessHooks } from '../../config/runtime/index.js';
 import { toHongKongTimeLog } from '../../utils/time/index.js';
 import type { Logger } from '../../types/logger.js';

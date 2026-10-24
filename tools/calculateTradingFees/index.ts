@@ -5,7 +5,7 @@
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { TRADE_PERSISTENCE } from '../../src/constants/index.js';
+import { TRADE_PERSISTENCE } from '../../src/constants/common.js';
 import type { HKFeeRates, Trade } from './types.js';
 import {
   accumulateFees,

@@ -2,7 +2,7 @@ import type { SeatSwitchWorkflow, StartSwitchOnDistanceResult } from '../../type
 import type { SymbolRegistry } from '../../types/seat.js';
 
 /** 距离换标事件用例：从原行情/席位身份与 canonical 持仓发起距离检查，不代管 WAIT 或激活。 */
-import { TRADING } from '../../constants/index.js';
+import { TRADING } from '../../constants/common.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
 import { isSeatActive } from '../../domain/seat/seatPolicy.js';
 

@@ -7,7 +7,7 @@
  * - 原子发布换标中席位状态与新身份；阶段计划由唯一 switchStateMachine 写入
  */
 import type { SuppressibleSwitchTriggerKind } from '../../domain/seat/types.js';
-import { LOG_COLORS } from '../../constants/index.js';
+import { LOG_COLORS } from '../../constants/common.js';
 import type { SeatStateManager, SeatStateManagerDeps, SeatStateUpdater } from './types.js';
 
 /**

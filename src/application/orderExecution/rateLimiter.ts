@@ -7,7 +7,7 @@
  * - mutation callback 持有序列席位直到最终报价、授权、SDK 调用与回调收口完成，避免 quote-to-order TOCTOU。
  */
 
-import { API } from '../../constants/index.js';
+import { API } from '../../constants/common.js';
 import { DEFAULT_TRADE_RATE_LIMIT } from '../../constants/tradeRateLimit.js';
 import type { RateLimiter, TradeMutationPermit } from '../../types/rateLimit.js';
 import type { RateLimiterDeps } from './types.js';

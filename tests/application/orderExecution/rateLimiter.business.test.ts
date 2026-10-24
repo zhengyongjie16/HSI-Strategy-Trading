@@ -11,7 +11,7 @@ import { createLoggerDouble } from '../../helpers/testDoubles.js';
 
 import { describe, expect, it } from 'bun:test';
 import { createRateLimiter } from '../../../src/application/orderExecution/rateLimiter.js';
-import { API } from '../../../src/constants/index.js';
+import { API } from '../../../src/constants/common.js';
 
 describe('rateLimiter business behavior', () => {
   it('rechecks the interval when the scheduler wakes early', async () => {

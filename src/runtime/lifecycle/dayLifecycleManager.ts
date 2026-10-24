@@ -22,7 +22,7 @@ import type { LifecycleMutableState } from '../../types/lifecycle.js';
 import type { RuntimeTermination } from '../../types/runtime.js';
 import type { SnapshotToken } from '../../types/accountPosition.js';
 import type { DiagnosticFields } from '../../types/diagnostics.js';
-import { LIFECYCLE } from '../../constants/index.js';
+import { LIFECYCLE } from '../../constants/common.js';
 import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import { formatError } from '../../utils/error/index.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';

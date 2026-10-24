@@ -11,7 +11,7 @@ import {
   API,
   ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS,
   ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
-} from '../../../constants/index.js';
+} from '../../../constants/common.js';
 import {
   assertStateCheckRawExecutionFactsReady,
   mergeMonotonicOrderFact,

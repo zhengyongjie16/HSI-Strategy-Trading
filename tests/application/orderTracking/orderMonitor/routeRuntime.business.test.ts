@@ -17,7 +17,7 @@ import type {
 import {
   ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
   TIME,
-} from '../../../../src/constants/index.js';
+} from '../../../../src/constants/common.js';
 import type { OrderMonitorTrackedOrder } from '../../../../src/domain/order/types.js';
 import type { QuoteUpdatedEvent } from '../../../../src/types/marketPorts.js';
 import { createMarketDataClientDouble, createQuoteDouble } from '../../../helpers/testDoubles.js';

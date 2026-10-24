@@ -13,7 +13,7 @@ import {
   ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
   ORDER_QUOTE_RETRY,
   TRADING,
-} from '../../../constants/index.js';
+} from '../../../constants/common.js';
 import {
   NON_REPLACEABLE_READ_STATUSES,
   NON_REPLACEABLE_READ_TYPES,

@@ -3,7 +3,7 @@
  *
  * 职责：按显式成交/当前时点计算香港时区冷却边界，并从 completion 时点模拟触发周期；不执行恢复 IO。
  */
-import { TIME } from '../../../constants/index.js';
+import { TIME } from '../../../constants/common.js';
 import { getHKTime } from '../../../utils/time/index.js';
 import type { LiquidationCooldownConfig } from '../../../types/config.js';
 import type { CooldownCandidate } from './types.js';

@@ -3,7 +3,7 @@ import {
   DEFAULT_PRICE_DECIMALS,
   ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
   ORDER_PRICE_DIFF_THRESHOLD,
-} from '../../constants/index.js';
+} from '../../constants/common.js';
 import type { GlobalConfig } from '../../types/config.js';
 import type { OrderReadStatus, OrderClosedReason } from '../../types/orderReadMetadata.js';
 

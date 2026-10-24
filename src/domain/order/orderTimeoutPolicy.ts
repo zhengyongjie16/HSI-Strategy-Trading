@@ -3,7 +3,7 @@
 import {
   ORDER_MONITOR_CANCEL_RETRY_BASE_DELAY_MS,
   ORDER_MONITOR_CANCEL_RETRY_MAX_DELAY_MS,
-} from '../../constants/index.js';
+} from '../../constants/common.js';
 import { isTerminalOrderReadStatus } from './orderReadLifecycle.js';
 import type {
   OrderMonitorTrackedOrder,

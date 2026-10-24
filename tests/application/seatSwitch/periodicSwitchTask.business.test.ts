@@ -25,7 +25,7 @@ import { createMonitorTaskProcessor } from '../../../src/runtime/asyncProgram/mo
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createSettlementRuntimeFixture } from '../../helpers/settlementRuntime.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
-import { TRADING } from '../../../src/constants/index.js';
+import { TRADING } from '../../../src/constants/common.js';
 
 import { createLoggerStub, getDefaultAutoSearchConfig } from '../../helpers/seatTestUtils.js';
 import type { MonitorTaskInput } from '../../../src/runtime/asyncProgram/monitorTaskQueue/types.js';

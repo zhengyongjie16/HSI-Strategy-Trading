@@ -1,4 +1,4 @@
-import { HK_DATE_KEY_PATTERN, TIME } from '../../constants/index.js';
+import { HK_DATE_KEY_PATTERN, TIME } from '../../constants/common.js';
 import type { HKTime } from './types.js';
 
 /**

@@ -7,7 +7,7 @@
  * - 在部分成交时维护 pendingSell 部分成交状态
  */
 
-import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../constants/index.js';
+import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../constants/common.js';
 import { recordOrderTerminalConfirmation } from './orderObservation.js';
 import { mergeExecutionFact } from '../../../domain/order/executionFact.js';
 import {

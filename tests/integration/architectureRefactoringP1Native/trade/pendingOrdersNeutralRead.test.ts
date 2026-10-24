@@ -8,7 +8,7 @@ import { createLoggerDouble } from '../../../helpers/testDoubles.js';
 import { expect, test } from 'bun:test';
 import { createRateLimiter } from '../../../../src/application/orderExecution/rateLimiter.js';
 import { createOrderCacheManager } from '../../../../src/application/orderTracking/orderCacheManager.js';
-import { API } from '../../../../src/constants/index.js';
+import { API } from '../../../../src/constants/common.js';
 import {
   createBrokerIngressFixture,
   type BrokerIngressInput,

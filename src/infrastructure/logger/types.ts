@@ -1,4 +1,4 @@
-import type { LOG_LEVELS } from '../../constants/index.js';
+import type { LOG_LEVELS } from '../../constants/common.js';
 
 /** 调用时准备的文本快照；仅在 logger 的两个 objectMode 队列之间传递，不持有原始 extra。 */
 export type PreparedLogRecord = {

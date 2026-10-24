@@ -4,7 +4,7 @@
  * 核心职责：执行权威时间评估、发布门禁变化并触发生命周期/末日用例，汇总下一次系统级时间计划。
  * 末日撤买→清仓、执行状态、成功副作用与失败重评估策略仅由 DoomsdayClearanceWorkflow 持有。
  */
-import { TIME, TRADING } from '../../constants/index.js';
+import { TIME, TRADING } from '../../constants/common.js';
 import {
   isWithinDoomsdayClearanceTakeoverWindow,
   resolveDoomsdayWindowEntryMs,

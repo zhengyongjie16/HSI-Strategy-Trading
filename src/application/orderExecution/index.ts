@@ -8,7 +8,7 @@ import type { Logger } from '../../types/logger.js';
  * - 管理同方向买入频率限制（防止重复开仓）
  * - 协调订单提交流程与追踪登记
  */
-import { LOG_COLORS } from '../../constants/index.js';
+import { LOG_COLORS } from '../../constants/common.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { isSeatVersionMatch } from '../../domain/seat/seatIdentity.js';
 import { getHKDateKey } from '../../utils/time/index.js';

@@ -1,6 +1,6 @@
 /** 成交后 workflow 并发测试：迟到订阅、事实 revision、水位、真实 IO 排空及多 waiter 授权。 */
 import { expect, test } from 'bun:test';
-import { API } from '../../../src/constants/index.js';
+import { API } from '../../../src/constants/common.js';
 import { isExternalApiRequestError } from '../../../src/utils/apiFailure/index.js';
 import { createPostTradeSettlementWorkflow } from '../../../src/application/postTradeSettlement/index.js';
 import { createAccountPositionSnapshot } from '../../../src/application/accountPositionSnapshot/index.js';

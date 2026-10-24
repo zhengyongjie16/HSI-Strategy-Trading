@@ -25,7 +25,7 @@ import type {
 import {
   ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS,
   ORDER_QUOTE_RETRY,
-} from '../../../../src/constants/index.js';
+} from '../../../../src/constants/common.js';
 import type {
   OrderMonitorConfig,
   OrderMonitorTrackedOrder,

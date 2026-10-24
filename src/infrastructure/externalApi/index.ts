@@ -3,7 +3,7 @@
  *
  * 职责：在真实 IO 边界执行既有有限重试；保留原错误身份、尝试次数、等待时机和调用方收窄门禁。
  */
-import { API } from '../../constants/index.js';
+import { API } from '../../constants/common.js';
 import { createExternalApiRequestError, isProgramError } from '../../utils/apiFailure/index.js';
 import { isRetryableExternalApiError } from './errorClassification.js';
 import type { ExternalApiRetryConfig } from '../../types/apiFailure.js';

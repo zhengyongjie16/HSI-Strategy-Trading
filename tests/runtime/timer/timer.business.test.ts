@@ -4,7 +4,7 @@
  * 覆盖长时间 one-shot 分段、到期触发、取消和非法时间 fail-fast。
  */
 import { describe, expect, it } from 'bun:test';
-import { TIME } from '../../../src/constants/index.js';
+import { TIME } from '../../../src/constants/common.js';
 import { scheduleBoundedOneShotAt } from '../../../src/runtime/timer/index.js';
 
 type TimerRecord = {

@@ -5,7 +5,7 @@ import { createAccountPositionSnapshot } from '../../../src/application/accountP
 import { createOrderRecorder } from '../../../src/application/orderTracking/recorder/index.js';
 import { createPostTradeSettlementWorkflow } from '../../../src/application/postTradeSettlement/index.js';
 import type { SettlementProtectionCompletion } from '../../../src/application/postTradeSettlement/types.js';
-import { API } from '../../../src/constants/index.js';
+import { API } from '../../../src/constants/common.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../../src/domain/liquidation/episode/index.js';
 import { orderAnalysis } from '../../../src/domain/order/orderAnalysis.js';
 import { createDailyLossTracker } from '../../../src/domain/risk/dailyLossTracker.js';

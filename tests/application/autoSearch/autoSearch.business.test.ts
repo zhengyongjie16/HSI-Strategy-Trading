@@ -6,7 +6,7 @@ import { describe, expect, it } from 'bun:test';
 import { rejects } from 'node:assert/strict';
 import { createAutoSearch } from '../../../src/application/autoSearch/index.js';
 import { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
-import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS } from '../../../src/constants/index.js';
+import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS } from '../../../src/constants/common.js';
 import type {
   AutoSearchDeps,
   WarrantCandidateSearch,

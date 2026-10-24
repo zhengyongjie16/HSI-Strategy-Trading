@@ -3,7 +3,7 @@
  * 版本失效在本 owner 内重新选择；只有真实报价缺失才返回限次重试请求，FIFO worker 只负责调度。
  */
 import { isStaleCrossDaySignal, isLiquidationSignal } from '../../domain/order/executionPolicy.js';
-import { ORDER_QUOTE_RETRY } from '../../constants/index.js';
+import { ORDER_QUOTE_RETRY } from '../../constants/common.js';
 import { resolveNextQuoteRetry } from '../quoteRetry.js';
 import { resolveQuoteReadinessForRequirement } from '../../domain/order/quoteReadiness.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';

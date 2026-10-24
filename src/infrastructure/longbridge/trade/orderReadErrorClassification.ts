@@ -3,7 +3,7 @@
 import {
   ORDER_API_RETRYABLE_MESSAGE_HINTS,
   ORDER_API_TRANSIENT_STATUS_CODE_SET,
-} from '../../../constants/index.js';
+} from '../../../constants/common.js';
 import { isRecord } from '../../../utils/helpers/index.js';
 import { logger } from '../../logger/index.js';
 

@@ -28,7 +28,7 @@ import {
   createWarrantCandidate,
   createLoggerStub,
 } from '../../helpers/seatTestUtils.js';
-import { ORDER_QUOTE_RETRY, TRADING } from '../../../src/constants/index.js';
+import { ORDER_QUOTE_RETRY, TRADING } from '../../../src/constants/common.js';
 import { createStaticLiquidationExecutor } from '../../../src/application/staticLiquidation/index.js';
 import { createDefaultMonitorQuoteEventRuntime as createDefaultMonitorQuoteEventRuntimeImpl } from '../../../src/runtime/monitorQuoteEventRuntime/monitorQuoteEventRuntime.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';

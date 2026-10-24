@@ -6,7 +6,7 @@
  * - 消费 seat/自动寻标授权/timer 显式唤醒源
  * - 每次唤醒重新读取权威状态，不维护 seat 事实副本
  */
-import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../constants/index.js';
+import { AUTO_SYMBOL_SEARCH_COOLDOWN_MS, TIME } from '../../constants/common.js';
 import { scheduleBoundedOneShotAt } from '../timer/index.js';
 import type { SeatStateChangedEvent } from '../../types/seat.js';
 import type { BoundedOneShotTimerController } from '../../types/timer.js';

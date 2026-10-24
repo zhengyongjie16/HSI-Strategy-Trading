@@ -10,7 +10,7 @@ import {
 /** 普通 SELL 用例镜像：真实 readiness/reselect、授权失效、报价重试和 accepted ID 不重提。 */
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { rejects } from 'node:assert/strict';
-import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
+import { ORDER_QUOTE_RETRY } from '../../../src/constants/common.js';
 import { createSellHarness } from './fixture.js';
 
 import { createTradeMutationUnknownError } from '../../../src/application/orderExecution/tradeMutationErrors.js';

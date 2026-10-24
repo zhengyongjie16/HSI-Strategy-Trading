@@ -28,7 +28,7 @@ import type {
   OrderCacheManager,
   OrderHoldRegistry,
 } from '../../../../src/application/orderTracking/types.js';
-import { ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS } from '../../../../src/constants/index.js';
+import { ORDER_MONITOR_REPLACE_TEMP_BLOCK_BACKOFF_MS } from '../../../../src/constants/common.js';
 import { normalizeTerminalStateSnapshot } from '../../../../src/domain/order/orderFactMerge.js';
 import type { OrderMonitorTrackedOrder } from '../../../../src/domain/order/types.js';
 import type { RateLimiter, TradeMutationPermit } from '../../../../src/types/rateLimit.js';

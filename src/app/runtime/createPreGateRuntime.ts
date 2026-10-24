@@ -6,7 +6,7 @@
  * - 执行配置校验、行情客户端创建与启动交易日状态初始化
  * - 固定 pre-gate 对象所有权边界
  */
-import { AUTO_SYMBOL_WARRANT_LIST_CACHE_TTL_MS } from '../../constants/index.js';
+import { AUTO_SYMBOL_WARRANT_LIST_CACHE_TTL_MS } from '../../constants/common.js';
 import { validateAllConfig } from '../../config/validator/index.js';
 import { createTradingConfig } from '../../config/trading/index.js';
 import { createWarrantListCache } from '../../infrastructure/longbridge/market/warrantListCache/index.js';

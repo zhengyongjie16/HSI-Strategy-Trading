@@ -13,7 +13,7 @@ import { createTerminationRuntime } from '../../../src/runtime/lifecycle/termina
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createTradeMutationUnknownError } from '../../../src/application/orderExecution/tradeMutationErrors.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
-import { TRADING } from '../../../src/constants/index.js';
+import { TRADING } from '../../../src/constants/common.js';
 import type { Position } from '../../../src/types/account.js';
 import type { Logger } from '../../../src/types/logger.js';
 

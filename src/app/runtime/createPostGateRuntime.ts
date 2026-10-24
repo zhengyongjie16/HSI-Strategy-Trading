@@ -27,7 +27,7 @@ import { createTradeLogHydrator } from '../../application/protectiveLiquidation/
 import { createWarrantRiskRefresh } from '../../application/riskRefresh/warrantRiskRefresh.js';
 import { createSeatActivationWorkflow } from '../../application/seatActivation/index.js';
 import { createStaticLiquidationExecutor } from '../../application/staticLiquidation/index.js';
-import { TIME, TRADE_PERSISTENCE } from '../../constants/index.js';
+import { TIME, TRADE_PERSISTENCE } from '../../constants/common.js';
 import { createLiquidationCooldownTracker } from '../../domain/liquidation/cooldown/index.js';
 import { createProtectiveLiquidationEpisodeTracker } from '../../domain/liquidation/episode/index.js';
 import { orderAnalysis } from '../../domain/order/orderAnalysis.js';

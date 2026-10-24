@@ -5,7 +5,7 @@ import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.j
  * 验证中性显示投影、行情来源、latest-only 合并、门禁与停止排空。
  */
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { TRADING } from '../../../src/constants/index.js';
+import { TRADING } from '../../../src/constants/common.js';
 import { createMonitorDisplayRuntime } from '../../../src/runtime/monitorDisplayRuntime/index.js';
 import type { MonitorDisplayRuntimeDeps } from '../../../src/runtime/monitorDisplayRuntime/types.js';
 import type { RenderMonitorIndicatorsParams } from '../../../src/types/display.js';

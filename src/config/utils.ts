@@ -1,5 +1,5 @@
 import type { Logger } from '../types/logger.js';
-import { ORDER_TYPE_CONFIG_VALUES, SYMBOL_WITH_REGION_REGEX } from '../constants/index.js';
+import { ORDER_TYPE_CONFIG_VALUES, SYMBOL_WITH_REGION_REGEX } from '../constants/common.js';
 import type { LiquidationCooldownConfig, DecimalRange } from '../types/config.js';
 import { AMOUNT_CONFIG_TEXT_PATTERN } from '../constants/financialConfig.js';
 import { canonicalDecimal, exactCompare } from '../utils/numeric/exact.js';

@@ -8,7 +8,7 @@ import type { TradingCalendarState, TradingDayInfo } from '../../../src/types/tr
 import { createSnapshotFixture } from '../../helpers/accountPositionSnapshot.js';
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { TIME } from '../../../src/constants/index.js';
+import { TIME } from '../../../src/constants/common.js';
 import { timeWakeupEvaluationProgram } from '../../../src/runtime/timeWakeupEvaluationProgram/index.js';
 import { createTimeWakeupRuntime } from '../../../src/runtime/timeWakeupRuntime/index.js';
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';

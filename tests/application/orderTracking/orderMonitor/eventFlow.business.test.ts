@@ -22,7 +22,7 @@ import type {
   FinalizeOrderSettlementParams,
   OrderMonitorRuntimeStore,
 } from '../../../../src/application/orderTracking/orderMonitor/types.js';
-import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../../src/constants/index.js';
+import { ORDER_MONITOR_WAIT_WS_ONLY_BLOCK_UNTIL_MS } from '../../../../src/constants/common.js';
 import type { OrderMonitorTrackedOrder } from '../../../../src/domain/order/types.js';
 import type { OrderReadStatus } from '../../../../src/types/orderReadMetadata.js';
 import { exactMultiply } from '../../../../src/utils/numeric/exact.js';

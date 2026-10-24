@@ -1,5 +1,5 @@
 /** 执行命令纯规则：动作显示、合法中性订单类型、跨日与 protective 识别；不执行订单或日志 IO。 */
-import { SIGNAL_ACTION_DESCRIPTIONS } from '../../constants/index.js';
+import { SIGNAL_ACTION_DESCRIPTIONS } from '../../constants/common.js';
 import type { OrderTypeConfig, Signal } from '../../types/signal.js';
 import { getHKDateKey } from '../../utils/time/index.js';
 

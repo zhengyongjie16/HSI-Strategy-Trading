@@ -6,7 +6,7 @@
 import fs, { type BigIntStats } from 'node:fs';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
-import { TRADE_PERSISTENCE } from '../../../constants/index.js';
+import { TRADE_PERSISTENCE } from '../../../constants/common.js';
 import { isRecord } from '../../../utils/helpers/index.js';
 import { buildTradeLogPath } from './tradeLogPath.js';
 import { getHKDateKey } from '../../../utils/time/index.js';

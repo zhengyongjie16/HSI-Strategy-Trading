@@ -4,7 +4,7 @@
  * 外部失败仅一次延迟重试；主体内部错误在完整 await release 前同步 fatal，清理不覆盖原始错误身份。
  * 不维护第二订单账或 settlement ready。
  */
-import { API } from '../../constants/index.js';
+import { API } from '../../constants/common.js';
 import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import {
   createExternalApiAggregateRequestError,

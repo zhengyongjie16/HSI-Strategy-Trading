@@ -43,7 +43,7 @@ import {
 } from '../../../src/application/seatSwitch/signalBuilder.js';
 import { calculateTradingDurationMsBetween } from '../../../src/domain/tradingSession/index.js';
 import { getHKDateKey } from '../../../src/utils/time/index.js';
-import { ORDER_QUOTE_RETRY } from '../../../src/constants/index.js';
+import { ORDER_QUOTE_RETRY } from '../../../src/constants/common.js';
 import { createTradeMutationUnknownError } from '../../../src/application/orderExecution/tradeMutationErrors.js';
 import { createExternalApiRequestError } from '../../helpers/createExternalApiRequestError.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';

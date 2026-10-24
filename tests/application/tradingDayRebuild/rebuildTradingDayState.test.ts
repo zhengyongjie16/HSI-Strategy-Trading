@@ -19,7 +19,7 @@ import type { RuntimeStateFixtures } from '../../helpers/types.js';
  */
 
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
-import { TIME } from '../../../src/constants/index.js';
+import { TIME } from '../../../src/constants/common.js';
 import { validateOrdersForRebuild } from '../../../src/domain/order/orderRecordPolicy.js';
 import { createRebuildTradingDayState } from '../../../src/application/tradingDayRebuild/rebuildTradingDayState.js';
 import {

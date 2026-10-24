@@ -11,7 +11,7 @@ import {
 } from '../../constants/orderReadMetadata.js';
 import { calculateTradingDurationMsBetween } from '../../domain/tradingSession/index.js';
 import { getHKDateKey } from '../../utils/time/index.js';
-import { AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY } from '../../constants/index.js';
+import { AUTO_SYMBOL_MAX_SEARCH_FAILURES_PER_DAY } from '../../constants/common.js';
 import type { SeatSwitchWorkflowDeps } from './types.js';
 import type { SeatSwitchWorkflow } from '../../types/seatSwitch.js';
 import type {
