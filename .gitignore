@@ -22,12 +22,6 @@ tests/logs/
 .DS_Store
 Thumbs.db
 
-# Build output
-dist/
-build/
-!tests/build/
-!tests/build/**
-
 # Git worktrees
 .worktrees/
 

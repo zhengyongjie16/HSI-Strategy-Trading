@@ -1,9 +1,18 @@
+/** 单活跃加载离线测试：只操作临时目录，不运行应用入口/SDK。 */
 import { importFixtureModule } from '../../helpers/importFixtureModule.js';
 import assert from 'node:assert/strict';
-
-/** 单活跃加载离线测试：只操作临时目录，不运行应用入口/SDK。 */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { lstat, mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import nodePath from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -15,21 +24,20 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture(extension: '.ts' | '.js' = '.ts') {
+async function fixture() {
   const root = await mkdtemp(nodePath.join(tmpdir(), 'strategy loader 空格 '));
   roots.push(root);
-  const source = extension === '.ts' ? 'src' : 'dist/src';
-  const strategyRoot = nodePath.join(root, source, 'strategies');
+  const strategyRoot = nodePath.join(root, 'src/strategies');
   const selected = nodePath.join(strategyRoot, 'firstStrategy');
   const other = nodePath.join(strategyRoot, 'brokenOther');
-  const definitionPath = nodePath.join(selected, `definition${extension}`);
+  const definitionPath = nodePath.join(selected, 'definition.ts');
   const configPath = nodePath.join(selected, 'config.json');
   await mkdir(selected, { recursive: true });
   await mkdir(other, { recursive: true });
   await writeFile(definitionPath, 'fixture entry');
   await writeFile(configPath, '{ "value": 1 }\r\n');
   await writeFile(
-    nodePath.join(other, `definition${extension}`),
+    nodePath.join(other, 'definition.ts'),
     'throw new Error("unselected evaluated")',
   );
   await writeFile(nodePath.join(other, 'config.json'), 'broken JSON');
@@ -49,7 +57,7 @@ async function fixture(extension: '.ts' | '.js' = '.ts') {
   };
   const deps: PrepareStrategyDeps = {
     loaderModuleHref: pathToFileURL(
-      nodePath.join(root, source, `app/startup/prepareStrategy${extension}`),
+      nodePath.join(root, 'src/app/startup/prepareStrategy.ts'),
     ).href,
     lstat: (path) => {
       calls.push(`lstat:${path}`);
@@ -67,7 +75,6 @@ async function fixture(extension: '.ts' | '.js' = '.ts') {
   };
   return {
     root,
-    source,
     strategyRoot,
     selected,
     other,
@@ -83,31 +90,32 @@ async function fixture(extension: '.ts' | '.js' = '.ts') {
 const selection = { env: { ACTIVE_STRATEGY_ID: 'first-strategy' } };
 
 describe('prepareStrategy', () => {
-  for (const extension of ['.ts', '.js'] as const) {
-    test(`只导入/prepare 同一策略目录的选中项一次，${extension} 无 create`, async () => {
-      const f = await fixture(extension);
-      const result = await prepareStrategy(selection, f.deps);
-      expect(result).toEqual({ strategyId: 'first-strategy', prepared: f.prepared });
-      expect(f.calls.filter((call) => call.startsWith('import:'))).toEqual([
-        'import:' + pathToFileURL(nodePath.join(f.selected, 'definition' + extension)).href,
-      ]);
-      expect(f.calls.filter((call) => call === 'prepare')).toEqual(['prepare']);
-      expect(f.calls).not.toContain('create');
-      expect(f.calls.some((call) => call.includes(f.other))).toBe(false);
-      expect(f.calls.some((call) => call.includes('strategyDefinitions'))).toBe(false);
-    });
+  test('只导入/prepare 同一源码策略目录的选中项一次，无 create', async () => {
+    const f = await fixture();
+    const result = await prepareStrategy(selection, f.deps);
+    expect(result).toEqual({ strategyId: 'first-strategy', prepared: f.prepared });
+    expect(f.calls.filter((call) => call.startsWith('import:'))).toEqual([
+      'import:' + pathToFileURL(f.definitionPath).href,
+    ]);
+    expect(f.calls.filter((call) => call === 'prepare')).toEqual(['prepare']);
+    expect(f.calls).not.toContain('create');
+    expect(f.calls.some((call) => call.includes(f.other))).toBe(false);
+    expect(f.calls.some((call) => call.includes('strategyDefinitions'))).toBe(false);
+  });
 
-    test(`${extension} 目标不存在先失败，不回退另一个扩展名`, async () => {
-      const f = await fixture(extension);
-      await rm(f.definitionPath);
-      await writeFile(
-        nodePath.join(f.selected, extension === '.ts' ? 'definition.js' : 'definition.ts'),
-        'fixture',
-      );
-      await assert.rejects(prepareStrategy(selection, f.deps), /必需文件/);
-      expect(f.calls.some((call) => call.startsWith('import:'))).toBe(false);
-    });
-  }
+  test('源码 definition.ts 缺失时在元信息阶段失败，不尝试 definition.js', async () => {
+    const f = await fixture();
+    await rm(f.definitionPath);
+    await writeFile(
+      nodePath.join(f.selected, 'definition.js'),
+      'throw new Error("legacy JS evaluated")',
+    );
+    await assert.rejects(prepareStrategy(selection, f.deps), /Strategy:metadata.*必需文件/);
+    expect(f.calls.some((call) => call.startsWith('import:'))).toBe(false);
+    expect(f.calls.some((call) => call.includes('definition.js'))).toBe(false);
+    expect(f.calls).not.toContain('prepare');
+    expect(f.calls).not.toContain('create');
+  });
 
   for (const id of [
     undefined,
@@ -158,12 +166,34 @@ describe('prepareStrategy', () => {
       pathToFileURL(nodePath.join(f.root, 'prepareStrategy.mjs')).href,
       'https://example.com/prepareStrategy.ts',
       `${f.deps.loaderModuleHref}?fresh=1`,
+      `${f.deps.loaderModuleHref}#fragment`,
     ]) {
       await assert.rejects(
         prepareStrategy(selection, { ...f.deps, loaderModuleHref: href }),
-        /加载器/,
+        /Strategy:location.*加载器/,
       );
     }
+
+    expect(f.calls).toEqual([]);
+  });
+
+  test.each(['src', 'dist/src'])('旧 %s JS 加载器在任何 I/O 或求值前拒绝', async (layout) => {
+    const f = await fixture();
+    const directory = nodePath.join(f.root, layout, 'strategies/firstStrategy');
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      nodePath.join(directory, 'definition.js'),
+      'throw new Error("legacy JS evaluated")',
+    );
+    await writeFile(nodePath.join(directory, 'config.json'), '{}');
+    const loaderModuleHref = pathToFileURL(
+      nodePath.join(f.root, layout, 'app/startup/prepareStrategy.js'),
+    ).href;
+    await assert.rejects(
+      prepareStrategy(selection, { ...f.deps, loaderModuleHref }),
+      /Strategy:location.*加载器扩展名: \.js/,
+    );
+    expect(f.calls).toEqual([]);
   });
 
   test('根目录精确拼写及相关大小写冲突拒绝，不检查无关坏名字', async () => {
@@ -213,8 +243,7 @@ describe('prepareStrategy', () => {
     await rm(f.configPath);
     const legacyConfig = nodePath.join(
       f.root,
-      f.source,
-      'config/strategy/firstStrategy/config.json',
+      'src/config/strategy/firstStrategy/config.json',
     );
     await mkdir(nodePath.dirname(legacyConfig), { recursive: true });
     await writeFile(legacyConfig, '{ "value": 1 }');
@@ -225,7 +254,7 @@ describe('prepareStrategy', () => {
 
   test('旧 app/startup/strategyDefinitions 布局不再被发现', async () => {
     const f = await fixture();
-    const legacy = nodePath.join(f.root, f.source, 'app/startup/strategyDefinitions/legacyOnly');
+    const legacy = nodePath.join(f.root, 'src/app/startup/strategyDefinitions/legacyOnly');
     await mkdir(legacy, { recursive: true });
     await writeFile(nodePath.join(legacy, 'definition.ts'), 'throw new Error("legacy evaluated")');
     await writeFile(nodePath.join(legacy, 'config.json'), '{}');
@@ -429,6 +458,67 @@ describe('prepareStrategy', () => {
       expect(f.calls.some((call) => call.startsWith('import:'))).toBe(false);
     },
   );
+
+  test.each([
+    { fault: 'invalid-dsl', signal: '(ADX>1)', extra: {}, causeMessage: /无效信号表达式/ },
+    {
+      fault: 'extra-field',
+      signal: '(K>0)',
+      extra: { extra: true },
+      causeMessage: /配置字段必须精确包含/,
+    },
+  ])('真实私有 parser 拒绝 %j，保留 prepare 阶段和 cause', async ({ signal, extra, causeMessage }) => {
+    const f = await fixture();
+    const sourceRoot = fileURLToPath(new URL('../../../src/', import.meta.url));
+    // 使用真实策略入口及其私有 parser；只复制源码依赖，不复制环境文件或运行应用入口。
+    for (const relative of ['strategies/intradayRegression', 'utils']) {
+      await cp(nodePath.join(sourceRoot, relative), nodePath.join(f.root, 'src', relative), {
+        recursive: true,
+      });
+    }
+
+    await symlink(
+      fileURLToPath(new URL('../../../node_modules/', import.meta.url)),
+      nodePath.join(f.root, 'node_modules'),
+      'junction',
+    );
+    const directory = nodePath.join(f.strategyRoot, 'intradayRegression');
+    await writeFile(
+      nodePath.join(directory, 'config.json'),
+      JSON.stringify({
+        signals: { BUYCALL: signal, SELLCALL: '(K>0)', BUYPUT: '(K>0)', SELLPUT: '(K>0)' },
+        verification: {
+          buy: { delaySeconds: 0, indicators: [] },
+          sell: { delaySeconds: 0, indicators: [] },
+        },
+        ...extra,
+      }),
+    );
+    const imported: string[] = [];
+    await assert.rejects(
+      prepareStrategy(
+        { env: { ACTIVE_STRATEGY_ID: 'intraday-regression' } },
+        {
+          ...f.deps,
+          importModule: async (href): Promise<unknown> => {
+            imported.push(fileURLToPath(href));
+            return importFixtureModule(f.root, href);
+          },
+        },
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        expect(error.message).toContain('Strategy:prepare');
+        expect(error.message).not.toContain('Strategy:import');
+        assert.ok(error.cause instanceof Error);
+        expect(error.cause.message).toMatch(causeMessage);
+        return true;
+      },
+    );
+    expect(imported).toEqual([nodePath.join(directory, 'definition.ts')]);
+    expect(f.calls.some((call) => call.startsWith('import:'))).toBe(false);
+    expect(f.calls).not.toContain('create');
+  });
 
   test('同一根内两个独立 schema 策略各自准备，互不导入', async () => {
     const f = await fixture();

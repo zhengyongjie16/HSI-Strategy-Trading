@@ -30,5 +30,5 @@
     "noEmit": true
   },
   "include": ["src/**/*", "tools/**/*", "tests/**/*", "mock/**/*"],
-  "exclude": ["node_modules", "dist", "logs", "utils/**", ".claude"]
+  "exclude": ["node_modules", "logs", "utils/**", ".claude"]
 }

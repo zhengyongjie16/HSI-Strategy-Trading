@@ -126,21 +126,21 @@ ACTIVE_STRATEGY_ID=intraday-regression
 ### 4. 启动
 
 ```bash
-bun start
+bun run start
 ```
+
+正式入口固定为 `bun src/index.ts`，由 Bun 直接运行 TypeScript 源码；不生成或运行预编译产物。
 
 ### 5. 常用命令
 
-| 命令               | 说明                                       |
-| ------------------ | ------------------------------------------ |
-| `bun start`        | 启动正式运行                               |
-| `bun run build`    | clean + tsc，输出静态 JSON 依赖            |
-| `bun test`         | 运行测试                                   |
-| `bun type-check`   | 执行类型检查                               |
-| `bun lint`         | 执行 ESLint 检查                           |
-| `bun run lint:fix` | 执行 ESLint 自动修复（不等于完整格式化）   |
-| `bun run format`   | 使用 Bun 原生格式化写入文件，不运行 ESLint |
-| `bun clean`        | 清理构建产物                               |
+| 命令                          | 说明                                       |
+| ----------------------------- | ------------------------------------------ |
+| `bun run start`               | 使用 Bun 运行 TS 源码                      |
+| `bun --no-env-file run test`  | 经 package 脚本运行测试及离线 SDK preload   |
+| `bun run type-check`          | 独立执行严格 noEmit 类型检查                |
+| `bun run lint`                | 执行 ESLint 检查                           |
+| `bun run lint:fix`            | 执行 ESLint 自动修复（不等于完整格式化）    |
+| `bun run format`              | 使用 Bun 原生格式化写入文件，不运行 ESLint  |
 
 ## 配置说明
 
@@ -160,16 +160,22 @@ README 只保留最关键的配置规则，完整参数请直接阅读 [`./.env.
 - 当前版本只接受无下标的单监控配置键，例如 `MONITOR_SYMBOL`、`LONG_SYMBOL`、`SHORT_SYMBOL`。
 - 自动寻标、换标、风控与信号仍然保留 LONG/SHORT 双方向边界，但不再支持并行配置多个监控标的。
 
-### 单活跃策略与构建资产
+### 单活跃策略与源码发布
 
 - 必须显式设置 `ACTIVE_STRATEGY_ID`，使用严格 kebab-case；如 `intraday-regression` 的入口为 `src/strategies/intradayRegression/definition.ts`，配置解析、DSL、指标、信号规则、延迟验证与私有常量都在同一个策略目录，无需中心登记。启动只加载选中策略，先同步 `prepare()` 校验配置，再同步 `create(deps)` 创建唯一实例；两步均在 SDK 接入前完成，不存在默认策略或运行期热切换。宿主只通过 `src/types/strategy.ts` 的公共契约接入，不读取策略私有指标、样本、pending 或配置结构；新增策略只需新建策略目录、补对应测试并设置选择值，不改加载器、宿主行情处理或执行链路。
 - 当前策略的四个信号与 buy/sell 验证配置仅由 [策略 config.json](./src/strategies/intradayRegression/config.json) 提供，所有字段必须显式填写。`definition.ts` 静态导入同目录 `config.json`，由策略私有解析器完成字段、范围、DSL 与指标校验，并冻结规范化副本；未选策略入口不会被加载。
 - 升级前请从实际环境中**删除** `SIGNAL_BUYCALL`、`SIGNAL_SELLCALL`、`SIGNAL_BUYPUT`、`SIGNAL_SELLPUT`、`VERIFICATION_DELAY_SECONDS_BUY`、`VERIFICATION_DELAY_SECONDS_SELL`、`VERIFICATION_INDICATORS_BUY`、`VERIFICATION_INDICATORS_SELL`，即使值为空也会拒绝启动，再设置 `ACTIVE_STRATEGY_ID`。工具不会修改本地凭据或 `.env.local`。
 - 启动检查选中策略目录、同目录 `definition.ts` 和 `config.json` 的精确大小写、真实路径边界，并拒绝 symlink/junction；不回退到旧的分根位置或其他扩展名。
-- `bun run build` 执行 `bun run clean && tsc -p tsconfig.build.json`，由 tsc 输出静态 JSON 依赖，不运行策略 `prepare()`；因此构建成功不等于策略配置校验通过。未选策略的业务配置错误不在启动时检查，但其静态依赖仍须通过编译。JSON 按工具链解析，不保证源码与产物字节一致。
-- `tsconfig.build.json` 仅 include `src/**/*`，`rootDir=./`、`outDir=./dist`，`noEmitOnError=true`；产物仅 `dist/src/**/*.js` 与静态依赖 JSON，关闭 declaration/declarationMap/sourceMap。开发类型检查仍覆盖 tools/tests/mock，工具和测试不进入生产闭包。
-- 产物启动命令为 `bun dist/src/index.js`。源码只加载 source 布局的 `definition.ts`/JSON，产物只加载对应 dist 布局的 `definition.js`/JSON，不回退到源码。
-- 源码、JSON 配置变更及策略目录增删后，产物部署必须重新完整构建，成功后才启动；直接运行源码也须重启，不支持热重载。先停旧进程并完成清理，再部署完整包，禁止替换运行中的文件或继续使用失败构建产物。
+- 策略入口只接受源码目录中的 `definition.ts`，同目录 `config.json` 必须是真实文件；拒绝 JS/dist 入口，不在 TS 缺失时回退其他布局。普通 ESM `.js` 标识符仍由 Bun/TypeScript 按现有规则解析到源码，不代表支持 Node 原生 TS 启动。
+- Bun 运行 TS 不代替质量检查。发布前在完整开发依赖环境依次执行 `bun run lint:fix`、`bun run type-check`、`bun --no-env-file run test`，任何失败都不发布。类型检查保持 `noEmit: true` 并覆盖 src/tools/tests/mock；启动仍只校验选中策略的私有业务配置。
+- 测试应通过 `tests/setup/childEnv.ts` 的白名单环境隔离 HOME/TEMP/日志，保留 `--no-env-file`、testRuntime preload 与离线 SDK guard。离线 guard 不是网络沙箱，不得用真实交易入口或账户查询代替验收。
+- 源码、JSON 配置变更及策略目录增删后，必须发布完整版本并重启，不做进程内热替换。先停旧进程并完成清理，再切换完整包；回滚同样按完整版本进行，禁止在运行中逐文件覆盖。
+
+发布包包含完整 `src/`（所有策略目录及 JSON）、`package.json`、`bun.lock`、`tsconfig.json` 和适配目标平台的生产依赖，不包含 dist、构建配置、测试或无关工具。项目不再提供 build/clean 命令或替代构建器。若依赖未随包准备，在目标或兼容环境执行：
+
+```bash
+bun install --production --frozen-lockfile
+```
 
 ### 自动寻标说明
 

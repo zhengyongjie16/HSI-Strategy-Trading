@@ -1,25 +1,18 @@
-import type { createBusinessEventProgram } from '../../src/runtime/businessEventProgram/index.js';
+import type { createBusinessEventProgram } from '../../../src/runtime/businessEventProgram/index.js';
 import type {
   createBuyTaskQueue,
   createSellTaskQueue,
-} from '../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
-import type { createTerminationRuntime } from '../../src/runtime/lifecycle/terminationRuntime.js';
-import type { createSelectedStrategy } from '../../src/app/startup/createSelectedStrategy.js';
-import type { prepareStrategy } from '../../src/app/startup/prepareStrategy.js';
-import type { createCleanup } from '../../src/app/shutdown/createCleanup.js';
-import type { createSymbolRegistry } from '../../src/domain/seat/symbolRegistry.js';
-
-/**
- * 构建替换性 smoke 的运行布局。
- * 用途：区分临时工程源码与正式构建产物；两者都只加载真实宿主入口。
- * 使用范围：productionBuild.test.ts 与 strategyReplaceabilitySmoke.ts 的父子进程协议。
- */
-export type StrategyReplaceabilityMode = 'source' | 'dist';
+} from '../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
+import type { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
+import type { createSelectedStrategy } from '../../../src/app/startup/createSelectedStrategy.js';
+import type { prepareStrategy } from '../../../src/app/startup/prepareStrategy.js';
+import type { createCleanup } from '../../../src/app/shutdown/createCleanup.js';
+import type { createSymbolRegistry } from '../../../src/domain/seat/symbolRegistry.js';
 
 /**
  * 单个独立 schema 策略的替换性用例参数。
- * 数据来源：productionBuild.test.ts 的 fixture 常量，父进程通过命令行 JSON 传给子进程。
- * 使用范围：临时策略 definition 的生成、source/dist smoke 的队列字段断言。
+ * 数据来源：replaceability.integration.test.ts 的 fixture 常量，父进程通过命令行 JSON 传给子进程。
+ * 使用范围：临时策略 definition 的生成与源码 smoke 的队列字段断言。
  */
 export type StrategyReplaceabilityCase = {
   readonly id: string;
@@ -31,7 +24,7 @@ export type StrategyReplaceabilityCase = {
 };
 
 /**
- * 临时工程 source/dist 中真实宿主入口的导出集合。
+ * 临时工程源码中真实宿主入口的导出集合。
  * 数据来源：importFixtureModule 从临时工程加载的 app/runtime/domain 模块。
  * 使用范围：smoke 子进程组装 prepare、实例、队列、终止与清理，不回落仓库默认实现。
  */
@@ -64,7 +57,7 @@ export type StrategyReplaceabilityTask = {
 /**
  * smoke 子进程在真实程序运行期间采集、清理前冻结的观察值。
  * 数据来源：真实行情上下文、emitter 经宿主写入的决策队列与共享终止 owner。
- * 使用范围：strategyReplaceabilitySmoke.ts 的 observeDecision 返回值与结果组装。
+ * 使用范围：smoke.ts 的 observeDecision 返回值与结果组装。
  */
 export type StrategyReplaceabilityObservation = {
   readonly task: StrategyReplaceabilityTask;
@@ -82,7 +75,6 @@ export type StrategyReplaceabilityObservation = {
  */
 export type StrategyReplaceabilitySmokeResult = {
   readonly id: string;
-  readonly mode: StrategyReplaceabilityMode;
   readonly pid: number;
   readonly definitionPath: string;
   readonly importedPaths: ReadonlyArray<string>;

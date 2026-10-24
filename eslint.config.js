@@ -951,8 +951,7 @@ export default defineConfig(
   },
   {
     ignores: [
-      // 构建与依赖产物
-      'dist/**',
+      // 基准测试与依赖目录
       'benchmark/**',
       'node_modules/**',
 

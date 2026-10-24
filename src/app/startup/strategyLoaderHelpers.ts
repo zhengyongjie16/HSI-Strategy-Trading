@@ -53,23 +53,21 @@ async function assertStrategyFile(
   await assertStrategyNode(nodePath.join(directoryPath, name), 'file', fs, directoryPath);
 }
 
-/** 在选中策略目录内同时校验 definition 与 config 资产，只读取选中项的元信息，不预加载其他策略。 */
+/** 在选中策略目录内同时校验 definition.ts 与 config.json，只读取选中项的元信息，不预加载其他策略。 */
 export async function inspectStrategyLocation(
   rootPath: string,
   directoryName: string,
-  extension: '.ts' | '.js',
   fs: StrategyFileSystem,
 ): Promise<StrategyLocation> {
   const strategyId = strategyDirectoryNameToId(directoryName);
   const directoryPath = nodePath.join(rootPath, directoryName);
   await assertStrategyNode(directoryPath, 'directory', fs, rootPath);
-  const definitionName = `${STRATEGY_DEFINITION_FILE_NAME}${extension}`;
-  await assertStrategyFile(directoryPath, definitionName, fs);
+  await assertStrategyFile(directoryPath, STRATEGY_DEFINITION_FILE_NAME, fs);
   await assertStrategyFile(directoryPath, STRATEGY_CONFIG_FILE_NAME, fs);
 
   return {
     strategyId,
-    definitionPath: nodePath.join(directoryPath, definitionName),
+    definitionPath: nodePath.join(directoryPath, STRATEGY_DEFINITION_FILE_NAME),
   };
 }
 

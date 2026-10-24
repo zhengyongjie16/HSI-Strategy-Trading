@@ -689,7 +689,7 @@ describe('P6 frozen occurrence architecture', () => {
     ).toBeTrue();
   });
 
-  it('does not grant a fixture-loader file exemption or approve a missing URL/root validation gate', () => {
+  it('does not grant a fixture-loader file exemption or approve a weakened source/URL/root gate', () => {
     const real = readFileSync('tests/helpers/importFixtureModule.ts', 'utf8');
     const approved = fixture({ 'tests/helpers/importFixtureModule.ts': real });
     expect(approved.violations.filter((key) => key.includes('NONLITERAL'))).toEqual([]);
@@ -699,6 +699,7 @@ describe('P6 frozen occurrence architecture', () => {
     });
     expect(injected.violations.filter((key) => key.includes('NONLITERAL'))).toHaveLength(1);
     for (const [before, after] of [
+      ['new URL(href)', "new URL('file:///outside.ts')"],
       ["url.protocol !== 'file:'", "url.protocol === 'file:'"],
       ["url.search !== ''", 'false'],
       ["url.hash !== ''", 'false'],
@@ -707,8 +708,14 @@ describe('P6 frozen occurrence architecture', () => {
       ['(!entries.has(entry) && !definition)', 'false'],
       ['realpath(root)', 'Promise.resolve(root)'],
       ['realpath(fileURLToPath(url))', 'Promise.resolve(fileURLToPath(url))'],
+      ['path.relative(directory, file)', 'file.slice(directory.length + 1)'],
+      ["const layout = 'src/'", "const layout = 'dist/src/'"],
+      ["const extension = '.ts'", "const extension = '.js'"],
+      ['relative.slice(layout.length, -extension.length)', "'app/startup/prepareStrategy'"],
       [String.raw`/^strategies\/[a-z][a-zA-Z0-9]*\/definition$/`, '/.*/'],
       ["'domain/seat/symbolRegistry'", "'strategies/arbitrary/index'"],
+      ['function importFixtureModule(', 'function bypass('],
+      ['import(pathToFileURL(file).href)', 'import(href)'],
     ] as const) {
       expect(real.includes(before)).toBe(true);
       const unguarded = fixture({
@@ -737,9 +744,21 @@ describe('P6 frozen occurrence architecture', () => {
       expect(mutated.violations.some((key) => key.includes('NONLITERAL'))).toBe(!allowed);
     }
 
-    const relocated = fixture({ 'tests/build/strategyReplaceabilitySmoke.ts': real });
+    const relocated = fixture({ 'tests/helpers/unreviewedLoader.ts': real });
     expect(relocated.violations.some((key) => key.includes('NONLITERAL'))).toBeTrue();
-  }, 20_000);
+  }, 30_000);
+
+  it('refuses the former dual-layout fixture importer even with every URL/realpath gate intact', () => {
+    const real = readFileSync('tests/helpers/importFixtureModule.ts', 'utf8');
+    const fixed = "const layout = 'src/';\n  const extension = '.ts';";
+    expect(real.includes(fixed)).toBeTrue();
+    const dualLayout = real.replace(
+      fixed,
+      "const layout = relative.startsWith('dist/src/') ? 'dist/src/' : 'src/';\n  const extension = layout === 'src/' ? '.ts' : '.js';",
+    );
+    const scan = fixture({ 'tests/helpers/importFixtureModule.ts': dualLayout });
+    expect(scan.violations.some((key) => key.includes('NONLITERAL'))).toBeTrue();
+  });
 
   it.each([
     ['src/application/probe.ts', 'TradeRuntime'],
@@ -1510,41 +1529,40 @@ describe('P6 frozen occurrence architecture', () => {
     expect(scan.violations.some((key) => key.includes('NONLITERAL'))).toBe(true);
   });
 
-  it('constrains selected strategy entry paths in both source and compiled layouts', () => {
-    for (const compiled of [false, true]) {
-      const prefix = compiled ? 'dist/src' : 'src';
-      const directory = `${prefix}/strategies`;
-      const extension = compiled ? 'js' : 'ts';
-      expect(
-        selectedStrategyPath(
-          root,
-          'intradayRegression',
-          path.join(root, directory, 'intradayRegression', `definition.${extension}`),
-          compiled,
-        ),
-      ).toBe(true);
+  it('constrains selected strategy entries to source TS and rejects former dist/JS paths', () => {
+    const directory = 'src/strategies';
+    expect(
+      selectedStrategyPath(
+        root,
+        'intradayRegression',
+        path.join(root, directory, 'intradayRegression/definition.ts'),
+      ),
+    ).toBe(true);
 
-      for (const tail of [
-        `other/definition.${extension}`,
-        `intradayRegression/Definition.${extension}`,
-        `intradayRegression/runtime/ema.${extension}`,
-        `intradayRegression/definition.${compiled ? 'ts' : 'js'}`,
-        '../outside.js',
-      ]) {
-        expect(
-          selectedStrategyPath(
-            root,
-            'intradayRegression',
-            path.join(root, directory, tail),
-            compiled,
-          ),
-        ).toBe(false);
-      }
+    expect(
+      selectedStrategyPath(
+        root,
+        'intradayRegression',
+        path.join(root, directory, 'intradayRegression') + '/internal/../definition.ts',
+      ),
+    ).toBe(true);
+
+    for (const tail of [
+      'other/definition.ts',
+      'intradayRegression/Definition.ts',
+      'intradayRegression/runtime/ema.ts',
+      'intradayRegression/definition.js',
+      '../outside.js',
+    ]) {
+      expect(
+        selectedStrategyPath(root, 'intradayRegression', path.join(root, directory, tail)),
+      ).toBe(false);
     }
 
-    for (const directory of [
+    for (const legacyDirectory of [
       'src/core/strategy',
       'src/app/startup/strategyDefinitions',
+      'dist/src/strategies',
       'dist/src/app/startup/strategyDefinitions',
       'dist/core/strategy',
       'dist/app/startup/strategyDefinitions',
@@ -1556,13 +1574,21 @@ describe('P6 frozen occurrence architecture', () => {
         selectedStrategyPath(
           root,
           'intradayRegression',
-          path.join(root, directory, 'intradayRegression/definition.ts'),
-          false,
+          path.join(root, legacyDirectory, 'intradayRegression/definition.ts'),
         ),
       ).toBe(false);
 
     expect(
-      selectedStrategyPath(root, '../outside', path.join(root, 'outside/definition.ts'), false),
+      selectedStrategyPath(
+        root,
+        'intradayRegression',
+        path.join(root, 'dist/src/strategies/intradayRegression/definition.js'),
+      ),
     ).toBe(false);
+
+    for (const selected of ['../outside', 'IntradayRegression', 'intraday-regression'])
+      expect(
+        selectedStrategyPath(root, selected, path.join(root, directory, selected, 'definition.ts')),
+      ).toBe(false);
   });
 });

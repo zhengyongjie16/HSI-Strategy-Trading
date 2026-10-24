@@ -1,4 +1,4 @@
-/** 临时构建工程的离线模块加载边界：只求值显式 source/dist 入口或测试策略定义，拒绝路径注入。 */
+/** 临时源码工程的离线模块加载边界：只求值显式 TS 入口或测试策略定义，拒绝路径注入。 */
 import path from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -18,8 +18,8 @@ export async function importFixtureModule(root: string, href: string): Promise<u
 
   const [directory, file] = await Promise.all([realpath(root), realpath(fileURLToPath(url))]);
   const relative = path.relative(directory, file).replaceAll('\\', '/');
-  const layout = relative.startsWith('dist/src/') ? 'dist/src/' : 'src/';
-  const extension = layout === 'src/' ? '.ts' : '.js';
+  const layout = 'src/';
+  const extension = '.ts';
   const entry = relative.slice(layout.length, -extension.length);
   const entries = new Set([
     'app/startup/prepareStrategy',
@@ -36,7 +36,7 @@ export async function importFixtureModule(root: string, href: string): Promise<u
     !relative.endsWith(extension) ||
     (!entries.has(entry) && !definition)
   ) {
-    throw new Error('Fixture import is outside the reviewed source/dist entry boundary');
+    throw new Error('Fixture import is outside the reviewed source TS entry boundary');
   }
 
   return import(pathToFileURL(file).href);

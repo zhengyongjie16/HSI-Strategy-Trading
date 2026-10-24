@@ -227,20 +227,24 @@ function fixedQueryModule(argument: ts.Node | undefined): string | undefined {
   return /^(?:\.\.?\/)+[^?#]+\.[cm]?[jt]s\?[^?#]+$/.test(fixed) ? fixed.split('?')[0] : undefined;
 }
 
-/** 唯一受 realpath/布局/入口白名单运行时校验的离线 fixture importer；不豁免文件中的其他 import。 */
+/** 唯一受 realpath/源码 TS/入口白名单运行时校验的离线 fixture importer；不豁免文件中的其他 import。 */
 function guardedFixtureImport(file: string, node: ts.Node): boolean {
   if (
     file !== 'tests/helpers/importFixtureModule.ts' ||
     !ts.isCallExpression(node) ||
     node.expression.kind !== ts.SyntaxKind.ImportKeyword ||
-    functionName(node) !== 'importFixtureModule' ||
     !ts.isReturnStatement(node.parent) ||
     compact(node.getText()) !== 'import(pathToFileURL(file).href)'
   )
     return false;
 
   const body = node.parent.parent;
-  if (!ts.isBlock(body)) return false;
+  if (
+    !ts.isBlock(body) ||
+    !ts.isFunctionDeclaration(body.parent) ||
+    body.parent.name?.text !== 'importFixtureModule'
+  )
+    return false;
 
   const guards = new Set(
     body.statements
@@ -292,8 +296,11 @@ function guardedFixtureImport(file: string, node: ts.Node): boolean {
     declarations.has(
       String.raw`definition = /^strategies\/[a-z][a-zA-Z0-9]*\/definition$/.test(entry)`,
     ) &&
-    declarations.has("layout = relative.startsWith('dist/src/') ? 'dist/src/' : 'src/'") &&
-    declarations.has("extension = layout === 'src/' ? '.ts' : '.js'") &&
+    declarations.has('url = new URL(href)') &&
+    declarations.has(String.raw`relative = path.relative(directory, file).replaceAll('\\', '/')`) &&
+    declarations.has("layout = 'src/'") &&
+    declarations.has("extension = '.ts'") &&
+    declarations.has('entry = relative.slice(layout.length, -extension.length)') &&
     guards.has("url.protocol !== 'file:' || url.search !== '' || url.hash !== ''") &&
     guards.has(
       '!relative.startsWith(layout) || !relative.endsWith(extension) || (!entries.has(entry) && !definition)',
@@ -402,19 +409,12 @@ export function sdkAdapter(file: string): boolean {
   );
 }
 
-/** 同时检查源码与编译布局；动态入口不能任意注入外部路径、private leaf 或其他策略。 */
-export function selectedStrategyPath(
-  root: string,
-  selected: string,
-  candidate: string,
-  compiled: boolean,
-): boolean {
+/** 仅接受源码 TS 的精确策略入口；动态入口不能注入外部路径、private leaf 或其他策略。 */
+export function selectedStrategyPath(root: string, selected: string, candidate: string): boolean {
   if (!/^[a-z][a-zA-Z0-9]*$/.test(selected)) return false;
 
-  const directory = compiled ? 'dist/src/strategies' : 'src/strategies';
   return (
-    path.resolve(candidate) ===
-    path.resolve(root, directory, selected, `definition.${compiled ? 'js' : 'ts'}`)
+    path.resolve(candidate) === path.resolve(root, 'src/strategies', selected, 'definition.ts')
   );
 }
 

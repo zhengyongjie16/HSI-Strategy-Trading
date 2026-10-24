@@ -48,7 +48,7 @@ export async function prepareStrategy(
   }
 
   const extension = nodePath.extname(fileURLToPath(moduleUrl));
-  if (extension !== '.ts' && extension !== '.js') {
+  if (extension !== '.ts') {
     throw new Error('[Strategy:location] 不支持的加载器扩展名: ' + extension);
   }
 
@@ -62,7 +62,7 @@ export async function prepareStrategy(
     throw new Error('[Strategy:selection] 选中目录不存在、拼写不符或大小写冲突: ' + directoryName);
   }
 
-  const location = await inspectStrategyLocation(rootPath, directoryName, extension, deps);
+  const location = await inspectStrategyLocation(rootPath, directoryName, deps);
   const definition = await importStrategyDefinition(location, deps);
   return { strategyId, prepared: prepareStrategyDefinition(definition) };
 }

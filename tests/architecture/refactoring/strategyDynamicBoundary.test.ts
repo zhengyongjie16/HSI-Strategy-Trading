@@ -1,7 +1,8 @@
 /**
  * 非字面量 selected-strategy 路径保护：执行真实准备器，但只注入元信息/模块对象。
- * 覆盖 definition/config 同根、源码与 compiled 布局、越界、链接和大小写，不求值策略或 SDK。
+ * 覆盖源码 definition/config 同根、越界、链接和大小写，并拒绝旧 JS/dist 加载器，不求值策略或 SDK。
  */
+import { rejects } from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -10,7 +11,6 @@ import { prepareStrategy } from '../../../src/app/startup/prepareStrategy.js';
 import { selectedStrategyPath } from './scanner.js';
 
 function loaderFixture(
-  compiled: boolean,
   mode:
     | 'valid'
     | 'link'
@@ -22,20 +22,19 @@ function loaderFixture(
     | 'missingConfig',
 ) {
   const root = path.join(os.tmpdir(), 'hsi-static-strategy-fixture');
-  const prefix = compiled ? 'dist/src' : 'src';
-  const extension = compiled ? 'js' : 'ts';
-  const strategyRoot = path.join(root, prefix, 'strategies');
+  const strategyRoot = path.join(root, 'src/strategies');
   const owner = path.join(strategyRoot, 'intradayRegression');
 
-  const definition = path.join(owner, `definition.${extension}`);
+  const definition = path.join(owner, 'definition.ts');
   const config = path.join(owner, 'config.json');
   const directories = new Set([strategyRoot, owner]);
   const loaderModuleHref = pathToFileURL(
-    path.join(root, prefix, `app/startup/prepareStrategy.${extension}`),
+    path.join(root, 'src/app/startup/prepareStrategy.ts'),
   ).href;
   const imported: string[] = [];
   let prepared = 0;
   return {
+    root,
     imported,
     getPrepareCount: () => prepared,
     deps: {
@@ -47,11 +46,11 @@ function loaderFixture(
             : ['intradayRegression'];
 
         if (directory === owner) {
-          if (mode === 'missingConfig') return [`definition.${extension}`];
+          if (mode === 'missingConfig') return ['definition.ts'];
 
           return mode === 'configCase'
-            ? [`definition.${extension}`, 'config.json', 'Config.json']
-            : [`definition.${extension}`, 'config.json'];
+            ? ['definition.ts', 'config.json', 'Config.json']
+            : ['definition.ts', 'config.json'];
         }
 
         return [];
@@ -68,7 +67,7 @@ function loaderFixture(
           : file,
       importModule: async (href: string): Promise<unknown> => {
         imported.push(href);
-        if (!selectedStrategyPath(root, 'intradayRegression', fileURLToPath(href), compiled))
+        if (!selectedStrategyPath(root, 'intradayRegression', fileURLToPath(href)))
           throw new Error('unexpected module path');
 
         return {
@@ -86,13 +85,31 @@ function loaderFixture(
 }
 
 describe('selected dynamic strategy boundary', () => {
-  it.each([false, true])(
-    'imports and prepares only the selected definition with colocated config (%s)',
-    async (compiled) => {
-      const probe = loaderFixture(compiled, 'valid');
-      await prepareStrategy({ env: { ACTIVE_STRATEGY_ID: 'intraday-regression' } }, probe.deps);
-      expect(probe.imported).toHaveLength(1);
-      expect(probe.getPrepareCount()).toBe(1);
+  it('imports and prepares only the selected source TS definition with colocated config', async () => {
+    const probe = loaderFixture('valid');
+    await prepareStrategy({ env: { ACTIVE_STRATEGY_ID: 'intraday-regression' } }, probe.deps);
+    expect(probe.imported).toEqual([
+      pathToFileURL(path.join(probe.root, 'src/strategies/intradayRegression/definition.ts')).href,
+    ]);
+    expect(probe.getPrepareCount()).toBe(1);
+  });
+
+  it.each(['src/app/startup/prepareStrategy.js', 'dist/src/app/startup/prepareStrategy.js'])(
+    'rejects the former JS loader %s before dynamic evaluation',
+    async (entry) => {
+      const probe = loaderFixture('valid');
+      await rejects(
+        prepareStrategy(
+          { env: { ACTIVE_STRATEGY_ID: 'intraday-regression' } },
+          {
+            ...probe.deps,
+            loaderModuleHref: pathToFileURL(path.join(probe.root, entry)).href,
+          },
+        ),
+        /\[Strategy:location\]/,
+      );
+      expect(probe.imported).toEqual([]);
+      expect(probe.getPrepareCount()).toBe(0);
     },
   );
 
@@ -105,25 +122,23 @@ describe('selected dynamic strategy boundary', () => {
     'configCase',
     'missingConfig',
   ] as const)('rejects %s before any dynamic evaluation', async (mode) => {
-    for (const compiled of [false, true]) {
-      const probe = loaderFixture(compiled, mode);
-      const rejected = await prepareStrategy(
-        { env: { ACTIVE_STRATEGY_ID: 'intraday-regression' } },
-        probe.deps,
-      ).then(
-        () => false,
-        () => true,
-      );
-      expect(rejected).toBe(true);
-      expect(probe.imported).toEqual([]);
-      expect(probe.getPrepareCount()).toBe(0);
-    }
+    const probe = loaderFixture(mode);
+    const rejected = await prepareStrategy(
+      { env: { ACTIVE_STRATEGY_ID: 'intraday-regression' } },
+      probe.deps,
+    ).then(
+      () => false,
+      () => true,
+    );
+    expect(rejected).toBe(true);
+    expect(probe.imported).toEqual([]);
+    expect(probe.getPrepareCount()).toBe(0);
   });
 
   it.each(['../outside', 'intraday-regression/runtime/ema', 'intradayRegression'])(
     'refuses unselected/private/arbitrary strategy path %s',
     async (id) => {
-      const probe = loaderFixture(false, 'valid');
+      const probe = loaderFixture('valid');
       const rejected = await prepareStrategy({ env: { ACTIVE_STRATEGY_ID: id } }, probe.deps).then(
         () => false,
         () => true,

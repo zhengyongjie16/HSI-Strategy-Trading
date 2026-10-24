@@ -16,7 +16,6 @@
         "eslint-config-prettier": "^10.1.8",
         "eslint-plugin-sonarjs": "4.2.0",
         "eslint-plugin-unicorn": "^64.0.0",
-        "rimraf": "^6.1.3",
         "typescript": "^6.0.3",
         "typescript-eslint": "8.65.0"
       }
@@ -786,18 +785,6 @@
       {},
       "sha512-dsKNQNdj6xA3T+QlADDA7mOSlX0qiMINjn0cgr+eGHGsbSHzTabcIogz2+p/iqP1Xs6EP/sS2SbqH+brGTbq0g=="
     ],
-    "glob": [
-      "glob@13.0.6",
-      "",
-      {
-        "dependencies": {
-          "minimatch": "^10.2.2",
-          "minipass": "^7.1.3",
-          "path-scurry": "^2.0.2"
-        }
-      },
-      "sha512-Wjlyrolmm8uDpm/ogGyXZXb1Z+Ca2B8NbJwqBVg0axK9GbBeoS7yGV6vjXnYdGm6X53iehEuxxbyiKp8QmN4Vw=="
-    ],
     "glob-parent": [
       "glob-parent@6.0.2",
       "",
@@ -996,12 +983,6 @@
       },
       "sha512-FmhBoRFrUUXRIOUfcJzxkGw0/Er+ine6VjXnEYaHV18GWl8TgnfiaZuFjauA5xFwJiqoVbVMI1wnzN6/CZ0azw=="
     ],
-    "lru-cache": [
-      "lru-cache@11.3.5",
-      "",
-      {},
-      "sha512-NxVFwLAnrd9i7KUBxC4DrUhmgjzOs+1Qm50D3oF1/oL+r1NpZ4gA7xvG0/zJ8evR7zIKn4vLf7qTNduWFtCrRw=="
-    ],
     "minimatch": [
       "minimatch@10.2.5",
       "",
@@ -1011,12 +992,6 @@
         }
       },
       "sha512-MULkVLfKGYDFYejP07QOurDLLQpcjk7Fw+7jXS2R2czRQzR56yHRveU5NDJEOviH+hETZKSkIk5c+T23GjFUMg=="
-    ],
-    "minipass": [
-      "minipass@7.1.3",
-      "",
-      {},
-      "sha512-tEBHqDnIoM/1rXME1zgka9g6Q2lcoCkxHLuc7ODJ5BxbP5d4c2Z5cGgtXAku59200Cx7diuHTOYfSBD8n6mm8A=="
     ],
     "ms": [
       "ms@2.1.3",
@@ -1071,12 +1046,6 @@
       },
       "sha512-LaNjtRWUBY++zB5nE/NwcaoMylSPk+S+ZHNB1TzdbMJMny6dynpAGt7X/tl/QYq3TIeE6nxHppbo2LGymrG5Pw=="
     ],
-    "package-json-from-dist": [
-      "package-json-from-dist@1.0.1",
-      "",
-      {},
-      "sha512-UEZIS3/by4OC8vL3P2dTXRETpebLI2NiI5vIrjaD/5UtrkFX/tNbwjTSRAGC/+7CAo2pIcBaRgWmcBBHcsaCIw=="
-    ],
     "path-exists": [
       "path-exists@4.0.0",
       "",
@@ -1088,17 +1057,6 @@
       "",
       {},
       "sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q=="
-    ],
-    "path-scurry": [
-      "path-scurry@2.0.2",
-      "",
-      {
-        "dependencies": {
-          "lru-cache": "^11.0.0",
-          "minipass": "^7.1.2"
-        }
-      },
-      "sha512-3O/iVVsJAPsOnpwWIeD+d6z/7PmqApyQePUtCndjatj/9I5LylHvt5qluFaBT3I5h3r1ejfR056c+FCv+NnNXg=="
     ],
     "picocolors": [
       "picocolors@1.1.1",
@@ -1173,20 +1131,6 @@
         }
       },
       "sha512-dLsljMd9sqwRkby8zhO1gSg3PnJIBFid8f4CQj/sXx+7cKx+E7u0PKhZ+U4wmhx7EfmtvnA318oVaIkAB1lRJw=="
-    ],
-    "rimraf": [
-      "rimraf@6.1.3",
-      "",
-      {
-        "dependencies": {
-          "glob": "^13.0.3",
-          "package-json-from-dist": "^1.0.1"
-        },
-        "bin": {
-          "rimraf": "dist/esm/bin.mjs"
-        }
-      },
-      "sha512-LKg+Cr2ZF61fkcaK1UdkH2yEBBKnYjTyWzTJT6KNPcSPaiT7HSdhtMXQuN5wkTX0Xu72KQ1l8S42rlmexS2hSA=="
     ],
     "scslre": [
       "scslre@0.3.0",

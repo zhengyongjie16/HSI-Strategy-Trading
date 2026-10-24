@@ -140,7 +140,7 @@ export interface PreparedStrategy {
 /**
  * 策略入口定义。
  * 类型用途：约束免注册动态加载的固定入口导出、身份和配置准备能力。
- * 数据来源：由具体策略目录的 definition.ts/definition.js 导出。
+ * 数据来源：由具体策略目录的 definition.ts 导出。
  * 使用范围：启动加载器与具体策略入口。
  */
 export interface StrategyDefinition {

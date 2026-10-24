@@ -20,8 +20,8 @@ export const LEGACY_STRATEGY_ENV_KEYS: ReadonlyArray<string> = [
 /** 严格 kebab-case 策略 ID 规则。 */
 export const STRATEGY_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*$/;
 
-/** 策略入口文件的固定基础名称；运行时按 source/dist 模式追加扩展名。 */
-export const STRATEGY_DEFINITION_FILE_NAME = 'definition';
+/** 策略源码入口的完整固定文件名；不接受其他扩展名替代。 */
+export const STRATEGY_DEFINITION_FILE_NAME = 'definition.ts';
 
 /** 策略配置资产的固定文件名。 */
 export const STRATEGY_CONFIG_FILE_NAME = 'config.json';

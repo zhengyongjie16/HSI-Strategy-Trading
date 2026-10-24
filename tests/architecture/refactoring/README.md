@@ -2,9 +2,9 @@
 
 ## 当前门禁
 
-`baseline.stage` 为 **P6**；`src` 与 `tests` 同范围扫描，原 occurrence、计数、cutoff 与 sourcePhysical 截止不变，所有到期债务必须归零。宽契约与旧根目录不得通过重命名、转发或测试目录豁免保活。`numericProbe` 保留历史 `core/trader`、`types/trader` 的真实审计身份；新增测试同时校验原多重集合额度、原截止与当前 `TradeRuntime`/窄能力的金融投影。离线 fixture 的动态加载只允许固定模块 query 隔离，或先经 realpath、source/dist 布局与具名入口校验的测试 loader；不授权任意动态路径。
+`baseline.stage` 为 **P6**；`src` 与 `tests` 同范围扫描，原 occurrence、计数、cutoff 与 sourcePhysical 截止不变，所有到期债务必须归零。宽契约与旧根目录不得通过重命名、转发或测试目录豁免保活。`numericProbe` 保留历史 `core/trader`、`types/trader` 的真实审计身份；新增测试同时校验原多重集合额度、原截止与当前 `TradeRuntime`/窄能力的金融投影。离线 fixture 的动态加载只允许固定模块 query 隔离，或先经 file URL、无 query/hash、realpath、精确源码 TS 布局与具名入口校验的测试 loader；不授权任意动态路径或 dist/JS 入口。共享 importer 只识别新的固定 `src/` 与 `.ts` 门禁，恢复旧双布局声明即失去动态 import 授权，不同时认可两套结构。
 
-本轮起点为原始 HEAD `cf54399`、stage P6，已补齐 §14 观测与独立全链路复核，**唯一验证者的五项最终离线门禁通过：3019 pass / 0 fail**。下文 P4.5 的命令、数字、日志及“P5/P6 未执行”均保留为历史时点事实，不替换成本轮结果；当前真实测试索引及本轮证据另见文末。冻结 baseline/unresolved 与 HEAD 哈希一致，未修改或重采；最终文档补证后的两文件 scoped check 交同一验证者执行。本轮不发布、不开门、不连接实盘。
+2026-10-16 的 P6 验收起点为原始 HEAD `cf54399`、stage P6，当时已补齐 §14 观测与独立全链路复核，**唯一验证者的五项最终离线门禁通过：3019 pass / 0 fail**。这些数字、build 通过记录及文末 P6 证据均为该历史时点事实，不代表本次 Bun 源码运行重构的验收结果。下文 P4.5 的命令、数字、日志及“P5/P6 未执行”同样保留历史原义。历史验收时冻结 baseline/unresolved 与对应 HEAD 哈希一致，未修改或重采；本次仍禁止修改冻结清单、迁移历史额度或新增豁免。不发布、不开门、不连接实盘。
 
 ## P4.5 离线验收记录（历史，不作为 P6 完成证明）
 
@@ -12,18 +12,19 @@
 
 ## 保留的检查
 
-- `scanner.ts` / `freeze.test.ts` 使用 TypeScript 模块解析与 checker 检查真实目标、SDK 声明来源、alias、import/type-only/type import/dynamic/require/re-export。SDK import、use、origin、legacy、snapshot 各自按 occurrence **多重集合**冻结，重复调用不能共用一条额度。
+- `scanner.ts` / `freeze.test.ts` 使用 TypeScript 模块解析与 checker 检查真实目标、SDK 声明来源、alias、import/type-only/type import/dynamic/require/re-export。相对路径和 `@/` 中正常的 `.js → .ts` 源码解析、固定 `.js?case=...` 缓存隔离继续保留，不属于产物兼容。SDK import、use、origin、legacy、snapshot 各自按 occurrence **多重集合**冻结，重复调用不能共用一条额度。
 - §5.1 层矩阵对生产 `src/*` 独立生效；`tests/application/*` 可装配真实旧协作者，不继承同名生产目录的依赖矩阵，测试 SDK/fixture 和金融门禁不受影响。domain 直接文件/网络/调度模块、真实 ambient fetch/timer 和 logger IO 另作窄能力检查，本地同名纯函数及纯 Logger 类型不因此被禁止。跨旧业务 owner 的值依赖仍消费原阶段额度；函数签名中性不等于获得新 owner 资格。同 owner 的数据函数、SDK-free type query，以及合法 domain/utils/constants 数据能力通过有限类型/实际出口检查，不因函数重命名要求整体 owner 提前迁移；返回业务能力对象的 factory 不据此豁免。非 infra 的真实 SDK-free types/facts 可作为中性类型，不能因此反向依赖旧业务 owner。已有中性 observation 分类保留审计依据，不新增动态白名单。
 - 新 infra mapper/port 的 legacy 目标资格只检查实际解析声明、公共返回类型、实际返回结构、嵌套字段和回调。展开直接返回对象、局部 initializer、返回函数和出口调用，拒绝明显的 SDK/any 擦除及返回额外 raw 字段。`unknown` 可用于 JSON/错误输入，但不作为任意中性返回出口；唯一窄例外是完整 mutation 失败结果的原始 `cause` 证据，必须符合 operation/kind/requestAttempted/code/reason 结构约束。实际来源继续核验默认参数、局部别名与实参；享受例外的绑定按 symbol 检查重赋值，参数、局部与 catch 绑定发生重赋值即拒绝，不建立 CFG 或全污点分析。依赖该例外的外部声明调用必须有可检查的中性证据来源，全部实参与接收对象均须安全，不按 built-in 名称放行。不能用 unknown callback 参数掩盖实际传入的 SDK 值。mapper 可接受 adapter 内的 SDK DTO，但不得把 SDK callback 能力带出；不以函数名、文件名或 body hash 批准能力。
 - `executionProbe.ts` 保留旧 helper **boolean 构造探针**：实际调用、未被实参替换的 default、静态 factory method、显式 callback 和数组 map。未调用 method/闭包不计构造；production owner 内部执行不在 test fixture 维度递归。递归与参数上下文缓存只保证构造判断不串用，不缓存业务资格。
 - HEAD-only helper 冻结仍为 **855 occurrences**，不重采、不改截止。测试可以经 SDK-free port 驱动合法 infra fixture 内部 SDK；原构造 occurrence 仍记录，只在实际跨入 infra fixture 的 seam 公开/实际出口中性且构造位置合法时单独扣除；外围测试装配/观察接口不被当成 SDK seam。caller 目录本身不授予或取消资格；中性 module/owner port 测试与 integration 遵循同一边界检查。纯造值 fixture 是否有必要由行为覆盖及审查判定，不用目录模拟业务场景。`withNativeContext` / `Config` callback 之类公开 SDK 能力不合格，必须先改造真实 fixture。
-- P3F 历史收口记录保持不变：当时冻结记录中的 80 个 P3F 前 source files、14 个完整旧 owner roots、镜像目录和 AST import/export 残留均为零。当前继续按原 `sourcePhysicalStage` / `sourcePhysicalDeadline` 检查截至 P4.5 的旧 owner；P5/P6 deferred occurrence（包括 `quoteSubscriptionRuntime` 的 P5 owner）继续保留，不能因 P4.5 绿灯提前关闭。
+- P3F 历史收口记录保持不变：当时冻结记录中的 80 个 P3F 前 source files、14 个完整旧 owner roots、镜像目录和 AST import/export 残留均为零。P4.5 当时继续按原 `sourcePhysicalStage` / `sourcePhysicalDeadline` 检查截至该阶段的旧 owner；当时 P5/P6 deferred occurrence（包括 `quoteSubscriptionRuntime` 的 P5 owner）继续保留，不能因 P4.5 绿灯提前关闭；这不表示当前 P6 仍可消费到期额度。
 - `../longbridgeBoundary.test.ts` 不消费历史 allowance，直接要求生产 SDK import/use/origin 仅位于 `infrastructure/longbridge/{trade,market}`；同时拒绝 `SDK_EXPOSURE` 与未通过既有 selected-strategy loader 校验的 `NONLITERAL`。runtime/type-only/dynamic/re-export/require 均有合法 adapter 与非法业务层正反例，变量和无插值模板动态导入不能绕过最终门禁。
 - 全仓实际 `TradeContext.new` 创建点必须恰好一个且位于 production trade adapter；不把已迁移的旧 core 路径当不可变业务基线。
 - `snapshotProbe.ts` 保留唯一 canonical owner、readonly reader/嵌套事实、能力外泄、第二 writer、cast/Object.assign 等保护；原 snapshot/mirror occurrence 在 P1 到期。
 - `numericProbe.ts` / `numericBoundary.test.ts` 保留字段 identity、金融 number/有损投影保护和合法整数/指标边界。投影额度按文件、原函数、表达式逐 occurrence 计数，仅原金融投影可获额度；P1 已闭合字段/投影立即到期，后续金融额度按所属阶段收缩，最迟 P4.5 归零。P2 恢复/持久化原契约的累计金额不允许退回 number 或直接有损投影；revision/时间字段仍为结构 number。`Quote.prevClose` 的真实角色由附加登记补齐，不重写 P0 审计。
-- 策略私有身份按单一策略根 `src/strategies/<selected>/` 识别；原 `domain/strategy`、`runtime/strategy`、`config/strategy`、`app/startup/strategyDefinitions` 四根身份及 definition/config 分根契约不再成立。入口、`config.json`、解析、DSL、指标、信号、验证与私有常量同目录。宿主或其他策略导入某策略私有实现、配置与常量均由 `strategyBoundary.test.ts` 拒绝。`strategyDynamicBoundary.test.ts` 执行真实准备器验证同目录 definition/config，入口精确定位为 `src/strategies/<selected>/definition.ts` 或 `dist/src/strategies/<selected>/definition.js`，不回退旧 core 或四根路径，也不在 `.ts/.js` 之间回退。
-- 非字面量加载只准入两条有限结构连接：runAppDeps 直接向实际声明的 prepareStrategy 注入 `importModule: (href) => import(href)`；真实 loader 的 importStrategyDefinition 使用已声明 StrategyLocation/StrategyFileSystem 参数，经 Node pathToFileURL(location.definitionPath).href 调用 importModule。路径、真实声明及参数 symbol 共同校验，局部同名函数/契约、任意 URL、间接回调或其他 loader 均拒绝；不扩大原 baseline 的动态 occurrence 额度。加载安全仍由真实元信息负例与唯一消费者检查共同验证，不宣称任意数据流证明。
+- 策略私有身份按单一策略根 `src/strategies/<selected>/` 识别；原 `domain/strategy`、`runtime/strategy`、`config/strategy`、`app/startup/strategyDefinitions` 四根身份及 definition/config 分根契约不再成立。入口、`config.json`、解析、DSL、指标、信号、验证与私有常量同目录。宿主或其他策略导入某策略私有实现、配置与常量均由 `strategyBoundary.test.ts` 拒绝。`strategyDynamicBoundary.test.ts` 执行真实准备器验证同目录 definition/config，入口只精确定位为 `src/strategies/<selected>/definition.ts`，同目录 `config.json` 必须存在；拒绝旧 dist/JS 入口，不回退旧 core、四根路径或其他扩展名。
+- 共享 `importFixtureModule` 的宿主入口精确集合保持七项：`app/startup/prepareStrategy`、`app/startup/createSelectedStrategy`、`app/shutdown/createCleanup`、`runtime/businessEventProgram/index`、`runtime/asyncProgram/tradeTaskQueue/index`、`runtime/lifecycle/terminationRuntime`、`domain/seat/symbolRegistry`；另只允许符合目录名规则的直接策略 definition。`freeze.test.ts` 验证逐项门禁、七项无缺失/新增/重复（允许排列变化）、旧双布局 helper 拒绝及普通非授权测试路径不得继承资格，不以文件名或函数名独立授权。
+- 生产非字面量加载只准入两条有限结构连接：runAppDeps 直接向实际声明的 prepareStrategy 注入 `importModule: (href) => import(href)`；真实 loader 的 importStrategyDefinition 使用已声明 StrategyLocation/StrategyFileSystem 参数，经 Node pathToFileURL(location.definitionPath).href 调用 importModule。路径、真实声明及参数 symbol 共同校验，局部同名函数/契约、任意 URL、间接回调或其他 loader 均拒绝；不扩大原 baseline 的动态 occurrence 额度。加载安全仍由真实元信息负例与唯一消费者检查共同验证，不宣称任意数据流证明。
 
 ## 明确不做的事
 
@@ -70,7 +71,9 @@ bun --no-env-file test tests/architecture/refactoring tests/architecture/longbri
 
 本机临时日志位于 `C:/WINDOWS/TEMP/p4-final-verification-3IJh3L/`：`01-format` 至 `05-test` 保留首轮 `.log/.result.json`，`06-test-default-log-root.log/.result.json` 保留完整复跑，`07-debts.log` 保留九类汇总；这些临时文件不是仓库长期审计归档。
 
-## P6 后剩余工作与当前验收边界
+## P6 后剩余工作与验收边界（历史记录，2026-10-16）
+
+本节及其子节保留原 P6 验收时点的“本轮”“当前”和后续待办含义，命令、数量、build 通过记录及原验证范围不改写成本次源码运行重构的结果。
 
 本轮唯一交付文档为本 README 与[实施计划](../../../docs/architecture/architecture-refactoring-implementation-plan.md)。P0–P4/P4.5 历史事实保持原义，P5/P6 现有实现与当前 stage 按当前源码、测试和本轮最终证据核对，不用改写历史“未执行”掩盖阶段差异。
 
@@ -104,7 +107,7 @@ bun --no-env-file test tests/architecture/refactoring tests/architecture/longbri
 | §14 / §17.6 settlement / order | `tests/application/postTradeSettlement/{readinessGate,protectionRecovery}.test.ts`；`tests/application/orderTracking/orderMonitor/orderObservation.business.test.ts`；`tests/integration/architectureRefactoringP1Native/trade/nativeSubmitObservation.test.ts`；连续 stale/token、同步 completion、首次权威 terminal/ACK 与原错误身份。 |
 | §14 / §17.6 seat / queue / lifecycle | `tests/runtime/seatDiagnosticRuntime/business.test.ts`；`tests/application/seatActivation/seatRefreshRelease.business.test.ts`；`tests/runtime/asyncProgram/{tradeTaskQueue,monitorTaskQueue}/diagnostics.test.ts`；`tests/application/tradingDayRebuild/startupRebuild.test.ts`；`tests/runtime/lifecycle/dayLifecycleDiagnostics.test.ts`；完整 activation、retain/release、三队列和实际 startup/open rebuilt / 原重试。 |
 
-### 本轮最终离线验收证据（五项门禁通过）
+### P6 最终离线验收证据（历史：五项门禁通过）
 
 已读取并核实唯一验证者 `offline-final-verifier` 的 `FINAL-VALIDATION-REPORT.md` 与 `architecture-evidence.json`。证据根为 `C:/WINDOWS/TEMP/hsi-p6-final-validation-20261016-180854/`；原始 HEAD `cf543994945b8351d2ce5e848ab3a2159ce0af9c`，Bun 1.4.2，所有实现/文档 owner 显式停写后各门禁仅串行执行一次，无失败复跑：
 
