@@ -1,5 +1,6 @@
 import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import { createRuntimeStateFixtures } from '../helpers/runtimeStateFixtures.js';
+import type { RuntimeTermination } from '../../src/types/runtime.js';
 
 /**
  * terminal-switch-finalization 集成测试
@@ -38,8 +39,8 @@ import {
 } from '../helpers/testDoubles.js';
 import { createWarrantCandidateWithOverrides, createLoggerStub } from '../helpers/seatTestUtils.js';
 
-function createTradingGateEventRuntime() {
-  return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
+function createTradingGateEventRuntime(termination: RuntimeTermination) {
+  return createProductionTradingGateEventRuntime({ termination });
 }
 
 async function waitUntil(predicate: () => boolean, timeoutMs: number = 1_000): Promise<void> {
@@ -271,6 +272,11 @@ describe('terminal switch finalization integration', () => {
     const receipt = await postTradeConsistencyRuntime.waitForFresh();
     expect(receipt.snapshotToken).toEqual(committed.snapshotToken);
     expect(postTradeConsistencyRuntime.isCurrent(receipt)).toBeTrue();
+    const termination = createTerminationDouble({
+      reportFatalError: (error) => {
+        throw error;
+      },
+    });
     const switchWakeupRuntime = createSwitchWakeupRuntime({
       logger: { error: () => {} },
       marketDataClient,
@@ -280,18 +286,14 @@ describe('terminal switch finalization integration', () => {
       ...stateFixtures,
       snapshot,
       postTradeConsistencyRuntime,
-      tradingGateEventRuntime: createTradingGateEventRuntime(),
+      tradingGateEventRuntime: createTradingGateEventRuntime(termination),
       doomsdayProtectionEnabled: false,
       now: () => new Date(nowMs),
       scheduleTimer: (callback, delayMs) => setTimeout(callback, delayMs),
       clearTimer: (handle) => {
         clearTimeout(handle);
       },
-      termination: createTerminationDouble({
-        reportFatalError: (error) => {
-          throw error;
-        },
-      }),
+      termination,
     });
     const monitorQuoteRuntime = createDefaultMonitorQuoteEventRuntime({
       logger: { error: () => {} },

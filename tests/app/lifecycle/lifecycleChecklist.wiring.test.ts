@@ -585,7 +585,7 @@ describe('lifecycle checklist actual wiring', () => {
     const timers = new Map<number, () => void>();
     const scheduledAtMs: number[] = [];
     let timerScheduled = Promise.withResolvers<undefined>();
-    const tradingGateEventRuntime = createTradingGateEventRuntime({ logger: h.logger });
+    const tradingGateEventRuntime = createTradingGateEventRuntime({ termination: h.termination });
     const tradingConfig = createTradingConfig({
       monitor: h.monitorContext.config,
       global: {

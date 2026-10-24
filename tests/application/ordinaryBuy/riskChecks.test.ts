@@ -4,6 +4,7 @@
  * 功能：
  * - 验证风险检查管道相关场景意图、边界条件与业务期望。
  */
+import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 import { logger } from '../../../src/infrastructure/logger/index.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { rejects } from 'node:assert/strict';
@@ -89,6 +90,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
         orderRecorder: createOrderRecorderDouble(),
       });
       const pipeline = createBuyRiskChecks({
+        diagnostics: createDiagnosticObserverDouble(),
         logger,
         doomsdayProtection: createTradingConfig().global.doomsdayProtection,
         liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
@@ -138,6 +140,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
@@ -195,6 +198,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     let checks = 0;
     lastRiskCheckTime.set('BULL.HK_BUY', 0);
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: false,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
@@ -262,6 +266,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
@@ -342,6 +347,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       },
     });
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
@@ -398,6 +404,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       },
     });
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
@@ -437,6 +444,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
@@ -500,6 +508,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
@@ -541,6 +550,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
@@ -591,6 +601,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
@@ -645,6 +656,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
@@ -700,6 +712,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
@@ -769,6 +782,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
@@ -839,6 +853,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
@@ -902,6 +917,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
       });
 
       const pipeline = createBuyRiskChecks({
+        diagnostics: createDiagnosticObserverDouble(),
         logger,
         doomsdayProtection: createTradingConfig().global.doomsdayProtection,
         liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
@@ -960,6 +976,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),
@@ -1030,6 +1047,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
@@ -1133,6 +1151,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
@@ -1224,6 +1243,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble({
@@ -1303,6 +1323,7 @@ describe('ordinaryBuy riskChecks business flow', () => {
     });
 
     const pipeline = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       doomsdayProtection: createTradingConfig().global.doomsdayProtection,
       liquidationCooldownTracker: createLiquidationCooldownTrackerDouble(),

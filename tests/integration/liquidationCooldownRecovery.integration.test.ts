@@ -11,6 +11,7 @@ import { createTradeLogHydrator } from '../../src/application/protectiveLiquidat
 import type { BuyRiskCheckContext } from '../../src/application/ordinaryBuy/types.js';
 import { createMonitorConfig, createTradingConfig } from '../../mock/factories/configFactory.js';
 import { createSignal } from '../../mock/factories/signalFactory.js';
+import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import {
   createAccountSnapshotDouble,
   createLoggerDouble,
@@ -130,6 +131,7 @@ async function assertDualDirectionBuyBlockedAfterHydration(params: {
     orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
   });
   const checkRisk = createBuyRiskChecks({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     doomsdayProtection: tradingConfig.global.doomsdayProtection,
     liquidationCooldownTracker: tracker,
@@ -276,6 +278,7 @@ describe('liquidation-cooldown-recovery integration', () => {
       orderExecutor: { canTradeNow: () => ({ canTrade: true }) },
     });
     const checkRisk = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       doomsdayProtection: tradingConfig.global.doomsdayProtection,
       liquidationCooldownTracker: tracker,

@@ -46,6 +46,7 @@ import {
 } from './tradeMutationErrors.js';
 import { handleSubmitError } from './submitFailureLogging.js';
 import { createQuantityResolver } from './quantityResolver.js';
+import { recordOrderExecutionOutcome } from './diagnostics.js';
 
 /** 已发出的撤单/查询全部落定后才返回或抛错；内部错误优先，保留原错误身份。 */
 async function settleCancelFanout(
@@ -283,6 +284,7 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     recordBuyAttempt,
     now,
   } = deps;
+  // 数量解析的 0 也可能是授权拒绝哨兵，诊断只描述派生执行结果，不据此声称真实可卖量为零。
   const quantityResolver = createQuantityResolver({
     logger: logger,
     rateLimiter,
@@ -318,28 +320,72 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     const symbolDisplayForLog = formatSymbolDisplay(symbol, signal.symbolName ?? null);
     const finalAuthorizationAborted = new Error('原 caller 最终提交授权失效');
     const sellAvailabilityChanged = new Error('独立卖出可卖量计划已失效');
+    const recordSellMergeChanged = (): void => {
+      recordOrderExecutionOutcome(
+        deps.diagnostics,
+        signal,
+        'submitOrder.beforeApi',
+        'BLOCKED',
+        'SELL_MERGE_DECISION_CHANGED',
+        () => ({ mutation: 'SUBMIT' }),
+      );
+    };
 
     try {
       return await rateLimiter.withTradeMutation(async (permit) => {
         if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
 
-        if (isSellAvailabilityCurrent !== undefined && !isSellAvailabilityCurrent())
+        if (isSellAvailabilityCurrent !== undefined && !isSellAvailabilityCurrent()) {
+          recordOrderExecutionOutcome(
+            deps.diagnostics,
+            signal,
+            'submitOrder.beforeApi',
+            'BLOCKED',
+            'SELL_AVAILABILITY_CHANGED',
+            () => ({ mutation: 'SUBMIT' }),
+          );
           return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+        }
 
         const finalQuotes = await marketDataClient.getQuotes([symbol]);
         if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
 
-        if (isSellAvailabilityCurrent !== undefined && !isSellAvailabilityCurrent())
+        if (isSellAvailabilityCurrent !== undefined && !isSellAvailabilityCurrent()) {
+          recordOrderExecutionOutcome(
+            deps.diagnostics,
+            signal,
+            'submitOrder.beforeApi',
+            'BLOCKED',
+            'SELL_AVAILABILITY_CHANGED',
+            () => ({ mutation: 'SUBMIT' }),
+          );
           return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+        }
 
         const finalQuote = finalQuotes.get(symbol) ?? null;
         if (finalQuote === null) {
           logger.warn(`[订单提交] 最终执行行情缺失，尚未提交: ${symbolDisplayForLog}`);
+          recordOrderExecutionOutcome(
+            deps.diagnostics,
+            signal,
+            'submitOrder.finalQuote',
+            'SKIPPED',
+            'QUOTE_MISSING',
+            () => ({ mutation: 'SUBMIT' }),
+          );
           return { kind: 'QUOTE_MISSING', symbol };
         }
 
         if (exactCompare(finalQuote.price, '0') <= 0) {
           logger.warn(`[订单提交] 最终执行行情无效，尚未提交: ${symbolDisplayForLog}`);
+          recordOrderExecutionOutcome(
+            deps.diagnostics,
+            signal,
+            'submitOrder.finalQuote',
+            'SKIPPED',
+            'QUOTE_INVALID',
+            () => ({ mutation: 'SUBMIT', price: finalQuote.price }),
+          );
           return { kind: 'QUOTE_INVALID', symbol };
         }
 
@@ -357,6 +403,15 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
             logger.warn(
               `[订单提交] 当前浮亏已触发保护性清仓阈值，拒绝买入: ${symbolDisplayForLog}`,
             );
+
+            recordOrderExecutionOutcome(
+              deps.diagnostics,
+              signal,
+              'submitOrder.buyRisk',
+              'BLOCKED',
+              'UNREALIZED_LOSS_LIMIT',
+              () => ({ mutation: 'SUBMIT', price: finalQuote.price }),
+            );
             return { kind: 'SKIPPED' };
           }
         }
@@ -365,6 +420,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         if (side === 'BUY') {
           if (!canTradeNow(signal.action).canTrade) {
             logger.debug(`[订单提交] 最终买入频率检查未通过，跳过: ${symbol}`);
+            recordOrderExecutionOutcome(
+              deps.diagnostics,
+              signal,
+              'submitOrder.buyThrottle',
+              'BLOCKED',
+              'BUY_THROTTLED',
+              () => ({ mutation: 'SUBMIT' }),
+            );
             return { kind: 'SKIPPED' };
           }
 
@@ -389,6 +452,19 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
             ) >= 0
           ) {
             logger.warn(`[订单提交] 最终买入价格触及最新买入价，跳过: ${symbol}`);
+            recordOrderExecutionOutcome(
+              deps.diagnostics,
+              signal,
+              'submitOrder.buyPrice',
+              'BLOCKED',
+              'LATEST_BUY_COST_REACHED',
+              () => ({
+                mutation: 'SUBMIT',
+                price: finalQuote.price,
+                latestBuyCostAmount: latestBuyCost.costAmount,
+                latestBuyQuantity: latestBuyCost.quantity.toString(),
+              }),
+            );
             return { kind: 'SKIPPED' };
           }
 
@@ -402,6 +478,19 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         }
 
         if (finalSubmittedQuantity === null || finalSubmittedQuantity === 0) {
+          recordOrderExecutionOutcome(
+            deps.diagnostics,
+            signal,
+            'submitOrder.quantity',
+            'SKIPPED',
+            'NO_SUBMITTABLE_QUANTITY',
+            () => ({
+              mutation: 'SUBMIT',
+              ...(finalSubmittedQuantity === null
+                ? {}
+                : { quantity: finalSubmittedQuantity.toString() }),
+            }),
+          );
           return { kind: 'SKIPPED' };
         }
 
@@ -420,6 +509,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           })
         ) {
           logger.warn(`[订单提交] 关联买单无法整单表示最终卖出数量，拒绝提交: ${symbol}`);
+          recordOrderExecutionOutcome(
+            deps.diagnostics,
+            signal,
+            'submitOrder.relatedBuyOrders',
+            'BLOCKED',
+            'RELATED_BUY_QUANTITY_MISMATCH',
+            () => ({ mutation: 'SUBMIT', quantity: finalSubmittedQuantity.toString() }),
+          );
           return { kind: 'SKIPPED' };
         }
 
@@ -479,7 +576,10 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         };
 
         const onRemoteIssued = (): void => {
-          if (!authorizeOrderAction('submitOrder.beforeApi') || !isSellSubmissionCurrent()) {
+          if (!authorizeOrderAction('submitOrder.beforeApi')) throw finalAuthorizationAborted;
+
+          if (!isSellSubmissionCurrent()) {
+            recordSellMergeChanged();
             throw finalAuthorizationAborted;
           }
 
@@ -487,22 +587,56 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           if (command.kind === 'BUY') recordBuyAttempt(signal.action);
         };
         const response = await permit.invoke(async () => {
-          if (!authorizeOrderAction('submitOrder.beforeApi') || !isSellSubmissionCurrent())
+          if (!authorizeOrderAction('submitOrder.beforeApi')) return null;
+
+          if (!isSellSubmissionCurrent()) {
+            recordSellMergeChanged();
             return null;
+          }
 
           return tradeMutationPort.submitOrder(orderPayload, onRemoteIssued);
         });
         if (response === null) return { kind: 'SKIPPED' };
 
         if (response.kind === 'REJECTED') {
+          recordOrderExecutionOutcome(
+            deps.diagnostics,
+            signal,
+            'submitOrder.brokerResult',
+            'REJECTED',
+            'BROKER_REJECTED',
+            () => ({
+              mutation: 'SUBMIT',
+              sdkOperation: response.operation,
+              requestAttempted: response.requestAttempted,
+              code: response.code,
+              quantity: finalSubmittedQuantity.toString(),
+              ...(orderPayload.submittedPrice === undefined
+                ? {}
+                : { price: orderPayload.submittedPrice }),
+              localSyncStatus: 'NOT_APPLICABLE',
+            }),
+          );
           handleSubmitError(logger, response, signal, orderPayload);
           return { kind: 'REJECTED' };
         }
 
         if (response.kind === 'UNKNOWN') {
           try {
+            const seatVersion = signal.seatVersion;
+            const triggerTimeMs = signal.triggerTime?.getTime();
             deps.diagnostics.record(DIAGNOSTIC_OPERATIONS.ORDER_SUBMIT_UNKNOWN_FATAL, {
+              stage: 'submitOrder.brokerResult',
+              outcome: 'UNKNOWN',
+              reasonCode: 'BROKER_SUBMIT_UNKNOWN',
               symbol,
+              action: signal.action,
+              ...(Number.isFinite(seatVersion) ? { seatVersion } : {}),
+              ...(typeof triggerTimeMs === 'number' && Number.isFinite(triggerTimeMs)
+                ? { triggerTimeMs }
+                : {}),
+              mutation: 'SUBMIT',
+              localSyncStatus: 'NOT_STARTED',
               side,
               purpose: orderPayload.purpose,
               orderType: orderPayload.orderType,
@@ -522,6 +656,25 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         if (typeof orderId !== 'string' || orderId.length === 0)
           throw new TypeError('broker 返回无效 orderId');
 
+        // 真实 accepted 必须先于任何本地同步；后续失败不能被解释为未提交。
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          'submitOrder.brokerResult',
+          'BROKER_ACCEPTED',
+          'BROKER_ACCEPTED',
+          () => ({
+            mutation: 'SUBMIT',
+            orderId,
+            sdkOperation: response.operation,
+            requestAttempted: response.requestAttempted,
+            quantity: finalSubmittedQuantity.toString(),
+            ...(orderPayload.submittedPrice === undefined
+              ? {}
+              : { price: orderPayload.submittedPrice }),
+            localSyncStatus: 'PENDING',
+          }),
+        );
         const isLongSymbol = command.direction === 'LONG';
         const isProtectiveLiquidation = isLiquidationSignal(signal);
         try {
@@ -553,9 +706,35 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
             );
           }
         } catch (error) {
+          recordOrderExecutionOutcome(
+            deps.diagnostics,
+            signal,
+            'submitOrder.localSync',
+            'ACCEPTED_LOCAL_SYNC_FAILED',
+            'LOCAL_SYNC_FAILED',
+            () => ({
+              mutation: 'SUBMIT',
+              orderId,
+              requestAttempted: response.requestAttempted,
+              localSyncStatus: 'FAILED',
+            }),
+          );
           throw createAcceptedOrderLocalSyncError(orderId, error);
         }
 
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          'submitOrder.localSync',
+          'LOCAL_SYNC_SUCCEEDED',
+          'LOCAL_SYNC_SUCCEEDED',
+          () => ({
+            mutation: 'SUBMIT',
+            orderId,
+            requestAttempted: response.requestAttempted,
+            localSyncStatus: 'SUCCEEDED',
+          }),
+        );
         const actionDesc = getActionDescription(signal.action);
         logger.info(
           `[订单提交成功] ${actionDesc} ${orderPayload.symbol} 数量=${orderPayload.submittedQuantity} 订单ID=${orderId}`,
@@ -566,7 +745,17 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       // 只接收本轮私有取消身份；任何内部/SDK 错误即使原授权过期仍原样暴露。
       if (error === finalAuthorizationAborted) return { kind: 'SKIPPED' };
 
-      if (error === sellAvailabilityChanged) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+      if (error === sellAvailabilityChanged) {
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          'submitOrder.beforeApi',
+          'BLOCKED',
+          'SELL_AVAILABILITY_CHANGED',
+          () => ({ mutation: 'SUBMIT' }),
+        );
+        return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+      }
 
       throw error;
     }
@@ -580,9 +769,20 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     command: DoomsdayClearanceOrderCommand,
     authorizeOrderAction: OrderActionAuthorization,
   ): Promise<OrderActionResult> {
-    const symbol = command.signal.symbol;
+    const { signal } = command;
+    const symbol = signal.symbol;
     const isSellAvailabilityCurrent = orderMonitor.captureSellAvailabilityGuard(symbol);
-    if (!isSellAvailabilityCurrent()) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+    if (!isSellAvailabilityCurrent()) {
+      recordOrderExecutionOutcome(
+        deps.diagnostics,
+        signal,
+        'submitDoomsdayClearanceSell',
+        'BLOCKED',
+        'SELL_AVAILABILITY_CHANGED',
+        () => ({ mutation: 'SUBMIT' }),
+      );
+      return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+    }
 
     const freshSubmittedQuantity = await quantityResolver.readFreshAvailableSellQuantity(
       symbol,
@@ -590,9 +790,29 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     );
     if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
 
-    if (!isSellAvailabilityCurrent()) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+    if (!isSellAvailabilityCurrent()) {
+      recordOrderExecutionOutcome(
+        deps.diagnostics,
+        signal,
+        'submitDoomsdayClearanceSell',
+        'BLOCKED',
+        'SELL_AVAILABILITY_CHANGED',
+        () => ({ mutation: 'SUBMIT' }),
+      );
+      return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+    }
 
-    if (freshSubmittedQuantity === 0) return { kind: 'SKIPPED' };
+    if (freshSubmittedQuantity === 0) {
+      recordOrderExecutionOutcome(
+        deps.diagnostics,
+        signal,
+        'submitDoomsdayClearanceSell.quantity',
+        'SKIPPED',
+        'NO_POSITIVE_EXECUTABLE_QUANTITY',
+        () => ({ mutation: 'SUBMIT' }),
+      );
+      return { kind: 'SKIPPED' };
+    }
 
     return submitOrder({
       command,
@@ -624,6 +844,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
       logger.warn(
         `[订单提交] 非港股标的禁止交易，跳过: ${formatSymbolDisplay(symbol, signal.symbolName ?? null)}`,
       );
+
+      recordOrderExecutionOutcome(
+        deps.diagnostics,
+        signal,
+        'submitTargetOrder',
+        'BLOCKED',
+        'NON_HONG_KONG_SYMBOL',
+      );
       return { kind: 'SKIPPED' };
     }
 
@@ -643,16 +871,46 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
     if (side === 'SELL' && signal.executionOrigin === 'SWITCH_MOVE') {
       // 换仓只新增实时 available；原卖单继续归原 owner，不撤、不改、不合并，也不预扣 broker 占用。
       const isSellAvailabilityCurrent = orderMonitor.captureSellAvailabilityGuard(symbol);
-      if (!isSellAvailabilityCurrent()) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+      if (!isSellAvailabilityCurrent()) {
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          'submitTargetOrder.switchMove',
+          'BLOCKED',
+          'SELL_AVAILABILITY_CHANGED',
+          () => ({ mutation: 'SUBMIT' }),
+        );
+        return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+      }
 
       const quantity = await quantityResolver.readFreshAvailableSellQuantity(symbol, () =>
         authorizeOrderAction('executeSignals'),
       );
       if (!authorizeOrderAction('submitOrder.beforeApi')) return { kind: 'SKIPPED' };
 
-      if (!isSellAvailabilityCurrent()) return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+      if (!isSellAvailabilityCurrent()) {
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          'submitTargetOrder.switchMove',
+          'BLOCKED',
+          'SELL_AVAILABILITY_CHANGED',
+          () => ({ mutation: 'SUBMIT' }),
+        );
+        return { kind: 'SELL_AVAILABILITY_CHANGED', symbol };
+      }
 
-      if (quantity === 0) return { kind: 'NO_AVAILABLE_QUANTITY' };
+      if (quantity === 0) {
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          'submitTargetOrder.quantity',
+          'SKIPPED',
+          'NO_POSITIVE_EXECUTABLE_QUANTITY',
+          () => ({ mutation: 'SUBMIT' }),
+        );
+        return { kind: 'NO_AVAILABLE_QUANTITY' };
+      }
 
       return submitOrder({
         command,
@@ -673,6 +931,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
       const submittedQuantity = initialSellQuantity.submittedQuantity;
       if (submittedQuantity === 0) {
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          'submitTargetOrder.quantity',
+          'SKIPPED',
+          'NO_POSITIVE_EXECUTABLE_QUANTITY',
+          () => ({ mutation: 'SUBMIT' }),
+        );
         return { kind: 'SKIPPED' };
       }
 
@@ -707,13 +973,25 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           const finalQuote = finalQuotes.get(symbol) ?? null;
           if (finalQuote === null || exactCompare(finalQuote.price, '0') <= 0) {
             logger.warn(`[订单合并] 最终改单行情缺失或无效，尚未改单: ${symbol}`);
+            const quoteFailure = finalQuote === null ? 'QUOTE_MISSING' : 'QUOTE_INVALID';
+            recordOrderExecutionOutcome(
+              deps.diagnostics,
+              signal,
+              'replaceOrder.finalQuote',
+              'SKIPPED',
+              quoteFailure,
+              () => ({
+                mutation: 'REPLACE',
+                orderId: replaceTargetOrderId,
+                ...(finalQuote === null ? {} : { price: finalQuote.price }),
+              }),
+            );
             return {
               outcome: { kind: 'NOT_EXECUTED' } as const,
-              quoteFailure:
-                finalQuote === null ? ('QUOTE_MISSING' as const) : ('QUOTE_INVALID' as const),
+              quoteFailure,
               existingPendingSell: null,
               mergedRelatedBuyOrderIds: null,
-            };
+            } as const;
           }
 
           const currentDecision = resolveSellMergeDecision({
@@ -724,6 +1002,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
           });
           if (!hasSameSellMergeDecisionFacts(decision, currentDecision)) {
             logger.warn(`[订单合并] 等待改单额度期间挂单事实已变化，拒绝改单: ${symbol}`);
+            recordOrderExecutionOutcome(
+              deps.diagnostics,
+              signal,
+              'replaceOrder.beforeApi',
+              'BLOCKED',
+              'SELL_MERGE_DECISION_CHANGED',
+              () => ({ mutation: 'REPLACE', orderId: replaceTargetOrderId }),
+            );
             return {
               outcome: { kind: 'NOT_EXECUTED' } as const,
               existingPendingSell: null,
@@ -753,6 +1039,18 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
             !hasExactRelatedBuyOrderQuantity(currentRelatedBuyOrderValidation)
           ) {
             logger.warn(`[订单合并] 关联买单无法整单表示 REPLACE 数量，拒绝改单: ${symbol}`);
+            recordOrderExecutionOutcome(
+              deps.diagnostics,
+              signal,
+              'replaceOrder.relatedBuyOrders',
+              'BLOCKED',
+              'RELATED_BUY_QUANTITY_MISMATCH',
+              () => ({
+                mutation: 'REPLACE',
+                orderId: replaceTargetOrderId,
+                quantity: decision.mergedQuantity.toString(),
+              }),
+            );
             return {
               outcome: { kind: 'NOT_EXECUTED' } as const,
               existingPendingSell: null,
@@ -811,8 +1109,30 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         }
 
         if (replaceOutcome.kind !== 'BROKER_CONFIRMED') {
+          recordOrderExecutionOutcome(
+            deps.diagnostics,
+            signal,
+            'replaceOrder.result',
+            'SKIPPED',
+            'REPLACE_NOT_CONFIRMED',
+            () => ({ mutation: 'REPLACE', orderId: replaceTargetOrderId }),
+          );
           return { kind: 'SKIPPED' };
         }
+
+        // tracking 仅确认旧单修改；该结果不提供新单、成交或 adapter request 元数据。
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          'replaceOrder.result',
+          'REPLACED',
+          'REPLACE_BROKER_CONFIRMED',
+          () => ({
+            mutation: 'REPLACE',
+            orderId: replaceTargetOrderId,
+            quantity: decision.mergedQuantity.toString(),
+          }),
+        );
 
         if (replaceResult.existingPendingSell) {
           orderRecorder.updatePendingSell(replaceTargetOrderId, {
@@ -844,6 +1164,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
         if (cancelOutcomes.some(isFilledCancelOutcome)) {
           logger.warn(`[订单合并] 检测到已成交卖单，禁止重复提交: ${symbol}`);
+          recordOrderExecutionOutcome(
+            deps.diagnostics,
+            signal,
+            'cancelAndSubmit.result',
+            'BLOCKED',
+            'PENDING_SELL_FILLED',
+            () => ({ mutation: 'SUBMIT' }),
+          );
           return { kind: 'SKIPPED' };
         }
 
@@ -853,6 +1181,15 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         if (unconfirmedOutcome) {
           logger.warn(
             `[订单合并] 撤单未确认非成交终态，跳过合并提交: ${symbol}, outcome=${formatCancelOutcomeTag(unconfirmedOutcome)}`,
+          );
+
+          recordOrderExecutionOutcome(
+            deps.diagnostics,
+            signal,
+            'cancelAndSubmit.result',
+            'BLOCKED',
+            'CANCEL_TERMINAL_UNCONFIRMED',
+            () => ({ mutation: 'SUBMIT', cancelOutcome: unconfirmedOutcome.kind }),
           );
           return { kind: 'SKIPPED' };
         }
@@ -870,6 +1207,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
         );
         if (replannedQuantity === null) {
           logger.warn(`[订单合并] 撤单终态数量或撤单后可卖量不可信，拒绝提交: ${symbol}`);
+          recordOrderExecutionOutcome(
+            deps.diagnostics,
+            signal,
+            'cancelAndSubmit.quantity',
+            'BLOCKED',
+            'SELL_REPLAN_UNTRUSTED',
+            () => ({ mutation: 'SUBMIT' }),
+          );
           return { kind: 'SKIPPED' };
         }
 
@@ -878,6 +1223,14 @@ export function createSubmitTargetOrder(deps: SubmitTargetOrderDeps): SubmitTarg
 
       if (decision.action === 'SKIP') {
         logger.info(`[订单合并] 无需新增卖单: ${symbol}, reason=${decision.reason}`);
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          'submitTargetOrder.sellMerge',
+          'SKIPPED',
+          'SELL_MERGE_SKIPPED',
+          () => ({ mutation: 'SUBMIT', mergeReason: decision.reason }),
+        );
         return { kind: 'SKIPPED' };
       }
 

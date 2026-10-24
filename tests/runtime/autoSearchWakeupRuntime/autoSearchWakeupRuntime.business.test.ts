@@ -11,7 +11,7 @@ import type {
   SearchOnEventParams,
   AutoSearchWorkflow,
 } from '../../../src/application/autoSearch/types.js';
-import { createLoggerDouble, createMonitorConfigDouble } from '../../helpers/testDoubles.js';
+import { createMonitorConfigDouble } from '../../helpers/testDoubles.js';
 
 let termination: ReturnType<typeof createTerminationRuntime>;
 beforeEach(() => {
@@ -30,7 +30,7 @@ beforeEach(() => {
  */
 
 function createTradingGateEventRuntime() {
-  return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
+  return createProductionTradingGateEventRuntime({ termination });
 }
 
 function createAutoSearchEnabledMonitorConfig(

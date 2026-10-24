@@ -1,4 +1,5 @@
 import type { Logger } from '../../types/logger.js';
+import type { DiagnosticObserver } from '../../types/diagnostics.js';
 import type { AccountSnapshot, Position } from '../../types/account.js';
 import type { AccountService } from '../../types/accountReadPorts.js';
 import type { ExternalApiRetryConfig } from '../../types/apiFailure.js';
@@ -41,6 +42,7 @@ export type BuyRiskCheckContext = {
 /** 风险检查实现参数；冷却 Map 只由 ordinaryBuy owner 持有，失败后不回滚。 */
 export interface BuyRiskCheckDeps {
   readonly logger: Pick<Logger, 'debug' | 'warn' | 'error'>;
+  readonly diagnostics: DiagnosticObserver;
   readonly doomsdayProtection: boolean;
   readonly liquidationCooldownTracker: Pick<LiquidationCooldownTracker, 'getRemainingMs'>;
   readonly lastRiskCheckTime: Map<string, number>;
@@ -50,6 +52,7 @@ export interface BuyRiskCheckDeps {
 /** 普通买入用例的窄能力；由 app 注入同一席位、同步风险状态及真实订单执行入口。 */
 export interface OrdinaryBuyWorkflowDeps {
   readonly logger: Pick<Logger, 'debug' | 'warn' | 'error'>;
+  readonly diagnostics: DiagnosticObserver;
   readonly config: BuyRiskCheckContext['config'] & Pick<MonitorConfig, 'monitorSymbol'>;
   readonly doomsdayProtection: boolean;
   readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;

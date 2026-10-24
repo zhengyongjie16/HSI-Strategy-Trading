@@ -1,4 +1,5 @@
 import type { Logger } from '../../types/logger.js';
+import type { DiagnosticObserver } from '../../types/diagnostics.js';
 import type { RuntimeTermination } from '../../types/runtime.js';
 import type { Task, TaskQueue } from './tradeTaskQueue/types.js';
 
@@ -29,6 +30,7 @@ export interface Processor {
  * 使用范围：仅 asyncProgram 子模块内部使用。
  */
 export type BaseProcessorConfig<TType extends string> = {
+  readonly diagnostics: DiagnosticObserver;
   readonly logger: Logger;
 
   /** 日志前缀（如 BuyProcessor、SellProcessor） */

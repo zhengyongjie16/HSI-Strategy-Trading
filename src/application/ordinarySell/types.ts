@@ -1,5 +1,6 @@
 import type { SignalExecutor } from '../../types/orderExecutionPorts.js';
 import type { Logger } from '../../types/logger.js';
+import type { DiagnosticObserver } from '../../types/diagnostics.js';
 import type { Position } from '../../types/account.js';
 import type { AccountPositionSnapshotReader } from '../../types/accountPosition.js';
 import type { MonitorConfig } from '../../types/config.js';
@@ -63,6 +64,7 @@ export type SellExecutionAttempt = {
 /** 完整普通 SELL 的窄能力；不依赖 BUY 风控、总 MonitorContext 或旧 SignalProcessor。 */
 export interface OrdinarySellWorkflowDeps {
   readonly logger: Pick<Logger, 'debug' | 'warn' | 'error'>;
+  readonly diagnostics: DiagnosticObserver;
   readonly config: Pick<MonitorConfig, 'smartCloseEnabled' | 'smartCloseTimeoutMinutes'>;
   readonly symbolRegistry: Pick<SymbolRegistry, 'getSeatState' | 'getSeatVersion'>;
   readonly orderRecorder: ProcessSellSignalsParams['orderRecorder'];

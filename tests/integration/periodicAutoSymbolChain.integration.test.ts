@@ -1,5 +1,6 @@
 import { createDiagnosticObserverDouble } from '../helpers/diagnostics.js';
 import type { RuntimeStateFixtures } from '../helpers/types.js';
+import type { RuntimeTermination } from '../../src/types/runtime.js';
 
 /**
  * periodic-auto-symbol-chain 集成测试
@@ -47,8 +48,8 @@ import {
 } from '../helpers/testDoubles.js';
 import { createWarrantCandidateWithOverrides, createLoggerStub } from '../helpers/seatTestUtils.js';
 
-function createTradingGateEventRuntime() {
-  return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
+function createTradingGateEventRuntime(termination: RuntimeTermination) {
+  return createProductionTradingGateEventRuntime({ termination });
 }
 
 let candidateQueue: Array<ReturnType<typeof createWarrantCandidateWithOverrides> | null> = [];
@@ -120,6 +121,7 @@ function createStartedSwitchWakeupRuntime(
     now: () => Date;
   }>,
 ): SwitchWakeupRuntime {
+  const termination = createTerminationDouble({ reportFatalError: rethrowFatalError });
   const runtime = createSwitchWakeupRuntime({
     logger: { error: () => {} },
     marketDataClient: createMarketDataClientDouble(),
@@ -129,7 +131,7 @@ function createStartedSwitchWakeupRuntime(
     ...params.stateFixtures,
     snapshot: params.snapshot,
     postTradeConsistencyRuntime: params.settlement,
-    tradingGateEventRuntime: createTradingGateEventRuntime(),
+    tradingGateEventRuntime: createTradingGateEventRuntime(termination),
     quoteSubscriptionRuntime: createQuoteSubscriptionRuntimeDouble(),
     doomsdayProtectionEnabled: false,
     now: params.now,
@@ -137,11 +139,7 @@ function createStartedSwitchWakeupRuntime(
     clearTimer: (handle) => {
       clearTimeout(handle);
     },
-    termination: createTerminationDouble({
-      reportFatalError: (error) => {
-        throw error;
-      },
-    }),
+    termination,
   });
   runtime.start();
   return {
@@ -163,6 +161,7 @@ function createStartedSwitchWakeupRuntime(
 
 describe('periodic auto-symbol full chain integration', () => {
   it('hands periodic no-candidate back to EMPTY without letting AUTO_SYMBOL_TICK restart auto-search', async () => {
+    const termination = createTerminationDouble({ reportFatalError: rethrowFatalError });
     const readyMs = Date.parse('2026-02-16T01:30:00.000Z');
     let currentNowMs = Date.parse('2026-02-16T01:31:00.000Z');
     candidateQueue = [
@@ -348,7 +347,7 @@ describe('periodic auto-symbol full chain integration', () => {
       callback: () => void;
     }> = [];
     const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
-      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      termination,
       monitorContext,
       symbolRegistry,
       monitorTaskQueue: {
@@ -366,7 +365,7 @@ describe('periodic auto-symbol full chain integration', () => {
         stateFixtures.lifecycleState.isTradingEnabled &&
         stateFixtures.tradingTimeState.canTrade === true,
       postTradeConsistencyRuntime: settlement,
-      tradingGateEventRuntime: createTradingGateEventRuntime(),
+      tradingGateEventRuntime: createTradingGateEventRuntime(termination),
       calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
         calculateTradingDurationDueAtMs({
           startMs,
@@ -455,6 +454,7 @@ describe('periodic auto-symbol full chain integration', () => {
   });
 
   it('keeps seat ACTIVE when local pending buy order exists before order recorder is written', async () => {
+    const termination = createTerminationDouble({ reportFatalError: rethrowFatalError });
     const readyMs = Date.parse('2026-02-16T01:30:00.000Z');
     const currentNowMs = Date.parse('2026-02-16T01:31:00.000Z');
     candidateQueue = [createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: '21000' })];
@@ -638,7 +638,7 @@ describe('periodic auto-symbol full chain integration', () => {
       callback: () => void;
     }> = [];
     const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
-      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      termination,
       monitorContext,
       symbolRegistry,
       monitorTaskQueue: {
@@ -656,7 +656,7 @@ describe('periodic auto-symbol full chain integration', () => {
         stateFixtures.lifecycleState.isTradingEnabled &&
         stateFixtures.tradingTimeState.canTrade === true,
       postTradeConsistencyRuntime: settlement,
-      tradingGateEventRuntime: createTradingGateEventRuntime(),
+      tradingGateEventRuntime: createTradingGateEventRuntime(termination),
       calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
         calculateTradingDurationDueAtMs({
           startMs,
@@ -726,6 +726,7 @@ describe('periodic auto-symbol full chain integration', () => {
   });
 
   it('keeps seat ACTIVE when local pending sell order remains after order recorder is cleared', async () => {
+    const termination = createTerminationDouble({ reportFatalError: rethrowFatalError });
     const readyMs = Date.parse('2026-02-16T01:30:00.000Z');
     const currentNowMs = Date.parse('2026-02-16T01:31:00.000Z');
     candidateQueue = [createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: '21000' })];
@@ -909,7 +910,7 @@ describe('periodic auto-symbol full chain integration', () => {
       callback: () => void;
     }> = [];
     const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
-      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      termination,
       monitorContext,
       symbolRegistry,
       monitorTaskQueue: {
@@ -927,7 +928,7 @@ describe('periodic auto-symbol full chain integration', () => {
         stateFixtures.lifecycleState.isTradingEnabled &&
         stateFixtures.tradingTimeState.canTrade === true,
       postTradeConsistencyRuntime: settlement,
-      tradingGateEventRuntime: createTradingGateEventRuntime(),
+      tradingGateEventRuntime: createTradingGateEventRuntime(termination),
       calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
         calculateTradingDurationDueAtMs({
           startMs,
@@ -997,6 +998,7 @@ describe('periodic auto-symbol full chain integration', () => {
   });
 
   it('applies cross-day trading-duration rule before periodic switch is triggered', async () => {
+    const termination = createTerminationDouble({ reportFatalError: rethrowFatalError });
     const readyMs = Date.parse('2026-02-16T07:59:00.000Z'); // Day1 15:59 HK
     let currentNowMs = Date.parse('2026-02-17T01:30:00.000Z'); // Day2 09:30 HK
     candidateQueue = [createWarrantCandidateWithOverrides('NEW_BULL.HK', { callPrice: '21000' })];
@@ -1180,7 +1182,7 @@ describe('periodic auto-symbol full chain integration', () => {
       callback: () => void;
     }> = [];
     const periodicSwitchWakeupRuntime = createPeriodicSwitchWakeupRuntime({
-      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      termination,
       monitorContext,
       symbolRegistry,
       monitorTaskQueue: {
@@ -1198,7 +1200,7 @@ describe('periodic auto-symbol full chain integration', () => {
         stateFixtures.lifecycleState.isTradingEnabled &&
         stateFixtures.tradingTimeState.canTrade === true,
       postTradeConsistencyRuntime: settlement,
-      tradingGateEventRuntime: createTradingGateEventRuntime(),
+      tradingGateEventRuntime: createTradingGateEventRuntime(termination),
       calculateDueAtMs: ({ startMs, switchIntervalMinutes }) =>
         calculateTradingDurationDueAtMs({
           startMs,

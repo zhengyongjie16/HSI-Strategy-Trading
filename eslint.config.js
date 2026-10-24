@@ -177,9 +177,11 @@ const strategyPrivateBoundaryRule = {
       CallExpression(node) {
         if (node.callee.type !== 'Identifier' || node.callee.name !== 'require') return;
 
-        if (typeof node.arguments[0]?.value === 'string')
-          {check(node, node.arguments[0]);}
-        else {reportNode(context, node, 'selectedLoaderOnly');}
+        if (typeof node.arguments[0]?.value === 'string') {
+          check(node, node.arguments[0]);
+        } else {
+          reportNode(context, node, 'selectedLoaderOnly');
+        }
       },
     };
   },
@@ -287,7 +289,6 @@ const strategyCapabilitiesRule = {
       );
     }
 
-
     /** 零参数 Date 构造身份来自标准库；别名 `const Clock = Date` 共享同一 DateConstructor 身份。 */
     function ambientDateConstructor(expression) {
       const found = checker.getTypeAtLocation(tsNode(expression)).getSymbol();
@@ -306,9 +307,9 @@ const strategyCapabilitiesRule = {
       if (typeof source?.value !== 'string') return;
 
       const value = source.value;
-      if (
 
-        /** os 与 fs/net 同属环境/文件系统边界；策略角色不按调用点区分读取用途。 */
+      /** os 与 fs/net 同属环境/文件系统边界；策略角色不按调用点区分读取用途。 */
+      if (
         /^longbridge(?:\/|$)/.test(value) ||
         /^(?:node:)?(?:fs|dns|timers|readline)(?:\/promises)?$/.test(value) ||
         /^(?:node:)?(?:https?|http2|net|tls|dgram|os|child_process|worker_threads|cluster|process|console)$/.test(
@@ -400,14 +401,13 @@ const strategyCapabilitiesRule = {
         moduleEdge(node, node.source, false);
       },
       Identifier(node) {
+        /**
+         * 名单只收环境/原生调度/平台根对象；命中仍要求标准库声明身份，同名局部声明不受影响。
+         * 普通根访问 `globalThis.console`/`globalThis.process`/`globalThis.performance` 的属性名
+         * 解析到同一 ambient 声明，因此有限闭合这三类 dot 访问；计算字符串根访问不在闭合范围。
+         */
         if (
           !typePosition(node) &&
-
-          /**
-           * 名单只收环境/原生调度/平台根对象；命中仍要求标准库声明身份，同名局部声明不受影响。
-           * 普通根访问 `globalThis.console`/`globalThis.process`/`globalThis.performance` 的属性名
-           * 解析到同一 ambient 声明，因此有限闭合这三类 dot 访问；计算字符串根访问不在闭合范围。
-           */
           /^(?:process|fetch|setTimeout|setInterval|setImmediate|clearTimeout|clearInterval|clearImmediate|queueMicrotask|console|Bun|Deno|WebSocket|XMLHttpRequest|performance)$/.test(
             node.name,
           ) &&

@@ -413,7 +413,7 @@ function createPostGateRuntimeFactory(
       logger,
     });
     const doomsdayProtectionEnabled = tradingConfig.global.doomsdayProtection;
-    const tradingGateEventRuntime = createTradingGateEventRuntime({ logger });
+    const tradingGateEventRuntime = createTradingGateEventRuntime({ termination });
 
     const quoteSubscriptionRuntime = createQuoteSubscriptionRuntime({
       logger,
@@ -653,6 +653,7 @@ function createPostGateRuntimeFactory(
       });
     const ordinaryBuy = createOrdinaryBuyWorkflow({
       logger,
+      diagnostics,
       config: monitorContext.config,
       doomsdayProtection: doomsdayProtectionEnabled,
       symbolRegistry,
@@ -671,6 +672,7 @@ function createPostGateRuntimeFactory(
     });
     const ordinarySell = createOrdinarySellWorkflow({
       logger,
+      diagnostics,
       config: monitorContext.config,
       symbolRegistry,
       orderRecorder: monitorContext.orderRecorder,

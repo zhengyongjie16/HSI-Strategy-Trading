@@ -64,7 +64,9 @@ function removeSignalTasks(
   queue: TaskQueue<BuyTaskType> | TaskQueue<SellTaskType>,
   direction: 'LONG' | 'SHORT',
 ): number {
-  return queue.removeTasks((task) => isDirectionAction(task.data.action, direction));
+  return queue.removeTasks((task) => isDirectionAction(task.data.action, direction), {
+    reasonCode: 'SEAT_RUNTIME_CLEANUP',
+  });
 }
 
 /**

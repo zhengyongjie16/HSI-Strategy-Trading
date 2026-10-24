@@ -1,6 +1,9 @@
 /** 策略 emitter 的同步契约检查、origin 权限和异步回流边界。 */
 import { describe, expect, it } from 'bun:test';
+import { DIAGNOSTIC_OPERATIONS } from '../../../src/constants/diagnostics.js';
 import { createBusinessEventProgram } from '../../../src/runtime/businessEventProgram/index.js';
+import { createStrategyEmitter } from '../../../src/runtime/businessEventProgram/emissionAdapter.js';
+import type { DiagnosticFields } from '../../../src/types/diagnostics.js';
 import type { StrategyDecision } from '../../../src/types/strategy.js';
 import { createEventHarness } from './fixtures.js';
 
@@ -181,6 +184,157 @@ describe('strategy emission adapter', () => {
       }
 
       h.emitter()({ action: 'BUYCALL', triggerTimeMs: 0 });
+      expect(h.termination.isTerminated()).toBeFalse();
+      expect(h.buyTaskQueue.isEmpty()).toBeTrue();
+      await h.program.stopAndDrain();
+    },
+  );
+
+  it.each(['day', 'gate', 'state', 'symbol', 'version', 'valid'] as const)(
+    '%s 诊断保留原 gate/seat 短路、单次时钟和 action 消费时点',
+    (kind) => {
+      const events: { readonly operation: string; readonly fields: DiagnosticFields }[] = [];
+      const h = createEventHarness({
+        diagnostics: {
+          record: (operation, fields) => {
+            events.push({ operation, fields });
+          },
+        },
+      });
+      let dayReads = 0;
+      let gateReads = 0;
+      let seatReads = 0;
+      let versionReads = 0;
+      let clockReads = 0;
+      const version = h.symbolRegistry.getSeatVersion('LONG');
+      const emit = createStrategyEmitter(
+        {
+          ...h.deps,
+          clock: {
+            now: () => {
+              clockReads += 1;
+              return new Date(h.mutable.nowMs);
+            },
+          },
+          lifecycleState: {
+            get currentDayKey() {
+              dayReads += 1;
+              return kind === 'day' ? '2026-07-16' : '2026-07-15';
+            },
+            get isTradingEnabled() {
+              gateReads += 1;
+              return kind !== 'gate';
+            },
+          },
+          monitorContext: {
+            ...h.deps.monitorContext,
+            symbolRegistry: {
+              getSeatState: () => {
+                seatReads += 1;
+                return {
+                  symbol: kind === 'symbol' ? 'NEW.HK' : 'BULL.HK',
+                  status: kind === 'state' ? 'SWITCHING' : 'ACTIVE',
+                  lastSwitchAt: null,
+                  lastSearchAt: null,
+                  lastSeatActivatedAt: 100,
+                  searchFailCountToday: 0,
+                  frozenTradingDayKey: null,
+                };
+              },
+              getSeatVersion: () => {
+                versionReads += 1;
+                return kind === 'version' ? version + 1 : version;
+              },
+            },
+          },
+        },
+        {
+          dayKey: '2026-07-15',
+          routes: [
+            {
+              direction: 'LONG',
+              symbol: 'BULL.HK',
+              seatVersion: version,
+              hasFilledBuyOrders: true,
+            },
+          ],
+        },
+      );
+      emit({ action: 'BUYCALL', triggerTimeMs: 123 });
+      expect(clockReads).toBe(1);
+      expect(dayReads).toBe(1);
+      expect(gateReads).toBe(kind === 'day' ? 0 : 1);
+      expect(seatReads).toBe(kind === 'day' || kind === 'gate' ? 0 : 1);
+      expect(versionReads).toBe(kind === 'version' || kind === 'valid' ? 1 : 0);
+      const admission = events.filter(
+        ({ operation }) => operation === DIAGNOSTIC_OPERATIONS.SIGNAL_ADMISSION_RESULT,
+      );
+      if (kind === 'valid') {
+        expect(admission).toHaveLength(0);
+        expect(
+          events.filter(({ operation }) => operation === DIAGNOSTIC_OPERATIONS.SIGNAL_QUEUE_EVENT),
+        ).toHaveLength(1);
+      } else {
+        const reasonCode = {
+          day: 'ORIGIN_DAY_CHANGED',
+          gate: 'ORDINARY_GATE_CLOSED',
+          state: 'SEAT_IDENTITY_CHANGED',
+          symbol: 'SEAT_IDENTITY_CHANGED',
+          version: 'SEAT_IDENTITY_CHANGED',
+        }[kind];
+        expect(admission.map(({ fields }) => fields)).toEqual([
+          {
+            stage: 'STRATEGY_EMITTER',
+            outcome: 'REJECTED',
+            reasonCode,
+            symbol: 'BULL.HK',
+            action: 'BUYCALL',
+            seatVersion: version,
+            triggerTimeMs: 123,
+            ...(kind === 'day' ? { originDayKey: '2026-07-15', currentDayKey: '2026-07-16' } : {}),
+          },
+        ]);
+        expect(h.buyTaskQueue.isEmpty()).toBeTrue();
+      }
+
+      expect(() => {
+        emit({ action: 'BUYCALL', triggerTimeMs: 124 });
+      }).toThrow('重复');
+      expect(clockReads).toBe(1);
+      expect(dayReads).toBe(1);
+    },
+  );
+
+  it.each(['day', 'gate', 'seat'] as const)(
+    'observer 抛错不改变 %s 正常拒绝或产生 fatal',
+    async (kind) => {
+      let observerCalls = 0;
+      const h = createEventHarness({
+        diagnostics: {
+          record: () => {
+            observerCalls += 1;
+            throw new Error('observer unavailable');
+          },
+        },
+      });
+      h.program.start();
+      h.publish();
+      await Promise.resolve();
+      if (kind === 'day') h.stateFixtures.lifecycleState.currentDayKey = '2026-07-16';
+
+      if (kind === 'gate') h.stateFixtures.tradingTimeState.canTrade = false;
+
+      if (kind === 'seat') {
+        h.symbolRegistry.updateSeatStateWithVersionBump('LONG', {
+          ...h.symbolRegistry.getSeatState('LONG'),
+          lastSeatActivatedAt: 100,
+        });
+      }
+
+      expect(() => {
+        h.emitter()({ action: 'BUYCALL', triggerTimeMs: 123 });
+      }).not.toThrow();
+      expect(observerCalls).toBe(1);
       expect(h.termination.isTerminated()).toBeFalse();
       expect(h.buyTaskQueue.isEmpty()).toBeTrue();
       await h.program.stopAndDrain();

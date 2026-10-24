@@ -1,4 +1,5 @@
 /** FIFO 队列 worker：仅消费、调度、stop/drain 与 fatal 路由，不判定买卖业务结果。 */
+import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import { formatError } from '../../utils/error/index.js';
 import type { BaseProcessorConfig, Processor } from './types.js';
 
@@ -47,6 +48,24 @@ export function createBaseProcessor<TType extends string>(
 
       const canProcess = getCanProcessTask ? getCanProcessTask() : true;
       if (!canProcess) {
+        try {
+          const { symbol, action, seatVersion, triggerTime } = task.data;
+          const triggerTimeMs = triggerTime?.getTime();
+          config.diagnostics.record(DIAGNOSTIC_OPERATIONS.SIGNAL_PROCESSING_OUTCOME, {
+            stage: 'PROCESSOR',
+            outcome: 'SKIPPED',
+            reasonCode: 'PROCESSOR_GATE_CLOSED',
+            symbol,
+            action,
+            ...(seatVersion === null || seatVersion === undefined ? {} : { seatVersion }),
+            ...(triggerTimeMs !== undefined && Number.isFinite(triggerTimeMs)
+              ? { triggerTimeMs }
+              : {}),
+          });
+        } catch {
+          // 已 pop 的门禁拒绝不受诊断字段或 observer 失败影响。
+        }
+
         continue;
       }
 

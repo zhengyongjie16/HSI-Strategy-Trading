@@ -38,6 +38,7 @@ import type {
 } from './types.js';
 import { createSubmitTargetOrder } from './submitFlow.js';
 import { createBuyThrottle } from './buyThrottle.js';
+import { recordOrderExecutionOutcome } from './diagnostics.js';
 import {
   getActionDescription,
   isLiquidationSignal,
@@ -327,6 +328,14 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     logger.debug(
       `[执行门禁] ${stage} 门禁关闭，跳过信号: ${formatSymbolDisplay(signal.symbol, signal.symbolName ?? null)} ${signal.action}`,
     );
+
+    recordOrderExecutionOutcome(
+      deps.diagnostics,
+      signal,
+      stage,
+      'BLOCKED',
+      'EXECUTION_GATE_CLOSED',
+    );
     return false;
   }
 
@@ -353,6 +362,14 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
       logger.warn(
         `[执行门禁] ${stage} 无法确认当日交易日事实，拒绝订单副作用: symbol=${signal.symbol} action=${signal.action} currentDateKey=${currentDateKey} calendarDateKey=${currentTradingDayInfo?.dateKey ?? 'null'}`,
       );
+
+      recordOrderExecutionOutcome(
+        deps.diagnostics,
+        signal,
+        stage,
+        'BLOCKED',
+        'TRADING_DAY_UNCONFIRMED',
+      );
       return false;
     }
 
@@ -361,12 +378,28 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
       logger.debug(
         `[执行门禁] ${stage} 连续交易门禁关闭，拒绝订单副作用: symbol=${signal.symbol} action=${signal.action}`,
       );
+
+      recordOrderExecutionOutcome(
+        deps.diagnostics,
+        signal,
+        stage,
+        'BLOCKED',
+        'CONTINUOUS_TRADING_GATE_CLOSED',
+      );
       return false;
     }
 
     if (!isInContinuousHKSession(currentTime, isHalfDay)) {
       logger.debug(
         `[执行门禁] ${stage} 当前不在连续交易时段，拒绝订单副作用: symbol=${signal.symbol} action=${signal.action}`,
+      );
+
+      recordOrderExecutionOutcome(
+        deps.diagnostics,
+        signal,
+        stage,
+        'BLOCKED',
+        'OUTSIDE_CONTINUOUS_SESSION',
       );
       return false;
     }
@@ -377,6 +410,14 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
         logger.warn(
           `[执行门禁] ${stage} 末日保护未启用，拒绝末日清仓命令: symbol=${signal.symbol} action=${signal.action}`,
         );
+
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          stage,
+          'BLOCKED',
+          'DOOMSDAY_PROTECTION_DISABLED',
+        );
         return false;
       }
 
@@ -384,12 +425,28 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
         logger.debug(
           `[执行门禁] ${stage} 不在末日清仓接管窗口，拒绝末日清仓命令: symbol=${signal.symbol} action=${signal.action}`,
         );
+
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          stage,
+          'BLOCKED',
+          'OUTSIDE_DOOMSDAY_TAKEOVER',
+        );
         return false;
       }
 
       if (isStaleCrossDaySignal(signal, currentTime)) {
         logger.debug(
           `[执行门禁] ${stage} 末日清仓命令跨日或触发时间无效，拒绝订单副作用: symbol=${signal.symbol} action=${signal.action}`,
+        );
+
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          stage,
+          'BLOCKED',
+          'STALE_OR_INVALID_TRIGGER_TIME',
         );
         return false;
       }
@@ -401,6 +458,8 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
       logger.debug(
         `[执行门禁] ${stage} 已进入末日清仓接管窗口，拒绝普通信号: symbol=${signal.symbol} action=${signal.action}`,
       );
+
+      recordOrderExecutionOutcome(deps.diagnostics, signal, stage, 'BLOCKED', 'DOOMSDAY_TAKEOVER');
       return false;
     }
 
@@ -411,6 +470,14 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     ) {
       logger.info(
         `[执行门禁] ${stage} 已进入末日保护买入截止窗口，拒绝买入: symbol=${signal.symbol} action=${signal.action}`,
+      );
+
+      recordOrderExecutionOutcome(
+        deps.diagnostics,
+        signal,
+        stage,
+        'BLOCKED',
+        'DOOMSDAY_BUY_CUTOFF',
       );
       return false;
     }
@@ -432,15 +499,26 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     const { signal } = command;
 
     return (stage) => {
-      if (!callerAuthorization() || !canExecuteSignal(signal, stage)) {
+      if (!callerAuthorization()) {
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          stage,
+          'BLOCKED',
+          'CALLER_AUTHORIZATION_INVALID',
+        );
         return false;
       }
+
+      if (!canExecuteSignal(signal, stage)) return false;
 
       const currentSeat = symbolRegistry.resolveSeatBySymbol(signal.symbol);
       if (!currentSeat) {
         logger.debug(
           `[执行门禁] ${stage} 信号标的已不属于当前席位，跳过信号: ${signal.symbol} ${signal.action}`,
         );
+
+        recordOrderExecutionOutcome(deps.diagnostics, signal, stage, 'BLOCKED', 'SEAT_NOT_CURRENT');
         return false;
       }
 
@@ -454,6 +532,14 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
         logger.debug(
           `[执行门禁] ${stage} 信号方向已失效，跳过信号: ${signal.symbol} ${signal.action}`,
         );
+
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          stage,
+          'BLOCKED',
+          'SEAT_DIRECTION_CHANGED',
+        );
         return false;
       }
 
@@ -461,12 +547,24 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
         return false;
       }
 
-      return validateSignalSeatVersionAtExecution(
+      const seatVersionValid = validateSignalSeatVersionAtExecution(
         logger,
         signal,
         signal.seatVersion,
         currentSeat.seatVersion,
       );
+      if (!seatVersionValid) {
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          stage,
+          'BLOCKED',
+          'SEAT_VERSION_INVALID',
+          () => ({ currentSeatVersion: currentSeat.seatVersion }),
+        );
+      }
+
+      return seatVersionValid;
     };
   }
 
@@ -504,7 +602,18 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
     commands: ReadonlyArray<ExecutableOrderCommand>,
     callerAuthorization: SignalCallerAuthorization,
   ): Promise<OrderCommandBatchResult> {
-    if (!callerAuthorization() || !isExecutionAllowed()) {
+    const callerAuthorized = callerAuthorization();
+    if (!callerAuthorized || !isExecutionAllowed()) {
+      for (const { signal } of commands) {
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          'executeSignals',
+          'BLOCKED',
+          callerAuthorized ? 'EXECUTION_GATE_CLOSED' : 'CALLER_AUTHORIZATION_INVALID',
+        );
+      }
+
       logger.debug('[执行门禁] 门禁关闭，跳过本次下单，不提交任何订单');
       return {
         executedOrderIds: [],
@@ -537,11 +646,26 @@ export function createOrderExecutor(deps: OrderExecutorDeps): OrderExecutor {
         logger.debug(
           `[执行门禁] 跨日或触发时间无效信号，跳过执行: ${signalSymbolDisplay} ${signal.action}`,
         );
+
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          'executeSignals',
+          'BLOCKED',
+          'STALE_OR_INVALID_TRIGGER_TIME',
+        );
         continue;
       }
 
       if (!isExecutionAllowed()) {
         logger.debug(`[执行门禁] 门禁已关闭，跳过信号: ${signalSymbolDisplay} ${signal.action}`);
+        recordOrderExecutionOutcome(
+          deps.diagnostics,
+          signal,
+          'executeSignals',
+          'BLOCKED',
+          'EXECUTION_GATE_CLOSED',
+        );
         continue;
       }
 

@@ -1,5 +1,5 @@
 import type { Unsubscribe } from '../../types/events.js';
-import type { Logger } from '../../types/logger.js';
+import type { RuntimeTermination } from '../../types/runtime.js';
 import type {
   AutoSearchAuthorizationChangedEvent,
   TradingGatePublisher,
@@ -8,12 +8,12 @@ import type {
 
 /**
  * 交易门禁事件端口依赖。
- * 类型用途：为事件 listener 的同步异常提供统一日志归属。
- * 数据来源：由 app 顶层装配注入日志能力。
+ * 类型用途：listener 失败时立即同步关门，并向唯一终止 owner 报告原始错误。
+ * 数据来源：由 app 顶层装配注入唯一 RuntimeTermination。
  * 使用范围：仅 createTradingGateEventRuntime 与相关测试使用。
  */
 export interface TradingGateEventRuntimeDeps {
-  readonly logger: Pick<Logger, 'error'>;
+  readonly termination: RuntimeTermination;
 }
 
 /**

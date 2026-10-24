@@ -25,6 +25,7 @@ import { createExternalApiRequestError } from '../../helpers/createExternalApiRe
 import { createTradingConfig } from '../../../mock/factories/configFactory.js';
 
 import type { OrdinaryBuyWorkflowDeps } from '../../../src/application/ordinaryBuy/types.js';
+import type { DiagnosticFields } from '../../../src/types/diagnostics.js';
 
 /** 通过真实 H 发布基线，窄能力直接创建完整 owner，不经过 SignalProcessor 或旧处理器。 */
 async function createWorkflow(overrides: Partial<OrdinaryBuyWorkflowDeps> = {}) {
@@ -36,6 +37,7 @@ async function createWorkflow(overrides: Partial<OrdinaryBuyWorkflowDeps> = {}) 
   });
   const tradeRuntime = createTradeRuntimeDouble();
   const deps: OrdinaryBuyWorkflowDeps = {
+    diagnostics: createDiagnosticObserverDouble(),
     tradeFrequencyReader: tradeRuntime.orderExecutor,
     logger,
     config: config.monitor,
@@ -285,6 +287,7 @@ describe('ordinaryBuy owner', () => {
       });
       const processor = createBuyProcessor({
         logger: createLoggerDouble(),
+        diagnostics: createDiagnosticObserverDouble(),
         taskQueue: queue,
         workflow,
         getCanProcessTask: () => true,
@@ -310,3 +313,126 @@ describe('ordinaryBuy owner', () => {
     },
   );
 });
+
+describe.each([false, true])(
+  'ordinaryBuy admission diagnostics observer throws=%s',
+  (observerThrows) => {
+    it.each([
+      { quoteCase: 'tradeMissing', reasonCode: 'QUOTE_MISSING', quoteRole: 'TRADE' },
+      { quoteCase: 'monitorMissing', reasonCode: 'QUOTE_MISSING', quoteRole: 'MONITOR' },
+      { quoteCase: 'monitorInvalid', reasonCode: 'QUOTE_INVALID', quoteRole: 'MONITOR' },
+    ])(
+      'keeps $quoteCase admission before realtime reads',
+      async ({ quoteCase, reasonCode, quoteRole }) => {
+        const events: DiagnosticFields[] = [];
+        let reads = 0;
+        let quoteReads = 0;
+        let clockReads = 0;
+        const { workflow } = await createWorkflow({
+          logger: createLoggerDouble(),
+          diagnostics: {
+            record: (_operation, fields) => {
+              events.push(fields);
+              if (observerThrows) throw new Error('observer failed');
+            },
+          },
+          now: () => {
+            clockReads += 1;
+            return new Date('2026-02-16T02:00:00Z');
+          },
+          accountService: {
+            getAccountSnapshot: async () => {
+              reads += 1;
+              return createAccountSnapshotDouble('100000');
+            },
+            getStockPositions: async () => {
+              reads += 1;
+              return [];
+            },
+          },
+          marketDataClient: createMarketDataClientDouble({
+            getQuotes: async () => {
+              quoteReads += 1;
+              const quotes = new Map();
+              if (quoteCase !== 'tradeMissing')
+                quotes.set('BULL.HK', createQuoteDouble('BULL.HK', '1'));
+
+              if (quoteCase !== 'monitorMissing')
+                quotes.set(
+                  'HSI.HK',
+                  createQuoteDouble('HSI.HK', quoteCase === 'monitorInvalid' ? '0' : '20000'),
+                );
+
+              return quotes;
+            },
+          }),
+        });
+        await workflow.execute(buySignal());
+        expect(quoteReads).toBe(1);
+        expect(reads).toBe(0);
+        expect(clockReads).toBe(0);
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+          stage: 'BUY_QUOTE_ADMISSION',
+          outcome: 'REJECTED',
+          reasonCode,
+          quoteRole,
+          action: 'BUYCALL',
+          seatVersion: 2,
+        });
+      },
+    );
+
+    it('reports the existing post-quote day rejection without extra authorization calls', async () => {
+      const events: DiagnosticFields[] = [];
+      let gateChecks = 0;
+      let clockReads = 0;
+      let snapshotReads = 0;
+      const h = await createWorkflow({
+        logger: createLoggerDouble(),
+        diagnostics: {
+          record: (_operation, fields) => {
+            events.push(fields);
+            if (observerThrows) throw new Error('observer failed');
+          },
+        },
+        now: () => {
+          clockReads += 1;
+          return new Date('2026-02-16T02:00:00Z');
+        },
+        getCanProcessTask: () => {
+          gateChecks += 1;
+          return true;
+        },
+        marketDataClient: createMarketDataClientDouble({
+          getQuotes: async () => {
+            await h.snapshot.requestClear({ reason: 'DAY_CUT', dayEpoch: 7 });
+            return new Map();
+          },
+        }),
+      });
+      const originalDayEpoch = h.snapshot.getView().token.dayEpoch;
+      const workflow = createOrdinaryBuyWorkflow({
+        ...h.deps,
+        snapshot: {
+          getView: () => {
+            snapshotReads += 1;
+            return h.snapshot.getView();
+          },
+        },
+      });
+      await workflow.execute(buySignal());
+      expect(gateChecks).toBe(2);
+      expect(snapshotReads).toBe(3);
+      expect(clockReads).toBe(0);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        stage: 'BUY_AUTHORIZATION',
+        outcome: 'ABORTED',
+        reasonCode: 'TRADING_DAY_INVALIDATED',
+        originDayEpoch: originalDayEpoch,
+        currentDayEpoch: 7,
+      });
+    });
+  },
+);

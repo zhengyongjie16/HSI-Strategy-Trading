@@ -27,6 +27,7 @@ describe('BUY FIFO worker', () => {
       release = resolve;
     });
     const worker = createBuyProcessor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       taskQueue: queue,
       termination,
@@ -60,6 +61,7 @@ describe('BUY FIFO worker', () => {
     });
     let calls = 0;
     const worker = createBuyProcessor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       taskQueue: queue,
       termination,

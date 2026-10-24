@@ -24,8 +24,7 @@ describe('trade task queue diagnostics', () => {
       clock: { now: () => new Date(nowMs) },
       diagnostics: {
         record: (operation, fields) => {
-          expect(operation).toBe(DIAGNOSTIC_OPERATIONS.QUEUE_STATE);
-          events.push(fields);
+          if (operation === DIAGNOSTIC_OPERATIONS.QUEUE_STATE) events.push(fields);
         },
       },
     });
@@ -66,8 +65,8 @@ describe('trade task queue diagnostics', () => {
     const queue = createSellTaskQueue({
       clock: { now: () => new Date(nowMs) },
       diagnostics: {
-        record: (_operation, fields) => {
-          events.push(fields);
+        record: (operation, fields) => {
+          if (operation === DIAGNOSTIC_OPERATIONS.QUEUE_STATE) events.push(fields);
         },
       },
     });
@@ -86,6 +85,186 @@ describe('trade task queue diagnostics', () => {
     expect(events.at(-1)).toMatchObject({ mutation: 'pop', depth: 3, oldestTaskAgeMs: 600 });
     expect(queue.clearAll()).toBe(3);
     expect(events.at(-1)).toMatchObject({ mutation: 'clear', depth: 0, oldestTaskAgeMs: 0 });
+  });
+
+  it('records each committed signal mutation once with its real cleanup reason and no empty/rejected facts', () => {
+    const events: DiagnosticFields[] = [];
+    const queue = createBuyTaskQueue({
+      clock: { now: () => new Date(0) },
+      diagnostics: {
+        record: (operation, fields) => {
+          if (operation === DIAGNOSTIC_OPERATIONS.SIGNAL_QUEUE_EVENT) events.push(fields);
+        },
+      },
+    });
+    const signals = ['FIRST', 'REMOVE', 'CLEAR', 'REMOVE_AGAIN'].map((symbol) => ({
+      ...buySignal,
+      symbol,
+      ...(symbol === 'FIRST' ? { triggerTime: new Date(123) } : {}),
+      ...(['REMOVE', 'CLEAR'].includes(symbol) ? { triggerTime: new Date(Number.NaN) } : {}),
+    }));
+    for (const data of signals) queue.push({ type: 'STRATEGY_BUY', data });
+
+    expect(queue.pop()?.data).toBe(signals[0]);
+    let predicateCalls = 0;
+    expect(
+      queue.removeTasks(
+        (task) => {
+          predicateCalls += 1;
+          return task.data.symbol.startsWith('REMOVE');
+        },
+        { reasonCode: 'SEAT_RUNTIME_CLEANUP' },
+      ),
+    ).toBe(2);
+    expect(predicateCalls).toBe(3);
+    expect(queue.clearAll({ reasonCode: 'DAY_CLEAR' })).toBe(1);
+    expect(
+      events.map(({ mutation, symbol, outcome, reasonCode }) => ({
+        mutation,
+        symbol,
+        outcome,
+        reasonCode,
+      })),
+    ).toEqual([
+      ...signals.map(({ symbol }) => ({
+        mutation: 'push',
+        symbol,
+        outcome: 'ENQUEUED',
+        reasonCode: 'QUEUE_PUSH',
+      })),
+      { mutation: 'pop', symbol: 'FIRST', outcome: 'DEQUEUED', reasonCode: 'QUEUE_POP' },
+      {
+        mutation: 'remove',
+        symbol: 'REMOVE',
+        outcome: 'REMOVED',
+        reasonCode: 'SEAT_RUNTIME_CLEANUP',
+      },
+      {
+        mutation: 'remove',
+        symbol: 'REMOVE_AGAIN',
+        outcome: 'REMOVED',
+        reasonCode: 'SEAT_RUNTIME_CLEANUP',
+      },
+      { mutation: 'clear', symbol: 'CLEAR', outcome: 'CLEARED', reasonCode: 'DAY_CLEAR' },
+    ]);
+
+    expect(events[0]).toMatchObject({
+      stage: 'TRADE_QUEUE',
+      queue: 'BUY',
+      action: 'BUYCALL',
+      seatVersion: 1,
+      triggerTimeMs: 123,
+    });
+
+    for (const event of events) {
+      if (event['symbol'] === 'FIRST') expect(event['triggerTimeMs']).toBe(123);
+      else expect(event).not.toHaveProperty('triggerTimeMs');
+    }
+
+    expect(queue.removeTasks(() => true)).toBe(0);
+    expect(queue.clearAll()).toBe(0);
+    expect(queue.pop()).toBeNull();
+    queue.close();
+    expect(queue.push({ type: 'STRATEGY_BUY', data: buySignal })).toBeFalse();
+    expect(events).toHaveLength(8);
+  });
+
+  it('commits no removals or diagnostics when the original one-pass predicate throws', () => {
+    const events: string[] = [];
+    const queue = createBuyTaskQueue({
+      clock: { now: () => new Date(0) },
+      diagnostics: {
+        record: (operation) => {
+          events.push(operation);
+        },
+      },
+    });
+    for (const symbol of ['FIRST', 'SECOND', 'THIRD'])
+      queue.push({ type: 'STRATEGY_BUY', data: { ...buySignal, symbol } });
+
+    const before = events.length;
+    let predicateCalls = 0;
+    expect(() =>
+      queue.removeTasks((task) => {
+        predicateCalls += 1;
+        if (task.data.symbol === 'SECOND') throw new Error('predicate failure');
+
+        return true;
+      }),
+    ).toThrow('predicate failure');
+    expect(predicateCalls).toBe(2);
+    expect(events).toHaveLength(before);
+    expect([queue.pop()?.data.symbol, queue.pop()?.data.symbol, queue.pop()?.data.symbol]).toEqual([
+      'FIRST',
+      'SECOND',
+      'THIRD',
+    ]);
+  });
+
+  it('records push before a synchronous consumer pop without additional diagnostic clock reads', () => {
+    const facts: string[] = [];
+    let clockReads = 0;
+    const queue = createBuyTaskQueue({
+      clock: {
+        now: () => {
+          clockReads += 1;
+          return new Date(0);
+        },
+      },
+      diagnostics: {
+        record: (operation, fields) => {
+          if (operation === DIAGNOSTIC_OPERATIONS.SIGNAL_QUEUE_EVENT)
+            facts.push(String(fields['outcome']));
+        },
+      },
+    });
+    queue.onTaskAdded(() => {
+      expect(queue.pop()?.data).toBe(buySignal);
+    });
+    expect(queue.push({ type: 'STRATEGY_BUY', data: buySignal })).toBeTrue();
+    expect(facts).toEqual(['ENQUEUED', 'DEQUEUED']);
+    expect(clockReads).toBe(3);
+  });
+
+  it('uses UNSPECIFIED only when a removal caller omits context', () => {
+    const facts: DiagnosticFields[] = [];
+    const queue = createSellTaskQueue({
+      clock: { now: () => new Date(0) },
+      diagnostics: {
+        record: (operation, fields) => {
+          if (operation === DIAGNOSTIC_OPERATIONS.SIGNAL_QUEUE_EVENT) facts.push(fields);
+        },
+      },
+    });
+    queue.push({ type: 'STRATEGY_SELL', data: sellSignal });
+    expect(queue.removeTasks(() => true)).toBe(1);
+    queue.push({ type: 'STRATEGY_SELL', data: sellSignal });
+    expect(queue.clearAll()).toBe(1);
+    expect(facts.filter((fields) => fields['reasonCode'] === 'UNSPECIFIED')).toHaveLength(2);
+    expect(facts.at(-1)).toMatchObject({ queue: 'SELL', action: 'SELLCALL', outcome: 'CLEARED' });
+  });
+
+  it('isolates diagnostic field construction failures after every successful mutation', () => {
+    let notifications = 0;
+    const data = Object.defineProperty({ ...buySignal }, 'triggerTime', {
+      get: () => {
+        throw new Error('diagnostic field failure');
+      },
+    });
+    const queue = createBuyTaskQueue({
+      clock: { now: () => new Date(0) },
+      diagnostics: { record: () => {} },
+    });
+    queue.onTaskAdded(() => {
+      notifications += 1;
+    });
+    expect(queue.push({ type: 'STRATEGY_BUY', data })).toBeTrue();
+    expect(queue.pop()?.data).toBe(data);
+    queue.push({ type: 'STRATEGY_BUY', data });
+    expect(queue.removeTasks(() => true)).toBe(1);
+    queue.push({ type: 'STRATEGY_BUY', data });
+    expect(queue.clearAll()).toBe(1);
+    expect(notifications).toBe(3);
   });
 
   it('does not let diagnostic observer or private clock failures change admission, callbacks or pop', () => {

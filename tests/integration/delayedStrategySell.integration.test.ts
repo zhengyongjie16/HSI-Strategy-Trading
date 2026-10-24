@@ -184,6 +184,7 @@ describe('delayed strategy sell integration', () => {
       const tradingConfig = createTradingConfig({ monitor: config });
       const emitter = createStrategyEmitter(
         {
+          diagnostics: createDiagnosticObserverDouble(),
           clock: h.deps.clock,
           marketDataClient: createMarketDataClientDouble(),
           monitorContext,
@@ -336,11 +337,13 @@ describe('delayed strategy sell integration', () => {
       for (const timer of h.timers) timer.callback();
 
       const processor = createSellProcessor({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         scheduler: h.deps.scheduler,
         termination,
         taskQueue: sellTaskQueue,
         workflow: createOrdinarySellWorkflow({
+          diagnostics: createDiagnosticObserverDouble(),
           logger: createLoggerDouble(),
           clock: h.deps.clock,
           config,

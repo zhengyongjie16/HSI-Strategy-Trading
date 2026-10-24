@@ -273,6 +273,7 @@ describe('buy-flow integration', () => {
       onSecondaryError: () => {},
     });
     const workflow = createOrdinaryBuyWorkflow({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       config: tradingConfig.monitor,
       doomsdayProtection: tradingConfig.global.doomsdayProtection,
@@ -291,6 +292,7 @@ describe('buy-flow integration', () => {
       termination,
     });
     const processor = createBuyProcessor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       taskQueue: queue,
       workflow,
@@ -1031,6 +1033,7 @@ describe('buy-flow integration', () => {
     const tradingConfig = createTradingConfig();
     const currentTime = new Date('2026-07-10T07:00:00.000Z');
     const checkBuyRisk = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       lastRiskCheckTime: new Map(),
       doomsdayProtection: tradingConfig.global.doomsdayProtection,
@@ -1446,6 +1449,7 @@ describe('buy-flow integration', () => {
   it('blocks the next buy in applyRiskChecks once the previous buy has passed frequency check, regardless of submit success', async () => {
     const tradingConfig = createTradingConfig();
     const checkBuyRisk = createBuyRiskChecks({
+      diagnostics: createDiagnosticObserverDouble(),
       logger,
       lastRiskCheckTime: new Map(),
       doomsdayProtection: tradingConfig.global.doomsdayProtection,

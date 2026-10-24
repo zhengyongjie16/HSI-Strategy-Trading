@@ -2,10 +2,11 @@
  * 中性策略输出适配器：保存 origin 授权，先检查契约，再检查当前事实，最后白名单入队。
  * emitter 可被策略 pending 保存；不维护宿主 pending 表，不重新检查 SELL 买单记录。
  */
+import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import { ordinarySignalGuard } from '../../domain/strategy/ordinarySignalGuard.js';
 import { isValidTimeMs, validateDecision } from './utils.js';
 import type { StrategyDecision, StrategyEmitter } from '../../types/strategy.js';
-import type { BusinessEventProgramDeps, StrategyOrigin } from './types.js';
+import type { BusinessEventProgramDeps, StrategyOrigin, StrategyOriginRoute } from './types.js';
 
 /** 创建单次新评估 origin 的逐动作输出边界；内部错误在当前调用栈先 fatal 再上抛。 */
 export function createStrategyEmitter(
@@ -13,6 +14,32 @@ export function createStrategyEmitter(
   origin: StrategyOrigin | null,
 ): StrategyEmitter {
   const emittedActions = new Set<StrategyDecision['action']>();
+
+  /** 只记录当前事实拒绝；字段读取和 observer 失败均不得影响 action 消费或 fatal 边界。 */
+  function recordRejection(
+    decision: StrategyDecision,
+    route: StrategyOriginRoute,
+    reasonCode: 'ORIGIN_DAY_CHANGED' | 'ORDINARY_GATE_CLOSED' | 'SEAT_IDENTITY_CHANGED',
+    currentDayKey?: string | null,
+  ): void {
+    try {
+      deps.diagnostics.record(DIAGNOSTIC_OPERATIONS.SIGNAL_ADMISSION_RESULT, {
+        stage: 'STRATEGY_EMITTER',
+        outcome: 'REJECTED',
+        reasonCode,
+        symbol: route.symbol,
+        action: decision.action,
+        seatVersion: route.seatVersion,
+        triggerTimeMs: decision.triggerTimeMs,
+        ...(currentDayKey === undefined || origin === null
+          ? {}
+          : { originDayKey: origin.dayKey, currentDayKey }),
+      });
+    } catch {
+      // 被动诊断不能改变策略输出授权、检查次数或错误路由。
+    }
+  }
+
   return (input): void => {
     if (deps.termination.isTerminated()) {
       return;
@@ -38,8 +65,13 @@ export function createStrategyEmitter(
         throw new Error('策略 emitter 门禁时间非法');
       }
 
+      const currentDayKey = deps.lifecycleState.currentDayKey;
+      if (currentDayKey !== origin.dayKey) {
+        recordRejection(decision, route, 'ORIGIN_DAY_CHANGED', currentDayKey);
+        return;
+      }
+
       if (
-        deps.lifecycleState.currentDayKey !== origin.dayKey ||
         !ordinarySignalGuard({
           tradingTimeState: deps.tradingTimeState,
           lifecycleState: deps.lifecycleState,
@@ -47,6 +79,7 @@ export function createStrategyEmitter(
           doomsdayProtectionEnabled: deps.tradingConfig.global.doomsdayProtection,
         })
       ) {
+        recordRejection(decision, route, 'ORDINARY_GATE_CLOSED');
         return;
       }
 
@@ -57,6 +90,7 @@ export function createStrategyEmitter(
         seat.symbol !== route.symbol ||
         registry.getSeatVersion(direction) !== route.seatVersion
       ) {
+        recordRejection(decision, route, 'SEAT_IDENTITY_CHANGED');
         return;
       }
 

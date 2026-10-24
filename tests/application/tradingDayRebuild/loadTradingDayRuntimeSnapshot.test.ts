@@ -957,9 +957,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       });
       const hydrate = spyOn(deps.tradeLogHydrator, 'hydrate');
       const publish = spyOn(deps.dailyLossTracker, 'publishRecalculation');
-      const result = await createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now }),
-      );
+      const result = await createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now }));
       expect(result.status).toBe('COMMITTED');
       if (result.status !== 'COMMITTED') throw new Error('启动订单快照未完成');
 
@@ -2015,9 +2013,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         tradeLogHydrator: { hydrate: () => {} },
       });
 
-      const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now }),
-      );
+      const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now }));
       expect(snapshot.status).toBe('COMMITTED');
       expect(dailyLossTracker.getLossOffset('LONG')).toBe('-10');
       expect(repository.loadExecutionProgressRecords('2026-03-13')).toHaveLength(2);
@@ -2091,9 +2087,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         const recalculate = spyOn(deps.dailyLossTracker, 'publishRecalculation');
 
         await expectPromiseToRejectWithMessage(
-          createLoadTradingDayRuntimeSnapshot(deps)(
-            createLoadParams({ now }),
-          ),
+          createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now })),
           /same revision\/quantity execution time conflict/,
         );
         expect(seed).not.toHaveBeenCalled();
@@ -2188,9 +2182,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       const recalculate = spyOn(deps.dailyLossTracker, 'publishRecalculation');
 
       await expectPromiseToRejectWithMessage(
-        createLoadTradingDayRuntimeSnapshot(deps)(
-          createLoadParams({ now }),
-        ),
+        createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now })),
         /same revision\/quantity execution time conflict/,
       );
       expect(seed).not.toHaveBeenCalled();
@@ -2327,9 +2319,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         tradeLogHydrator: { hydrate: () => {} },
       });
 
-      const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now }),
-      );
+      const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now }));
       expect(snapshot.status).toBe('COMMITTED');
       expect(dailyLossTracker.getLossOffset('LONG')).toBe('0');
       expect(repository.loadExecutionProgressRecords('2026-03-13')).toHaveLength(2);
@@ -2376,9 +2366,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     await expectPromiseToRejectWithMessage(
-      createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now }),
-      ),
+      createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now })),
       /正成交缺少本次原始金额/,
     );
     expect(recalculate).not.toHaveBeenCalled();
@@ -2432,9 +2420,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
     });
 
-    const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(
-      createLoadParams({ now }),
-    );
+    const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now }));
     expect(snapshot.status).toBe('COMMITTED');
     if (snapshot.status !== 'COMMITTED') throw new Error('Expected committed load receipt');
 
@@ -2507,9 +2493,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
     });
 
-    const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(
-      createLoadParams({ now }),
-    );
+    const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now }));
     expect(snapshot.status).toBe('COMMITTED');
     if (snapshot.status !== 'COMMITTED') throw new Error('Expected committed load receipt');
 
@@ -2685,9 +2669,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     await expectPromiseToRejectWithMessage(
-      createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now }),
-      ),
+      createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now })),
       /cannot reconstruct.*ordinary-buy-crossing-persisted-boundary/i,
     );
   });
@@ -2774,9 +2756,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
     });
 
-    const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(
-      createLoadParams({ now }),
-    );
+    const snapshot = await createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now }));
 
     expect(snapshot.status).toBe('COMMITTED');
     if (snapshot.status !== 'COMMITTED') throw new Error('Expected committed load receipt');
@@ -2900,9 +2880,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     await expectPromiseToRejectWithMessage(
-      createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now }),
-      ),
+      createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now })),
       /completion.*monitorSymbol/i,
     );
 
@@ -2975,9 +2953,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
     });
 
     await expectPromiseToRejectWithMessage(
-      createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now }),
-      ),
+      createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now })),
       /progress.*保护性清仓/i,
     );
 
@@ -3316,9 +3292,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
     });
 
-    await createLoadTradingDayRuntimeSnapshot(deps)(
-      createLoadParams({ now }),
-    );
+    await createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now }));
 
     expect(appendedRecords).toHaveLength(1);
     expect(appendedRecords[0]?.boundaryExecutedTimeMs).toBe(lastExecutionTimeMs);
@@ -3396,9 +3370,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
         mixedTradeLogRepository: repository,
       });
 
-      await createLoadTradingDayRuntimeSnapshot(deps)(
-        createLoadParams({ now }),
-      );
+      await createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now }));
 
       const logFile = buildTradeLogPath(path.join(tempRoot, 'trades'), now);
       expect(path.basename(logFile)).toBe('2026-03-13.jsonl');
@@ -3507,9 +3479,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
     });
 
-    await createLoadTradingDayRuntimeSnapshot(deps)(
-      createLoadParams({ now }),
-    );
+    await createLoadTradingDayRuntimeSnapshot(deps)(createLoadParams({ now }));
 
     expect(appendedRecords).toHaveLength(1);
     expect(appendedRecords[0]?.orderBaselines).toEqual([
@@ -3582,9 +3552,7 @@ describe('createLoadTradingDayRuntimeSnapshot', () => {
       }),
     });
 
-    await createLoadTradingDayRuntimeSnapshot(restartedDeps)(
-      createLoadParams({ now }),
-    );
+    await createLoadTradingDayRuntimeSnapshot(restartedDeps)(createLoadParams({ now }));
 
     expect(secondRestartAppends).toEqual([]);
   });

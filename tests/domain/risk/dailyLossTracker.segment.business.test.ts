@@ -339,10 +339,12 @@ describe('dailyLossTracker segment flow', () => {
       }),
     ];
 
-    const executionSnapshots = ([
-      ['BUY-SELECTOR-CONSISTENCY', 'BUY', '400'],
-      ['SELL-SELECTOR-CONSISTENCY', 'SELL', '360'],
-    ] as const).flatMap(([orderId, side, cumulativeAmount]) =>
+    const executionSnapshots = (
+      [
+        ['BUY-SELECTOR-CONSISTENCY', 'BUY', '400'],
+        ['SELL-SELECTOR-CONSISTENCY', 'SELL', '360'],
+      ] as const
+    ).flatMap(([orderId, side, cumulativeAmount]) =>
       (['OPEN', 'TERMINAL'] as const).map((factStage) => ({
         factStage,
         direction: 'LONG' as const,
@@ -742,13 +744,7 @@ describe('dailyLossTracker segment flow', () => {
         executionTimeMs: boundaryMs,
       }),
     ];
-    recalculateDailyLoss(
-      tracker,
-      allOrders,
-      createMonitor(),
-      new Date(boundaryMs),
-      new Map(),
-    );
+    recalculateDailyLoss(tracker, allOrders, createMonitor(), new Date(boundaryMs), new Map());
 
     const beforeRestore = inspectPublishedState(tracker, boundaryMs);
     expect(() => {
@@ -801,13 +797,7 @@ describe('dailyLossTracker segment flow', () => {
         executionTimeMs: boundaryMs,
       }),
     ];
-    recalculateDailyLoss(
-      tracker,
-      allOrders,
-      createMonitor(),
-      new Date(boundaryMs),
-      new Map(),
-    );
+    recalculateDailyLoss(tracker, allOrders, createMonitor(), new Date(boundaryMs), new Map());
 
     const beforeRestore = inspectPublishedState(tracker, boundaryMs);
     expect(() => {
@@ -851,13 +841,7 @@ describe('dailyLossTracker segment flow', () => {
         executionTimeMs: afterBoundaryMs,
       }),
     ];
-    recalculateDailyLoss(
-      tracker,
-      allOrders,
-      createMonitor(),
-      new Date(afterBoundaryMs),
-      new Map(),
-    );
+    recalculateDailyLoss(tracker, allOrders, createMonitor(), new Date(afterBoundaryMs), new Map());
 
     const beforeRestore = inspectPublishedState(tracker, afterBoundaryMs);
     expect(() => {
@@ -1591,12 +1575,7 @@ describe('dailyLossTracker segment flow', () => {
           updatedAtMs: finalMs + scenario.revisionOffset,
         },
       ];
-      recalculateDailyLoss(
-        tracker,
-        currentOrders,
-        createMonitor(),
-        new Date(finalMs + 1),
-      );
+      recalculateDailyLoss(tracker, currentOrders, createMonitor(), new Date(finalMs + 1));
       const boundary = { direction: 'LONG' as const, boundaryExecutedTimeMs: boundaryMs };
       if (scenario.accepted) {
         expect(tracker.prepareProtectionBoundary(boundary).orderBaselines).toEqual([]);
@@ -1612,9 +1591,7 @@ describe('dailyLossTracker segment flow', () => {
             undefined,
             {
               executionSnapshots: [],
-              boundaries: [
-                { ...boundary, orderBaselines: [] },
-              ],
+              boundaries: [{ ...boundary, orderBaselines: [] }],
             },
           );
         }).toThrow(/cannot reconstruct.*API-BUY/);
@@ -1659,12 +1636,7 @@ describe('dailyLossTracker segment flow', () => {
         submittedAt: new Date(previousMs - 1),
       },
     ];
-    recalculateDailyLoss(
-      tracker,
-      allOrders,
-      createMonitor(),
-      new Date(finalMs),
-    );
+    recalculateDailyLoss(tracker, allOrders, createMonitor(), new Date(finalMs));
 
     expect(() =>
       tracker.prepareProtectionBoundary({

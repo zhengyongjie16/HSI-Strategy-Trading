@@ -60,7 +60,7 @@ beforeEach(() => {
  */
 
 function createTradingGateEventRuntime() {
-  return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
+  return createProductionTradingGateEventRuntime({ termination });
 }
 
 type Deferred<T> = Readonly<{

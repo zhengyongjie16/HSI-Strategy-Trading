@@ -116,7 +116,8 @@ async function runSmoke(
   const calls: Record<string, number> = Object.create(null) as Record<string, number>;
   (globalThis as Record<string, unknown>)[callsKey] = calls;
   const strategyFileSystem: PrepareStrategyDeps = {
-    loaderModuleHref: pathToFileURL(nodePath.join(moduleRoot, 'app/startup/prepareStrategy.ts')).href,
+    loaderModuleHref: pathToFileURL(nodePath.join(moduleRoot, 'app/startup/prepareStrategy.ts'))
+      .href,
     lstat,
     realpath,
     readDirectory: (path: string) => readdir(path),
@@ -246,7 +247,9 @@ async function observeDecision(
   assert.equal(signal.seatVersion, 1);
   assert.equal(signal.reason, testCase.reason);
   const oppositeQueueEmpty =
-    testCase.action === 'BUYCALL' ? harness.sellTaskQueue.isEmpty() : harness.buyTaskQueue.isEmpty();
+    testCase.action === 'BUYCALL'
+      ? harness.sellTaskQueue.isEmpty()
+      : harness.buyTaskQueue.isEmpty();
   assert.equal(oppositeQueueEmpty, true);
 
   return {

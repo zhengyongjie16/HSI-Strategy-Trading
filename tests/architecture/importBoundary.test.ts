@@ -44,10 +44,7 @@ describe('architecture import boundaries', () => {
     ['./otherMath.js?raw', null],
     ['node:path', null],
   ])('preserves strategy import resolution for %s', async (specifier, messageId) => {
-    const messages = await lintText(
-      'src/strategies/newAlpha/newMath.ts',
-      `import '${specifier}';`,
-    );
+    const messages = await lintText('src/strategies/newAlpha/newMath.ts', `import '${specifier}';`);
     expect(
       messages
         .filter((message) => message.ruleId === 'local/strategy-private-boundary')

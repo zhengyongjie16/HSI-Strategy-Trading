@@ -10,6 +10,7 @@ import type {
   PostTradeConsistencyRuntimeDeps,
 } from '../../src/app/runtime/types.js';
 import type { RuntimeStateFixtures } from '../helpers/types.js';
+import type { RuntimeTermination } from '../../src/types/runtime.js';
 
 /**
  * full-business-simulation 集成测试
@@ -116,8 +117,8 @@ const ASYNC_PROCESSOR_RUNTIME = {
   },
 };
 
-function createTradingGateEventRuntime() {
-  return createProductionTradingGateEventRuntime({ logger: createLoggerDouble() });
+function createTradingGateEventRuntime(termination: RuntimeTermination) {
+  return createProductionTradingGateEventRuntime({ termination });
 }
 
 let autoSymbolCandidates: Array<ReturnType<typeof createWarrantCandidateWithOverrides> | null> = [];
@@ -692,9 +693,11 @@ describe('full business simulation integration', () => {
         stateFixtures.lifecycleState.isTradingEnabled,
     });
     const buyProcessor = createBuyProcessor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       taskQueue: buyTaskQueue,
       workflow: createOrdinaryBuyWorkflow({
+        diagnostics: createDiagnosticObserverDouble(),
         accountService: tradeRuntime.accountService,
         orderExecutor: tradeRuntime.orderExecutor,
         tradeFrequencyReader: tradeRuntime.orderExecutor,
@@ -734,10 +737,12 @@ describe('full business simulation integration', () => {
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const sellProcessor = createSellProcessor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       taskQueue: sellTaskQueue,
       scheduler: ASYNC_PROCESSOR_RUNTIME.scheduler,
       workflow: createOrdinarySellWorkflow({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         config: monitorContext.config,
         symbolRegistry,
@@ -784,6 +789,7 @@ describe('full business simulation integration', () => {
 
     const candlestickUpdatedEvents = createSingleListenerEventSource<CandlestickUpdatedEvent>();
     const businessEventProgram = createBusinessEventProgram({
+      diagnostics: createDiagnosticObserverDouble(),
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
       clock: { now: () => new Date('2026-02-16T01:31:00.000Z') },
       marketDataClient: {
@@ -826,6 +832,7 @@ describe('full business simulation integration', () => {
   });
 
   it('simulates event-driven auto-search and auto-switch end to end', async () => {
+    const termination = createTerminationDouble({ reportFatalError: rethrowFatalError });
     autoSymbolCandidates = [
       createWarrantCandidateWithOverrides('OLD_BULL.HK', { callPrice: '20000' }),
       null,
@@ -1059,7 +1066,7 @@ describe('full business simulation integration', () => {
         stateFixtures.lifecycleState.isTradingEnabled,
       onOrderStateChanged: orderStateChangedEvents.emit,
     });
-    const tradingGateEventRuntime = createTradingGateEventRuntime();
+    const tradingGateEventRuntime = createTradingGateEventRuntime(termination);
     const quoteSubscriptionRuntime = createQuoteSubscriptionRuntime({
       snapshot,
       logger: createLoggerDouble(),
@@ -1089,10 +1096,10 @@ describe('full business simulation integration', () => {
         clearTimeout(handle);
       },
       quoteSubscriptionRuntime,
-      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      termination,
     });
     const autoSearchWakeupRuntime = createAutoSearchWakeupRuntime({
-      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      termination,
       symbolRegistry,
       autoSearch,
       autoSearchConfig: monitorConfig.autoSearchConfig,
@@ -1112,7 +1119,7 @@ describe('full business simulation integration', () => {
         stateFixtures.tradingTimeState.canTrade === true &&
         stateFixtures.lifecycleState.isTradingEnabled,
       snapshot,
-      termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
+      termination,
       monitorContext,
       symbolRegistry,
       monitorTaskQueue,
@@ -1178,9 +1185,11 @@ describe('full business simulation integration', () => {
     });
 
     const buyProcessor = createBuyProcessor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       taskQueue: buyTaskQueue,
       workflow: createOrdinaryBuyWorkflow({
+        diagnostics: createDiagnosticObserverDouble(),
         accountService: tradeRuntime.accountService,
         orderExecutor: tradeRuntime.orderExecutor,
         tradeFrequencyReader: tradeRuntime.orderExecutor,
@@ -1205,10 +1214,12 @@ describe('full business simulation integration', () => {
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const sellProcessor = createSellProcessor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       taskQueue: sellTaskQueue,
       scheduler: ASYNC_PROCESSOR_RUNTIME.scheduler,
       workflow: createOrdinarySellWorkflow({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         config: monitorContext.config,
         symbolRegistry,
@@ -1531,9 +1542,11 @@ describe('full business simulation integration', () => {
         stateFixtures.lifecycleState.isTradingEnabled,
     });
     const buyProcessor = createBuyProcessor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       taskQueue: buyTaskQueue,
       workflow: createOrdinaryBuyWorkflow({
+        diagnostics: createDiagnosticObserverDouble(),
         accountService: tradeRuntime.accountService,
         orderExecutor: tradeRuntime.orderExecutor,
         tradeFrequencyReader: tradeRuntime.orderExecutor,
@@ -1573,10 +1586,12 @@ describe('full business simulation integration', () => {
       termination: createTerminationDouble({ reportFatalError: rethrowFatalError }),
     });
     const sellProcessor = createSellProcessor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       taskQueue: sellTaskQueue,
       scheduler: ASYNC_PROCESSOR_RUNTIME.scheduler,
       workflow: createOrdinarySellWorkflow({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         config: monitorContext.config,
         symbolRegistry,

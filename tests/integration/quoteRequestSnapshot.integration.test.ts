@@ -176,6 +176,7 @@ describe('quote request metadata snapshot', () => {
       });
       const observedQuotes: ReadonlyMap<string, Quote | null>[] = [];
       const workflow = createOrdinaryBuyWorkflow({
+        diagnostics: createDiagnosticObserverDouble(),
         logger,
         config: config.monitor,
         doomsdayProtection: config.global.doomsdayProtection,
@@ -199,6 +200,7 @@ describe('quote request metadata snapshot', () => {
         termination,
       });
       const processor = createBuyProcessor({
+        diagnostics: createDiagnosticObserverDouble(),
         logger,
         taskQueue: queue,
         workflow,

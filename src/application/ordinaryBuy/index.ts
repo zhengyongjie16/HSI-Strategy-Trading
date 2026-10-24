@@ -4,6 +4,7 @@
  * 外部读取失败仅丢弃本次信号，内部错误与 UNKNOWN submission 原样抛给 FIFO worker 的 fatal 通道。
  */
 import { createBuyRiskChecks } from './riskChecks.js';
+import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import { formatError } from '../../utils/error/index.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { exactCompare } from '../../utils/numeric/exact.js';
@@ -14,6 +15,7 @@ import {
 } from '../../domain/seat/seatPolicy.js';
 
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
+import type { DiagnosticFields } from '../../types/diagnostics.js';
 import type { BuySignal } from '../../types/signal.js';
 import type { OrdinaryBuyWorkflow, OrdinaryBuyWorkflowDeps } from './types.js';
 
@@ -21,6 +23,7 @@ import type { OrdinaryBuyWorkflow, OrdinaryBuyWorkflowDeps } from './types.js';
 export function createOrdinaryBuyWorkflow(deps: OrdinaryBuyWorkflowDeps): OrdinaryBuyWorkflow {
   const {
     logger,
+    diagnostics,
     config,
     symbolRegistry,
     orderRecorder,
@@ -38,6 +41,7 @@ export function createOrdinaryBuyWorkflow(deps: OrdinaryBuyWorkflowDeps): Ordina
   const lastRiskCheckTime = new Map<string, number>();
   const checkRisk = createBuyRiskChecks({
     logger,
+    diagnostics,
     doomsdayProtection: deps.doomsdayProtection,
     liquidationCooldownTracker: deps.liquidationCooldownTracker,
     lastRiskCheckTime,
@@ -47,12 +51,70 @@ export function createOrdinaryBuyWorkflow(deps: OrdinaryBuyWorkflowDeps): Ordina
   /** 异步返回后及 execution mutation permit 内复核原交易日、生命周期与席位身份。 */
   async function execute(signal: BuySignal): Promise<void> {
     const symbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName ?? null);
-    const dayEpoch = snapshot.getView().token.dayEpoch;
-    const callerAuthorization = (): boolean =>
-      !termination.isTerminated() &&
-      getCanProcessTask() &&
-      snapshot.getView().token.dayEpoch === dayEpoch &&
-      validateSignalSeat({ signal, symbolRegistry }).valid;
+    const originDayEpoch = snapshot.getView().token.dayEpoch;
+
+    /** 字段延迟到隔离区内构造；诊断失败不改变业务短路、异常或授权调用次数。 */
+    function recordOutcome(fields: () => DiagnosticFields): void {
+      try {
+        const triggerTimeMs = signal.triggerTime?.getTime();
+        diagnostics.record(DIAGNOSTIC_OPERATIONS.SIGNAL_PROCESSING_OUTCOME, {
+          symbol: signal.symbol,
+          action: signal.action,
+          seatVersion: signal.seatVersion,
+          ...(triggerTimeMs !== undefined && Number.isFinite(triggerTimeMs)
+            ? { triggerTimeMs }
+            : {}),
+          originDayEpoch,
+          ...fields(),
+        });
+      } catch {
+        // 被动旁路，不重试、不调用 logger/fatal，也不补读业务事实。
+      }
+    }
+
+    const callerAuthorization = (): boolean => {
+      if (termination.isTerminated()) {
+        recordOutcome(() => ({
+          stage: 'BUY_AUTHORIZATION',
+          outcome: 'ABORTED',
+          reasonCode: 'RUNTIME_TERMINATED',
+        }));
+        return false;
+      }
+
+      if (!getCanProcessTask()) {
+        recordOutcome(() => ({
+          stage: 'BUY_AUTHORIZATION',
+          outcome: 'ABORTED',
+          reasonCode: 'TRADING_GATE_CLOSED',
+        }));
+        return false;
+      }
+
+      const currentDayEpoch = snapshot.getView().token.dayEpoch;
+      if (currentDayEpoch !== originDayEpoch) {
+        recordOutcome(() => ({
+          stage: 'BUY_AUTHORIZATION',
+          outcome: 'ABORTED',
+          reasonCode: 'TRADING_DAY_INVALIDATED',
+          currentDayEpoch,
+        }));
+        return false;
+      }
+
+      const validation = validateSignalSeat({ signal, symbolRegistry });
+      if (!validation.valid) {
+        recordOutcome(() => ({
+          stage: 'BUY_AUTHORIZATION',
+          outcome: 'ABORTED',
+          reasonCode: validation.reason,
+        }));
+        return false;
+      }
+
+      return true;
+    };
+
     try {
       const runtimeAction: unknown = signal.action;
       if (runtimeAction !== 'BUYCALL' && runtimeAction !== 'BUYPUT') {
@@ -64,6 +126,12 @@ export function createOrdinaryBuyWorkflow(deps: OrdinaryBuyWorkflowDeps): Ordina
         logger.debug(
           `[OrdinaryBuy] ${describeSignalSeatValidationFailure(validation)}，跳过: ${symbolDisplay}`,
         );
+
+        recordOutcome(() => ({
+          stage: 'BUY_SEAT_VALIDATION',
+          outcome: 'REJECTED',
+          reasonCode: validation.reason,
+        }));
         return;
       }
 
@@ -87,11 +155,25 @@ export function createOrdinaryBuyWorkflow(deps: OrdinaryBuyWorkflowDeps): Ordina
       const tradeQuote = signal.action === 'BUYCALL' ? longQuote : shortQuote;
       if (!tradeQuote) {
         logger.warn(`[OrdinaryBuy] 买入标的行情缺失，跳过: ${symbolDisplay}`);
+        recordOutcome(() => ({
+          stage: 'BUY_QUOTE_ADMISSION',
+          outcome: 'REJECTED',
+          reasonCode: 'QUOTE_MISSING',
+          quoteRole: 'TRADE',
+        }));
         return;
       }
 
       if (!monitorQuote || exactCompare(monitorQuote.price, '0') <= 0) {
         logger.warn(`[OrdinaryBuy] 监控行情缺失或无效，跳过: ${config.monitorSymbol}`);
+        recordOutcome(() => ({
+          stage: 'BUY_QUOTE_ADMISSION',
+          outcome: 'REJECTED',
+          reasonCode: monitorQuote === null ? 'QUOTE_MISSING' : 'QUOTE_INVALID',
+          quoteRole: 'MONITOR',
+          quoteSymbol: config.monitorSymbol,
+          ...(monitorQuote === null ? {} : { currentPrice: monitorQuote.price }),
+        }));
         return;
       }
 
@@ -124,6 +206,12 @@ export function createOrdinaryBuyWorkflow(deps: OrdinaryBuyWorkflowDeps): Ordina
       if (!isExternalApiRequestError(error)) throw error;
 
       logger.error(`[OrdinaryBuy] 处理失败: ${symbolDisplay} ${signal.action}`, formatError(error));
+      recordOutcome(() => ({
+        stage: 'BUY_WORKFLOW',
+        outcome: 'FAILED',
+        reasonCode: 'EXTERNAL_API_READ_FAILED',
+        detail: formatError(error),
+      }));
     }
   }
 

@@ -111,6 +111,7 @@ describe('ordinary SELL real owner integration', () => {
       });
       const retries: Array<() => void> = [];
       const worker = createSellProcessor({
+        diagnostics: h.deps.diagnostics,
         logger: createLoggerDouble(),
         taskQueue: queue,
         workflow,

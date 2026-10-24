@@ -10,6 +10,7 @@ import { exactCompare, formatDecimal, formatRatio } from '../../utils/numeric/ex
 import { readAccountAndPositionsBothSettled } from './accountPositionsRead.js';
 import { formatSymbolDisplay } from '../../utils/display/index.js';
 import { BUY_RISK_CHECK_COOLDOWN_MS } from '../../constants/common.js';
+import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import {
   getDoomsdayBuyCutoffWindowRangeLabel,
   isWithinDoomsdayBuyCutoffWindow,
@@ -18,7 +19,8 @@ import { isBuyPriceWithinLatestOrderLimit } from '../../domain/risk/buyPricePoli
 import type { Quote } from '../../types/quote.js';
 import type { BuySignal } from '../../types/signal.js';
 import type { LiquidationCooldownConfig } from '../../types/config.js';
-import type { BuyRiskCheckContext, BuyRiskCheckDeps } from './types.js';
+import type { DiagnosticFields } from '../../types/diagnostics.js';
+import type { AccountPositionsReadResult, BuyRiskCheckContext, BuyRiskCheckDeps } from './types.js';
 import type { LiquidationCooldownTracker } from '../../domain/liquidation/cooldown/types.js';
 
 /** 生成买入风险检查冷却键；同一标的的 BUYCALL / BUYPUT 共用 BUY 语义。 */
@@ -94,6 +96,7 @@ function getSignalQuote(params: {
  */
 export const createBuyRiskChecks = ({
   logger,
+  diagnostics,
   doomsdayProtection,
   liquidationCooldownTracker,
   lastRiskCheckTime,
@@ -102,6 +105,24 @@ export const createBuyRiskChecks = ({
   signals: ReadonlyArray<BuySignal>,
   context: BuyRiskCheckContext,
 ) => Promise<ReadonlyArray<BuySignal>>) => {
+  /** 仅记录已选中的风控拒绝与读取失败；字段和 observer 都在隔离区内，不增读或重算风险规则。 */
+  function recordOutcome(signal: BuySignal, fields: () => DiagnosticFields): void {
+    try {
+      const triggerTimeMs = signal.triggerTime?.getTime();
+      diagnostics.record(DIAGNOSTIC_OPERATIONS.SIGNAL_PROCESSING_OUTCOME, {
+        stage: 'BUY_RISK_CHECK',
+        outcome: 'REJECTED',
+        symbol: signal.symbol,
+        action: signal.action,
+        seatVersion: signal.seatVersion,
+        ...(triggerTimeMs !== undefined && Number.isFinite(triggerTimeMs) ? { triggerTimeMs } : {}),
+        ...fields(),
+      });
+    } catch {
+      // 诊断失败不能回滚冷却、继续下一项风控或覆盖原读取错误。
+    }
+  }
+
   /** 先验证内部行情契约，再按固定顺序过滤买入信号；契约误用必须在冷却和风控副作用前抛错。 */
   const applyRiskChecks = async (
     signals: ReadonlyArray<BuySignal>,
@@ -149,6 +170,11 @@ export const createBuyRiskChecks = ({
         const remainingSeconds = Math.ceil((lastTime + cooldownMs - currentTimeMs) / 1000);
         const reason = `风险检查冷却期内，剩余 ${remainingSeconds} 秒`;
         logger.warn(`[风险检查冷却] ${sigSymbol} ${sig.action}: ${reason}`);
+        recordOutcome(sig, () => ({
+          reasonCode: 'RISK_CHECK_COOLDOWN',
+          detail: reason,
+          remainingMs: lastTime + cooldownMs - currentTimeMs,
+        }));
       } else {
         signalsAfterCooldown.push(sig);
       }
@@ -200,6 +226,11 @@ export const createBuyRiskChecks = ({
         const waitSeconds = tradeCheck.waitSeconds ?? 0;
         const reason = `交易频率限制：${directionDesc} 在${context.config.buyIntervalSeconds}秒内已买入过，需等待 ${waitSeconds} 秒后才能再次买入`;
         logger.warn(`[交易频率限制] ${reason}：${signalLabel}`);
+        recordOutcome(sig, () => ({
+          reasonCode: 'BUY_FREQUENCY_LIMIT',
+          detail: reason,
+          ...(tradeCheck.waitSeconds === undefined ? {} : { waitSeconds: tradeCheck.waitSeconds }),
+        }));
         continue;
       }
 
@@ -212,11 +243,20 @@ export const createBuyRiskChecks = ({
         const remainingSeconds = Math.ceil(remainingMs / 1000);
         const reason = `清仓冷却期内，剩余 ${remainingSeconds} 秒，拒绝买入`;
         logger.warn(`[清仓冷却] ${signalLabel} ${reason}`);
+        recordOutcome(sig, () => ({
+          reasonCode: 'LIQUIDATION_COOLDOWN',
+          detail: reason,
+          remainingMs,
+        }));
         continue;
       }
 
       if (currentPrice === null || exactCompare(currentPrice, '0') <= 0) {
         logger.warn(`[买入行情无效] ${signalLabel}，跳过买入`);
+        recordOutcome(sig, () => ({
+          reasonCode: currentPrice === null ? 'QUOTE_MISSING' : 'QUOTE_INVALID',
+          ...(currentPrice === null ? {} : { currentPrice }),
+        }));
         continue;
       }
 
@@ -234,6 +274,13 @@ export const createBuyRiskChecks = ({
         );
         const reason = `买入价格限制：当前价格 ${currentPriceStr} 高于或等于最新买入订单价格 ${latestBuyPriceStr}`;
         logger.warn(`[买入价格限制] ${directionDesc} ${reason}，拒绝买入：${signalLabel}`);
+        recordOutcome(sig, () => ({
+          reasonCode: 'BUY_PRICE_LIMIT',
+          detail: reason,
+          currentPrice,
+          latestBuyCostAmount: latestBuyCost.costAmount,
+          latestBuyQuantity: String(latestBuyCost.quantity),
+        }));
         continue;
       }
 
@@ -247,6 +294,7 @@ export const createBuyRiskChecks = ({
         const closeTimeRange = getDoomsdayBuyCutoffWindowRangeLabel(isHalfDay);
         const reason = `末日保护程序：买入截止窗口内拒绝买入（当前时间在${closeTimeRange}范围内）`;
         logger.warn(`[末日保护程序] ${reason}：${signalLabel}`);
+        recordOutcome(sig, () => ({ reasonCode: 'DOOMSDAY_BUY_CUTOFF', detail: reason }));
         continue;
       }
 
@@ -267,8 +315,13 @@ export const createBuyRiskChecks = ({
           );
         }
       } else {
-        const reason = warrantRiskResult.reason ?? '牛熊证风险检查未通过';
+        const detail = warrantRiskResult.reason;
+        const reason = detail ?? '牛熊证风险检查未通过';
         logger.warn(`[牛熊证风险拦截] 信号被牛熊证风险控制拦截：${signalLabel} - ${reason}`);
+        recordOutcome(sig, () => ({
+          reasonCode: 'WARRANT_RISK_REJECTED',
+          ...(detail === undefined ? {} : { detail }),
+        }));
         continue;
       }
 
@@ -280,16 +333,27 @@ export const createBuyRiskChecks = ({
         );
         if (unrealizedLossCheck.shouldLiquidate) {
           logger.warn(`[浮亏风险拦截] 当前浮亏已触发保护性清仓阈值，拒绝买入：${signalLabel}`);
+          recordOutcome(sig, () => ({ reasonCode: 'UNREALIZED_LOSS_REJECTED', currentPrice }));
           continue;
         }
       }
 
-      const { account: realtimeAccount, positions: realtimePositions } =
-        await readAccountAndPositionsBothSettled({
+      let realtimeFacts: AccountPositionsReadResult;
+      try {
+        realtimeFacts = await readAccountAndPositionsBothSettled({
           accountService,
           retryConfig: { retries: 0, delayMs: 0 },
           reportFatalError,
         });
+      } catch (error) {
+        recordOutcome(sig, () => ({
+          outcome: 'FAILED',
+          reasonCode: 'ACCOUNT_POSITION_READ_FAILED',
+        }));
+        throw error;
+      }
+
+      const { account: realtimeAccount, positions: realtimePositions } = realtimeFacts;
 
       const orderNotional = context.config.targetNotional;
       const buyRiskResult = riskChecker.checkBeforeOrder({
@@ -301,8 +365,13 @@ export const createBuyRiskChecks = ({
       if (buyRiskResult.allowed) {
         finalSignals.push(sig);
       } else {
-        const reason = buyRiskResult.reason ?? '基础风险检查未通过';
+        const detail = buyRiskResult.reason;
+        const reason = detail ?? '基础风险检查未通过';
         logger.warn(`[风险拦截] 信号被风险控制拦截：${signalLabel} - ${reason}`);
+        recordOutcome(sig, () => ({
+          reasonCode: 'BASIC_RISK_REJECTED',
+          ...(detail === undefined ? {} : { detail }),
+        }));
       }
     }
 

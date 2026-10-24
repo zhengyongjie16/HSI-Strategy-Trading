@@ -3,7 +3,9 @@ import { createLoggerDouble, createSignalDouble } from '../../helpers/testDouble
 
 /** FIFO processor 终态与可恢复 stop/restart；不会重新打开最终 admission。 */
 import { describe, expect, test } from 'bun:test';
+import { DIAGNOSTIC_OPERATIONS } from '../../../src/constants/diagnostics.js';
 import { createBaseProcessor } from '../../../src/runtime/asyncProgram/processor.js';
+import type { DiagnosticFields } from '../../../src/types/diagnostics.js';
 import { createBuyTaskQueue } from '../../../src/runtime/asyncProgram/tradeTaskQueue/index.js';
 import { createTerminationRuntime } from '../../../src/runtime/lifecycle/terminationRuntime.js';
 
@@ -20,6 +22,91 @@ async function flushImmediate(): Promise<void> {
 }
 
 describe('processor termination', () => {
+  test.each(['normal', 'observerThrows', 'fieldThrows', 'invalidTime'] as const)(
+    'pop 后关闭门禁的 %s 诊断不改检查次数、FIFO 或 fatal 路由',
+    async (mode) => {
+      const queue = createBuyTaskQueue({
+        clock: { now: () => new Date(0) },
+        diagnostics: createDiagnosticObserverDouble(),
+      });
+      const events: DiagnosticFields[] = [];
+      const popped: string[] = [];
+      const fatals: unknown[] = [];
+      let gateCalls = 0;
+      let businessCalls = 0;
+      const first = {
+        action: 'BUYCALL' as const,
+        symbol: 'FIRST.HK',
+        symbolName: null,
+        seatVersion: 1,
+        ...(mode === 'invalidTime' ? { triggerTime: new Date(Number.NaN) } : {}),
+      };
+      const second = { ...first, symbol: 'SECOND.HK', triggerTime: new Date(123) };
+      if (mode === 'fieldThrows') {
+        Object.defineProperty(first, 'triggerTime', {
+          get: () => {
+            throw new Error('diagnostic field failure');
+          },
+        });
+      }
+
+      for (const data of [first, second]) queue.push({ type: 'STRATEGY_BUY', data });
+
+      const processor = createBaseProcessor({
+        diagnostics: {
+          record: (operation, fields) => {
+            expect(operation).toBe(DIAGNOSTIC_OPERATIONS.SIGNAL_PROCESSING_OUTCOME);
+            events.push(fields);
+            if (mode === 'observerThrows') throw new Error('observer unavailable');
+          },
+        },
+        logger: createLoggerDouble(),
+        loggerPrefix: 'gate',
+        taskQueue: {
+          ...queue,
+          pop: () => {
+            const task = queue.pop();
+            if (task) popped.push(task.data.symbol);
+
+            return task;
+          },
+        },
+        getCanProcessTask: () => {
+          gateCalls += 1;
+          return false;
+        },
+        processTask: async () => {
+          businessCalls += 1;
+        },
+        termination: {
+          isTerminated: () => false,
+          reportFatalError: (error) => {
+            fatals.push(error);
+          },
+        },
+      });
+      processor.start();
+      await flushImmediate();
+      await processor.stopAndDrain();
+      expect(popped).toEqual(['FIRST.HK', 'SECOND.HK']);
+      expect(gateCalls).toBe(2);
+      expect(businessCalls).toBe(0);
+      expect(fatals).toEqual([]);
+      expect(events).toHaveLength(mode === 'fieldThrows' ? 1 : 2);
+      expect(events.at(-1)).toEqual({
+        stage: 'PROCESSOR',
+        outcome: 'SKIPPED',
+        reasonCode: 'PROCESSOR_GATE_CLOSED',
+        symbol: 'SECOND.HK',
+        action: 'BUYCALL',
+        seatVersion: second.seatVersion,
+        triggerTimeMs: 123,
+      });
+
+      if (mode !== 'fieldThrows') expect(events[0]).not.toHaveProperty('triggerTimeMs');
+    },
+  );
+
   test('普通 stop/restart 可恢复；最终 close 后 restart 不重新订阅或消费', async () => {
     const queue = createBuyTaskQueue({
       clock: { now: () => new Date() },
@@ -34,6 +121,7 @@ describe('processor termination', () => {
       onSecondaryError: () => {},
     });
     const processor = createBaseProcessor({
+      diagnostics: createDiagnosticObserverDouble(),
       logger: createLoggerDouble(),
       loggerPrefix: 'test',
       taskQueue: {

@@ -30,7 +30,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
     resources,
     cleanup,
   } = params;
-  const { tradingConfig } = preGateRuntime;
+  const { tradingConfig, diagnostics } = preGateRuntime;
   const {
     monitorContext,
     snapshot,
@@ -85,6 +85,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
 
   const buyProcessor = createBuyProcessor({
     logger,
+    diagnostics,
     taskQueue: buyTaskQueue,
     workflow: ordinaryBuy,
     getCanProcessTask: canProcessOrdinaryTradeTask,
@@ -102,6 +103,7 @@ export function createAsyncRuntime(params: AsyncRuntimeFactoryDeps): AsyncRuntim
 
   const sellProcessor = createSellProcessor({
     logger,
+    diagnostics,
     scheduler,
     taskQueue: sellTaskQueue,
     workflow: ordinarySell,

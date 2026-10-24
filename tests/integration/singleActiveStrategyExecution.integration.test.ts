@@ -308,6 +308,7 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     diagnostics: createDiagnosticObserverDouble(),
   });
   const sellWorkflow = createOrdinarySellWorkflow({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     clock: h.deps.clock,
     config,
@@ -326,6 +327,7 @@ async function createExecutionFixture(smartCloseEnabled = false) {
     termination,
   });
   const sellProcessor = createSellProcessor({
+    diagnostics: createDiagnosticObserverDouble(),
     logger: createLoggerDouble(),
     scheduler: h.deps.scheduler,
     termination,
@@ -360,6 +362,7 @@ async function createExecutionFixture(smartCloseEnabled = false) {
   blockRefresh = true;
   return {
     h,
+    diagnostics: createDiagnosticObserverDouble(),
     generatedAtMs,
     strategy,
     native,
@@ -681,9 +684,11 @@ describe('execution authority at buy and clearance boundaries', () => {
       const f = await createExecutionFixture();
       let quoteRequested = false;
       const processor = createBuyProcessor({
+        diagnostics: createDiagnosticObserverDouble(),
         logger: createLoggerDouble(),
         taskQueue: f.buyTaskQueue,
         workflow: createOrdinaryBuyWorkflow({
+          diagnostics: createDiagnosticObserverDouble(),
           accountService: f.tradeRuntime.accountService,
           orderExecutor: f.tradeRuntime.orderExecutor,
           tradeFrequencyReader: f.tradeRuntime.orderExecutor,
@@ -787,6 +792,7 @@ describe('execution authority at buy and clearance boundaries', () => {
       Reflect.set(invalidContext, 'monitorQuote', null);
       await rejects(
         createBuyRiskChecks({
+          diagnostics: f.diagnostics,
           logger: createLoggerDouble(),
           doomsdayProtection: f.tradingConfig.global.doomsdayProtection,
           liquidationCooldownTracker: f.liquidationCooldownTracker,

@@ -1,4 +1,5 @@
 import type { RuntimeStateFixtures } from '../../helpers/types.js';
+import type { DiagnosticObserver } from '../../../src/types/diagnostics.js';
 import { createRuntimeStateFixtures } from '../../helpers/runtimeStateFixtures.js';
 import { createDiagnosticObserverDouble } from '../../helpers/diagnostics.js';
 
@@ -22,6 +23,7 @@ import type { EventHarness, EventHarnessMutable } from './types.js';
 import type { BusinessEventProgramDeps } from '../../../src/runtime/businessEventProgram/types.js';
 
 type EventHarnessOptions = {
+  readonly diagnostics?: DiagnosticObserver;
   readonly strategy?: TradingSignalStrategy;
   readonly createBusinessEventProgram?: typeof createBusinessEventProgram;
   readonly createBuyTaskQueue?: typeof createBuyTaskQueue;
@@ -95,7 +97,7 @@ export function createEventHarness(options: EventHarnessOptions = {}): EventHarn
   });
   const queueDeps = {
     clock: { now: () => new Date(mutable.nowMs) },
-    diagnostics: createDiagnosticObserverDouble(),
+    diagnostics: options.diagnostics ?? createDiagnosticObserverDouble(),
   };
   const buyTaskQueue = (options.createBuyTaskQueue ?? createBuyTaskQueue)(queueDeps);
   const sellTaskQueue = (options.createSellTaskQueue ?? createSellTaskQueue)(queueDeps);
@@ -147,6 +149,7 @@ export function createEventHarness(options: EventHarnessOptions = {}): EventHarn
     onSecondaryError: () => {},
   });
   const deps: BusinessEventProgramDeps = {
+    diagnostics: queueDeps.diagnostics,
     clock: { now: () => new Date(mutable.nowMs) },
     marketDataClient: {
       getCandlestickSnapshot: () => mutable.snapshot,

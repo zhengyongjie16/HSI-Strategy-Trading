@@ -227,6 +227,7 @@ async function setup(orderIds: ReadonlyArray<string> = ['FIRST', 'SECOND']) {
     signal,
     queue,
     logger,
+    diagnostics,
   };
 }
 
@@ -247,6 +248,7 @@ test('SELL 双撤单首次坏 detail 立即 fatal；另一已发 IO、worker 和
   let taskError: unknown;
   let processedTasks = 0;
   const processor = createBaseProcessor({
+    diagnostics: f.diagnostics,
     logger: f.logger,
     loggerPrefix: 'PublicOperationFatalBoundary',
     taskQueue: f.queue,

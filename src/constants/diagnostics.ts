@@ -20,6 +20,10 @@ export const DIAGNOSTIC_OPERATIONS = {
   CANCEL_ACKNOWLEDGEMENT_TO_TERMINAL: 'cancel_acknowledgement_to_terminal',
   LIQUIDATION_COMPLETION_COMMITTED: 'liquidation_completion_committed',
   QUEUE_STATE: 'queue_state',
+  SIGNAL_ADMISSION_RESULT: 'signal_admission_result',
+  SIGNAL_QUEUE_EVENT: 'signal_queue_event',
+  SIGNAL_PROCESSING_OUTCOME: 'signal_processing_outcome',
+  ORDER_EXECUTION_OUTCOME: 'order_execution_outcome',
   OPEN_REBUILD_RETRY: 'open_rebuild_retry',
   TRADING_DAY_REBUILT: 'trading_day_rebuilt',
 } as const;

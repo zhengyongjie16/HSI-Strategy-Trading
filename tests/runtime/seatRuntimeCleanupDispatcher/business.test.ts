@@ -13,7 +13,9 @@ import { getDefaultAutoSearchConfig } from '../../helpers/seatTestUtils.js';
 
 /** 真实 registry mutation 的同步方向取消与队列清理；另一方向及 SEAT_REFRESH 保留。 */
 import { afterEach, describe, expect, it } from 'bun:test';
+import { DIAGNOSTIC_OPERATIONS } from '../../../src/constants/diagnostics.js';
 import { createSeatRuntimeCleanupDispatcher } from '../../../src/runtime/seatRuntimeCleanupDispatcher/index.js';
+import type { DiagnosticFields } from '../../../src/types/diagnostics.js';
 import { createMonitorTaskQueue } from '../../../src/runtime/asyncProgram/monitorTaskQueue/index.js';
 import type { MonitorTaskDataMap } from '../../../src/runtime/asyncProgram/monitorTaskProcessor/types.js';
 import type { RuntimeWritableSeatState } from '../../../src/types/seat.js';
@@ -54,7 +56,14 @@ describe('seatRuntimeCleanupDispatcher 同步方向取消', () => {
   it.each(['LONG', 'SHORT'] as const)(
     '%s 退场在 registry 返回前取消对应 pending，另一方向保留',
     async (direction) => {
-      const h = createEventHarness();
+      const signalEvents: DiagnosticFields[] = [];
+      const h = createEventHarness({
+        diagnostics: {
+          record: (operation, fields) => {
+            if (operation === DIAGNOSTIC_OPERATIONS.SIGNAL_QUEUE_EVENT) signalEvents.push(fields);
+          },
+        },
+      });
       h.symbolRegistry.updateSeatState('LONG', activeSeat('BULL.HK'));
       h.symbolRegistry.updateSeatState('SHORT', activeSeat('BEAR.HK'));
       const issued = await createIssuedPeriodicTasksFixture({
@@ -159,6 +168,17 @@ describe('seatRuntimeCleanupDispatcher 同步方向取消', () => {
       order.push('registry-return');
       expect(order).toEqual([`cancel:${direction}`, `risk:${direction}`, 'registry-return']);
       expect([...pending]).toEqual([direction === 'LONG' ? 'SHORT' : 'LONG']);
+      const removals = signalEvents.filter((event) => event['outcome'] === 'REMOVED');
+      expect(removals).toHaveLength(2);
+      expect(removals.map((event) => event['reasonCode'])).toEqual([
+        'SEAT_RUNTIME_CLEANUP',
+        'SEAT_RUNTIME_CLEANUP',
+      ]);
+
+      expect(removals.map((event) => event['action'])).toEqual(
+        direction === 'LONG' ? ['BUYCALL', 'SELLCALL'] : ['BUYPUT', 'SELLPUT'],
+      );
+
       expect(h.buyTaskQueue.pop()?.data.action).toBe(direction === 'LONG' ? 'BUYPUT' : 'BUYCALL');
       expect(h.sellTaskQueue.pop()?.data.action).toBe(
         direction === 'LONG' ? 'SELLPUT' : 'SELLCALL',

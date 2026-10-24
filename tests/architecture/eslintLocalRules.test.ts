@@ -66,10 +66,7 @@ describe('local ESLint rules', () => {
       'console',
     ].flatMap((specifier) => [specifier, `node:${specifier}`]),
   ])('preserves ambient module rejection for %s', async (specifier) => {
-    const messages = await lintText(
-      'src/strategies/newAlpha/newMath.ts',
-      `import '${specifier}';`,
-    );
+    const messages = await lintText('src/strategies/newAlpha/newMath.ts', `import '${specifier}';`);
     expect(
       messages.some(
         (message) =>
@@ -90,10 +87,7 @@ describe('local ESLint rules', () => {
     'node:https/extra',
     'node:worker_threads/extra',
   ])('preserves non-ambient module allowance for %s', async (specifier) => {
-    const messages = await lintText(
-      'src/strategies/newAlpha/newMath.ts',
-      `import '${specifier}';`,
-    );
+    const messages = await lintText('src/strategies/newAlpha/newMath.ts', `import '${specifier}';`);
     expect(messages.filter((message) => message.ruleId === 'local/strategy-capabilities')).toEqual(
       [],
     );

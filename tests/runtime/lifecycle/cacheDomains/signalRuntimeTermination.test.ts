@@ -1,6 +1,8 @@
 /** 跨日排空与终态防重开回归，直接调用真实 signal runtime cache domain。 */
 import { createDiagnosticObserverDouble } from '../../../helpers/diagnostics.js';
 import { describe, expect, it } from 'bun:test';
+import { DIAGNOSTIC_OPERATIONS } from '../../../../src/constants/diagnostics.js';
+import type { DiagnosticFields } from '../../../../src/types/diagnostics.js';
 import { createOpenRebuildContextFixture } from '../fixtures/openRebuildContext.js';
 import { createSignalRuntimeDomain } from '../../../../src/runtime/lifecycle/cacheDomains/signalRuntimeDomain.js';
 import { createTerminationRuntime } from '../../../../src/runtime/lifecycle/terminationRuntime.js';
@@ -19,6 +21,12 @@ import { createLoggerDouble, createMonitorContextDouble } from '../../../helpers
 
 function harness() {
   const calls: string[] = [];
+  const queueEvents: DiagnosticFields[] = [];
+  const diagnostics = {
+    record: (operation: string, fields: DiagnosticFields) => {
+      if (operation === DIAGNOSTIC_OPERATIONS.SIGNAL_QUEUE_EVENT) queueEvents.push(fields);
+    },
+  };
   const owner = {
     start: () => {
       calls.push('start');
@@ -88,11 +96,11 @@ function harness() {
     },
     buyTaskQueue: createBuyTaskQueue({
       clock: { now: () => new Date() },
-      diagnostics: createDiagnosticObserverDouble(),
+      diagnostics,
     }),
     sellTaskQueue: createSellTaskQueue({
       clock: { now: () => new Date() },
-      diagnostics: createDiagnosticObserverDouble(),
+      diagnostics,
     }),
     monitorTaskQueue: createMonitorTaskQueue<MonitorTaskDataMap>({
       logger: createLoggerDouble(),
@@ -104,14 +112,42 @@ function harness() {
     now: new Date('2026-05-01T00:00:00+08:00'),
     runtime: { dayKey: '2026-05-01', canTradeNow: false, isTradingDay: true },
   };
-  return { deps, calls, termination, context, strategy };
+  return { deps, calls, termination, context, strategy, queueEvents };
 }
 
 describe('signal runtime cross-day safety', () => {
   it('resets the same strategy after order/PostTrade/Quote drain, never destroys it at midnight', async () => {
     const h = harness();
     const domain = createSignalRuntimeDomain(h.deps);
+    h.deps.buyTaskQueue.push({
+      type: 'STRATEGY_BUY',
+      data: {
+        symbol: 'BUY.HK',
+        symbolName: null,
+        action: 'BUYCALL',
+        seatVersion: 1,
+      },
+    });
+
+    h.deps.sellTaskQueue.push({
+      type: 'STRATEGY_SELL',
+      data: {
+        symbol: 'SELL.HK',
+        symbolName: null,
+        action: 'SELLCALL',
+        seatVersion: 2,
+      },
+    });
+
     await domain.midnightClear(h.context);
+    expect(
+      h.queueEvents
+        .filter((event) => event['outcome'] === 'CLEARED')
+        .map(({ symbol, reasonCode }) => ({ symbol, reasonCode })),
+    ).toEqual([
+      { symbol: 'BUY.HK', reasonCode: 'DAY_CLEAR' },
+      { symbol: 'SELL.HK', reasonCode: 'DAY_CLEAR' },
+    ]);
     expect(h.deps.monitorContext.strategy).toBe(h.strategy);
     expect(h.calls).toEqual([
       'orders.drain',

@@ -229,6 +229,7 @@ function createRunApp(deps: RunAppDeps): (params: AppEnvironmentParams) => Promi
       if (asyncRuntime === null || termination.isTerminated()) return;
 
       const businessEventProgram = buildBusinessEventProgram({
+        diagnostics,
         clock: SYSTEM_RUNTIME_CLOCK,
         marketDataClient: preGateRuntime.marketDataClient,
         monitorContext,

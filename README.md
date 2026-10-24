@@ -133,14 +133,14 @@ bun run start
 
 ### 5. 常用命令
 
-| 命令                          | 说明                                       |
-| ----------------------------- | ------------------------------------------ |
-| `bun run start`               | 使用 Bun 运行 TS 源码                      |
-| `bun --no-env-file run test`  | 经 package 脚本运行测试及离线 SDK preload   |
-| `bun run type-check`          | 独立执行严格 noEmit 类型检查                |
-| `bun run lint`                | 执行 ESLint 检查                           |
-| `bun run lint:fix`            | 执行 ESLint 自动修复（不等于完整格式化）    |
-| `bun run format`              | 使用 Bun 原生格式化写入文件，不运行 ESLint  |
+| 命令                         | 说明                                       |
+| ---------------------------- | ------------------------------------------ |
+| `bun run start`              | 使用 Bun 运行 TS 源码                      |
+| `bun --no-env-file run test` | 经 package 脚本运行测试及离线 SDK preload  |
+| `bun run type-check`         | 独立执行严格 noEmit 类型检查               |
+| `bun run lint`               | 执行 ESLint 检查                           |
+| `bun run lint:fix`           | 执行 ESLint 自动修复（不等于完整格式化）   |
+| `bun run format`             | 使用 Bun 原生格式化写入文件，不运行 ESLint |
 
 ## 配置说明
 

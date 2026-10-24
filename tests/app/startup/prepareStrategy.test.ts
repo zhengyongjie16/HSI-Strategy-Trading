@@ -36,10 +36,7 @@ async function fixture() {
   await mkdir(other, { recursive: true });
   await writeFile(definitionPath, 'fixture entry');
   await writeFile(configPath, '{ "value": 1 }\r\n');
-  await writeFile(
-    nodePath.join(other, 'definition.ts'),
-    'throw new Error("unselected evaluated")',
-  );
+  await writeFile(nodePath.join(other, 'definition.ts'), 'throw new Error("unselected evaluated")');
   await writeFile(nodePath.join(other, 'config.json'), 'broken JSON');
   const calls: string[] = [];
   const prepared = {
@@ -56,9 +53,7 @@ async function fixture() {
     },
   };
   const deps: PrepareStrategyDeps = {
-    loaderModuleHref: pathToFileURL(
-      nodePath.join(root, 'src/app/startup/prepareStrategy.ts'),
-    ).href,
+    loaderModuleHref: pathToFileURL(nodePath.join(root, 'src/app/startup/prepareStrategy.ts')).href,
     lstat: (path) => {
       calls.push(`lstat:${path}`);
       return lstat(path);
@@ -241,10 +236,7 @@ describe('prepareStrategy', () => {
   test('同目录缺 config.json 时，旧 config/strategy 根存在的 JSON 不被采用', async () => {
     const f = await fixture();
     await rm(f.configPath);
-    const legacyConfig = nodePath.join(
-      f.root,
-      'src/config/strategy/firstStrategy/config.json',
-    );
+    const legacyConfig = nodePath.join(f.root, 'src/config/strategy/firstStrategy/config.json');
     await mkdir(nodePath.dirname(legacyConfig), { recursive: true });
     await writeFile(legacyConfig, '{ "value": 1 }');
     await assert.rejects(prepareStrategy(selection, f.deps), /必需文件/);
@@ -467,58 +459,61 @@ describe('prepareStrategy', () => {
       extra: { extra: true },
       causeMessage: /配置字段必须精确包含/,
     },
-  ])('真实私有 parser 拒绝 %j，保留 prepare 阶段和 cause', async ({ signal, extra, causeMessage }) => {
-    const f = await fixture();
-    const sourceRoot = fileURLToPath(new URL('../../../src/', import.meta.url));
-    // 使用真实策略入口及其私有 parser；只复制源码依赖，不复制环境文件或运行应用入口。
-    for (const relative of ['strategies/intradayRegression', 'utils']) {
-      await cp(nodePath.join(sourceRoot, relative), nodePath.join(f.root, 'src', relative), {
-        recursive: true,
-      });
-    }
+  ])(
+    '真实私有 parser 拒绝 %j，保留 prepare 阶段和 cause',
+    async ({ signal, extra, causeMessage }) => {
+      const f = await fixture();
+      const sourceRoot = fileURLToPath(new URL('../../../src/', import.meta.url));
+      // 使用真实策略入口及其私有 parser；只复制源码依赖，不复制环境文件或运行应用入口。
+      for (const relative of ['strategies/intradayRegression', 'utils']) {
+        await cp(nodePath.join(sourceRoot, relative), nodePath.join(f.root, 'src', relative), {
+          recursive: true,
+        });
+      }
 
-    await symlink(
-      fileURLToPath(new URL('../../../node_modules/', import.meta.url)),
-      nodePath.join(f.root, 'node_modules'),
-      'junction',
-    );
-    const directory = nodePath.join(f.strategyRoot, 'intradayRegression');
-    await writeFile(
-      nodePath.join(directory, 'config.json'),
-      JSON.stringify({
-        signals: { BUYCALL: signal, SELLCALL: '(K>0)', BUYPUT: '(K>0)', SELLPUT: '(K>0)' },
-        verification: {
-          buy: { delaySeconds: 0, indicators: [] },
-          sell: { delaySeconds: 0, indicators: [] },
-        },
-        ...extra,
-      }),
-    );
-    const imported: string[] = [];
-    await assert.rejects(
-      prepareStrategy(
-        { env: { ACTIVE_STRATEGY_ID: 'intraday-regression' } },
-        {
-          ...f.deps,
-          importModule: async (href): Promise<unknown> => {
-            imported.push(fileURLToPath(href));
-            return importFixtureModule(f.root, href);
+      await symlink(
+        fileURLToPath(new URL('../../../node_modules/', import.meta.url)),
+        nodePath.join(f.root, 'node_modules'),
+        'junction',
+      );
+      const directory = nodePath.join(f.strategyRoot, 'intradayRegression');
+      await writeFile(
+        nodePath.join(directory, 'config.json'),
+        JSON.stringify({
+          signals: { BUYCALL: signal, SELLCALL: '(K>0)', BUYPUT: '(K>0)', SELLPUT: '(K>0)' },
+          verification: {
+            buy: { delaySeconds: 0, indicators: [] },
+            sell: { delaySeconds: 0, indicators: [] },
           },
+          ...extra,
+        }),
+      );
+      const imported: string[] = [];
+      await assert.rejects(
+        prepareStrategy(
+          { env: { ACTIVE_STRATEGY_ID: 'intraday-regression' } },
+          {
+            ...f.deps,
+            importModule: async (href): Promise<unknown> => {
+              imported.push(fileURLToPath(href));
+              return importFixtureModule(f.root, href);
+            },
+          },
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          expect(error.message).toContain('Strategy:prepare');
+          expect(error.message).not.toContain('Strategy:import');
+          assert.ok(error.cause instanceof Error);
+          expect(error.cause.message).toMatch(causeMessage);
+          return true;
         },
-      ),
-      (error: unknown) => {
-        assert.ok(error instanceof Error);
-        expect(error.message).toContain('Strategy:prepare');
-        expect(error.message).not.toContain('Strategy:import');
-        assert.ok(error.cause instanceof Error);
-        expect(error.cause.message).toMatch(causeMessage);
-        return true;
-      },
-    );
-    expect(imported).toEqual([nodePath.join(directory, 'definition.ts')]);
-    expect(f.calls.some((call) => call.startsWith('import:'))).toBe(false);
-    expect(f.calls).not.toContain('create');
-  });
+      );
+      expect(imported).toEqual([nodePath.join(directory, 'definition.ts')]);
+      expect(f.calls.some((call) => call.startsWith('import:'))).toBe(false);
+      expect(f.calls).not.toContain('create');
+    },
+  );
 
   test('同一根内两个独立 schema 策略各自准备，互不导入', async () => {
     const f = await fixture();

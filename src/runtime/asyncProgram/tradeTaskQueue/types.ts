@@ -78,6 +78,11 @@ export type TaskInput<TType extends string> = {
   readonly data: TaskSignal<TType>;
 };
 
+/** 调用方在真实清理边界提供的只读原因；不参与筛选、授权或队列顺序。 */
+export type TaskQueueRemovalContext = {
+  readonly reasonCode: 'SEAT_RUNTIME_CLEANUP' | 'DAY_CLEAR' | 'RETRY_CLEANUP' | 'UNSPECIFIED';
+};
+
 /**
  * 通用任务队列接口（行为契约）。
  * 类型用途：买卖任务队列的入队/出队/清空/按条件移除及任务添加回调；泛型 TType 为 BuyTaskType 或 SellTaskType。
@@ -97,11 +102,14 @@ export interface TaskQueue<TType extends string> {
   /** 检查队列是否为空 */
   isEmpty: () => boolean;
 
-  /** 按条件移除任务，返回移除数量 */
-  removeTasks: (predicate: (task: Task<TType>) => boolean) => number;
+  /** 按条件移除任务，返回移除数量；省略清理上下文时仅诊断为 UNSPECIFIED。 */
+  removeTasks: (
+    predicate: (task: Task<TType>) => boolean,
+    context?: TaskQueueRemovalContext,
+  ) => number;
 
-  /** 清空全部任务，返回移除数量 */
-  clearAll: () => number;
+  /** 清空全部任务，返回移除数量；省略清理上下文时仅诊断为 UNSPECIFIED。 */
+  clearAll: (context?: TaskQueueRemovalContext) => number;
 
   /** 注册任务添加回调，返回注销函数 */
   onTaskAdded: (callback: TaskAddedCallback) => () => void;

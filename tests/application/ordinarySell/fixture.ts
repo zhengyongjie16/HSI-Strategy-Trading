@@ -71,6 +71,7 @@ export async function createSellHarness(
 
   const deps: OrdinarySellWorkflowDeps = {
     logger,
+    diagnostics: createDiagnosticObserverDouble(),
     config: { smartCloseEnabled: false, smartCloseTimeoutMinutes: null },
     symbolRegistry: context.symbolRegistry,
 

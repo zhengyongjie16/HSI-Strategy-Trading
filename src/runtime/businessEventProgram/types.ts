@@ -1,6 +1,7 @@
 import type { MonitorConfig, TradingConfig } from '../../types/config.js';
 import type { LifecycleMutableState } from '../../types/lifecycle.js';
 import type { TradingTimeState } from '../../types/timeControlPlane.js';
+import type { DiagnosticObserver } from '../../types/diagnostics.js';
 
 import type { MarketDataClient } from '../../types/marketPorts.js';
 import type { OrderRecorder } from '../../types/orderRecorder.js';
@@ -33,6 +34,7 @@ interface BusinessEventMonitorDisplayRuntime {
 
 /** composition root 注入的行情、普通授权、输出与终态端口。 */
 export type BusinessEventProgramDeps = {
+  readonly diagnostics: DiagnosticObserver;
   readonly clock: RuntimeClock;
   readonly marketDataClient: Pick<
     MarketDataClient,

@@ -4,6 +4,7 @@
  */
 import { isStaleCrossDaySignal, isLiquidationSignal } from '../../domain/order/executionPolicy.js';
 import { ORDER_QUOTE_RETRY } from '../../constants/common.js';
+import { DIAGNOSTIC_OPERATIONS } from '../../constants/diagnostics.js';
 import { resolveNextQuoteRetry } from '../quoteRetry.js';
 import { resolveQuoteReadinessForRequirement } from '../../domain/order/quoteReadiness.js';
 import { isExternalApiRequestError } from '../../utils/apiFailure/index.js';
@@ -17,6 +18,7 @@ import {
 } from '../../domain/seat/seatPolicy.js';
 
 import { processSellSignals } from './quantityResolver.js';
+import type { DiagnosticFields } from '../../types/diagnostics.js';
 import type { ExecutableSellSignal } from '../../types/signal.js';
 import type { SettlementReadinessReceipt } from '../../types/settlement.js';
 import type {
@@ -44,6 +46,7 @@ function cloneSellSignal(signal: ExecutableSellSignal): ExecutableSellSignal {
 export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): OrdinarySellWorkflow {
   const {
     logger,
+    diagnostics,
     clock,
     config,
     symbolRegistry,
@@ -64,15 +67,101 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
   ): Promise<SellExecutionOutcome> {
     const symbolDisplay = formatSymbolDisplay(signal.symbol, signal.symbolName ?? null);
     const originDayEpoch = attempt.retry?.dayEpoch ?? snapshot.getView().token.dayEpoch;
-    const canContinue = (): boolean =>
-      attempt.isActive() && !termination.isTerminated() && getCanProcessTask();
-    const canContinueOrigin = (): boolean =>
-      canContinue() &&
-      snapshot.getView().token.dayEpoch === originDayEpoch &&
-      validateSignalSeat({ signal, symbolRegistry }).valid;
 
-    /** 首次报价与 execution 最终报价缺失共用同一预算、原 epoch 及原业务信号，重试时重新选择数量。 */
-    function deferMissingQuote(): SellExecutionOutcome {
+    /** 仅在既有阻断/延期分支采集；字段构造及 observer 异常不参与卖出策略。 */
+    function recordOutcome(fields: () => DiagnosticFields): void {
+      try {
+        const triggerTimeMs = signal.triggerTime?.getTime();
+        diagnostics.record(DIAGNOSTIC_OPERATIONS.SIGNAL_PROCESSING_OUTCOME, {
+          symbol: signal.symbol,
+          action: signal.action,
+          seatVersion: signal.seatVersion,
+          ...(triggerTimeMs !== undefined && Number.isFinite(triggerTimeMs)
+            ? { triggerTimeMs }
+            : {}),
+          originDayEpoch,
+          ...fields(),
+        });
+      } catch {
+        // 被动旁路，不调用 logger/fatal、不补读授权、席位或时钟。
+      }
+    }
+
+    const canContinue = (): boolean => {
+      if (!attempt.isActive()) {
+        recordOutcome(() => ({
+          stage: 'SELL_AUTHORIZATION',
+          outcome: 'ABORTED',
+          reasonCode: 'RUN_GENERATION_INVALIDATED',
+        }));
+        return false;
+      }
+
+      if (termination.isTerminated()) {
+        recordOutcome(() => ({
+          stage: 'SELL_AUTHORIZATION',
+          outcome: 'ABORTED',
+          reasonCode: 'RUNTIME_TERMINATED',
+        }));
+        return false;
+      }
+
+      if (!getCanProcessTask()) {
+        recordOutcome(() => ({
+          stage: 'SELL_AUTHORIZATION',
+          outcome: 'ABORTED',
+          reasonCode: 'TRADING_GATE_CLOSED',
+        }));
+        return false;
+      }
+
+      return true;
+    };
+
+    const canContinueOrigin = (): boolean => {
+      if (!canContinue()) return false;
+
+      const currentDayEpoch = snapshot.getView().token.dayEpoch;
+      if (currentDayEpoch !== originDayEpoch) {
+        recordOutcome(() => ({
+          stage: 'SELL_AUTHORIZATION',
+          outcome: 'ABORTED',
+          reasonCode: 'TRADING_DAY_INVALIDATED',
+          currentDayEpoch,
+        }));
+        return false;
+      }
+
+      const validation = validateSignalSeat({ signal, symbolRegistry });
+      if (!validation.valid) {
+        recordOutcome(() => ({
+          stage: 'SELL_AUTHORIZATION',
+          outcome: 'ABORTED',
+          reasonCode: validation.reason,
+        }));
+        return false;
+      }
+
+      return true;
+    };
+
+    /** 沿原 retry 授权短路检查失效；只在既有跨日拒绝点记录，不增加 clock 调用。 */
+    function isRetryCurrent(retrySignal: ExecutableSellSignal): boolean {
+      if (!canContinueOrigin()) return false;
+
+      if (isLiquidationSignal(retrySignal) || !isStaleCrossDaySignal(retrySignal, clock.now()))
+        return true;
+
+      recordOutcome(() => ({
+        stage: 'SELL_RETRY_VALIDITY',
+        outcome: 'ABORTED',
+        reasonCode: 'SIGNAL_TRADING_DAY_STALE',
+      }));
+      return false;
+    }
+
+    /** 首次报价与 execution 最终报价缺失共用同一预算；返回延期请求，不宣称 runtime 已建立 timer。 */
+    function deferMissingQuote(stage: string): SellExecutionOutcome {
       if (!canContinueOrigin()) return { status: 'COMPLETED' };
 
       const nextRetry = resolveNextQuoteRetry({
@@ -83,10 +172,23 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
       });
       if (nextRetry.exhausted) {
         logger.warn(`[OrdinarySell] 卖出行情重试耗尽，放弃执行: ${symbolDisplay}`);
+        recordOutcome(() => ({
+          stage,
+          outcome: 'REJECTED',
+          reasonCode: 'QUOTE_RETRY_EXHAUSTED',
+          retryAttempts: attempt.retry?.attempts ?? 0,
+        }));
         return { status: 'COMPLETED' };
       }
 
       const retrySignal = cloneSellSignal(signal);
+      recordOutcome(() => ({
+        stage,
+        outcome: 'DEFERRED',
+        reasonCode: 'QUOTE_MISSING',
+        retryAttempts: nextRetry.nextAttempts,
+        retryDelayMs: ORDER_QUOTE_RETRY.INTERVAL_MS,
+      }));
       return {
         status: 'RETRY',
         retry: {
@@ -94,9 +196,7 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
           attempts: nextRetry.nextAttempts,
           dayEpoch: originDayEpoch,
           delayMs: ORDER_QUOTE_RETRY.INTERVAL_MS,
-          isCurrent: () =>
-            canContinueOrigin() &&
-            (isLiquidationSignal(retrySignal) || !isStaleCrossDaySignal(retrySignal, clock.now())),
+          isCurrent: () => isRetryCurrent(retrySignal),
         },
       };
     }
@@ -113,6 +213,11 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
           receipt = await settlement.waitForFresh();
         } catch (error) {
           if (isSettlementReadinessAbortError(error, 'STOP_AND_DRAIN')) {
+            recordOutcome(() => ({
+              stage: 'SELL_SETTLEMENT_WAIT',
+              outcome: 'ABORTED',
+              reasonCode: 'SETTLEMENT_WAIT_ABORTED',
+            }));
             return { status: 'COMPLETED' };
           }
 
@@ -121,10 +226,22 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
 
         if (!canContinueOrigin()) return { status: 'COMPLETED' };
 
-        const isReceiptCurrent = (): boolean =>
-          canContinueOrigin() &&
-          receipt.snapshotToken.dayEpoch === originDayEpoch &&
-          settlement.isCurrent(receipt);
+        const isReceiptCurrent = (): boolean => {
+          if (!canContinueOrigin()) return false;
+
+          if (receipt.snapshotToken.dayEpoch !== originDayEpoch) {
+            recordOutcome(() => ({
+              stage: 'SELL_SETTLEMENT_WAIT',
+              outcome: 'INVALIDATED',
+              reasonCode: 'SETTLEMENT_RECEIPT_DAY_INVALIDATED',
+              receiptDayEpoch: receipt.snapshotToken.dayEpoch,
+            }));
+            return false;
+          }
+
+          return settlement.isCurrent(receipt);
+        };
+
         if (!isReceiptCurrent()) continue;
 
         const calendar = getTradingCalendar();
@@ -136,6 +253,12 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
           logger.debug(
             `[OrdinarySell] ${describeSignalSeatValidationFailure(seatValidation)}，跳过信号: ${symbolDisplay} ${signal.action}`,
           );
+
+          recordOutcome(() => ({
+            stage: 'SELL_SEAT_VALIDATION',
+            outcome: 'REJECTED',
+            reasonCode: seatValidation.reason,
+          }));
           return { status: 'COMPLETED' };
         }
 
@@ -208,10 +331,18 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
             logger.warn(
               `[OrdinarySell] 卖出行情无效，放弃当前执行: ${symbolDisplay} ${signal.action} readiness=${quoteReadiness}`,
             );
+
+            recordOutcome(() => ({
+              stage: 'SELL_QUOTE_ADMISSION',
+              outcome: 'REJECTED',
+              reasonCode: 'QUOTE_INVALID',
+              quoteReadiness,
+              ...(targetQuote === null ? {} : { currentPrice: targetQuote.price }),
+            }));
             return { status: 'COMPLETED' };
           }
 
-          return deferMissingQuote();
+          return deferMissingQuote('SELL_QUOTE_ADMISSION');
         }
 
         // 卖出只进入卖量计算与卖出执行链路，不经过买入风控。
@@ -237,6 +368,17 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
         const firstSignal = processedSignals[0];
         if (!firstSignal || firstSignal.action === 'HOLD') {
           logger.debug(`[OrdinarySell] 卖出信号被跳过: ${symbolDisplay} ${signal.action}`);
+          recordOutcome(() => ({
+            stage: 'SELL_QUANTITY',
+            outcome: 'SKIPPED',
+            reasonCode: firstSignal ? 'SELL_QUANTITY_HOLD' : 'SELL_QUANTITY_EMPTY',
+            ...(firstSignal
+              ? {
+                  processedAction: firstSignal.action,
+                  ...(firstSignal.reason === undefined ? {} : { detail: firstSignal.reason }),
+                }
+              : {}),
+          }));
           return { status: 'COMPLETED' }; // 处理成功（虽然跳过了）
         }
 
@@ -248,6 +390,12 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
           logger.debug(
             `[OrdinarySell] ${describeSignalSeatValidationFailure(executionSeatValidation)}，执行前复核失败，跳过信号: ${symbolDisplay} ${signal.action}`,
           );
+
+          recordOutcome(() => ({
+            stage: 'SELL_EXECUTION_SEAT_VALIDATION',
+            outcome: 'REJECTED',
+            reasonCode: executionSeatValidation.reason,
+          }));
           return { status: 'COMPLETED' };
         }
 
@@ -272,13 +420,18 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
         const finalQuoteFailure = quoteFailures.find((failure) => failure.signal === firstSignal);
         if (finalQuoteFailure?.kind === 'QUOTE_INVALID') {
           logger.warn(`[OrdinarySell] 最终卖出行情无效，放弃当前执行: ${symbolDisplay}`);
+          recordOutcome(() => ({
+            stage: 'SELL_EXECUTION',
+            outcome: 'REJECTED',
+            reasonCode: 'QUOTE_INVALID',
+          }));
           return { status: 'COMPLETED' };
         }
 
         // 版本失效只重选当前事实，不消耗报价预算；明确最终缺价才共用首次缺价的有限重试。
         if (!isSelectionCurrent()) continue;
 
-        if (finalQuoteFailure?.kind === 'QUOTE_MISSING') return deferMissingQuote();
+        if (finalQuoteFailure?.kind === 'QUOTE_MISSING') return deferMissingQuote('SELL_EXECUTION');
 
         // 其他门禁/订单事实拒绝可能同样无 accepted ID，不能据此推造报价缺失并重试。
         return { status: 'COMPLETED' };
@@ -290,7 +443,17 @@ export function createOrdinarySellWorkflow(deps: OrdinarySellWorkflowDeps): Ordi
         throw error;
       }
 
-      logger.error(`[OrdinarySell] 处理失败: ${symbolDisplay} ${signal.action}`, formatError(error));
+      logger.error(
+        `[OrdinarySell] 处理失败: ${symbolDisplay} ${signal.action}`,
+        formatError(error),
+      );
+
+      recordOutcome(() => ({
+        stage: 'SELL_WORKFLOW',
+        outcome: 'FAILED',
+        reasonCode: 'EXTERNAL_API_READ_FAILED',
+        detail: formatError(error),
+      }));
       return { status: 'COMPLETED' };
     }
   }

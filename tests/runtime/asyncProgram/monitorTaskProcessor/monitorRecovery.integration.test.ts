@@ -112,7 +112,6 @@ async function createLunchBreakHarness(): Promise<
     clock: { now: () => new Date() },
     diagnostics: createDiagnosticObserverDouble(),
   });
-  const tradingGateEventRuntime = createTradingGateEventRuntime({ logger: createLoggerDouble() });
   const tradeRuntime = createTradeRuntimeDouble();
 
   const snapshot = await createSnapshotFixture({
@@ -124,6 +123,7 @@ async function createLunchBreakHarness(): Promise<
       fatalErrors.push(error);
     },
   });
+  const tradingGateEventRuntime = createTradingGateEventRuntime({ termination });
   const settlement = createSettlementRuntimeFixture({
     diagnostics: createDiagnosticObserverDouble(),
     clock: { now: () => new Date() },

@@ -31,8 +31,8 @@ function clearTradeQueues(
   readonly removedMonitor: number;
 } {
   const { buyTaskQueue, sellTaskQueue, monitorTaskQueue } = deps;
-  const removedBuy = buyTaskQueue.clearAll();
-  const removedSell = sellTaskQueue.clearAll();
+  const removedBuy = buyTaskQueue.clearAll({ reasonCode: 'DAY_CLEAR' });
+  const removedSell = sellTaskQueue.clearAll({ reasonCode: 'DAY_CLEAR' });
   const removedMonitor = monitorTaskQueue.clearAll();
   return {
     removedBuy,

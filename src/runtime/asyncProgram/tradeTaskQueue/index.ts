@@ -19,6 +19,7 @@ import type {
   SellTaskType,
   TaskQueueDeps,
   QueuedTradeTask,
+  TaskQueueRemovalContext,
 } from './types.js';
 
 /**
@@ -76,6 +77,41 @@ function createTaskQueue<TType extends string>(
     }
   }
 
+  /** 单项事实仅在 mutation 提交后记录；不重读 predicate，不采样额外时钟。 */
+  function recordSignalEvent(
+    task: Task<TType>,
+    mutation: 'push' | 'pop' | 'remove' | 'clear',
+    context?: TaskQueueRemovalContext,
+  ): void {
+    try {
+      const { symbol, action, seatVersion, triggerTime } = task.data;
+      const triggerTimeMs = triggerTime?.getTime();
+      const outcome = {
+        push: 'ENQUEUED',
+        pop: 'DEQUEUED',
+        remove: 'REMOVED',
+        clear: 'CLEARED',
+      }[mutation];
+      let reasonCode: string = context?.reasonCode ?? 'UNSPECIFIED';
+      if (mutation === 'push') reasonCode = 'QUEUE_PUSH';
+      else if (mutation === 'pop') reasonCode = 'QUEUE_POP';
+
+      deps.diagnostics.record(DIAGNOSTIC_OPERATIONS.SIGNAL_QUEUE_EVENT, {
+        stage: 'TRADE_QUEUE',
+        outcome,
+        reasonCode,
+        queue,
+        mutation,
+        symbol,
+        action,
+        ...(seatVersion === null || seatVersion === undefined ? {} : { seatVersion }),
+        ...(triggerTimeMs !== undefined && Number.isFinite(triggerTimeMs) ? { triggerTimeMs } : {}),
+      });
+    } catch {
+      // 字段构造与 observer 都不能改变 mutation、返回任务或消费者通知。
+    }
+  }
+
   function compactQueue(): void {
     if (headIndex === 0) {
       return;
@@ -101,6 +137,7 @@ function createTaskQueue<TType extends string>(
       };
       items.push({ task: fullTask, enqueuedAtMs: sampleDiagnosticTime() });
       recordState('push', 1);
+      recordSignalEvent(fullTask, 'push');
       notifyTaskAddedCallbacks(callbacks);
       return true;
     },
@@ -122,6 +159,8 @@ function createTaskQueue<TType extends string>(
       headIndex += 1;
       compactQueue();
       recordState('pop', task === null ? 0 : 1);
+      if (task !== null) recordSignalEvent(task, 'pop');
+
       return task;
     },
 
@@ -129,9 +168,12 @@ function createTaskQueue<TType extends string>(
       return headIndex >= items.length;
     },
 
-    removeTasks(predicate: (task: Task<TType>) => boolean): number {
+    removeTasks(
+      predicate: (task: Task<TType>) => boolean,
+      context?: TaskQueueRemovalContext,
+    ): number {
       const nextItems: QueuedTradeTask<TType>[] = [];
-      let removedCount = 0;
+      const removedTasks: Task<TType>[] = [];
 
       for (let index = headIndex; index < items.length; index += 1) {
         const task = items[index];
@@ -140,7 +182,7 @@ function createTaskQueue<TType extends string>(
         }
 
         if (predicate(task.task)) {
-          removedCount += 1;
+          removedTasks.push(task.task);
           continue;
         }
 
@@ -149,15 +191,19 @@ function createTaskQueue<TType extends string>(
 
       items = nextItems;
       headIndex = 0;
-      recordState('remove', removedCount);
-      return removedCount;
+      recordState('remove', removedTasks.length);
+      for (const task of removedTasks) recordSignalEvent(task, 'remove', context);
+
+      return removedTasks.length;
     },
 
-    clearAll(): number {
+    clearAll(context?: TaskQueueRemovalContext): number {
       const activeItems = items.slice(headIndex);
       items = [];
       headIndex = 0;
       recordState('clear', activeItems.length);
+      for (const { task } of activeItems) recordSignalEvent(task, 'clear', context);
+
       return activeItems.length;
     },
 
